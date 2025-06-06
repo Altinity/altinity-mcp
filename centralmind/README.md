@@ -2,6 +2,17 @@
 title: Gateway Helm Chart
 ---
 
+
+### altinity
+```
+helm install mcp-imdb ./ -f values.yaml -f imdb.yaml 
+helm upgrade mcp-imdb ./ -f values.yaml -f imdb.yaml
+helm template mcp-imdb ./ -f values.yaml -f imdb.yaml > debug.yaml
+
+helm install mcp-github ./ -f values.yaml -f github.yaml
+
+```
+
 This document includes instructions for installing and running Gateway on Kubernetes using Helm Charts.
 
 Helm is an open-source command line tool used for managing Kubernetes applications. It is a graduate project in the CNCF Landscape.
@@ -283,3 +294,4 @@ gateway:
       database: mydb
       port: 5432
 ``` 
+

@@ -5,4 +5,15 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   config.yaml: |
-    {{- toYaml .Values.gateway | nindent 4 }} 
+{{- with .Values.api }}
+    api:
+{{ . | toYaml | indent 6 }}
+{{- end }}
+{{- with .Values.database }}
+    database:
+{{ . | toYaml | indent 6 }}
+{{- end }}
+{{- with .Values.plugins }}
+    plugins:
+{{ . | toYaml | indent 6 }}
+{{- end }}

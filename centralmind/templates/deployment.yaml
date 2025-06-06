@@ -22,10 +22,8 @@ spec:
             - /etc/gateway/config.yaml
             - --addr
             - ":{{ .Values.service.port }}"
-            {{- if .Values.gateway.servers }}
             - --servers
-            - {{ join "," .Values.gateway.servers }}
-            {{- end }}
+            - https://{{ include "gateway.name" . }}.{{ .Values.service.domainName }}:{{ .Values.service.publicPort }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
