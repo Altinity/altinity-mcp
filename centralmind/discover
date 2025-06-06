@@ -1,0 +1,10 @@
+gateway discover \
+  -C "clickhouse://sql-clickhouse.clickhouse.com:9440/github?username=demo&password=&secure=true" \
+  --llm-log llm-log --prompt-file prompt-file \
+  --ai-reasoning=true \
+  --ai-provider openai \
+  --prompt "Develop an API that enables a chatbot to retrieve information about data. \
+Try to place yourself as analyst and think what kind of data you will require, \
+based on that come up with useful API methods for that"
+
+#https://github.demo.altinity.cloud:8443/
