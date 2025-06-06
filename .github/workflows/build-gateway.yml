@@ -39,8 +39,8 @@ jobs:
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+        username: altinity-robot
+        password: ${{ secrets.GHCR_TOKEN }}
 
     - name: Extract metadata
       id: meta
