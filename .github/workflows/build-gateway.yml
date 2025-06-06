@@ -3,8 +3,7 @@ name: Build Gateway
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    tags: [ 'v*.*.*' ]
   workflow_dispatch:
 
 env:
@@ -43,7 +42,7 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
+          type=ref,event=tag
           type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
 
