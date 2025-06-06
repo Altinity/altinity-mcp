@@ -1,5 +1,5 @@
 gateway discover \
-  -C "clickhouse://sql-clickhouse.clickhouse.com:9440/github?username=demo&password=&secure=true" \
+  -C "clickhouse://sql-clickhouse.clickhouse.com:9440/$1?username=demo&password=&secure=true" \
   --llm-log llm-log --prompt-file prompt-file \
   --ai-reasoning=true \
   --ai-provider openai \

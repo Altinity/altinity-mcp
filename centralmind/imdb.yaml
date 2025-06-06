@@ -1,49 +1,394 @@
 api:
-  name: "imdb"
-  description: IMDB Database API
+  name: "imdb-sql-clickhouse"
+  description: IMDB Database from sql-clickhouse.clickhouse.com
   version: v1.0.0
 database:
-  type: clickhouse
-  connection: clickhouse://sql-clickhouse.clickhouse.com:9440/imdb?username=demo&password=&secure=true
-  endpoints:
-    - group: peopleA
-      http_method: GET
-      http_path: /peopleA
-      mcp_method: get_peopleA_list
-      summary: List all peopleA records with pagination.
-      description: 'Returns a paginated list of peopleA records. Example: GET /peopleA?offset=0&limit=10'
-      query: SELECT * FROM peopleA LIMIT :limit OFFSET :offset
-      is_array_result: true
-      params:
-        - name: offset
-          type: number
-        - name: limit
-          type: number
-
-    - group: peopleB
-      http_method: GET
-      http_path: /peopleB
-      mcp_method: get_peopleB_list
-      summary: List all peopleB records with pagination.
-      description: 'Returns a paginated list of peopleB records. Example: GET /peopleB?offset=0&limit=10'
-      query: SELECT * FROM peopleB LIMIT :limit OFFSET :offset
-      is_array_result: true
-      params:
-        - name: offset
-          type: number
-        - name: limit
-          type: number
-
-    - group: movieInfo
-      http_method: GET
-      http_path: /movieInfo
-      mcp_method: get_movieInfo_list
-      summary: List all movie information with pagination.
-      description: 'Returns a paginated list of movie records. Example: GET /movieInfo?offset=0&limit=10'
-      query: SELECT * FROM movieInfo LIMIT :limit OFFSET :offset
-      is_array_result: true
-      params:
-        - name: offset
-          type: number
-        - name: limit
-          type: number
+    type: clickhouse
+    connection: clickhouse://sql-clickhouse.clickhouse.com:9440/imdb?username=demo&password=&secure=true
+    endpoints:
+        - group: people_d1
+          http_method: GET
+          http_path: /api/people_d1
+          mcp_method: list_people_d1
+          summary: Retrieve paginated list of people from dataset1.
+          description: 'Returns a paginated list of people. Example usage: GET /api/people_d1?offset=0&limit=10'
+          query: SELECT id, first_name, last_name, gender FROM people_d1 ORDER BY id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: people_d1
+          http_method: GET
+          http_path: /api/people_d1/total_count
+          mcp_method: count_people_d1
+          summary: Retrieve total count of people records in dataset1.
+          description: 'Returns the total record count for dataset1. Example: GET /api/people_d1/total_count'
+          query: SELECT count() AS total_count FROM people_d1
+          is_array_result: false
+          params: []
+        - group: people_d1
+          http_method: GET
+          http_path: /api/people_d1/{personId}/{firstName}/{lastName}/{gender}
+          mcp_method: get_people_d1
+          summary: Retrieve a single person record from dataset1 by composite primary keys.
+          description: 'Returns a single person record matching the given personId, firstName, lastName, and gender. Example: GET /api/people_d1/2/Michael/%27%27babeepower%27%20Viera/M'
+          query: SELECT id, first_name, last_name, gender FROM people_d1 WHERE id = :personId AND first_name = :firstName AND last_name = :lastName AND gender = :gender LIMIT 1
+          is_array_result: false
+          params:
+            - name: personId
+              type: integer
+              location: path
+              required: true
+            - name: firstName
+              type: string
+              location: path
+              required: true
+            - name: lastName
+              type: string
+              location: path
+              required: true
+            - name: gender
+              type: string
+              location: path
+              required: true
+        - group: people_d2
+          http_method: GET
+          http_path: /api/people_d2
+          mcp_method: list_people_d2
+          summary: Retrieve paginated list of people from dataset2.
+          description: 'Returns a paginated list of people from dataset2. Example usage: GET /api/people_d2?offset=0&limit=10'
+          query: SELECT id, first_name, last_name, gender FROM people_d2 ORDER BY id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: people_d2
+          http_method: GET
+          http_path: /api/people_d2/total_count
+          mcp_method: count_people_d2
+          summary: Retrieve total count of people records in dataset2.
+          description: 'Returns the total record count for dataset2. Example: GET /api/people_d2/total_count'
+          query: SELECT count() AS total_count FROM people_d2
+          is_array_result: false
+          params: []
+        - group: people_d2
+          http_method: GET
+          http_path: /api/people_d2/{personId}/{firstName}/{lastName}/{gender}
+          mcp_method: get_people_d2
+          summary: Retrieve a single person record from dataset2 by composite primary keys.
+          description: 'Returns a single person record matching the given personId, firstName, lastName, and gender. Example: GET /api/people_d2/2/Michael/%27%27babeepower%27%20Viera/M'
+          query: SELECT id, first_name, last_name, gender FROM people_d2 WHERE id = :personId AND first_name = :firstName AND last_name = :lastName AND gender = :gender LIMIT 1
+          is_array_result: false
+          params:
+            - name: personId
+              type: integer
+              location: path
+              required: true
+            - name: firstName
+              type: string
+              location: path
+              required: true
+            - name: lastName
+              type: string
+              location: path
+              required: true
+            - name: gender
+              type: string
+              location: path
+              required: true
+        - group: names
+          http_method: GET
+          http_path: /api/names
+          mcp_method: list_names
+          summary: Retrieve paginated list of names.
+          description: 'Returns a paginated list of names. Example usage: GET /api/names?offset=0&limit=10'
+          query: SELECT id, first_name, last_name FROM names ORDER BY id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: names
+          http_method: GET
+          http_path: /api/names/total_count
+          mcp_method: count_names
+          summary: Retrieve total count of name records.
+          description: 'Returns the total record count for names. Example: GET /api/names/total_count'
+          query: SELECT count() AS total_count FROM names
+          is_array_result: false
+          params: []
+        - group: names
+          http_method: GET
+          http_path: /api/names/{nameId}/{firstName}/{lastName}
+          mcp_method: get_name
+          summary: Retrieve a single name record by composite primary keys.
+          description: 'Returns a single name record matching the given nameId, firstName, and lastName. Example: GET /api/names/66841/Svetozar/Ristovski'
+          query: SELECT id, first_name, last_name FROM names WHERE id = :nameId AND first_name = :firstName AND last_name = :lastName LIMIT 1
+          is_array_result: false
+          params:
+            - name: nameId
+              type: integer
+              location: path
+              required: true
+            - name: firstName
+              type: string
+              location: path
+              required: true
+            - name: lastName
+              type: string
+              location: path
+              required: true
+        - group: movie_genre
+          http_method: GET
+          http_path: /api/movie_genre
+          mcp_method: list_movie_genre
+          summary: Retrieve paginated list of movie genres.
+          description: 'Returns a paginated list of movie genres. Example usage: GET /api/movie_genre?offset=0&limit=10'
+          query: SELECT movie_id, genre FROM movie_genre ORDER BY movie_id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: movie_genre
+          http_method: GET
+          http_path: /api/movie_genre/total_count
+          mcp_method: count_movie_genre
+          summary: Retrieve total count of movie genre records.
+          description: 'Returns the total record count for movie genres. Example: GET /api/movie_genre/total_count'
+          query: SELECT count() AS total_count FROM movie_genre
+          is_array_result: false
+          params: []
+        - group: movie_genre
+          http_method: GET
+          http_path: /api/movie_genre/{movieId}/{genre}
+          mcp_method: get_movie_genre
+          summary: Retrieve a single movie genre record by composite primary keys.
+          description: 'Returns a single movie genre record matching the given movieId and genre. Example: GET /api/movie_genre/1/Documentary'
+          query: SELECT movie_id, genre FROM movie_genre WHERE movie_id = :movieId AND genre = :genre LIMIT 1
+          is_array_result: false
+          params:
+            - name: movieId
+              type: integer
+              location: path
+              required: true
+            - name: genre
+              type: string
+              location: path
+              required: true
+        - group: director_movie
+          http_method: GET
+          http_path: /api/director_movie
+          mcp_method: list_director_movie
+          summary: Retrieve paginated list of director-movie mappings.
+          description: 'Returns a paginated list of director-movie mappings. Example usage: GET /api/director_movie?offset=0&limit=10'
+          query: SELECT director_id, movie_id FROM director_movie ORDER BY director_id, movie_id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: director_movie
+          http_method: GET
+          http_path: /api/director_movie/total_count
+          mcp_method: count_director_movie
+          summary: Retrieve total count of director-movie records.
+          description: 'Returns the total record count for director-movie mappings. Example: GET /api/director_movie/total_count'
+          query: SELECT count() AS total_count FROM director_movie
+          is_array_result: false
+          params: []
+        - group: director_movie
+          http_method: GET
+          http_path: /api/director_movie/{directorId}/{movieId}
+          mcp_method: get_director_movie
+          summary: Retrieve a single director-movie record by composite primary keys.
+          description: 'Returns a single director-movie record matching the given directorId and movieId. Example: GET /api/director_movie/3/304743'
+          query: SELECT director_id, movie_id FROM director_movie WHERE director_id = :directorId AND movie_id = :movieId LIMIT 1
+          is_array_result: false
+          params:
+            - name: directorId
+              type: integer
+              location: path
+              required: true
+            - name: movieId
+              type: integer
+              location: path
+              required: true
+        - group: movies
+          http_method: GET
+          http_path: /api/movies
+          mcp_method: list_movies
+          summary: Retrieve paginated list of movies.
+          description: 'Returns a paginated list of movies. Example usage: GET /api/movies?offset=0&limit=10'
+          query: SELECT id, name, year, rank FROM movies ORDER BY id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: movies
+          http_method: GET
+          http_path: /api/movies/total_count
+          mcp_method: count_movies
+          summary: Retrieve total count of movies.
+          description: 'Returns the total record count for movies. Example: GET /api/movies/total_count'
+          query: SELECT count() AS total_count FROM movies
+          is_array_result: false
+          params: []
+        - group: movies
+          http_method: GET
+          http_path: /api/movies/{movieId}/{movieName}/{year}
+          mcp_method: get_movie
+          summary: Retrieve a single movie record by composite primary keys.
+          description: 'Returns a single movie record matching the given movieId, movieName, and year. Example: GET /api/movies/2/%24/1971'
+          query: SELECT id, name, year, rank FROM movies WHERE id = :movieId AND name = :movieName AND year = :year LIMIT 1
+          is_array_result: false
+          params:
+            - name: movieId
+              type: integer
+              location: path
+              required: true
+            - name: movieName
+              type: string
+              location: path
+              required: true
+            - name: year
+              type: integer
+              location: path
+              required: true
+        - group: actor_movie_roles_small
+          http_method: GET
+          http_path: /api/actor_movie_roles_small
+          mcp_method: list_actor_movie_roles_small
+          summary: Retrieve paginated list of actor movie roles from the small dataset.
+          description: 'Returns a paginated list of actor movie roles from the small dataset. Example usage: GET /api/actor_movie_roles_small?offset=0&limit=10'
+          query: SELECT created_at, actor_id, movie_id, role FROM actor_movie_roles_small ORDER BY actor_id, movie_id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: actor_movie_roles_small
+          http_method: GET
+          http_path: /api/actor_movie_roles_small/total_count
+          mcp_method: count_actor_movie_roles_small
+          summary: Retrieve total count of actor movie roles in the small dataset.
+          description: 'Returns the total record count for actor movie roles in the small dataset. Example: GET /api/actor_movie_roles_small/total_count'
+          query: SELECT count() AS total_count FROM actor_movie_roles_small
+          is_array_result: false
+          params: []
+        - group: actor_movie_roles_small
+          http_method: GET
+          http_path: /api/actor_movie_roles_small/{actorId}/{movieId}
+          mcp_method: get_actor_movie_role_small
+          summary: Retrieve a single actor movie role record from the small dataset by composite primary keys.
+          description: 'Returns a single actor movie role record matching the given actorId and movieId. Example: GET /api/actor_movie_roles_small/2/280088'
+          query: SELECT created_at, actor_id, movie_id, role FROM actor_movie_roles_small WHERE actor_id = :actorId AND movie_id = :movieId LIMIT 1
+          is_array_result: false
+          params:
+            - name: actorId
+              type: integer
+              location: path
+              required: true
+            - name: movieId
+              type: integer
+              location: path
+              required: true
+        - group: actor_movie_roles_large
+          http_method: GET
+          http_path: /api/actor_movie_roles_large
+          mcp_method: list_actor_movie_roles_large
+          summary: Retrieve paginated list of actor movie roles from the large dataset.
+          description: 'Returns a paginated list of actor movie roles from the large dataset. Example usage: GET /api/actor_movie_roles_large?offset=0&limit=10'
+          query: SELECT created_at, actor_id, movie_id, role FROM actor_movie_roles_large ORDER BY actor_id, movie_id LIMIT :limit OFFSET :offset
+          is_array_result: true
+          params:
+            - name: offset
+              type: integer
+              location: query
+              required: false
+              default: 0
+            - name: limit
+              type: integer
+              location: query
+              required: false
+              default: 10
+        - group: actor_movie_roles_large
+          http_method: GET
+          http_path: /api/actor_movie_roles_large/total_count
+          mcp_method: count_actor_movie_roles_large
+          summary: Retrieve total count of actor movie roles in the large dataset.
+          description: 'Returns the total record count for actor movie roles in the large dataset. Example: GET /api/actor_movie_roles_large/total_count'
+          query: SELECT count() AS total_count FROM actor_movie_roles_large
+          is_array_result: false
+          params: []
+        - group: actor_movie_roles_large
+          http_method: GET
+          http_path: /api/actor_movie_roles_large/{actorId}/{movieId}
+          mcp_method: get_actor_movie_role_large
+          summary: Retrieve a single actor movie role record from the large dataset by composite primary keys.
+          description: 'Returns a single actor movie role record matching the given actorId and movieId. Example: GET /api/actor_movie_roles_large/0/6588'
+          query: SELECT created_at, actor_id, movie_id, role FROM actor_movie_roles_large WHERE actor_id = :actorId AND movie_id = :movieId LIMIT 1
+          is_array_result: false
+          params:
+            - name: actorId
+              type: integer
+              location: path
+              required: true
+            - name: movieId
+              type: integer
+              location: path
+              required: true
+    tables: []
+plugins: {}
