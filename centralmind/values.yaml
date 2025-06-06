@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/boristyshkevich/gateway   #ghcr.io/centralmind/gateway
+  repository: ghcr.io/altinity/altinity-mcp/gateway #ghcr.io/centralmind/gateway
   tag: "latest"
 
 service:
