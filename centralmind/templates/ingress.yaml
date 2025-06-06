@@ -1,0 +1,24 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: traefik.containo.us/v1alpha1
+kind: {{ .Values.ingress.kind }}
+metadata:
+  name: {{ include "gateway.name" . }}-http
+  namespace: {{ .Release.Namespace }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  entryPoints:
+  {{- range .Values.ingress.entryPoints }}
+    - {{ . }}
+  {{- end }}
+  routes:
+  {{- range .Values.ingress.hosts }}
+    - match: Host(`{{ .host }}`) && PathPrefix(`{{ (index .paths 0).path }}`)
+      kind: Rule
+      services:
+        - name: {{ include "gateway.name" $ }}
+          port: {{ $.Values.service.port }}
+  {{- end }}
+{{- end }} 

@@ -1,0 +1,427 @@
+image:
+  repository: ghcr.io/boristyshkevich/gateway   #ghcr.io/centralmind/gateway
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 8090
+
+ingress:
+  enabled: false
+  kind: IngressRoute
+  entryPoints:
+    - web
+  hosts:
+    - host: demo-gw.centralmind.io
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+domainName: altinity-skaeser-playground.dev.altinity.cloud
+
+gateway:
+  servers:
+    - https://mcp.altinity-skaeser-playground.dev.altinity.cloud
+  api:
+      name: ""
+      description: ""
+      version: ""
+  database:
+      type: clickhouse
+      connection: clickhouse://sql-clickhouse.clickhouse.com:9440/imdb?username=demo&password=&secure=true
+      endpoints:
+          - group: peopleA
+            http_method: GET
+            http_path: /peopleA
+            mcp_method: get_peopleA_list
+            summary: List all peopleA records with pagination.
+            description: 'Returns a paginated list of peopleA records. Example: GET /peopleA?offset=0&limit=10'
+            query: SELECT * FROM peopleA LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: peopleA
+            http_method: GET
+            http_path: /peopleA/count
+            mcp_method: get_peopleA_count
+            summary: Get total count of peopleA records.
+            description: 'Returns the total number of peopleA records. Example: GET /peopleA/count'
+            query: SELECT count() as total_count FROM peopleA
+            is_array_result: false
+            params: []
+          - group: peopleA
+            http_method: GET
+            http_path: /peopleA/{id}/{first_name}/{last_name}/{gender}
+            mcp_method: get_peopleA_by_pk
+            summary: Retrieve a single peopleA record by composite primary key.
+            description: 'Returns a single peopleA record matching the composite primary key. Example: GET /peopleA/2/Michael/''''''babeepower'''' Viera/M'
+            query: SELECT * FROM peopleA WHERE id = :id AND first_name = :first_name AND last_name = :last_name AND gender = :gender
+            is_array_result: false
+            params:
+              - name: id
+                type: number
+                location: path
+                required: true
+              - name: first_name
+                type: string
+                location: path
+                required: true
+              - name: last_name
+                type: string
+                location: path
+                required: true
+              - name: gender
+                type: string
+                location: path
+                required: true
+          - group: peopleB
+            http_method: GET
+            http_path: /peopleB
+            mcp_method: get_peopleB_list
+            summary: List all peopleB records with pagination.
+            description: 'Returns a paginated list of peopleB records. Example: GET /peopleB?offset=0&limit=10'
+            query: SELECT * FROM peopleB LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: peopleB
+            http_method: GET
+            http_path: /peopleB/count
+            mcp_method: get_peopleB_count
+            summary: Get total count of peopleB records.
+            description: 'Returns the total number of peopleB records. Example: GET /peopleB/count'
+            query: SELECT count() as total_count FROM peopleB
+            is_array_result: false
+            params: []
+          - group: peopleB
+            http_method: GET
+            http_path: /peopleB/{id}/{first_name}/{last_name}/{gender}
+            mcp_method: get_peopleB_by_pk
+            summary: Retrieve a single peopleB record by composite primary key.
+            description: 'Returns a single peopleB record matching the composite primary key. Example: GET /peopleB/3/Eloy/''''''Chincheta''''''/M'
+            query: SELECT * FROM peopleB WHERE id = :id AND first_name = :first_name AND last_name = :last_name AND gender = :gender
+            is_array_result: false
+            params:
+              - name: id
+                type: number
+                location: path
+                required: true
+              - name: first_name
+                type: string
+                location: path
+                required: true
+              - name: last_name
+                type: string
+                location: path
+                required: true
+              - name: gender
+                type: string
+                location: path
+                required: true
+          - group: peopleMinimal
+            http_method: GET
+            http_path: /peopleMinimal
+            mcp_method: get_peopleMinimal_list
+            summary: List all peopleMinimal records with pagination.
+            description: 'Returns a paginated list of peopleMinimal records. Example: GET /peopleMinimal?offset=0&limit=10'
+            query: SELECT * FROM peopleMinimal LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: peopleMinimal
+            http_method: GET
+            http_path: /peopleMinimal/count
+            mcp_method: get_peopleMinimal_count
+            summary: Get total count of peopleMinimal records.
+            description: 'Returns the total number of peopleMinimal records. Example: GET /peopleMinimal/count'
+            query: SELECT count() as total_count FROM peopleMinimal
+            is_array_result: false
+            params: []
+          - group: peopleMinimal
+            http_method: GET
+            http_path: /peopleMinimal/{id}/{first_name}/{last_name}
+            mcp_method: get_peopleMinimal_by_pk
+            summary: Retrieve a single peopleMinimal record by composite primary key.
+            description: 'Returns a single peopleMinimal record matching the composite primary key. Example: GET /peopleMinimal/66841/Svetozar/Ristovski'
+            query: SELECT * FROM peopleMinimal WHERE id = :id AND first_name = :first_name AND last_name = :last_name
+            is_array_result: false
+            params:
+              - name: id
+                type: number
+                location: path
+                required: true
+              - name: first_name
+                type: string
+                location: path
+                required: true
+              - name: last_name
+                type: string
+                location: path
+                required: true
+          - group: movieGenre
+            http_method: GET
+            http_path: /movieGenre
+            mcp_method: get_movieGenre_list
+            summary: List all movieGenre records with pagination.
+            description: 'Returns a paginated list of movieGenre records. Example: GET /movieGenre?offset=0&limit=10'
+            query: SELECT * FROM movieGenre LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: movieGenre
+            http_method: GET
+            http_path: /movieGenre/count
+            mcp_method: get_movieGenre_count
+            summary: Get total count of movieGenre records.
+            description: 'Returns the total number of movieGenre records. Example: GET /movieGenre/count'
+            query: SELECT count() as total_count FROM movieGenre
+            is_array_result: false
+            params: []
+          - group: movieGenre
+            http_method: GET
+            http_path: /movieGenre/{movie_id}/{genre}
+            mcp_method: get_movieGenre_by_pk
+            summary: Retrieve a single movieGenre record by composite primary key.
+            description: 'Returns a single movieGenre record matching the composite primary key. Example: GET /movieGenre/1/Documentary'
+            query: SELECT * FROM movieGenre WHERE movie_id = :movie_id AND genre = :genre
+            is_array_result: false
+            params:
+              - name: movie_id
+                type: number
+                location: path
+                required: true
+              - name: genre
+                type: string
+                location: path
+                required: true
+          - group: directorMovie
+            http_method: GET
+            http_path: /directorMovie
+            mcp_method: get_directorMovie_list
+            summary: List all directorMovie records with pagination.
+            description: 'Returns a paginated list of directorMovie records. Example: GET /directorMovie?offset=0&limit=10'
+            query: SELECT * FROM directorMovie LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: directorMovie
+            http_method: GET
+            http_path: /directorMovie/count
+            mcp_method: get_directorMovie_count
+            summary: Get total count of directorMovie records.
+            description: 'Returns the total number of directorMovie records. Example: GET /directorMovie/count'
+            query: SELECT count() as total_count FROM directorMovie
+            is_array_result: false
+            params: []
+          - group: directorMovie
+            http_method: GET
+            http_path: /directorMovie/{director_id}/{movie_id}
+            mcp_method: get_directorMovie_by_pk
+            summary: Retrieve a single directorMovie record by composite primary key.
+            description: 'Returns a single directorMovie record matching the composite primary key. Example: GET /directorMovie/1/378879'
+            query: SELECT * FROM directorMovie WHERE director_id = :director_id AND movie_id = :movie_id
+            is_array_result: false
+            params:
+              - name: director_id
+                type: number
+                location: path
+                required: true
+              - name: movie_id
+                type: number
+                location: path
+                required: true
+          - group: movieInfo
+            http_method: GET
+            http_path: /movieInfo
+            mcp_method: get_movieInfo_list
+            summary: List all movieInfo records with pagination.
+            description: 'Returns a paginated list of movieInfo records. Example: GET /movieInfo?offset=0&limit=10'
+            query: SELECT * FROM movieInfo LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: movieInfo
+            http_method: GET
+            http_path: /movieInfo/count
+            mcp_method: get_movieInfo_count
+            summary: Get total count of movieInfo records.
+            description: 'Returns the total number of movieInfo records. Example: GET /movieInfo/count'
+            query: SELECT count() as total_count FROM movieInfo
+            is_array_result: false
+            params: []
+          - group: movieInfo
+            http_method: GET
+            http_path: /movieInfo/{id}/{name}/{year}
+            mcp_method: get_movieInfo_by_pk
+            summary: Retrieve a single movieInfo record by composite primary key.
+            description: 'Returns a single movieInfo record matching the composite primary key. Example: GET /movieInfo/2/$1,000 Reward/1913'
+            query: SELECT * FROM movieInfo WHERE id = :id AND name = :name AND year = :year
+            is_array_result: false
+            params:
+              - name: id
+                type: number
+                location: path
+                required: true
+              - name: name
+                type: string
+                location: path
+                required: true
+              - name: year
+                type: number
+                location: path
+                required: true
+          - group: actorMovieRoleHistoric
+            http_method: GET
+            http_path: /actorMovieRoleHistoric
+            mcp_method: get_actorMovieRoleHistoric_list
+            summary: List all actorMovieRoleHistoric records with pagination.
+            description: 'Returns a paginated list of actorMovieRoleHistoric records. Example: GET /actorMovieRoleHistoric?offset=0&limit=10'
+            query: SELECT * FROM actorMovieRoleHistoric LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: actorMovieRoleHistoric
+            http_method: GET
+            http_path: /actorMovieRoleHistoric/count
+            mcp_method: get_actorMovieRoleHistoric_count
+            summary: Get total count of actorMovieRoleHistoric records.
+            description: 'Returns the total number of actorMovieRoleHistoric records. Example: GET /actorMovieRoleHistoric/count'
+            query: SELECT count() as total_count FROM actorMovieRoleHistoric
+            is_array_result: false
+            params: []
+          - group: actorMovieRoleHistoric
+            http_method: GET
+            http_path: /actorMovieRoleHistoric/{actor_id}/{movie_id}
+            mcp_method: get_actorMovieRoleHistoric_by_pk
+            summary: Retrieve a single actorMovieRoleHistoric record by composite primary key.
+            description: 'Returns a single actorMovieRoleHistoric record matching the composite primary key. Example: GET /actorMovieRoleHistoric/2/280088'
+            query: SELECT * FROM actorMovieRoleHistoric WHERE actor_id = :actor_id AND movie_id = :movie_id
+            is_array_result: false
+            params:
+              - name: actor_id
+                type: number
+                location: path
+                required: true
+              - name: movie_id
+                type: number
+                location: path
+                required: true
+          - group: actorMovieRoleLarge
+            http_method: GET
+            http_path: /actorMovieRoleLarge
+            mcp_method: get_actorMovieRoleLarge_list
+            summary: List all actorMovieRoleLarge records with pagination.
+            description: 'Returns a paginated list of actorMovieRoleLarge records. Example: GET /actorMovieRoleLarge?offset=0&limit=10'
+            query: SELECT * FROM actorMovieRoleLarge LIMIT :limit OFFSET :offset
+            is_array_result: true
+            params:
+              - name: offset
+                type: number
+                location: query
+                required: false
+                default: 0
+              - name: limit
+                type: number
+                location: query
+                required: false
+                default: 10
+          - group: actorMovieRoleLarge
+            http_method: GET
+            http_path: /actorMovieRoleLarge/count
+            mcp_method: get_actorMovieRoleLarge_count
+            summary: Get total count of actorMovieRoleLarge records.
+            description: 'Returns the total number of actorMovieRoleLarge records. Example: GET /actorMovieRoleLarge/count'
+            query: SELECT count() as total_count FROM actorMovieRoleLarge
+            is_array_result: false
+            params: []
+          - group: actorMovieRoleLarge
+            http_method: GET
+            http_path: /actorMovieRoleLarge/{actor_id}/{movie_id}
+            mcp_method: get_actorMovieRoleLarge_by_pk
+            summary: Retrieve a single actorMovieRoleLarge record by composite primary key.
+            description: 'Returns a single actorMovieRoleLarge record matching the composite primary key. Example: GET /actorMovieRoleLarge/0/6588'
+            query: SELECT * FROM actorMovieRoleLarge WHERE actor_id = :actor_id AND movie_id = :movie_id
+            is_array_result: false
+            params:
+              - name: actor_id
+                type: number
+                location: path
+                required: true
+              - name: movie_id
+                type: number
+                location: path
+                required: true
+      tables: []
+  plugins: {}
+

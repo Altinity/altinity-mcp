@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mcp
+description: A Helm chart for Gateway deployment
+type: application
+version: 0.1.0
+appVersion: "1.0.0" 
