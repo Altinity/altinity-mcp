@@ -50,7 +50,8 @@ jobs:
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v5
+      run: |
+        docker buildx build --platform=linux/arm64 --file=Dockerfile.build --build-arg TARGETARCH=arm64 -t test .
       with:
         context: /tmp/gateway
         file: /tmp/gateway/Dockerfile.build
