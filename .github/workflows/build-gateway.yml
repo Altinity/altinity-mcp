@@ -25,6 +25,10 @@ jobs:
       run: |
         git clone https://github.com/centralmind/gateway.git /tmp/gateway
 
+    - name: Remove TARGETARCH default from Dockerfile.build
+      run: |
+        sed -i '/^ARG TARGETARCH=amd64$/d' /tmp/gateway/Dockerfile.build
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
       
@@ -50,8 +54,7 @@ jobs:
           type=raw,value=latest,enable={{is_default_branch}}
 
     - name: Build and push Docker image
-      run: |
-        docker buildx build --platform=linux/arm64 --file=Dockerfile.build --build-arg TARGETARCH=arm64 -t test .
+      uses: docker/build-push-action@v5
       with:
         context: /tmp/gateway
         file: /tmp/gateway/Dockerfile.build
