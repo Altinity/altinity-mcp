@@ -29,7 +29,7 @@ domainName: altinity-skaeser-playground.dev.altinity.cloud
 
 gateway:
   servers:
-    - https://mcp.altinity-skaeser-playground.dev.altinity.cloud
+    - https://mcp.altinity-skaeser-playground.dev.altinity.cloud:8443
   api:
       name: ""
       description: ""
