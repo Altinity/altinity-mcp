@@ -1,2 +1,5 @@
 # quick install
-helm upgrade --install mcp-$1 ./ -f values.yaml -f $1.yaml
+helm upgrade --install mcp-$1 ./ -f values.yaml -f mcp-$1.yaml \
+ -n  altinity-cloud-managed-clickhouse
+#--reuse-values=false --force
+echo https://mcp-$1.altinity-skaeser-playground.dev.altinity.cloud/sse

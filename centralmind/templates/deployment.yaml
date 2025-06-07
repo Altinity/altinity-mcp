@@ -12,7 +12,10 @@ spec:
     metadata:
       labels:
         app: {{ include "gateway.name" . }}
+      annotations:
+        checksum/config: {{ printf "%s%s%s" (.Values.api | toYaml) (.Values.database | toYaml) (.Values.plugins | toYaml) | sha256sum }}
     spec:
+      serviceAccountName: "tailscale"
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
