@@ -11,7 +11,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}/gateway
 
 jobs:
-  build:
+  build-gateway:
     runs-on: ubuntu-latest
     permissions:
       contents: read
