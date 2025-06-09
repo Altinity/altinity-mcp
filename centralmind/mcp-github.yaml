@@ -2,6 +2,19 @@ api:
     name: "github"
     description: "GitHub github_eventsset from github.demo.altinity.cloud"
     version: "0.2"
+
+oauth:
+  provider: "auth0"
+  user_info_url: "https://altinity.auth0.com/userinfo"
+  # use --set oauth.client_id=XXX,oauth.client_secret=YYYY during `helm upgrade` for properly install
+  scopes:
+    - "openid"
+    - "profile"
+    - "email"
+  redirect_url: "https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"  # OAuth callback URL
+  auth_url: "/oauth/authorize" # Gateway's authorization endpoint (optional)
+  callback_url: "/oauth/callback" # Gateway's callback endpoint (optional)
+
 database:
     type: clickhouse
     connection: clickhouse://github.demo.altinity.cloud:9440/default?username=demo&password=demo&secure=true
