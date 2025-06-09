@@ -23,7 +23,8 @@ jobs:
 
     - name: Clone gateway repository
       run: |
-        git clone https://github.com/centralmind/gateway.git /tmp/gateway
+#        git clone https://github.com/centralmind/gateway.git /tmp/gateway
+         git clone --branch add_cors_to_sse https://github.com/Slach/gateway.git /tmp/gateway
 
     - name: Remove TARGETARCH default from Dockerfile.build
       run: |
