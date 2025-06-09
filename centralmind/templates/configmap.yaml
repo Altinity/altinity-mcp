@@ -5,6 +5,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   config.yaml: |
+{{- with .Values.oauth }}
+    oauth:
+{{ . | toYaml | indent 6 }}
+{{- end }}
 {{- with .Values.api }}
     api:
 {{ . | toYaml | indent 6 }}
