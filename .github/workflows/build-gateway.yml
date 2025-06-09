@@ -11,14 +11,22 @@ env:
   IMAGE_NAME: ${{ github.repository }}/gateway
 
 jobs:
-  build-amd64:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-latest-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     outputs:
-      image-digest: ${{ steps.build.outputs.digest }}
-      metadata: ${{ steps.meta.outputs.json }}
+      image-digest-amd64: ${{ matrix.platform == 'linux/amd64' && steps.build.outputs.digest || '' }}
+      image-digest-arm64: ${{ matrix.platform == 'linux/arm64' && steps.build.outputs.digest || '' }}
+      metadata: ${{ matrix.platform == 'linux/amd64' && steps.meta.outputs.json || '' }}
 
     steps:
     - name: Checkout repository
@@ -45,6 +53,7 @@ jobs:
 
     - name: Extract metadata
       id: meta
+      if: matrix.platform == 'linux/amd64'
       uses: docker/metadata-action@v5
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -55,66 +64,16 @@ jobs:
           type=raw,value=latest,enable={{is_default_branch}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-    - name: Build and push AMD64 image
+    - name: Build and push image
       id: build
       uses: docker/build-push-action@v5
       with:
         context: /tmp/gateway
         file: /tmp/gateway/Dockerfile.build
-        platforms: linux/amd64
+        platforms: ${{ matrix.platform }}
         push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-
-  build-arm64:
-    runs-on: ubuntu-latest-arm
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image-digest: ${{ steps.build.outputs.digest }}
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Clone gateway repository
-      run: |
-        git clone --branch add_cors_to_sse https://github.com/Slach/gateway.git /tmp/gateway
-        # git clone https://github.com/centralmind/gateway.git /tmp/gateway
-
-    - name: Remove TARGETARCH default from Dockerfile.build
-      run: |
-        sed -i '/^ARG TARGETARCH=amd64$/d' /tmp/gateway/Dockerfile.build
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Log in to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GHCR_TOKEN }}
-
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-    - name: Build and push ARM64 image
-      id: build
-      uses: docker/build-push-action@v5
-      with:
-        context: /tmp/gateway
-        file: /tmp/gateway/Dockerfile.build
-        platforms: linux/arm64
-        push: true
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ matrix.platform == 'linux/amd64' && steps.meta.outputs.tags || '' }}
+        labels: ${{ matrix.platform == 'linux/amd64' && steps.meta.outputs.labels || steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -124,9 +83,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs:
-      - build-amd64
-      - build-arm64
+    needs: build
 
     steps:
     - name: Set up Docker Buildx
@@ -142,14 +99,18 @@ jobs:
     - name: Create manifest list and push
       working-directory: /tmp
       run: |
-        # Parse metadata from build-amd64 job
-        METADATA='${{ needs.build-amd64.outputs.metadata }}'
+        # Parse metadata from build job
+        METADATA='${{ needs.build.outputs.metadata }}'
         TAGS=$(echo "$METADATA" | jq -r '.tags[]')
+        
+        # Get digests from matrix outputs
+        AMD64_DIGEST="${{ needs.build.outputs.image-digest-amd64 }}"
+        ARM64_DIGEST="${{ needs.build.outputs.image-digest-arm64 }}"
         
         # Create manifest for each tag
         for tag in $TAGS; do
           docker buildx imagetools create \
             --tag $tag \
-            ${{ needs.build-amd64.outputs.image-digest }} \
-            ${{ needs.build-arm64.outputs.image-digest }}
+            $AMD64_DIGEST \
+            $ARM64_DIGEST
         done
