@@ -1,0 +1,1 @@
+kubectl sniff $(kubectl get pod -o name -n altinity-cloud-managed-clickhouse -l app=mcp-$1 | sed 's/^pod\///') -o mcp.pcap -n altinity-cloud-managed-clickhouse --privileged --image ghcr.io/nefelim4ag/ksniff-helper:v4 --tcpdump-image ghcr.io/nefelim4ag/tcpdump:latest --verbose -f "port 8090"
