@@ -1,3 +1,7 @@
+image:
+  repository: ghcr.io/altinity/altinity-mcp/gateway
+  tag: "main"
+
 api:
     name: "github"
     description: "GitHub github_eventsset from github.demo.altinity.cloud"
