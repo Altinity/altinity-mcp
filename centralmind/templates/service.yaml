@@ -6,8 +6,6 @@ metadata:
   annotations:
     edge-proxy.altinity.com/port-mapping: {{ .Values.service.publicPort }}:tls-to-tcp:{{ .Values.service.port }}
     edge-proxy.altinity.com/tls-server-name: {{ include "gateway.name" . }}.{{ .Values.service.domainName }}
-    edge-proxy.altinity.com/zone: fsn1
-    edge-proxy.altinity.com/zone-routed-tls-server-name: {{ include "gateway.name" . }}.{{ .Values.service.domainName }}
   labels:
     app: {{ include "gateway.name" . }}
 spec:

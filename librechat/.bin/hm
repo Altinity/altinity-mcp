@@ -1,0 +1,3 @@
+helm upgrade  --install chat ./  \
+  -n demo --kube-context aws-prod-demo
+

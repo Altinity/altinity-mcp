@@ -1,0 +1,12 @@
+dependencies:
+- name: mongodb
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.3.0
+- name: meilisearch
+  repository: https://meilisearch.github.io/meilisearch-kubernetes
+  version: 0.11.0
+- name: librechat-rag-api
+  repository: file://../librechat-rag-api
+  version: 0.5.2
+digest: sha256:882b1fb6a610ee6bf98fe0b0d3e27ee9b7d344b1d0e44ec630a72e23e008a7c0
+generated: "2025-06-02T09:51:24.964126+02:00"
