@@ -43,9 +43,9 @@ jobs:
       run: |
         cd /tmp/gateway
         if [ "${{ matrix.platform }}" = "arm64" ]; then
-          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o gateway .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o gateway .
         else
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o gateway .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o gateway .
         fi
 
     - name: Set up QEMU
@@ -112,11 +112,12 @@ jobs:
         IMAGE_NAME_LOWER="${{ steps.image-name.outputs.image_name_lower }}"
         
         # Convert tags to array and iterate
-        IFS=$'\n' read -rd '' -a tag_array <<< "${{ steps.meta.outputs.tags }}" || true
-        for tag in "${tag_array[@]}"; do
-          echo "Creating manifest for tag: $tag"
-          docker buildx imagetools create \
-            --tag "$tag" \
-            "${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:amd64-${SHORT_SHA}" \
-            "${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:arm64-${SHORT_SHA}"
+        echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
+          if [ -n "$tag" ]; then
+            echo "Creating manifest for tag: $tag"
+            docker buildx imagetools create \
+              --tag "$tag" \
+              "${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:amd64-${SHORT_SHA}" \
+              "${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:arm64-${SHORT_SHA}"
+          fi
         done
