@@ -61,9 +61,6 @@ jobs:
   create-multiplatform-manifest:
     needs: build-and-push-platforms
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
 
     permissions:
       contents: read
