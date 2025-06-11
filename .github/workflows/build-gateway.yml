@@ -10,11 +10,15 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/gateway
 
-  build-binaries:
+jobs:
+  build-and-push-platforms:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         platform: [amd64, arm64]
+    permissions:
+      contents: read
+      packages: write
     
     steps:
     - name: Checkout repository
@@ -33,45 +37,38 @@ env:
     - name: Build binary for ${{ matrix.platform }}
       run: |
         cd /tmp/gateway
-        CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.platform }} go build -o gateway-${{ matrix.platform }} .
+        CGO_ENABLED=1 GOOS=linux GOARCH=${{ matrix.platform }} go build -o gateway .
 
-    - name: Upload binary artifact
-      uses: actions/upload-artifact@v3
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
       with:
-        name: gateway-${{ matrix.platform }}
-        path: /tmp/gateway/gateway-${{ matrix.platform }}
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN }}
 
-  build-and-push:
-    needs: build-binaries
+    - name: Build and push platform image
+      run: |
+        cd /tmp/gateway
+        docker buildx build --platform linux/${{ matrix.platform }} --push -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.platform }} .
+
+  create-multiplatform-manifest:
+    needs: build-and-push-platforms
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Clone gateway repository
-      run: |
-        git clone --branch add_cors_to_sse https://github.com/Slach/gateway.git /tmp/gateway
-        # git clone https://github.com/centralmind/gateway.git /tmp/gateway
-
-    - name: Download amd64 binary
-      uses: actions/download-artifact@v3
-      with:
-        name: gateway-amd64
-        path: /tmp/gateway/
-
-    - name: Download arm64 binary
-      uses: actions/download-artifact@v3
-      with:
-        name: gateway-arm64
-        path: /tmp/gateway/
-
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
-      
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -94,24 +91,8 @@ env:
           type=raw,value=latest,enable={{is_default_branch}}
           type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-    - name: Build local Docker images
-      run: |
-        cd /tmp/gateway
-        # Build amd64 image
-        docker buildx build --platform linux/amd64 --load -t gateway:amd64 --build-arg TARGETARCH=amd64 .
-        # Build arm64 image  
-        docker buildx build --platform linux/arm64 --load -t gateway:arm64 --build-arg TARGETARCH=arm64 .
-
     - name: Create and push multiplatform manifest
       run: |
-        # Tag images with registry names
-        docker tag gateway:amd64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64
-        docker tag gateway:arm64 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
-        
-        # Push individual platform images
-        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64
-        docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
-        
         # Create and push multiplatform manifest
         for tag in ${{ steps.meta.outputs.tags }}; do
           docker buildx imagetools create \
