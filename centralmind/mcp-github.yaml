@@ -154,13 +154,11 @@ database:
 plugins:
 # use --set plugins.oauth.client_id=XXX,plugins.oauth.client_secret=YYYY during `helm upgrade` for properly install
   oauth:
+    client_registration:
+      enabled: true
     provider: "auth0"
     user_info_url: "https://altinity.auth0.com/userinfo"
     scopes:
       - "openid"
       - "profile"
       - "email"
-    redirect_url: "https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"  # OAuth callback URL
-#    auth_url: "/oauth/authorize" # Gateway's authorization endpoint (optional)
-#    callback_url: "/oauth/callback" # Gateway's callback endpoint (optional)
-
