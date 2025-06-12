@@ -11,8 +11,7 @@ service:
 api:
     name: "github"
     description: "GitHub github_eventsset from github.demo.altinity.cloud"
-    version: "0.2"
-
+    version: "2025-06-12"
 
 database:
     type: clickhouse
