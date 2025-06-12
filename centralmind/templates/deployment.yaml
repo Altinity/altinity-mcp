@@ -23,6 +23,8 @@ spec:
             - start
             - --config
             - /etc/gateway/config.yaml
+            - --log-level
+            - debug
             - --addr
             - ":{{ .Values.service.port }}"
             - --prefix
