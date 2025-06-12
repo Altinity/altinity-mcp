@@ -22,9 +22,7 @@ plugins:
     client_registration:
       enabled: true
     provider: "google"
-    redirect_url: "https://mcp-github-oauth.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"
-    auth_url: "https://mcp-github-oauth.altinity-skaeser-playground.dev.altinity.cloud/oauth/authorize"
-    callback_url: "https://mcp-github-oauth.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"
+    issuer_url: https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud
     scopes:
       - "https://www.googleapis.com/auth/userinfo.profile"
       - "https://www.googleapis.com/auth/userinfo.email"
