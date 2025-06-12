@@ -15,7 +15,6 @@ spec:
       annotations:
         checksum/config: {{ printf "%s%s%s" (.Values.api | toYaml) (.Values.database | toYaml) (.Values.plugins | toYaml) | sha256sum }}
     spec:
-      serviceAccountName: "tailscale"
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -24,8 +23,12 @@ spec:
             - start
             - --config
             - /etc/gateway/config.yaml
+            - --log-level
+            - debug
             - --addr
             - ":{{ .Values.service.port }}"
+            - --prefix
+            - {{ .Values.api.auth_key }}
             - --servers
             - https://{{ include "gateway.name" . }}.{{ .Values.service.domainName }}:{{ .Values.service.publicPort }}
           ports:

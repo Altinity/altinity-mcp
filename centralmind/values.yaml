@@ -6,7 +6,7 @@ service:
   type: ClusterIP
   port: 8090
   publicPort: 443
-  domainName: altinity-skaeser-playground.dev.altinity.cloud
+  domainName: demo.altinity.cloud
 
 resources:
   limits:

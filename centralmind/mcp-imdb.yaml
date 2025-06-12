@@ -1,7 +1,13 @@
+image:
+  repository: ghcr.io/altinity/altinity-mcp/gateway
+  tag: "0.0.6"
+
 api:
   name: "imdb-sql-clickhouse"
   description: IMDB Database from sql-clickhouse.clickhouse.com
   version: v1.0.0
+  auth_key: 0d7df6a067a24027570210de1ade67b6
+
 database:
     type: clickhouse
     connection: clickhouse://sql-clickhouse.clickhouse.com:9440/imdb?username=demo&password=&secure=true

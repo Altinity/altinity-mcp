@@ -1,2 +1,2 @@
 # test it
-helm template mcp-$1 ./ -f values.yaml -f mcp-$1.yaml -n  altinity-cloud-managed-clickhouse > debug.yaml
+helm template mcp-$1 ./ -f values.yaml -f mcp-$1.yaml -n  demo > debug.yaml
