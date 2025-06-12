@@ -1,4 +1,6 @@
 Get the application URL by running these commands:
 {{- if .Values.api.auth_key  }}
   https://{{ include "gateway.name" . }}.{{ .Values.service.domainName }}:{{ .Values.service.publicPort }}/{{ .Values.api.auth_key }}/sse
+{{- else }}
+  https://{{ include "gateway.name" . }}.{{ .Values.service.domainName }}:{{ .Values.service.publicPort }}/sse
 {{- end }}

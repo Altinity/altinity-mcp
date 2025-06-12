@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/altinity/altinity-mcp/gateway
-  tag: "main"
+  tag: "0.0.12"
 
 api:
     name: "github"
@@ -11,15 +11,3 @@ api:
 database:
     type: clickhouse
     connection: clickhouse://github.demo.altinity.cloud:9440/default?username=demo&password=demo&secure=true
-plugins:
-# use --set plugins.oauth.client_id=XXX,plugins.oauth.client_secret=YYYY during `helm upgrade` for properly install
-  oauth:
-    client_registration:
-      enabled: true
-    provider: "google"
-    redirect_url: "https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"
-    auth_url: "https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud/oauth/authorize"
-    callback_url: "https://mcp-github.altinity-skaeser-playground.dev.altinity.cloud/oauth/callback"
-    scopes:
-      - "https://www.googleapis.com/auth/userinfo.profile"
-      - "https://www.googleapis.com/auth/userinfo.email"
