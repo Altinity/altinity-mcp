@@ -21,8 +21,17 @@ plugins:
   oauth:
     client_registration:
       enabled: true
-    provider: "google"
     issuer_url: https://mcp-github-oauth.altinity-skaeser-playground.dev.altinity.cloud
+    provider: auth0
+    provider_auth_url: https://altinity.auth0.com/authorize
+    provider_token_url: https://altinity.auth0.com/oauth/token
     scopes:
-      - "https://www.googleapis.com/auth/userinfo.profile"
-      - "https://www.googleapis.com/auth/userinfo.email"
+    - openid
+    - profile
+    - email
+    user_info_url: https://altinity.auth0.com/userinfo
+
+#    provider: "google"
+#    scopes:
+#      - "https://www.googleapis.com/auth/userinfo.profile"
+#      - "https://www.googleapis.com/auth/userinfo.email"
