@@ -4,6 +4,7 @@ go 1.21
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.16.0
+	github.com/centralmind/mcp-golang v0.1.0
 	github.com/rs/zerolog v1.31.0
 )
 
