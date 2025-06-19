@@ -6,6 +6,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.37.1
 	github.com/metoro-io/mcp-golang v0.13.0
 	github.com/rs/zerolog v1.31.0
+	github.com/urfave/cli/v3 v3.0.0-alpha9
 )
 
 require (

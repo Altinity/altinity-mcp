@@ -1,12 +1,12 @@
 package clickhouse
 
 import (
-	"altinity-mcp/config"
 	"context"
 	"database/sql"
 	"fmt"
 	"time"
 
+	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/rs/zerolog/log"
