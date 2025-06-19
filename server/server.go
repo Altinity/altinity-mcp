@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/centralmind/mcp-golang"
+	"github.com/metoro-io/mcp-golang"
 	"github.com/rs/zerolog/log"
 )
 
