@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/altinity/altinity-mcp/pkg/clickhouse"
-	"github.com/altinity/altinity-mcp/pkg/config"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	mcp "github.com/metoro-io/mcp-golang"
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
+	"github.com/altinity/altinity-mcp/pkg/config"
+	mcp_golang "github.com/metoro-io/mcp-golang"
+	"github.com/metoro-io/mcp-golang/transport/http"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,9 +21,8 @@ import (
 type Server struct {
 	config      config.ServerConfig
 	chClient    *clickhouse.Client
-	mcpServer   *mcp.Server
+	mcpServer   *mcp_golang.Server
 	httpServer  *http.Server
-	tools       []mcp.Tool
 	shutdownCtx context.Context
 	shutdown    context.CancelFunc
 }
@@ -43,19 +43,31 @@ type ExecuteQueryRequest struct {
 func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	server := &Server{
-		config:      cfg.Server,
-		chClient:    chClient,
-		shutdownCtx: ctx,
-		shutdown:    cancel,
+	// Create transport based on config
+	var transport mcp_golang.Transport
+	switch cfg.Server.Transport {
+	case config.HTTPTransport:
+		httpTransport := http.NewHTTPTransport("/mcp")
+		httpTransport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
+		transport = httpTransport
+	case config.SSETransport:
+		httpTransport := http.NewHTTPTransport("/mcp")
+		httpTransport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
+		transport = httpTransport
+	default:
+		return nil, fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
 
 	// Initialize MCP server
-	mcpServer, err := mcp.NewServer()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create MCP server: %w", err)
+	mcpServer := mcp_golang.NewServer(transport)
+
+	server := &Server{
+		config:      cfg.Server,
+		chClient:    chClient,
+		mcpServer:   mcpServer,
+		shutdownCtx: ctx,
+		shutdown:    cancel,
 	}
-	server.mcpServer = mcpServer
 
 	// Register tools
 	server.registerTools()
@@ -66,50 +78,24 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 // registerTools registers all MCP tools
 func (s *Server) registerTools() {
 	// List Tables Tool
-	listTablesTool := mcp.Tool{
-		Name:        "list_tables",
-		Description: "Lists all tables in the ClickHouse database",
-		Execute:     s.handleListTables,
-		ArgsSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {},
-			"additionalProperties": false
-		}`),
+	err := s.mcpServer.RegisterTool("list_tables", "Lists all tables in the ClickHouse database", 
+		func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return s.handleListTables(ctx, args)
+		})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to register list_tables tool")
 	}
 
 	// Execute Query Tool
-	executeQueryTool := mcp.Tool{
-		Name:        "execute_query",
-		Description: "Executes a SQL query with optional parameters",
-		Execute:     s.handleExecuteQuery,
-		ArgsSchema: json.RawMessage(`{
-			"type": "object",
-			"required": ["query"],
-			"properties": {
-				"query": {
-					"type": "string",
-					"description": "SQL query to execute"
-				},
-				"parameters": {
-					"type": "array",
-					"description": "Query parameters",
-					"items": {
-						"type": ["string", "number", "boolean", "null"]
-					}
-				}
-			},
-			"additionalProperties": false
-		}`),
+	err = s.mcpServer.RegisterTool("execute_query", "Executes a SQL query with optional parameters",
+		func(ctx context.Context, args json.RawMessage) (interface{}, error) {
+			return s.handleExecuteQuery(ctx, args)
+		})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to register execute_query tool")
 	}
 
-	// Register tools with MCP server
-	s.mcpServer.RegisterTool(listTablesTool)
-	s.mcpServer.RegisterTool(executeQueryTool)
-	s.tools = append(s.tools, listTablesTool, executeQueryTool)
-
-	log.Info().
-		Int("tool_count", len(s.tools)).
-		Msg("MCP tools registered")
+	log.Info().Msg("MCP tools registered")
 }
 
 // handleListTables handles the list_tables tool request
@@ -191,21 +177,11 @@ func (s *Server) Start() error {
 
 	// Start the server based on transport type
 	switch s.config.Transport {
-	case config.StdioTransport:
-		return s.startStdioServer()
-	case config.HTTPTransport:
+	case config.HTTPTransport, config.SSETransport:
 		return s.startHTTPServer()
-	case config.SSETransport:
-		return s.startSSEServer()
 	default:
 		return fmt.Errorf("unsupported transport type: %s", s.config.Transport)
 	}
-}
-
-// startStdioServer starts the MCP server with stdio transport
-func (s *Server) startStdioServer() error {
-	log.Info().Msg("Starting MCP server with stdio transport")
-	return s.mcpServer.ServeStdio()
 }
 
 // startHTTPServer starts the MCP server with HTTP transport
@@ -217,7 +193,7 @@ func (s *Server) startHTTPServer() error {
 
 	// Create HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.mcpServer.HTTPHandler())
+	mux.Handle("/mcp", s.mcpServer.Handler())
 
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -228,34 +204,6 @@ func (s *Server) startHTTPServer() error {
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("HTTP server error")
-		}
-	}()
-
-	// Wait for shutdown signal
-	<-s.shutdownCtx.Done()
-	return nil
-}
-
-// startSSEServer starts the MCP server with SSE transport
-func (s *Server) startSSEServer() error {
-	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	log.Info().
-		Str("address", addr).
-		Msg("Starting MCP server with SSE transport")
-
-	// Create HTTP server with SSE handler
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.mcpServer.SSEHandler())
-
-	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
-
-	// Start HTTP server in a goroutine
-	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error().Err(err).Msg("SSE server error")
 		}
 	}()
 
