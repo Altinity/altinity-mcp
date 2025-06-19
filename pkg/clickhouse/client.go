@@ -222,8 +222,6 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 
 // ExecuteQuery executes a SQL query and returns results
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
-	result := &QueryResult{}
-	
 	// Check if the query is a SELECT query
 	isSelect := isSelectQuery(query)
 	
