@@ -21,7 +21,7 @@ import (
 type Server struct {
 	config      config.ServerConfig
 	chClient    *clickhouse.Client
-	mcpServer   *mcp_golang.Server
+	mcpServer   *mcp.Server
 	httpServer  *http.Server
 	shutdownCtx context.Context
 	shutdown    context.CancelFunc
@@ -44,20 +44,26 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Create transport based on config
-	var transport *mcp_http.HTTPTransport
+	var transport mcp.Transport
 	switch cfg.Server.Transport {
 	case config.HTTPTransport:
-		transport = mcp_http.NewHTTPTransport("/mcp")
-		transport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
+		transport = http.NewTransport(http.Config{
+			Path:    "/mcp",
+			Address: fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port),
+		})
 	case config.SSETransport:
-		transport = mcp_http.NewHTTPTransport("/mcp")
-		transport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
+		transport = sse.NewTransport(sse.Config{
+			Path:    "/mcp",
+			Address: fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port),
+		})
+	case config.StdioTransport:
+		transport = stdio.NewTransport()
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
 
 	// Initialize MCP server
-	mcpServer := mcp_golang.NewServer(transport)
+	mcpServer := mcp.NewServer(transport)
 
 	server := &Server{
 		config:      cfg.Server,
@@ -76,19 +82,25 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 // registerTools registers all MCP tools
 func (s *Server) registerTools() {
 	// List Tables Tool
-	err := s.mcpServer.RegisterTool("list_tables", "Lists all tables in the ClickHouse database",
-		func(ctx context.Context, args json.RawMessage) (interface{}, error) {
-			return s.handleListTables(ctx, args)
-		})
+	err := s.mcpServer.RegisterTool(mcp.Tool{
+		Name:        "list_tables",
+		Description: "Lists all tables in the ClickHouse database",
+		Handler: func(ctx context.Context, payload json.RawMessage) (interface{}, error) {
+			return s.handleListTables(ctx, payload)
+		},
+	})
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to register list_tables tool")
 	}
 
 	// Execute Query Tool
-	err = s.mcpServer.RegisterTool("execute_query", "Executes a SQL query with optional parameters",
-		func(ctx context.Context, args json.RawMessage) (interface{}, error) {
-			return s.handleExecuteQuery(ctx, args)
-		})
+	err = s.mcpServer.RegisterTool(mcp.Tool{
+		Name:        "execute_query",
+		Description: "Executes a SQL query with optional parameters",
+		Handler: func(ctx context.Context, payload json.RawMessage) (interface{}, error) {
+			return s.handleExecuteQuery(ctx, payload)
+		},
+	})
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to register execute_query tool")
 	}
@@ -177,6 +189,8 @@ func (s *Server) Start() error {
 	switch s.config.Transport {
 	case config.HTTPTransport, config.SSETransport:
 		return s.startHTTPServer()
+	case config.StdioTransport:
+		return s.mcpServer.Start()
 	default:
 		return fmt.Errorf("unsupported transport type: %s", s.config.Transport)
 	}
