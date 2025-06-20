@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -296,20 +298,63 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 
 	// Create MCP server
 	log.Info().Msg("Creating MCP server...")
-	mcpServer, err := server.NewServer(cfg, chClient)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to create MCP server")
-		return err
-	}
+	mcpServer := server.NewServer(chClient)
 
-	// Start the server
+	// Start the server based on transport type
 	log.Info().
 		Str("transport", string(cfg.Server.Transport)).
 		Msg("Starting MCP server...")
 
-	if err := server.StartServer(mcpServer, cfg.Server); err != nil {
-		log.Error().Err(err).Msg("MCP server failed")
-		return err
+	switch cfg.Server.Transport {
+	case config.StdioTransport:
+		log.Info().Msg("Starting MCP server with STDIO transport")
+		if err := server.ServeStdio(mcpServer); err != nil {
+			log.Error().Err(err).Msg("STDIO server failed")
+			return err
+		}
+
+	case config.HTTPTransport:
+		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+		log.Info().
+			Str("address", addr).
+			Msg("Starting MCP server with HTTP transport")
+
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", server.ServeHTTP(mcpServer))
+
+		httpServer := &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+
+		log.Info().Str("url", fmt.Sprintf("http://%s/mcp", addr)).Msg("HTTP server listening")
+		if err := httpServer.ListenAndServe(); err != nil {
+			log.Error().Err(err).Msg("HTTP server failed")
+			return err
+		}
+
+	case config.SSETransport:
+		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+		log.Info().
+			Str("address", addr).
+			Msg("Starting MCP server with SSE transport")
+
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", server.ServeSSE(mcpServer))
+
+		httpServer := &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+
+		log.Info().Str("url", fmt.Sprintf("http://%s/mcp", addr)).Msg("SSE server listening")
+		if err := httpServer.ListenAndServe(); err != nil {
+			log.Error().Err(err).Msg("SSE server failed")
+			return err
+		}
+
+	default:
+		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
 
 	return nil
