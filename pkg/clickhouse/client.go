@@ -75,7 +75,7 @@ func (c *Client) connect() error {
 	case config.HTTPProtocol:
 		protocol = clickhouse.HTTP
 	case config.TCPProtocol:
-		protocol = clickhouse.TCP
+		protocol = clickhouse.Native
 	default:
 		// This should not happen due to validation in main.go, but as a safeguard:
 		return fmt.Errorf("unsupported clickhouse protocol: %s", c.config.Protocol)

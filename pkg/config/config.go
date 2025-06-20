@@ -32,17 +32,6 @@ type ClickHouseConfig struct {
 	MaxExecutionTime int                `json:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
 }
 
-// DefaultTLSConfig returns default TLS configuration
-func DefaultTLSConfig() TLSConfig {
-	return TLSConfig{
-		Enabled:            false,
-		CaCert:             "",
-		ClientCert:         "",
-		ClientKey:          "",
-		InsecureSkipVerify: false,
-	}
-}
-
 // MCPTransport defines the transport used for MCP communication
 type MCPTransport string
 

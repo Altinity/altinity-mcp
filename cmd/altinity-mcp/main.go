@@ -337,9 +337,9 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 	}()
 
 	// Test connection
-	if err := chClient.Ping(ctx); err != nil {
-		log.Error().Err(err).Msg("ClickHouse connection test failed")
-		return err
+	if pingErr := chClient.Ping(ctx); pingErr != nil {
+		log.Error().Err(pingErr).Msg("ClickHouse connection test failed")
+		return pingErr
 	}
 	log.Info().Msg("ClickHouse connection established")
 
