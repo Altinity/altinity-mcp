@@ -11,6 +11,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -292,7 +293,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 
 	// Create MCP server
 	log.Info().Msg("Creating MCP server...")
-	mcpServer := server.NewServer(chClient)
+	mcpServer := server.NewClickHouseServer(chClient)
 
 	// Start the server based on transport type
 	log.Info().
@@ -302,7 +303,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 	switch cfg.Server.Transport {
 	case config.StdioTransport:
 		log.Info().Msg("Starting MCP server with STDIO transport")
-		if err := mcpServer.ServeStdio(mcpServer); err != nil {
+		if err := server.ServeStdio(mcpServer); err != nil {
 			log.Error().Err(err).Msg("STDIO server failed")
 			return err
 		}
