@@ -27,10 +27,22 @@ type QueryResult struct {
 
 // TableInfo represents information about a table
 type TableInfo struct {
-	Name      string `json:"name"`
-	Database  string `json:"database"`
-	Engine    string `json:"engine"`
-	CreatedAt string `json:"created_at,omitempty"`
+	Name     string `ch:"name" json:"name"`
+	Database string `ch:"database" json:"database"`
+	Engine   string `ch:"engine" json:"engine"`
+}
+
+// ColumnInfo represents all the information about a column
+type ColumnInfo struct {
+	Name              string `ch:"name" json:"name"`
+	Type              string `ch:"type" json:"type"`
+	DefaultKind       string `ch:"default_kind" json:"default_kind"`
+	DefaultExpression string `ch:"default_expression" json:"default_expression"`
+	Comment           string `ch:"comment" json:"comment"`
+	IsInPartitionKey  uint8  `ch:"is_in_partition_key" json:"is_in_partition_key"`
+	IsInSortingKey    uint8  `ch:"is_in_sorting_key" json:"is_in_sorting_key"`
+	IsInPrimaryKey    uint8  `ch:"is_in_primary_key" json:"is_in_primary_key"`
+	IsInSamplingKey   uint8  `ch:"is_in_sampling_key" json:"is_in_sampling_key"`
 }
 
 // Client is a wrapper for ClickHouse connection
@@ -143,6 +155,33 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
+// DescribeTable returns column information for a given table
+func (c *Client) DescribeTable(ctx context.Context, tableName string) ([]ColumnInfo, error) {
+	query := `
+		SELECT
+			name,
+			type,
+			default_kind,
+			default_expression,
+			comment,
+			is_in_partition_key,
+			is_in_sorting_key,
+			is_in_primary_key,
+			is_in_sampling_key
+		FROM system.columns
+		WHERE database = ? AND table = ?
+		ORDER BY position
+	`
+
+	var columns []ColumnInfo
+	if err := c.conn.Select(ctx, &columns, query, c.config.Database, tableName); err != nil {
+		return nil, fmt.Errorf("failed to describe table %s: %w", tableName, err)
+	}
+
+	log.Debug().Int("column_count", len(columns)).Str("table", tableName).Msg("Retrieved table description")
+	return columns, nil
+}
+
 // ListTables returns a list of tables in the database
 func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 	query := `
@@ -156,27 +195,8 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 	`
 
 	var tables []TableInfo
-
-	rows, err := c.conn.Query(ctx, query, c.config.Database)
-	if err != nil {
+	if err := c.conn.Select(ctx, &tables, query, c.config.Database); err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			log.Error().Err(closeErr).Msg("ListTables: can't close rows")
-		}
-	}()
-
-	for rows.Next() {
-		var table TableInfo
-		if err := rows.Scan(&table.Name, &table.Database, &table.Engine); err != nil {
-			return nil, fmt.Errorf("failed to scan table info: %w", err)
-		}
-		tables = append(tables, table)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating table rows: %w", err)
 	}
 
 	log.Debug().Int("count", len(tables)).Msg("Retrieved tables list")
