@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/r3labs/sse/v2"
 	"github.com/stretchr/testify/require"
@@ -169,8 +169,8 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 
 	errChan := make(chan error, 1)
 	go func() {
-		err := app.Start(ctx)
-		if err != nil && err != http.ErrServerClosed {
+		startErr := app.Start(ctx)
+		if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
 			errChan <- err
 		}
 		close(errChan)
@@ -204,17 +204,15 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("list_tables", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Params: mcp.RequestParams{
-				ProtocolVersion: "1.0",
-				RequestID:       uuid.NewString(),
+			Request: mcp.Request{
+				Method: "tools/call",
 			},
-			Name:      "list_tables",
-			Arguments: map[string]interface{}{},
 		}
+		req.Params.Name = "list_tables"
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.ErrorMessage)
+		require.False(t, result.IsError)
 		var data map[string]interface{}
-		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &data))
 		require.Equal(t, float64(1), data["count"])
 		tables := data["tables"].([]interface{})
 		require.Len(t, tables, 1)
@@ -224,19 +222,20 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("execute_query", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Params: mcp.RequestParams{
-				ProtocolVersion: "1.0",
-				RequestID:       uuid.NewString(),
+			Request: mcp.Request{
+				Method: "tools/call",
 			},
-			Name: "execute_query",
-			Arguments: map[string]interface{}{
-				"query": "SELECT * FROM test ORDER BY id",
+			Params: mcp.CallToolParams{
+				Name: "execute_query",
+				Arguments: map[string]interface{}{
+					"query": "SELECT * FROM test ORDER BY id",
+				},
 			},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.ErrorMessage)
+		require.False(t, result.IsError)
 		var data clickhouse.QueryResult
-		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &data))
 		require.Equal(t, 2, data.Count)
 		require.Len(t, data.Rows, 2)
 		require.Equal(t, []interface{}{float64(1), "one"}, data.Rows[0])
@@ -245,19 +244,20 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("describe_table", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Params: mcp.RequestParams{
-				ProtocolVersion: "1.0",
-				RequestID:       uuid.NewString(),
+			Request: mcp.Request{
+				Method: "tools/call",
 			},
-			Name: "describe_table",
-			Arguments: map[string]interface{}{
-				"table_name": "test",
+			Params: mcp.CallToolParams{
+				Name: "describe_table",
+				Arguments: map[string]interface{}{
+					"table_name": "test",
+				},
 			},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.ErrorMessage)
+		require.Empty(t, result.IsError)
 		var data []clickhouse.ColumnInfo
-		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &data))
 		require.Len(t, data, 2)
 		require.Equal(t, "id", data[0].Name)
 		require.Equal(t, "UInt64", data[0].Type)
@@ -309,10 +309,10 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 		wg.Wait()
 
 	case config.StdioTransport:
-		_, err := stdioWriter.Write(append(body, '\n'))
-		require.NoError(t, err)
-		line, err := stdioReader.ReadBytes('\n')
-		require.NoError(t, err)
+		_, writeErr := stdioWriter.Write(append(body, '\n'))
+		require.NoError(t, writeErr)
+		line, readErr := stdioReader.ReadBytes('\n')
+		require.NoError(t, readErr)
 		require.NoError(t, json.Unmarshal(line, &result))
 	}
 
