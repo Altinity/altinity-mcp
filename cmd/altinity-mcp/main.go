@@ -67,6 +67,12 @@ func main() {
 				Value:   "http",
 				Sources: cli.EnvVars("CLICKHOUSE_PROTOCOL"),
 			},
+			&cli.BoolFlag{
+				Name:    "read-only",
+				Usage:   "Connect to ClickHouse in read-only mode (avoids setting session variables)",
+				Value:   false,
+				Sources: cli.EnvVars("CLICKHOUSE_READ_ONLY"),
+			},
 			// TLS configuration flags
 			&cli.BoolFlag{
 				Name:    "clickhouse-tls",
@@ -231,6 +237,7 @@ func buildConfig(cmd *cli.Command) config.Config {
 			Username: cmd.String("clickhouse-username"),
 			Password: cmd.String("clickhouse-password"),
 			Protocol: chProtocol,
+			ReadOnly: cmd.Bool("read-only"),
 			TLS: config.TLSConfig{
 				Enabled:            cmd.Bool("clickhouse-tls"),
 				CaCert:             cmd.String("clickhouse-tls-ca-cert"),

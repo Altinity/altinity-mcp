@@ -28,6 +28,7 @@ type ClickHouseConfig struct {
 	Password string             `json:"password" flag:"clickhouse-password" desc:"ClickHouse password"`
 	Protocol ClickHouseProtocol `json:"protocol" flag:"clickhouse-protocol" desc:"ClickHouse connection protocol (http/tcp)"`
 	TLS      TLSConfig          `json:"tls"`
+	ReadOnly bool               `json:"read_only" flag:"read-only" desc:"Connect to ClickHouse in read-only mode"`
 }
 
 // DefaultTLSConfig returns default TLS configuration

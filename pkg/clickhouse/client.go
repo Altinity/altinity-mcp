@@ -81,6 +81,11 @@ func (c *Client) connect() error {
 		return fmt.Errorf("unsupported clickhouse protocol: %s", c.config.Protocol)
 	}
 
+	settings := clickhouse.Settings{}
+	if !c.config.ReadOnly {
+		settings["max_execution_time"] = 60
+	}
+
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth: clickhouse.Auth{
@@ -88,11 +93,9 @@ func (c *Client) connect() error {
 			Username: c.config.Username,
 			Password: c.config.Password,
 		},
-		TLS:      tlsConfig,
-		Protocol: protocol,
-		Settings: clickhouse.Settings{
-			"max_execution_time": 60,
-		},
+		TLS:             tlsConfig,
+		Protocol:        protocol,
+		Settings:        settings,
 		DialTimeout:     time.Second * 10,
 		MaxOpenConns:    10,
 		MaxIdleConns:    5,
