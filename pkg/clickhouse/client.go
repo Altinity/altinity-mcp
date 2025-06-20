@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
