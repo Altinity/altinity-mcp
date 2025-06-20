@@ -2,13 +2,13 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/yaml.v3"
 )
 
 // NewServer creates a new MCP server with ClickHouse integration
@@ -49,12 +49,12 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 			Count:  len(tables),
 		}
 
-		jsonData, err := json.Marshal(response)
+		yamlData, err := yaml.Marshal(response)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
 		}
 
-		return mcp.NewToolResultJSON(jsonData), nil
+		return mcp.NewToolResultText(string(yamlData)), nil
 	})
 
 	// Execute Query Tool
@@ -78,12 +78,12 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
 		}
 
-		jsonData, err := json.Marshal(result)
+		yamlData, err := yaml.Marshal(result)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
 		}
 
-		return mcp.NewToolResultJSON(jsonData), nil
+		return mcp.NewToolResultText(string(yamlData)), nil
 	})
 
 	log.Info().Msg("MCP tools registered")
