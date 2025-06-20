@@ -308,9 +308,10 @@ func registerPrompts(srv *server.MCPServer, chClient *clickhouse.Client) {
 		if tableName != "" {
 			messages = append(messages, mcp.NewPromptMessage(
 				mcp.RoleUser,
-				mcp.NewEmbeddedResource(mcp.ResourceContents{
+				mcp.NewEmbeddedResource(mcp.TextResourceContents{
 					URI:      fmt.Sprintf("clickhouse://table/%s", tableName),
 					MIMEType: "application/json",
+					Text:     "", // Will be populated when resource is read
 				}),
 			))
 		}
@@ -357,9 +358,10 @@ func registerPrompts(srv *server.MCPServer, chClient *clickhouse.Client) {
 				),
 				mcp.NewPromptMessage(
 					mcp.RoleUser,
-					mcp.NewEmbeddedResource(mcp.ResourceContents{
+					mcp.NewEmbeddedResource(mcp.TextResourceContents{
 						URI:      "clickhouse://schema",
 						MIMEType: "application/json",
+						Text:     "", // Will be populated when resource is read
 					}),
 				),
 			},
