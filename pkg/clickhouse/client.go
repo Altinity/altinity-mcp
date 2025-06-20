@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/rs/zerolog/log"
 )
 
@@ -143,7 +143,7 @@ func (c *Client) connectSQL() error {
 
 	// Set connection pool parameters
 	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
+	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Hour)
 
 	// Test the connection
@@ -163,7 +163,7 @@ func (c *Client) GetDatabase() string {
 // Close closes the ClickHouse connection
 func (c *Client) Close() error {
 	c.cancelFunc()
-	
+
 	if c.useNative && c.conn != nil {
 		if err := c.conn.Close(); err != nil {
 			return fmt.Errorf("error closing native connection: %w", err)
@@ -173,7 +173,7 @@ func (c *Client) Close() error {
 			return fmt.Errorf("error closing SQL connection: %w", err)
 		}
 	}
-	
+
 	log.Debug().Msg("ClickHouse connection closed")
 	return nil
 }
@@ -191,7 +191,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	} else {
 		return fmt.Errorf("no active connection to ping")
 	}
-	
+
 	log.Debug().Msg("ClickHouse ping successful")
 	return nil
 }
@@ -208,16 +208,16 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 		WHERE database = ?
 		ORDER BY name
 	`
-	
+
 	var tables []TableInfo
-	
+
 	if c.useNative {
 		rows, err := c.conn.Query(ctx, query, c.config.Database)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tables: %w", err)
 		}
 		defer rows.Close()
-		
+
 		for rows.Next() {
 			var table TableInfo
 			if err := rows.Scan(&table.Name, &table.Database, &table.Engine, &table.CreatedAt); err != nil {
@@ -225,7 +225,7 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 			}
 			tables = append(tables, table)
 		}
-		
+
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("error iterating table rows: %w", err)
 		}
@@ -235,7 +235,7 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 			return nil, fmt.Errorf("failed to list tables: %w", err)
 		}
 		defer rows.Close()
-		
+
 		for rows.Next() {
 			var table TableInfo
 			if err := rows.Scan(&table.Name, &table.Database, &table.Engine, &table.CreatedAt); err != nil {
@@ -243,12 +243,12 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 			}
 			tables = append(tables, table)
 		}
-		
+
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("error iterating table rows: %w", err)
 		}
 	}
-	
+
 	log.Debug().Int("count", len(tables)).Msg("Retrieved tables list")
 	return tables, nil
 }
@@ -257,7 +257,7 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	// Check if the query is a SELECT query
 	isSelect := isSelectQuery(query)
-	
+
 	if isSelect {
 		if c.useNative {
 			return c.executeNativeSelect(ctx, query, args...)
@@ -277,167 +277,167 @@ func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interfa
 // executeNativeSelect executes a SELECT query using native interface
 func (c *Client) executeNativeSelect(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	result := &QueryResult{}
-	
+
 	rows, err := c.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer rows.Close()
-	
+
 	// Get column information
 	columnTypes := rows.ColumnTypes()
 	result.Columns = make([]string, len(columnTypes))
 	result.Types = make([]string, len(columnTypes))
-	
+
 	for i, ct := range columnTypes {
 		result.Columns[i] = ct.Name()
 		result.Types[i] = ct.DatabaseTypeName()
 	}
-	
+
 	// Fetch rows
 	for rows.Next() {
 		// Create a slice of interface{} to hold the row values
 		rowValues := make([]interface{}, len(columnTypes))
 		rowPointers := make([]interface{}, len(columnTypes))
-		
+
 		for i := range rowValues {
 			rowPointers[i] = &rowValues[i]
 		}
-		
+
 		if err := rows.Scan(rowPointers...); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		
+
 		// Convert any specific ClickHouse types to standard Go types for JSON serialization
 		for i := range rowValues {
 			rowValues[i] = convertToSerializable(rowValues[i])
 		}
-		
+
 		result.Rows = append(result.Rows, rowValues)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
-	
+
 	result.Count = len(result.Rows)
 	log.Debug().
 		Int("rows", result.Count).
 		Int("columns", len(result.Columns)).
 		Str("query", truncateString(query, 100)).
 		Msg("Query executed successfully")
-	
+
 	return result, nil
 }
 
 // executeSQLSelect executes a SELECT query using SQL interface
 func (c *Client) executeSQLSelect(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	result := &QueryResult{}
-	
+
 	rows, err := c.sqlDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer rows.Close()
-	
+
 	// Get column information
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 	result.Columns = columns
-	
+
 	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get column types: %w", err)
 	}
-	
+
 	result.Types = make([]string, len(columnTypes))
 	for i, ct := range columnTypes {
 		result.Types[i] = ct.DatabaseTypeName()
 	}
-	
+
 	// Fetch rows
 	for rows.Next() {
 		// Create a slice of interface{} to hold the row values
 		rowValues := make([]interface{}, len(columns))
 		rowPointers := make([]interface{}, len(columns))
-		
+
 		for i := range rowValues {
 			rowPointers[i] = &rowValues[i]
 		}
-		
+
 		if err := rows.Scan(rowPointers...); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		
+
 		// Convert any specific ClickHouse types to standard Go types for JSON serialization
 		for i := range rowValues {
 			rowValues[i] = convertToSerializable(rowValues[i])
 		}
-		
+
 		result.Rows = append(result.Rows, rowValues)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
-	
+
 	result.Count = len(result.Rows)
 	log.Debug().
 		Int("rows", result.Count).
 		Int("columns", len(result.Columns)).
 		Str("query", truncateString(query, 100)).
 		Msg("Query executed successfully")
-	
+
 	return result, nil
 }
 
 // executeNativeNonSelect executes a non-SELECT query using native interface
 func (c *Client) executeNativeNonSelect(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	result := &QueryResult{}
-	
+
 	err := c.conn.Exec(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	
+
 	// For non-SELECT queries, we just return an empty result with success status
 	result.Columns = []string{"status"}
 	result.Types = []string{"String"}
 	result.Rows = [][]interface{}{{"OK"}}
 	result.Count = 1
-	
+
 	log.Debug().
 		Str("query", truncateString(query, 100)).
 		Msg("Non-SELECT query executed successfully")
-	
+
 	return result, nil
 }
 
 // executeSQLNonSelect executes a non-SELECT query using SQL interface
 func (c *Client) executeSQLNonSelect(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	result := &QueryResult{}
-	
+
 	res, err := c.sqlDB.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	
+
 	// Try to get affected rows, though ClickHouse might not support this properly
 	rowsAffected, _ := res.RowsAffected()
-	
+
 	// For non-SELECT queries, we just return a simple result
 	result.Columns = []string{"status", "rows_affected"}
 	result.Types = []string{"String", "UInt64"}
 	result.Rows = [][]interface{}{{"OK", rowsAffected}}
 	result.Count = 1
-	
+
 	log.Debug().
 		Str("query", truncateString(query, 100)).
 		Int64("rows_affected", rowsAffected).
 		Msg("Non-SELECT query executed successfully")
-	
+
 	return result, nil
 }
 
