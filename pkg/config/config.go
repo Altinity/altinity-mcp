@@ -49,6 +49,7 @@ type ServerTLSConfig struct {
 	Enabled  bool   `json:"enabled" flag:"server-tls" desc:"Enable TLS for the MCP server"`
 	CertFile string `json:"cert_file" flag:"server-tls-cert-file" desc:"Path to TLS certificate file"`
 	KeyFile  string `json:"key_file" flag:"server-tls-key-file" desc:"Path to TLS key file"`
+	CaCert   string `json:"ca_cert" flag:"server-tls-ca-cert" desc:"Path to CA certificate for client certificate validation"`
 }
 
 // ServerConfig defines configuration for the MCP server

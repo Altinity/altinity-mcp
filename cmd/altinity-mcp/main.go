@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -148,6 +150,12 @@ func main() {
 				Value:   "",
 				Sources: cli.EnvVars("MCP_SERVER_TLS_KEY_FILE"),
 			},
+			&cli.StringFlag{
+				Name:    "server-tls-ca-cert",
+				Usage:   "Path to CA certificate for client certificate validation",
+				Value:   "",
+				Sources: cli.EnvVars("MCP_SERVER_TLS_CA_CERT"),
+			},
 			// Logging configuration flags
 			&cli.StringFlag{
 				Name:    "log-level",
@@ -280,12 +288,37 @@ func buildConfig(cmd *cli.Command) config.Config {
 				Enabled:  cmd.Bool("server-tls"),
 				CertFile: cmd.String("server-tls-cert-file"),
 				KeyFile:  cmd.String("server-tls-key-file"),
+				CaCert:   cmd.String("server-tls-ca-cert"),
 			},
 		},
 		Logging: config.LoggingConfig{
 			Level: logLevel,
 		},
 	}
+}
+
+// buildServerTLSConfig creates a tls.Config from the server TLS configuration
+func buildServerTLSConfig(cfg *config.ServerTLSConfig) (*tls.Config, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+
+	log.Debug().Msg("Building server TLS configuration")
+	tlsConfig := &tls.Config{}
+
+	if cfg.CaCert != "" {
+		log.Debug().Str("ca_cert", cfg.CaCert).Msg("Loading server CA certificate for client auth")
+		caCert, err := os.ReadFile(cfg.CaCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read server CA certificate: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		tlsConfig.ClientCAs = caCertPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	return tlsConfig, nil
 }
 
 // testConnection tests the connection to ClickHouse
@@ -399,12 +432,17 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
-			// The default endpoint path for StreamableHTTPServer is /mcp
+			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to build server TLS config")
+				return err
+			}
 			mux := http.NewServeMux()
 			mux.Handle("/", httpServer)
 			srv := &http.Server{
-				Addr:    addr,
-				Handler: mux,
+				Addr:      addr,
+				Handler:   mux,
+				TLSConfig: tlsConfig,
 			}
 			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
 				log.Error().Err(err).Msg("HTTPS server failed")
@@ -427,12 +465,17 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
-			// The default endpoint path for SSEServer is /mcp
+			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to build server TLS config")
+				return err
+			}
 			mux := http.NewServeMux()
 			mux.Handle("/", sseServer)
 			srv := &http.Server{
-				Addr:    addr,
-				Handler: mux,
+				Addr:      addr,
+				Handler:   mux,
+				TLSConfig: tlsConfig,
 			}
 			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
 				log.Error().Err(err).Msg("SSE server with TLS failed")
