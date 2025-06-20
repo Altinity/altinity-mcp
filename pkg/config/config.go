@@ -28,13 +28,13 @@ type ClickHouseConfig struct {
 func (c *ClickHouseConfig) DSN() string {
 	switch c.Protocol {
 	case HTTPProtocol:
-		return fmt.Sprintf("http://%s:%s@%s:%d/%s", 
+		return fmt.Sprintf("http://%s:%s@%s:%d/%s",
 			c.Username, c.Password, c.Host, c.Port, c.Database)
 	case TCPProtocol:
-		return fmt.Sprintf("tcp://%s:%d?database=%s&username=%s&password=%s", 
+		return fmt.Sprintf("tcp://%s:%d?database=%s&username=%s&password=%s",
 			c.Host, c.Port, c.Database, c.Username, c.Password)
 	default:
-		return fmt.Sprintf("http://%s:%s@%s:%d/%s", 
+		return fmt.Sprintf("http://%s:%s@%s:%d/%s",
 			c.Username, c.Password, c.Host, c.Port, c.Database)
 	}
 }

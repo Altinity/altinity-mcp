@@ -12,10 +12,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/mark3labs/mcp-go"
-	"github.com/mark3labs/mcp-go/transport/http"
-	"github.com/mark3labs/mcp-go/transport/stdio"
-	"github.com/mark3labs/mcp-go/transport/sse"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/rs/zerolog/log"
 )
 
