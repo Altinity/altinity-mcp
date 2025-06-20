@@ -153,9 +153,7 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 			ORDER BY position
 		`
 
-		// Get database name from client config
-		// Note: We'll need to add a GetDatabase method to the client or pass it differently
-		result, err := chClient.ExecuteQuery(ctx, query, "default", tableName)
+		result, err := chClient.ExecuteQuery(ctx, query, chClient.GetDatabase(), tableName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
 		}
@@ -190,7 +188,7 @@ func registerResources(srv *server.MCPServer, chClient *clickhouse.Client) {
 		}
 
 		schema := map[string]interface{}{
-			"database": "default", // TODO: Get from client config
+			"database": chClient.GetDatabase(),
 			"tables":   tables,
 			"count":    len(tables),
 		}
