@@ -23,80 +23,75 @@ var (
 )
 
 func main() {
-	app := &cli.App{
+	app := &cli.Command{
 		Name:        "altinity-mcp",
 		Usage:       "Altinity MCP Server - ClickHouse Model Context Protocol Server",
 		Description: "A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse databases",
 		Version:     fmt.Sprintf("%s (%s) built on %s", version, commit, date),
-		Authors: []*cli.Author{
-			{
-				Name:  "Altinity",
-				Email: "support@altinity.com",
-			},
-		},
+		Authors:     []string{"Altinity <support@altinity.com>"},
 		Flags: []cli.Flag{
 			// ClickHouse configuration flags
 			&cli.StringFlag{
 				Name:    "clickhouse-host",
 				Usage:   "ClickHouse server host",
 				Value:   "localhost",
-				EnvVars: []string{"CLICKHOUSE_HOST"},
+				Sources: cli.EnvVars("CLICKHOUSE_HOST"),
 			},
 			&cli.IntFlag{
 				Name:    "clickhouse-port",
 				Usage:   "ClickHouse server port",
 				Value:   8123,
-				EnvVars: []string{"CLICKHOUSE_PORT"},
+				Sources: cli.EnvVars("CLICKHOUSE_PORT"),
 			},
 			&cli.StringFlag{
 				Name:    "clickhouse-database",
 				Usage:   "ClickHouse database name",
 				Value:   "default",
-				EnvVars: []string{"CLICKHOUSE_DATABASE"},
+				Sources: cli.EnvVars("CLICKHOUSE_DATABASE"),
 			},
 			&cli.StringFlag{
 				Name:    "clickhouse-username",
 				Usage:   "ClickHouse username",
 				Value:   "default",
-				EnvVars: []string{"CLICKHOUSE_USERNAME"},
+				Sources: cli.EnvVars("CLICKHOUSE_USERNAME"),
 			},
 			&cli.StringFlag{
 				Name:    "clickhouse-password",
 				Usage:   "ClickHouse password",
 				Value:   "",
-				EnvVars: []string{"CLICKHOUSE_PASSWORD"},
+				Sources: cli.EnvVars("CLICKHOUSE_PASSWORD"),
 			},
 			&cli.StringFlag{
 				Name:    "clickhouse-protocol",
 				Usage:   "ClickHouse connection protocol (http/tcp)",
 				Value:   "http",
-				EnvVars: []string{"CLICKHOUSE_PROTOCOL"},
+				Sources: cli.EnvVars("CLICKHOUSE_PROTOCOL"),
 			},
 			// Server configuration flags
 			&cli.StringFlag{
 				Name:    "transport",
 				Usage:   "MCP transport type (stdio/http/sse)",
 				Value:   "stdio",
-				EnvVars: []string{"MCP_TRANSPORT"},
+				Sources: cli.EnvVars("MCP_TRANSPORT"),
 			},
 			&cli.StringFlag{
 				Name:    "address",
 				Usage:   "Server address for HTTP/SSE transport",
 				Value:   "0.0.0.0",
-				EnvVars: []string{"MCP_ADDRESS"},
+				Sources: cli.EnvVars("MCP_ADDRESS"),
 			},
 			&cli.IntFlag{
 				Name:    "port",
 				Usage:   "Server port for HTTP/SSE transport",
 				Value:   8080,
-				EnvVars: []string{"MCP_PORT"},
+				Sources: cli.EnvVars("MCP_PORT"),
 			},
 			// Logging configuration flags
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "Logging level (debug/info/warn/error)",
 				Value:   "info",
-				EnvVars: []string{"LOG_LEVEL"},
+				Sources: cli.EnvVars("LOG_LEVEL"),
 			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) error {
