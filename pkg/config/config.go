@@ -44,11 +44,19 @@ const (
 	SSETransport MCPTransport = "sse"
 )
 
+// ServerTLSConfig defines TLS configuration for the MCP server
+type ServerTLSConfig struct {
+	Enabled  bool   `json:"enabled" flag:"server-tls" desc:"Enable TLS for the MCP server"`
+	CertFile string `json:"cert_file" flag:"server-tls-cert-file" desc:"Path to TLS certificate file"`
+	KeyFile  string `json:"key_file" flag:"server-tls-key-file" desc:"Path to TLS key file"`
+}
+
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport MCPTransport `json:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address   string       `json:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port      int          `json:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	Transport MCPTransport    `json:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address   string          `json:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port      int             `json:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS       ServerTLSConfig `json:"tls"`
 }
 
 // LogLevel defines the logging level

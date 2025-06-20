@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -128,6 +129,24 @@ func main() {
 				Usage:   "Server port for HTTP/SSE transport",
 				Value:   8080,
 				Sources: cli.EnvVars("MCP_PORT"),
+			},
+			&cli.BoolFlag{
+				Name:    "server-tls",
+				Usage:   "Enable TLS for the MCP server (HTTP/SSE transports)",
+				Value:   false,
+				Sources: cli.EnvVars("MCP_SERVER_TLS"),
+			},
+			&cli.StringFlag{
+				Name:    "server-tls-cert-file",
+				Usage:   "Path to TLS certificate file for the MCP server",
+				Value:   "",
+				Sources: cli.EnvVars("MCP_SERVER_TLS_CERT_FILE"),
+			},
+			&cli.StringFlag{
+				Name:    "server-tls-key-file",
+				Usage:   "Path to TLS key file for the MCP server",
+				Value:   "",
+				Sources: cli.EnvVars("MCP_SERVER_TLS_KEY_FILE"),
 			},
 			// Logging configuration flags
 			&cli.StringFlag{
@@ -257,6 +276,11 @@ func buildConfig(cmd *cli.Command) config.Config {
 			Transport: mcpTransport,
 			Address:   cmd.String("address"),
 			Port:      cmd.Int("port"),
+			TLS: config.ServerTLSConfig{
+				Enabled:  cmd.Bool("server-tls"),
+				CertFile: cmd.String("server-tls-cert-file"),
+				KeyFile:  cmd.String("server-tls-key-file"),
+			},
 		},
 		Logging: config.LoggingConfig{
 			Level: logLevel,
@@ -366,10 +390,26 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Str("address", addr).
 			Msg("Starting MCP server with HTTP transport")
 
-		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
-		if err := server.NewStreamableHTTPServer(mcpServer).Start(addr); err != nil {
-			log.Error().Err(err).Msg("HTTP server failed")
-			return err
+		httpServer := server.NewStreamableHTTPServer(mcpServer)
+		if !cfg.Server.TLS.Enabled {
+			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
+			if err := httpServer.Start(addr); err != nil {
+				log.Error().Err(err).Msg("HTTP server failed")
+				return err
+			}
+		} else {
+			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
+			// The default endpoint path for StreamableHTTPServer is /mcp
+			mux := http.NewServeMux()
+			mux.Handle("/mcp", httpServer)
+			srv := &http.Server{
+				Addr:    addr,
+				Handler: mux,
+			}
+			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
+				log.Error().Err(err).Msg("HTTPS server failed")
+				return err
+			}
 		}
 
 	case config.SSETransport:
@@ -378,10 +418,26 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Str("address", addr).
 			Msg("Starting MCP server with SSE transport")
 
-		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
-		if err := server.NewSSEServer(mcpServer).Start(addr); err != nil {
-			log.Error().Err(err).Msg("SSE server failed")
-			return err
+		sseServer := server.NewSSEServer(mcpServer)
+		if !cfg.Server.TLS.Enabled {
+			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
+			if err := sseServer.Start(addr); err != nil {
+				log.Error().Err(err).Msg("SSE server failed")
+				return err
+			}
+		} else {
+			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
+			// The default endpoint path for SSEServer is /mcp
+			mux := http.NewServeMux()
+			mux.Handle("/mcp", sseServer)
+			srv := &http.Server{
+				Addr:    addr,
+				Handler: mux,
+			}
+			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
+				log.Error().Err(err).Msg("SSE server with TLS failed")
+				return err
+			}
 		}
 
 	default:
