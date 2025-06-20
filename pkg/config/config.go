@@ -34,32 +34,6 @@ type ClickHouseConfig struct {
 	TLS      TLSConfig          `json:"tls"`
 }
 
-// DSN returns the data source name for ClickHouse connection
-func (c *ClickHouseConfig) DSN() string {
-	switch c.Protocol {
-	case HTTPProtocol:
-		protocol := "http"
-		if c.TLS.Enabled {
-			protocol = "https"
-		}
-		return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
-			protocol, c.Username, c.Password, c.Host, c.Port, c.Database)
-	case TCPProtocol:
-		dsn := fmt.Sprintf("tcp://%s:%d?database=%s&username=%s&password=%s",
-			c.Host, c.Port, c.Database, c.Username, c.Password)
-		if c.TLS.Enabled {
-			dsn += "&secure=true"
-		}
-		return dsn
-	default:
-		protocol := "http"
-		if c.TLS.Enabled {
-			protocol = "https"
-		}
-		return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
-			protocol, c.Username, c.Password, c.Host, c.Port, c.Database)
-	}
-}
 
 // DefaultTLSConfig returns default TLS configuration
 func DefaultTLSConfig() TLSConfig {
