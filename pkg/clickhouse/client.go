@@ -172,9 +172,27 @@ func (c *Client) DescribeTable(ctx context.Context, tableName string) ([]ColumnI
 		ORDER BY position
 	`
 
+	rows, err := c.conn.Query(ctx, query, c.config.Database, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table description for %s: %w", tableName, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("DescribeTable: can't close rows")
+		}
+	}()
+
 	var columns []ColumnInfo
-	if err := c.conn.Select(ctx, &columns, query, c.config.Database, tableName); err != nil {
-		return nil, fmt.Errorf("failed to describe table %s: %w", tableName, err)
+	for rows.Next() {
+		var col ColumnInfo
+		if err := rows.ScanStruct(&col); err != nil {
+			return nil, fmt.Errorf("failed to scan row for describe table %s: %w", tableName, err)
+		}
+		columns = append(columns, col)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows for describe table %s: %w", tableName, err)
 	}
 
 	log.Debug().Int("column_count", len(columns)).Str("table", tableName).Msg("Retrieved table description")
@@ -256,7 +274,7 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
-			log.Error().Err(closeErr).Msg("ListTables: can't close rows")
+			log.Error().Err(closeErr).Msg("executeSelect: can't close rows")
 		}
 	}()
 
