@@ -10,7 +10,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/server"
+	altinityserver "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -29,7 +29,7 @@ func main() {
 		Usage:       "Altinity MCP Server - ClickHouse Model Context Protocol Server",
 		Description: "A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse databases",
 		Version:     fmt.Sprintf("%s (%s) built on %s", version, commit, date),
-		Authors:     []string{"Altinity <support@altinity.com>"},
+		Authors:     []any{"Altinity <support@altinity.com>"},
 		Flags: []cli.Flag{
 			// ClickHouse configuration flags
 			&cli.StringFlag{
@@ -95,9 +95,10 @@ func main() {
 				Sources: cli.EnvVars("LOG_LEVEL"),
 			},
 		},
-		Before: func(ctx context.Context, cmd *cli.Command) error {
+		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
-			return setupLogging(cmd.String("log-level"))
+			err := setupLogging(cmd.String("log-level"))
+			return ctx, err
 		},
 		Action: runServer,
 		Commands: []*cli.Command{
@@ -293,7 +294,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 
 	// Create MCP server
 	log.Info().Msg("Creating MCP server...")
-	mcpServer := server.NewClickHouseServer(chClient)
+	mcpServer := altinityserver.NewClickHouseServer(chClient)
 
 	// Start the server based on transport type
 	log.Info().
