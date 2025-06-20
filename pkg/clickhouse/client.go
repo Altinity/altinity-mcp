@@ -75,7 +75,7 @@ func (c *Client) connect() error {
 	case config.HTTPProtocol:
 		protocol = clickhouse.HTTP
 	case config.TCPProtocol:
-		protocol = clickhouse.Native
+		protocol = clickhouse.TCP
 	default:
 		// This should not happen due to validation in main.go, but as a safeguard:
 		return fmt.Errorf("unsupported clickhouse protocol: %s", c.config.Protocol)
@@ -83,7 +83,7 @@ func (c *Client) connect() error {
 
 	settings := clickhouse.Settings{}
 	if !c.config.ReadOnly {
-		settings["max_execution_time"] = 60
+		settings["max_execution_time"] = c.config.MaxExecutionTime
 	}
 
 	conn, err := clickhouse.Open(&clickhouse.Options{
@@ -145,11 +145,10 @@ func (c *Client) Ping(ctx context.Context) error {
 // ListTables returns a list of tables in the database
 func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 	query := `
-		SELECT 
+		SELECT
 			name,
 			database,
-			engine,
-			formatDateTime(creation_time, '%Y-%m-%d %H:%M:%S') as created_at
+			engine
 		FROM system.tables
 		WHERE database = ?
 		ORDER BY name
@@ -169,7 +168,7 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 
 	for rows.Next() {
 		var table TableInfo
-		if err := rows.Scan(&table.Name, &table.Database, &table.Engine, &table.CreatedAt); err != nil {
+		if err := rows.Scan(&table.Name, &table.Database, &table.Engine); err != nil {
 			return nil, fmt.Errorf("failed to scan table info: %w", err)
 		}
 		tables = append(tables, table)

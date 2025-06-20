@@ -21,14 +21,15 @@ type TLSConfig struct {
 
 // ClickHouseConfig defines configuration for connecting to ClickHouse
 type ClickHouseConfig struct {
-	Host     string             `json:"host" flag:"clickhouse-host" desc:"ClickHouse server host"`
-	Port     int                `json:"port" flag:"clickhouse-port" desc:"ClickHouse server port"`
-	Database string             `json:"database" flag:"clickhouse-database" desc:"ClickHouse database name"`
-	Username string             `json:"username" flag:"clickhouse-username" desc:"ClickHouse username"`
-	Password string             `json:"password" flag:"clickhouse-password" desc:"ClickHouse password"`
-	Protocol ClickHouseProtocol `json:"protocol" flag:"clickhouse-protocol" desc:"ClickHouse connection protocol (http/tcp)"`
-	TLS      TLSConfig          `json:"tls"`
-	ReadOnly bool               `json:"read_only" flag:"read-only" desc:"Connect to ClickHouse in read-only mode"`
+	Host             string             `json:"host" flag:"clickhouse-host" desc:"ClickHouse server host"`
+	Port             int                `json:"port" flag:"clickhouse-port" desc:"ClickHouse server port"`
+	Database         string             `json:"database" flag:"clickhouse-database" desc:"ClickHouse database name"`
+	Username         string             `json:"username" flag:"clickhouse-username" desc:"ClickHouse username"`
+	Password         string             `json:"password" flag:"clickhouse-password" desc:"ClickHouse password"`
+	Protocol         ClickHouseProtocol `json:"protocol" flag:"clickhouse-protocol" desc:"ClickHouse connection protocol (http/tcp)"`
+	TLS              TLSConfig          `json:"tls"`
+	ReadOnly         bool               `json:"read_only" flag:"read-only" desc:"Connect to ClickHouse in read-only mode"`
+	MaxExecutionTime int                `json:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
 }
 
 // DefaultTLSConfig returns default TLS configuration

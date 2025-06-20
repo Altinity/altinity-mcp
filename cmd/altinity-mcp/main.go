@@ -67,6 +67,12 @@ func main() {
 				Value:   "http",
 				Sources: cli.EnvVars("CLICKHOUSE_PROTOCOL"),
 			},
+			&cli.IntFlag{
+				Name:    "clickhouse-max-execution-time",
+				Usage:   "ClickHouse max execution time in seconds",
+				Value:   600,
+				Sources: cli.EnvVars("CLICKHOUSE_MAX_EXECUTION_TIME"),
+			},
 			&cli.BoolFlag{
 				Name:    "read-only",
 				Usage:   "Connect to ClickHouse in read-only mode (avoids setting session variables)",
@@ -231,13 +237,14 @@ func buildConfig(cmd *cli.Command) config.Config {
 
 	return config.Config{
 		ClickHouse: config.ClickHouseConfig{
-			Host:     cmd.String("clickhouse-host"),
-			Port:     cmd.Int("clickhouse-port"),
-			Database: cmd.String("clickhouse-database"),
-			Username: cmd.String("clickhouse-username"),
-			Password: cmd.String("clickhouse-password"),
-			Protocol: chProtocol,
-			ReadOnly: cmd.Bool("read-only"),
+			Host:             cmd.String("clickhouse-host"),
+			Port:             cmd.Int("clickhouse-port"),
+			Database:         cmd.String("clickhouse-database"),
+			Username:         cmd.String("clickhouse-username"),
+			Password:         cmd.String("clickhouse-password"),
+			Protocol:         chProtocol,
+			ReadOnly:         cmd.Bool("read-only"),
+			MaxExecutionTime: cmd.Int("clickhouse-max-execution-time"),
 			TLS: config.TLSConfig{
 				Enabled:            cmd.Bool("clickhouse-tls"),
 				CaCert:             cmd.String("clickhouse-tls-ca-cert"),
