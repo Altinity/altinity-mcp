@@ -37,8 +37,11 @@ func setupClickHouseContainer(t *testing.T, ctx context.Context) *config.ClickHo
 	t.Helper()
 	req := testcontainers.ContainerRequest{
 		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"9000/tcp"},
-		WaitingFor:   wait.ForLog("Ready for connections").WithStartupTimeout(5 * time.Minute),
+		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
+		Env: map[string]string{
+			"CLICKHOUSE_SKIP_USER_SETUP": "1",
+		},
+		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(5 * time.Second).WithPollInterval(1 * time.Second),
 	}
 	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
