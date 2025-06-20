@@ -307,7 +307,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("transport", string(cfg.Server.Transport)).
 		Msg("Starting MCP server...")
 
-	if err := mcpServer.Start(); err != nil {
+	if err := server.StartServer(mcpServer, cfg.Server); err != nil {
 		log.Error().Err(err).Msg("MCP server failed")
 		return err
 	}

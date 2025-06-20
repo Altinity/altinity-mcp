@@ -12,59 +12,31 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/server/http"
+	"github.com/mark3labs/mcp-go/server/sse"
 	"github.com/rs/zerolog/log"
 )
 
-// Server represents the MCP server
-type Server struct {
-	config      config.ServerConfig
-	chClient    *clickhouse.Client
-	mcpServer   *server.MCPServer
-	httpServer  *http.Server
-	shutdownCtx context.Context
-	shutdown    context.CancelFunc
-}
-
-// ListTablesResponse represents the response for list_tables tool
-type ListTablesResponse struct {
-	Tables []clickhouse.TableInfo `json:"tables"`
-	Count  int                    `json:"count"`
-}
-
-// ExecuteQueryRequest represents the request for execute_query tool
-type ExecuteQueryRequest struct {
-	Query      string        `json:"query"`
-	Parameters []interface{} `json:"parameters,omitempty"`
-}
-
-// NewServer creates a new MCP server
-func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Create MCP server
-	mcpServer := server.New(
+// NewServer creates a new MCP server with ClickHouse integration
+func NewServer(cfg config.Config, chClient *clickhouse.Client) (*server.MCPServer, error) {
+	// Create MCP server with basic configuration
+	srv := server.NewMCPServer(
 		"Altinity MCP Server",
 		"1.0.0",
 		server.WithToolCapabilities(false),
+		server.WithRecovery(),
 	)
 
-	srv := &Server{
-		config:      cfg.Server,
-		chClient:    chClient,
-		mcpServer:   mcpServer,
-		shutdownCtx: ctx,
-		shutdown:    cancel,
-	}
-
 	// Register tools
-	srv.registerTools()
+	registerTools(srv, chClient)
 
 	return srv, nil
 }
 
-// registerTools registers all MCP tools
-func (s *Server) registerTools() {
+// registerTools adds the ClickHouse tools to the MCP server
+func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
@@ -74,13 +46,16 @@ func (s *Server) registerTools() {
 		),
 	)
 
-	s.mcpServer.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		tables, err := s.chClient.ListTables(ctx)
+	srv.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tables, err := chClient.ListTables(ctx)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
 		}
 
-		response := ListTablesResponse{
+		response := struct {
+			Tables []clickhouse.TableInfo `json:"tables"`
+			Count  int                    `json:"count"`
+		}{
 			Tables: tables,
 			Count:  len(tables),
 		}
@@ -106,7 +81,7 @@ func (s *Server) registerTools() {
 		),
 	)
 
-	s.mcpServer.AddTool(executeQueryTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	srv.AddTool(executeQueryTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query, err := req.RequireString("query")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -114,7 +89,7 @@ func (s *Server) registerTools() {
 
 		params, _ := req.GetArray("parameters")
 
-		result, err := s.chClient.ExecuteQuery(ctx, query, params...)
+		result, err := chClient.ExecuteQuery(ctx, query, params...)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
 		}
@@ -130,122 +105,96 @@ func (s *Server) registerTools() {
 	log.Info().Msg("MCP tools registered")
 }
 
-// Start starts the MCP server
-func (s *Server) Start() error {
+// StartServer starts the MCP server with the specified transport
+func StartServer(srv *server.MCPServer, cfg config.ServerConfig) error {
 	log.Info().
-		Str("transport", string(s.config.Transport)).
+		Str("transport", string(cfg.Transport)).
 		Msg("Starting MCP server")
 
 	// Setup signal handling for graceful shutdown
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+
 	go func() {
 		sig := <-signalCh
 		log.Info().
 			Str("signal", sig.String()).
 			Msg("Received shutdown signal")
-		s.Stop()
+		shutdown()
 	}()
 
 	// Start the server based on transport type
-	switch s.config.Transport {
+	switch cfg.Transport {
 	case config.HTTPTransport:
-		return s.startHTTPServer()
+		return startHTTPServer(srv, cfg)
 	case config.SSETransport:
-		return s.startSSEServer()
+		return startSSEServer(srv, cfg)
 	case config.StdioTransport:
-		return server.ServeStdio(s.mcpServer)
+		return server.ServeStdio(srv)
 	default:
-		return fmt.Errorf("unsupported transport type: %s", s.config.Transport)
+		return fmt.Errorf("unsupported transport type: %s", cfg.Transport)
 	}
 }
 
-// startHTTPServer starts the MCP server with HTTP transport
-func (s *Server) startHTTPServer() error {
-	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+// startHTTPServer starts the HTTP transport server
+func startHTTPServer(srv *server.MCPServer, cfg config.ServerConfig) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Address, cfg.Port)
 	log.Info().
 		Str("address", addr).
 		Msg("Starting MCP server with HTTP transport")
 
-	// Create HTTP transport
 	httpTransport := http.NewTransport(http.Config{
 		Path:    "/mcp",
 		Address: addr,
 	})
 
-	// Create HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", httpTransport.Handle(s.mcpServer))
+	mux.Handle("/mcp", httpTransport.Handle(srv))
 
-	s.httpServer = &http.Server{
+	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: mux,
 	}
 
-	// Start HTTP server in a goroutine
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("HTTP server error")
 		}
 	}()
 
-	// Wait for shutdown signal
-	<-s.shutdownCtx.Done()
+	<-context.Background().Done()
 	return nil
 }
 
-// startSSEServer starts the MCP server with SSE transport
-func (s *Server) startSSEServer() error {
-	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+// startSSEServer starts the SSE transport server
+func startSSEServer(srv *server.MCPServer, cfg config.ServerConfig) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Address, cfg.Port)
 	log.Info().
 		Str("address", addr).
 		Msg("Starting MCP server with SSE transport")
 
-	// Create SSE transport
 	sseTransport := sse.NewTransport(sse.Config{
 		Path:    "/mcp",
 		Address: addr,
 	})
 
-	// Create HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", sseTransport.Handle(s.mcpServer))
+	mux.Handle("/mcp", sseTransport.Handle(srv))
 
-	s.httpServer = &http.Server{
+	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: mux,
 	}
 
-	// Start HTTP server in a goroutine
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("SSE server error")
 		}
 	}()
 
-	// Wait for shutdown signal
-	<-s.shutdownCtx.Done()
+	<-context.Background().Done()
 	return nil
-}
-
-// Stop stops the MCP server
-func (s *Server) Stop() {
-	log.Info().Msg("Stopping MCP server")
-
-	// Signal shutdown
-	s.shutdown()
-
-	// Shutdown HTTP server if it exists
-	if s.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := s.httpServer.Shutdown(ctx); err != nil {
-			log.Error().Err(err).Msg("HTTP server shutdown error")
-		}
-		log.Info().Msg("HTTP server stopped")
-	}
-
-	log.Info().Msg("MCP server stopped")
 }
