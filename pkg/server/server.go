@@ -13,7 +13,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	mcp_golang "github.com/metoro-io/mcp-golang"
-	"github.com/metoro-io/mcp-golang/transport/http"
+	mcp_http "github.com/metoro-io/mcp-golang/transport/http"
 	"github.com/rs/zerolog/log"
 )
 
@@ -44,16 +44,14 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Create transport based on config
-	var transport mcp_golang.Transport
+	var transport *mcp_http.HTTPTransport
 	switch cfg.Server.Transport {
 	case config.HTTPTransport:
-		httpTransport := http.NewHTTPTransport("/mcp")
-		httpTransport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
-		transport = httpTransport
+		transport = mcp_http.NewHTTPTransport("/mcp")
+		transport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
 	case config.SSETransport:
-		httpTransport := http.NewHTTPTransport("/mcp")
-		httpTransport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
-		transport = httpTransport
+		transport = mcp_http.NewHTTPTransport("/mcp")
+		transport.WithAddr(fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port))
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
@@ -78,7 +76,7 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 // registerTools registers all MCP tools
 func (s *Server) registerTools() {
 	// List Tables Tool
-	err := s.mcpServer.RegisterTool("list_tables", "Lists all tables in the ClickHouse database", 
+	err := s.mcpServer.RegisterTool("list_tables", "Lists all tables in the ClickHouse database",
 		func(ctx context.Context, args json.RawMessage) (interface{}, error) {
 			return s.handleListTables(ctx, args)
 		})
@@ -193,7 +191,7 @@ func (s *Server) startHTTPServer() error {
 
 	// Create HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.mcpServer.Handler())
+	mux.Handle("/mcp", s.mcpServer.Handle())
 
 	s.httpServer = &http.Server{
 		Addr:    addr,
