@@ -12,7 +12,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,7 +20,7 @@ import (
 type Server struct {
 	config      config.ServerConfig
 	chClient    *clickhouse.Client
-	mcpServer   *mcp.Server
+	mcpServer   *server.MCPServer
 	httpServer  *http.Server
 	shutdownCtx context.Context
 	shutdown    context.CancelFunc
@@ -42,29 +42,14 @@ type ExecuteQueryRequest struct {
 func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create transport based on config
-	var transport mcp.Transport
-	switch cfg.Server.Transport {
-	case config.HTTPTransport:
-		transport = http.NewTransport(http.Config{
-			Path:    "/mcp",
-			Address: fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port),
-		})
-	case config.SSETransport:
-		transport = sse.NewTransport(sse.Config{
-			Path:    "/mcp",
-			Address: fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port),
-		})
-	case config.StdioTransport:
-		transport = stdio.NewTransport()
-	default:
-		return nil, fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
-	}
+	// Create MCP server
+	mcpServer := server.New(
+		"Altinity MCP Server",
+		"1.0.0",
+		server.WithToolCapabilities(false),
+	)
 
-	// Initialize MCP server
-	mcpServer := mcp.NewServer(transport)
-
-	server := &Server{
+	srv := &Server{
 		config:      cfg.Server,
 		chClient:    chClient,
 		mcpServer:   mcpServer,
@@ -73,97 +58,76 @@ func NewServer(cfg config.Config, chClient *clickhouse.Client) (*Server, error) 
 	}
 
 	// Register tools
-	server.registerTools()
+	srv.registerTools()
 
-	return server, nil
+	return srv, nil
 }
 
 // registerTools registers all MCP tools
 func (s *Server) registerTools() {
 	// List Tables Tool
-	err := s.mcpServer.RegisterTool(mcp.Tool{
-		Name:        "list_tables",
-		Description: "Lists all tables in the ClickHouse database",
-		Handler: func(ctx context.Context, payload json.RawMessage) (interface{}, error) {
-			return s.handleListTables(ctx, payload)
-		},
+	listTablesTool := mcp.NewTool(
+		"list_tables",
+		mcp.WithDescription("Lists all tables in the ClickHouse database"),
+		mcp.WithString("database",
+			mcp.Description("Database name to list tables from"),
+		),
+	)
+
+	s.mcpServer.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tables, err := s.chClient.ListTables(ctx)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
+		}
+
+		response := ListTablesResponse{
+			Tables: tables,
+			Count:  len(tables),
+		}
+
+		jsonData, err := json.Marshal(response)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
+		}
+
+		return mcp.NewToolResultJSON(jsonData), nil
 	})
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to register list_tables tool")
-	}
 
 	// Execute Query Tool
-	err = s.mcpServer.RegisterTool(mcp.Tool{
-		Name:        "execute_query",
-		Description: "Executes a SQL query with optional parameters",
-		Handler: func(ctx context.Context, payload json.RawMessage) (interface{}, error) {
-			return s.handleExecuteQuery(ctx, payload)
-		},
+	executeQueryTool := mcp.NewTool(
+		"execute_query",
+		mcp.WithDescription("Executes a SQL query with optional parameters"),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("SQL query to execute"),
+		),
+		mcp.WithArray("parameters",
+			mcp.Description("Query parameters"),
+		),
+	)
+
+	s.mcpServer.AddTool(executeQueryTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		params, _ := req.GetArray("parameters")
+
+		result, err := s.chClient.ExecuteQuery(ctx, query, params...)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
+		}
+
+		jsonData, err := json.Marshal(result)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+		}
+
+		return mcp.NewToolResultJSON(jsonData), nil
 	})
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to register execute_query tool")
-	}
 
 	log.Info().Msg("MCP tools registered")
-}
-
-// handleListTables handles the list_tables tool request
-func (s *Server) handleListTables(ctx context.Context, args json.RawMessage) (interface{}, error) {
-	log.Debug().Msg("Handling list_tables request")
-
-	// Execute the list tables operation
-	tables, err := s.chClient.ListTables(ctx)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to list tables")
-		return nil, fmt.Errorf("failed to list tables: %w", err)
-	}
-
-	response := ListTablesResponse{
-		Tables: tables,
-		Count:  len(tables),
-	}
-
-	log.Debug().
-		Int("table_count", response.Count).
-		Msg("Successfully listed tables")
-
-	return response, nil
-}
-
-// handleExecuteQuery handles the execute_query tool request
-func (s *Server) handleExecuteQuery(ctx context.Context, args json.RawMessage) (interface{}, error) {
-	log.Debug().Msg("Handling execute_query request")
-
-	// Parse request
-	var request ExecuteQueryRequest
-	if err := json.Unmarshal(args, &request); err != nil {
-		log.Error().Err(err).Msg("Failed to parse execute_query request")
-		return nil, fmt.Errorf("invalid request format: %w", err)
-	}
-
-	// Validate query
-	if request.Query == "" {
-		return nil, fmt.Errorf("query cannot be empty")
-	}
-
-	// Execute the query
-	result, err := s.chClient.ExecuteQuery(ctx, request.Query, request.Parameters...)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("query", request.Query).
-			Interface("params", request.Parameters).
-			Msg("Failed to execute query")
-		return nil, fmt.Errorf("query execution failed: %w", err)
-	}
-
-	log.Debug().
-		Int("row_count", result.Count).
-		Int("column_count", len(result.Columns)).
-		Str("query", request.Query).
-		Msg("Successfully executed query")
-
-	return result, nil
 }
 
 // Start starts the MCP server
@@ -186,10 +150,12 @@ func (s *Server) Start() error {
 
 	// Start the server based on transport type
 	switch s.config.Transport {
-	case config.HTTPTransport, config.SSETransport:
+	case config.HTTPTransport:
 		return s.startHTTPServer()
+	case config.SSETransport:
+		return s.startSSEServer()
 	case config.StdioTransport:
-		return s.mcpServer.Start()
+		return server.ServeStdio(s.mcpServer)
 	default:
 		return fmt.Errorf("unsupported transport type: %s", s.config.Transport)
 	}
@@ -202,9 +168,15 @@ func (s *Server) startHTTPServer() error {
 		Str("address", addr).
 		Msg("Starting MCP server with HTTP transport")
 
+	// Create HTTP transport
+	httpTransport := http.NewTransport(http.Config{
+		Path:    "/mcp",
+		Address: addr,
+	})
+
 	// Create HTTP server
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.mcpServer.Handle())
+	mux.Handle("/mcp", httpTransport.Handle(s.mcpServer))
 
 	s.httpServer = &http.Server{
 		Addr:    addr,
@@ -215,6 +187,40 @@ func (s *Server) startHTTPServer() error {
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error().Err(err).Msg("HTTP server error")
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-s.shutdownCtx.Done()
+	return nil
+}
+
+// startSSEServer starts the MCP server with SSE transport
+func (s *Server) startSSEServer() error {
+	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+	log.Info().
+		Str("address", addr).
+		Msg("Starting MCP server with SSE transport")
+
+	// Create SSE transport
+	sseTransport := sse.NewTransport(sse.Config{
+		Path:    "/mcp",
+		Address: addr,
+	})
+
+	// Create HTTP server
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", sseTransport.Handle(s.mcpServer))
+
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Start HTTP server in a goroutine
+	go func() {
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("SSE server error")
 		}
 	}()
 
