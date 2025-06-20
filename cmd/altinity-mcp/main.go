@@ -401,7 +401,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
 			// The default endpoint path for StreamableHTTPServer is /mcp
 			mux := http.NewServeMux()
-			mux.Handle("/mcp", httpServer)
+			mux.Handle("/", httpServer)
 			srv := &http.Server{
 				Addr:    addr,
 				Handler: mux,
@@ -429,7 +429,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
 			// The default endpoint path for SSEServer is /mcp
 			mux := http.NewServeMux()
-			mux.Handle("/mcp", sseServer)
+			mux.Handle("/", sseServer)
 			srv := &http.Server{
 				Addr:    addr,
 				Handler: mux,
