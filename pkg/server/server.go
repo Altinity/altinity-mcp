@@ -8,14 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/server/http"
-	"github.com/mark3labs/mcp-go/server/sse"
 	"github.com/rs/zerolog/log"
 )
 
