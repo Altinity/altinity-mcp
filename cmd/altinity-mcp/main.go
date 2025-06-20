@@ -315,7 +315,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Msg("Starting MCP server with HTTP transport")
 
 		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
-		if err := server.NewStreamableHTTPServer(mcpServer).ListenAndServe(addr); err != nil {
+		if err := server.NewStreamableHTTPServer(mcpServer).Start(addr); err != nil {
 			log.Error().Err(err).Msg("HTTP server failed")
 			return err
 		}
@@ -327,7 +327,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Msg("Starting MCP server with SSE transport")
 
 		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
-		if err := server.NewSSEServer(mcpServer).ListenAndServe(addr); err != nil {
+		if err := server.NewSSEServer(mcpServer).Start(addr); err != nil {
 			log.Error().Err(err).Msg("SSE server failed")
 			return err
 		}
