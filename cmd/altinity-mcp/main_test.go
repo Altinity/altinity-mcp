@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -295,7 +294,7 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 			}
 		})
 		require.NoError(t, err)
-		defer client.UnsubscribeRaw()
+		defer client.Unsubscribe(events)
 
 		// Then send the POST request
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
