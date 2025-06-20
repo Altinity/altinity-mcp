@@ -315,16 +315,8 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Str("address", addr).
 			Msg("Starting MCP server with HTTP transport")
 
-		mux := http.NewServeMux()
-		mux.Handle("/mcp", server.ServeHTTP(mcpServer))
-
-		httpServer := &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		}
-
-		log.Info().Str("url", fmt.Sprintf("http://%s/mcp", addr)).Msg("HTTP server listening")
-		if err := httpServer.ListenAndServe(); err != nil {
+		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
+		if err := server.NewStreamableHTTPServer(mcpServer).ListenAndServe(addr); err != nil {
 			log.Error().Err(err).Msg("HTTP server failed")
 			return err
 		}
@@ -335,16 +327,8 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 			Str("address", addr).
 			Msg("Starting MCP server with SSE transport")
 
-		mux := http.NewServeMux()
-		mux.Handle("/mcp", server.ServeSSE(mcpServer))
-
-		httpServer := &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		}
-
-		log.Info().Str("url", fmt.Sprintf("http://%s/mcp", addr)).Msg("SSE server listening")
-		if err := httpServer.ListenAndServe(); err != nil {
+		log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
+		if err := server.NewSSEServer(mcpServer).ListenAndServe(addr); err != nil {
 			log.Error().Err(err).Msg("SSE server failed")
 			return err
 		}
