@@ -302,7 +302,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 	switch cfg.Server.Transport {
 	case config.StdioTransport:
 		log.Info().Msg("Starting MCP server with STDIO transport")
-		if err := server.ServeStdio(mcpServer); err != nil {
+		if err := mcpServer.ServeStdio(mcpServer); err != nil {
 			log.Error().Err(err).Msg("STDIO server failed")
 			return err
 		}
