@@ -67,6 +67,37 @@ func main() {
 				Value:   "http",
 				Sources: cli.EnvVars("CLICKHOUSE_PROTOCOL"),
 			},
+			// TLS configuration flags
+			&cli.BoolFlag{
+				Name:    "clickhouse-tls",
+				Usage:   "Enable TLS for ClickHouse connection",
+				Value:   false,
+				Sources: cli.EnvVars("CLICKHOUSE_TLS"),
+			},
+			&cli.StringFlag{
+				Name:    "clickhouse-tls-ca-cert",
+				Usage:   "Path to CA certificate for ClickHouse connection",
+				Value:   "",
+				Sources: cli.EnvVars("CLICKHOUSE_TLS_CA_CERT"),
+			},
+			&cli.StringFlag{
+				Name:    "clickhouse-tls-client-cert",
+				Usage:   "Path to client certificate for ClickHouse connection",
+				Value:   "",
+				Sources: cli.EnvVars("CLICKHOUSE_TLS_CLIENT_CERT"),
+			},
+			&cli.StringFlag{
+				Name:    "clickhouse-tls-client-key",
+				Usage:   "Path to client key for ClickHouse connection",
+				Value:   "",
+				Sources: cli.EnvVars("CLICKHOUSE_TLS_CLIENT_KEY"),
+			},
+			&cli.BoolFlag{
+				Name:    "clickhouse-tls-insecure-skip-verify",
+				Usage:   "Skip server certificate verification",
+				Value:   false,
+				Sources: cli.EnvVars("CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY"),
+			},
 			// Server configuration flags
 			&cli.StringFlag{
 				Name:    "transport",
@@ -200,6 +231,13 @@ func buildConfig(cmd *cli.Command) config.Config {
 			Username: cmd.String("clickhouse-username"),
 			Password: cmd.String("clickhouse-password"),
 			Protocol: chProtocol,
+			TLS: config.TLSConfig{
+				Enabled:            cmd.Bool("clickhouse-tls"),
+				CaCert:             cmd.String("clickhouse-tls-ca-cert"),
+				ClientCert:         cmd.String("clickhouse-tls-client-cert"),
+				ClientKey:          cmd.String("clickhouse-tls-client-key"),
+				InsecureSkipVerify: cmd.Bool("clickhouse-tls-insecure-skip-verify"),
+			},
 		},
 		Server: config.ServerConfig{
 			Transport: mcpTransport,

@@ -2,8 +2,13 @@ package clickhouse
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"fmt"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -74,6 +79,11 @@ func (c *Client) connectNative() error {
 		Str("protocol", string(c.config.Protocol)).
 		Msg("Connecting to ClickHouse using native protocol")
 
+	tlsConfig, err := buildTLSConfig(&c.config.TLS)
+	if err != nil {
+		return fmt.Errorf("failed to build TLS config: %w", err)
+	}
+
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth: clickhouse.Auth{
@@ -81,6 +91,7 @@ func (c *Client) connectNative() error {
 			Username: c.config.Username,
 			Password: c.config.Password,
 		},
+		TLS: tlsConfig,
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
 		},
@@ -106,6 +117,23 @@ func (c *Client) connectSQL() error {
 		Str("database", c.config.Database).
 		Str("protocol", string(c.config.Protocol)).
 		Msg("Connecting to ClickHouse using HTTP protocol")
+
+	if c.config.TLS.Enabled {
+		tlsConfig, err := buildTLSConfig(&c.config.TLS)
+		if err != nil {
+			return fmt.Errorf("failed to build TLS config for HTTP: %w", err)
+		}
+
+		err = clickhouse.RegisterTransport("https", &http.Transport{
+			TLSClientConfig: tlsConfig,
+		})
+		if err != nil {
+			// It might be already registered. The driver returns an error if so.
+			if !strings.Contains(err.Error(), "transport with name 'https' is already registered") {
+				return fmt.Errorf("failed to register https transport: %w", err)
+			}
+		}
+	}
 
 	dsn := c.config.DSN()
 	db, err := sql.Open("clickhouse", dsn)
@@ -411,6 +439,43 @@ func (c *Client) executeSQLNonSelect(ctx context.Context, query string, args ...
 		Msg("Non-SELECT query executed successfully")
 	
 	return result, nil
+}
+
+// buildTLSConfig creates a tls.Config from the ClickHouse configuration
+func buildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+
+	log.Debug().Msg("Building TLS configuration")
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+
+	if cfg.CaCert != "" {
+		log.Debug().Str("ca_cert", cfg.CaCert).Msg("Loading CA certificate")
+		caCert, err := os.ReadFile(cfg.CaCert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = caCertPool
+	}
+
+	if cfg.ClientCert != "" && cfg.ClientKey != "" {
+		log.Debug().
+			Str("client_cert", cfg.ClientCert).
+			Str("client_key", cfg.ClientKey).
+			Msg("Loading client key pair")
+		cert, err := tls.LoadX509KeyPair(cfg.ClientCert, cfg.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client key pair: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	return tlsConfig, nil
 }
 
 // Helper functions

@@ -14,6 +14,15 @@ const (
 	TCPProtocol ClickHouseProtocol = "tcp"
 )
 
+// TLSConfig defines TLS configuration for ClickHouse connection
+type TLSConfig struct {
+	Enabled            bool   `json:"enabled" flag:"clickhouse-tls" desc:"Enable TLS for ClickHouse connection"`
+	CaCert             string `json:"ca_cert" flag:"clickhouse-tls-ca-cert" desc:"Path to CA certificate for ClickHouse connection"`
+	ClientCert         string `json:"client_cert" flag:"clickhouse-tls-client-cert" desc:"Path to client certificate for ClickHouse connection"`
+	ClientKey          string `json:"client_key" flag:"clickhouse-tls-client-key" desc:"Path to client key for ClickHouse connection"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify" flag:"clickhouse-tls-insecure-skip-verify" desc:"Skip server certificate verification"`
+}
+
 // ClickHouseConfig defines configuration for connecting to ClickHouse
 type ClickHouseConfig struct {
 	Host     string             `json:"host" flag:"clickhouse-host" desc:"ClickHouse server host"`
@@ -22,20 +31,44 @@ type ClickHouseConfig struct {
 	Username string             `json:"username" flag:"clickhouse-username" desc:"ClickHouse username"`
 	Password string             `json:"password" flag:"clickhouse-password" desc:"ClickHouse password"`
 	Protocol ClickHouseProtocol `json:"protocol" flag:"clickhouse-protocol" desc:"ClickHouse connection protocol (http/tcp)"`
+	TLS      TLSConfig          `json:"tls"`
 }
 
 // DSN returns the data source name for ClickHouse connection
 func (c *ClickHouseConfig) DSN() string {
 	switch c.Protocol {
 	case HTTPProtocol:
-		return fmt.Sprintf("http://%s:%s@%s:%d/%s",
-			c.Username, c.Password, c.Host, c.Port, c.Database)
+		protocol := "http"
+		if c.TLS.Enabled {
+			protocol = "https"
+		}
+		return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
+			protocol, c.Username, c.Password, c.Host, c.Port, c.Database)
 	case TCPProtocol:
-		return fmt.Sprintf("tcp://%s:%d?database=%s&username=%s&password=%s",
+		dsn := fmt.Sprintf("tcp://%s:%d?database=%s&username=%s&password=%s",
 			c.Host, c.Port, c.Database, c.Username, c.Password)
+		if c.TLS.Enabled {
+			dsn += "&secure=true"
+		}
+		return dsn
 	default:
-		return fmt.Sprintf("http://%s:%s@%s:%d/%s",
-			c.Username, c.Password, c.Host, c.Port, c.Database)
+		protocol := "http"
+		if c.TLS.Enabled {
+			protocol = "https"
+		}
+		return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
+			protocol, c.Username, c.Password, c.Host, c.Port, c.Database)
+	}
+}
+
+// DefaultTLSConfig returns default TLS configuration
+func DefaultTLSConfig() TLSConfig {
+	return TLSConfig{
+		Enabled:            false,
+		CaCert:             "",
+		ClientCert:         "",
+		ClientKey:          "",
+		InsecureSkipVerify: false,
 	}
 }
 
@@ -48,6 +81,7 @@ func DefaultClickHouseConfig() ClickHouseConfig {
 		Username: "default",
 		Password: "",
 		Protocol: HTTPProtocol,
+		TLS:      DefaultTLSConfig(),
 	}
 }
 
