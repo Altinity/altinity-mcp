@@ -158,7 +158,36 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
 		}
 
-		jsonData, err := json.MarshalIndent(result, "", "  ")
+		// Transform the generic query result into a structured format for table description
+		type columnInfo struct {
+			Name              string `json:"name"`
+			Type              string `json:"type"`
+			DefaultKind       string `json:"default_kind"`
+			DefaultExpression string `json:"default_expression"`
+			Comment           string `json:"comment"`
+			IsInPartitionKey  uint8  `json:"is_in_partition_key"`
+			IsInSortingKey    uint8  `json:"is_in_sorting_key"`
+			IsInPrimaryKey    uint8  `json:"is_in_primary_key"`
+			IsInSamplingKey   uint8  `json:"is_in_sampling_key"`
+		}
+
+		var columns []columnInfo
+		for _, row := range result.Rows {
+			info := columnInfo{
+				Name:              row[0].(string),
+				Type:              row[1].(string),
+				DefaultKind:       row[2].(string),
+				DefaultExpression: row[3].(string),
+				Comment:           row[4].(string),
+				IsInPartitionKey:  row[5].(uint8),
+				IsInSortingKey:    row[6].(uint8),
+				IsInPrimaryKey:    row[7].(uint8),
+				IsInSamplingKey:   row[8].(uint8),
+			}
+			columns = append(columns, info)
+		}
+
+		jsonData, err := json.MarshalIndent(columns, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
 		}

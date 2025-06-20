@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -182,6 +183,38 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 	return tables, nil
 }
 
+// Column is a wrapper for a column value that can be scanned
+type Column struct {
+	Value interface{}
+}
+
+// Scan implements the driver.ColumnScanner interface
+func (c *Column) Scan(src interface{}) error {
+	c.Value = src
+	return nil
+}
+
+// scanRow scans a single row from the rows object
+func scanRow(rows driver.Rows) ([]interface{}, error) {
+	columnTypes := rows.ColumnTypes()
+	columns := make([]Column, len(columnTypes))
+	scannables := make([]interface{}, len(columnTypes))
+	for i := range columns {
+		scannables[i] = &columns[i]
+	}
+
+	if err := rows.ScanRow(scannables...); err != nil {
+		return nil, fmt.Errorf("failed to scan row: %w", err)
+	}
+
+	rowValues := make([]interface{}, len(columnTypes))
+	for i, col := range columns {
+		rowValues[i] = convertToSerializable(col.Value)
+	}
+
+	return rowValues, nil
+}
+
 // ExecuteQuery executes a SQL query and returns results
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
 	// Check if the query is a SELECT query
@@ -220,23 +253,10 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 
 	// Fetch rows
 	for rows.Next() {
-		// Create a slice of interface{} to hold the row values
-		rowValues := make([]interface{}, len(columnTypes))
-		rowPointers := make([]interface{}, len(columnTypes))
-
-		for i := range rowValues {
-			rowPointers[i] = &rowValues[i]
+		rowValues, err := scanRow(rows)
+		if err != nil {
+			return nil, err
 		}
-
-		if err := rows.Scan(rowPointers...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Convert any specific ClickHouse types to standard Go types for JSON serialization
-		for i := range rowValues {
-			rowValues[i] = convertToSerializable(rowValues[i])
-		}
-
 		result.Rows = append(result.Rows, rowValues)
 	}
 
