@@ -380,111 +380,143 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("build_date", date).
 		Msg("Starting Altinity MCP Server")
 
-	// Create ClickHouse client
-	log.Info().Msg("Connecting to ClickHouse...")
-	chClient, err := clickhouse.NewClient(cfg.ClickHouse)
+	app, err := newApplication(ctx, cfg)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to create ClickHouse client")
+		log.Error().Err(err).Msg("Failed to initialize application")
 		return err
 	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Warn().Err(closeErr).Msg("Failed to close ClickHouse client")
-		}
-	}()
+	defer app.Close()
+
+	return app.Start(ctx)
+}
+
+type application struct {
+	config    config.Config
+	chClient  *clickhouse.Client
+	mcpServer *server.MCPServer
+	httpSrv   *http.Server
+}
+
+func newApplication(ctx context.Context, cfg config.Config) (*application, error) {
+	// Create ClickHouse client
+	log.Debug().Msg("Connecting to ClickHouse...")
+	chClient, err := clickhouse.NewClient(cfg.ClickHouse)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+	}
 
 	// Test connection
-	if pingErr := chClient.Ping(ctx); pingErr != nil {
-		log.Error().Err(pingErr).Msg("ClickHouse connection test failed")
-		return pingErr
+	if err := chClient.Ping(ctx); err != nil {
+		_ = chClient.Close()
+		return nil, fmt.Errorf("ClickHouse connection test failed: %w", err)
 	}
-	log.Info().Msg("ClickHouse connection established")
+	log.Debug().Msg("ClickHouse connection established")
 
 	// Create MCP server
-	log.Info().Msg("Creating MCP server...")
+	log.Debug().Msg("Creating MCP server...")
 	mcpServer := altinitymcp.NewClickHouseMCPServer(chClient)
 
+	return &application{
+		config:    cfg,
+		chClient:  chClient,
+		mcpServer: mcpServer,
+	}, nil
+}
+
+func (a *application) Close() {
+	if a.chClient != nil {
+		if err := a.chClient.Close(); err != nil {
+			log.Warn().Err(err).Msg("Failed to close ClickHouse client")
+		}
+	}
+}
+
+func (a *application) Start(ctx context.Context) error {
 	// Start the server based on transport type
 	log.Info().
-		Str("transport", string(cfg.Server.Transport)).
+		Str("transport", string(a.config.Server.Transport)).
 		Msg("Starting MCP server...")
 
-	switch cfg.Server.Transport {
+	switch a.config.Server.Transport {
 	case config.StdioTransport:
 		log.Info().Msg("Starting MCP server with STDIO transport")
-		if err := server.ServeStdio(mcpServer); err != nil {
+		if err := server.ServeStdio(a.mcpServer); err != nil {
 			log.Error().Err(err).Msg("STDIO server failed")
 			return err
 		}
 
 	case config.HTTPTransport:
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+		addr := fmt.Sprintf("%s:%d", a.config.Server.Address, a.config.Server.Port)
 		log.Info().
 			Str("address", addr).
 			Msg("Starting MCP server with HTTP transport")
 
-		httpServer := server.NewStreamableHTTPServer(mcpServer)
-		if !cfg.Server.TLS.Enabled {
+		httpServer := server.NewStreamableHTTPServer(a.mcpServer)
+		mux := http.NewServeMux()
+		mux.Handle("/", httpServer)
+
+		a.httpSrv = &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+
+		if !a.config.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
-			if err := httpServer.Start(addr); err != nil {
+			if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Error().Err(err).Msg("HTTP server failed")
 				return err
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
-			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
+			tlsConfig, err := buildServerTLSConfig(&a.config.Server.TLS)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to build server TLS config")
 				return err
 			}
-			mux := http.NewServeMux()
-			mux.Handle("/", httpServer)
-			srv := &http.Server{
-				Addr:      addr,
-				Handler:   mux,
-				TLSConfig: tlsConfig,
-			}
-			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
+			a.httpSrv.TLSConfig = tlsConfig
+			if err := a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
 				log.Error().Err(err).Msg("HTTPS server failed")
 				return err
 			}
 		}
 
 	case config.SSETransport:
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+		addr := fmt.Sprintf("%s:%d", a.config.Server.Address, a.config.Server.Port)
 		log.Info().
 			Str("address", addr).
 			Msg("Starting MCP server with SSE transport")
 
-		sseServer := server.NewSSEServer(mcpServer)
-		if !cfg.Server.TLS.Enabled {
+		sseServer := server.NewSSEServer(a.mcpServer)
+		mux := http.NewServeMux()
+		mux.Handle("/", sseServer)
+
+		a.httpSrv = &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+
+		if !a.config.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
-			if err := sseServer.Start(addr); err != nil {
+			if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Error().Err(err).Msg("SSE server failed")
 				return err
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
-			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
+			tlsConfig, err := buildServerTLSConfig(&a.config.Server.TLS)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to build server TLS config")
 				return err
 			}
-			mux := http.NewServeMux()
-			mux.Handle("/", sseServer)
-			srv := &http.Server{
-				Addr:      addr,
-				Handler:   mux,
-				TLSConfig: tlsConfig,
-			}
-			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
+			a.httpSrv.TLSConfig = tlsConfig
+			if err := a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
 				log.Error().Err(err).Msg("SSE server with TLS failed")
 				return err
 			}
 		}
 
 	default:
-		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
+		return fmt.Errorf("unsupported transport type: %s", a.config.Server.Transport)
 	}
 
 	return nil
