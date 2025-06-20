@@ -12,8 +12,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// NewClickHouseServer creates a new MCP server with ClickHouse integration
-func NewClickHouseServer(chClient *clickhouse.Client) *server.MCPServer {
+// NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
+func NewClickHouseMCPServer(chClient *clickhouse.Client) *server.MCPServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -43,7 +43,7 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 
 	srv.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		log.Debug().Msg("Executing list_tables tool")
-		
+
 		tables, err := chClient.ListTables(ctx)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to list tables")
