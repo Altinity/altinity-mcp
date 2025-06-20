@@ -285,20 +285,19 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 
 	case config.SSETransport:
-		client := sse.NewClient(url)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		err = client.Subscribe(req.RequestID, func(msg *sse.Event) {
+		// First subscribe to SSE events
+		client := sse.NewClient(url + "/events")
+		events := make(chan *sse.Event)
+		err = client.SubscribeRaw(func(msg *sse.Event) {
+			// Only process tool_result events
 			if string(msg.Event) == "tool_result" {
-				var toolResult mcp.CallToolResult
-				require.NoError(t, json.Unmarshal(msg.Data, &toolResult))
-				result = &toolResult
-				wg.Done()
+				events <- msg
 			}
 		})
 		require.NoError(t, err)
-		defer client.Unsubscribe(req.RequestID)
+		defer client.UnsubscribeRaw()
 
+		// Then send the POST request
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 		require.NoError(t, err)
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -306,7 +305,16 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.NoError(t, resp.Body.Close())
-		wg.Wait()
+
+		// Wait for the tool result event
+		select {
+		case msg := <-events:
+			var toolResult mcp.CallToolResult
+			require.NoError(t, json.Unmarshal(msg.Data, &toolResult))
+			result = toolResult
+		case <-time.After(5 * time.Second):
+			require.Fail(t, "timed out waiting for tool result")
+		}
 
 	case config.StdioTransport:
 		_, writeErr := stdioWriter.Write(append(body, '\n'))
