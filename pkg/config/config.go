@@ -1,9 +1,5 @@
 package config
 
-import (
-	"fmt"
-)
-
 // ClickHouseProtocol defines the protocol used to connect to ClickHouse
 type ClickHouseProtocol string
 
@@ -34,7 +30,6 @@ type ClickHouseConfig struct {
 	TLS      TLSConfig          `json:"tls"`
 }
 
-
 // DefaultTLSConfig returns default TLS configuration
 func DefaultTLSConfig() TLSConfig {
 	return TLSConfig{
@@ -43,19 +38,6 @@ func DefaultTLSConfig() TLSConfig {
 		ClientCert:         "",
 		ClientKey:          "",
 		InsecureSkipVerify: false,
-	}
-}
-
-// DefaultClickHouseConfig returns default ClickHouse configuration
-func DefaultClickHouseConfig() ClickHouseConfig {
-	return ClickHouseConfig{
-		Host:     "localhost",
-		Port:     8123,
-		Database: "default",
-		Username: "default",
-		Password: "",
-		Protocol: HTTPProtocol,
-		TLS:      DefaultTLSConfig(),
 	}
 }
 
@@ -78,15 +60,6 @@ type ServerConfig struct {
 	Port      int          `json:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
 }
 
-// DefaultServerConfig returns default server configuration
-func DefaultServerConfig() ServerConfig {
-	return ServerConfig{
-		Transport: StdioTransport,
-		Address:   "0.0.0.0",
-		Port:      8080,
-	}
-}
-
 // LogLevel defines the logging level
 type LogLevel string
 
@@ -106,25 +79,9 @@ type LoggingConfig struct {
 	Level LogLevel `json:"level" flag:"log-level" desc:"Logging level (debug/info/warn/error)"`
 }
 
-// DefaultLoggingConfig returns default logging configuration
-func DefaultLoggingConfig() LoggingConfig {
-	return LoggingConfig{
-		Level: InfoLevel,
-	}
-}
-
 // Config is the main application configuration
 type Config struct {
 	ClickHouse ClickHouseConfig `json:"clickhouse"`
 	Server     ServerConfig     `json:"server"`
 	Logging    LoggingConfig    `json:"logging"`
-}
-
-// DefaultConfig returns the default configuration
-func DefaultConfig() Config {
-	return Config{
-		ClickHouse: DefaultClickHouseConfig(),
-		Server:     DefaultServerConfig(),
-		Logging:    DefaultLoggingConfig(),
-	}
 }

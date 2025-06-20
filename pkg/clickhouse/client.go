@@ -75,7 +75,7 @@ func (c *Client) connect() error {
 	case config.HTTPProtocol:
 		protocol = clickhouse.HTTP
 	case config.TCPProtocol:
-		protocol = clickhouse.TCP
+		protocol = clickhouse.Native
 	default:
 		// This should not happen due to validation in main.go, but as a safeguard:
 		return fmt.Errorf("unsupported clickhouse protocol: %s", c.config.Protocol)
@@ -158,7 +158,11 @@ func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("ListTables: can't close rows")
+		}
+	}()
 
 	for rows.Next() {
 		var table TableInfo
@@ -196,7 +200,11 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("ListTables: can't close rows")
+		}
+	}()
 
 	// Get column information
 	columnTypes := rows.ColumnTypes()
