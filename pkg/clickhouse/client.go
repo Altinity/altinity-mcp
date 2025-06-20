@@ -127,6 +127,11 @@ func (c *Client) connectSQL() error {
 	return nil
 }
 
+// GetDatabase returns the configured database name
+func (c *Client) GetDatabase() string {
+	return c.config.Database
+}
+
 // Close closes the ClickHouse connection
 func (c *Client) Close() error {
 	c.cancelFunc()
