@@ -204,14 +204,17 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("list_tables", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Request:   mcp.Request{ProtocolVersion: "1.0", RequestID: uuid.NewString()},
-			ToolName:  "list_tables",
+			Params: mcp.RequestParams{
+				ProtocolVersion: "1.0",
+				RequestID:       uuid.NewString(),
+			},
+			Name:      "list_tables",
 			Arguments: map[string]interface{}{},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.Error)
+		require.Empty(t, result.ErrorMessage)
 		var data map[string]interface{}
-		require.NoError(t, json.Unmarshal([]byte(result.Content), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
 		require.Equal(t, float64(1), data["count"])
 		tables := data["tables"].([]interface{})
 		require.Len(t, tables, 1)
@@ -221,16 +224,19 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("execute_query", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Request:  mcp.Request{ProtocolVersion: "1.0", RequestID: uuid.NewString()},
-			ToolName: "execute_query",
+			Params: mcp.RequestParams{
+				ProtocolVersion: "1.0",
+				RequestID:       uuid.NewString(),
+			},
+			Name: "execute_query",
 			Arguments: map[string]interface{}{
 				"query": "SELECT * FROM test ORDER BY id",
 			},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.Error)
+		require.Empty(t, result.ErrorMessage)
 		var data clickhouse.QueryResult
-		require.NoError(t, json.Unmarshal([]byte(result.Content), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
 		require.Equal(t, 2, data.Count)
 		require.Len(t, data.Rows, 2)
 		require.Equal(t, []interface{}{float64(1), "one"}, data.Rows[0])
@@ -239,16 +245,19 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Run("describe_table", func(t *testing.T) {
 		t.Parallel()
 		req := mcp.CallToolRequest{
-			Request:  mcp.Request{ProtocolVersion: "1.0", RequestID: uuid.NewString()},
-			ToolName: "describe_table",
+			Params: mcp.RequestParams{
+				ProtocolVersion: "1.0",
+				RequestID:       uuid.NewString(),
+			},
+			Name: "describe_table",
 			Arguments: map[string]interface{}{
 				"table_name": "test",
 			},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.Error)
+		require.Empty(t, result.ErrorMessage)
 		var data []clickhouse.ColumnInfo
-		require.NoError(t, json.Unmarshal([]byte(result.Content), &data))
+		require.NoError(t, json.Unmarshal([]byte(result.Contents[0].Text), &data))
 		require.Len(t, data, 2)
 		require.Equal(t, "id", data[0].Name)
 		require.Equal(t, "UInt64", data[0].Type)
@@ -281,7 +290,9 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 		wg.Add(1)
 		err = client.Subscribe(req.RequestID, func(msg *sse.Event) {
 			if string(msg.Event) == "tool_result" {
-				require.NoError(t, json.Unmarshal(msg.Data, &result))
+				var toolResult mcp.CallToolResult
+				require.NoError(t, json.Unmarshal(msg.Data, &toolResult))
+				result = &toolResult
 				wg.Done()
 			}
 		})
