@@ -222,7 +222,7 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 		scannables[i] = &columns[i]
 	}
 
-	if err := rows.ScanRow(scannables...); err != nil {
+	if err := rows.Scan(scannables...); err != nil {
 		return nil, fmt.Errorf("failed to scan row: %w", err)
 	}
 
