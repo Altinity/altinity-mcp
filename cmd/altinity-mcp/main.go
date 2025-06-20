@@ -10,7 +10,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	altinityserver "github.com/altinity/altinity-mcp/pkg/server"
+	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -294,7 +294,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 
 	// Create MCP server
 	log.Info().Msg("Creating MCP server...")
-	mcpServer := altinityserver.NewClickHouseServer(chClient)
+	mcpServer := altinitymcp.NewClickHouseMCPServer(chClient)
 
 	// Start the server based on transport type
 	log.Info().
