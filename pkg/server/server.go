@@ -12,8 +12,10 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	mcp_golang "github.com/metoro-io/mcp-golang"
-	mcp_http "github.com/metoro-io/mcp-golang/transport/http"
+	"github.com/mark3labs/mcp-go"
+	"github.com/mark3labs/mcp-go/transport/http"
+	"github.com/mark3labs/mcp-go/transport/stdio"
+	"github.com/mark3labs/mcp-go/transport/sse"
 	"github.com/rs/zerolog/log"
 )
 
