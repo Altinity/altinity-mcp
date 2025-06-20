@@ -19,7 +19,7 @@ func NewClickHouseServer(chClient *clickhouse.Client) *server.MCPServer {
 		"Altinity ClickHouse MCP Server",
 		"1.0.0",
 		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(true),
+		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
 	)
@@ -199,7 +199,7 @@ func registerResources(srv *server.MCPServer, chClient *clickhouse.Client) {
 		}
 
 		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
+			{
 				URI:      "clickhouse://schema",
 				MIMEType: "application/json",
 				Text:     string(jsonData),
@@ -253,7 +253,7 @@ func registerResources(srv *server.MCPServer, chClient *clickhouse.Client) {
 		}
 
 		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
+			{
 				URI:      uri,
 				MIMEType: "application/json",
 				Text:     string(jsonData),
@@ -308,10 +308,7 @@ func registerPrompts(srv *server.MCPServer, chClient *clickhouse.Client) {
 		if tableName != "" {
 			messages = append(messages, mcp.NewPromptMessage(
 				mcp.RoleUser,
-				mcp.NewEmbeddedResource(mcp.ResourceContents{
-					URI:      fmt.Sprintf("clickhouse://table/%s", tableName),
-					MIMEType: "application/json",
-				}),
+				mcp.NewEmbeddedResource(fmt.Sprintf("clickhouse://table/%s", tableName)),
 			))
 		}
 
@@ -357,10 +354,7 @@ func registerPrompts(srv *server.MCPServer, chClient *clickhouse.Client) {
 				),
 				mcp.NewPromptMessage(
 					mcp.RoleUser,
-					mcp.NewEmbeddedResource(mcp.ResourceContents{
-						URI:      "clickhouse://schema",
-						MIMEType: "application/json",
-					}),
+					mcp.NewEmbeddedResource("clickhouse://schema"),
 				),
 			},
 		), nil
