@@ -162,7 +162,14 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 			Port:      port,
 		},
 	}
-	url = fmt.Sprintf("http://127.0.0.1:%d/mcp/v1/tool", port)
+	switch transport {
+	case config.HTTPTransport:
+		url = fmt.Sprintf("http://127.0.0.1:%d/mcp/v1/tool", port)
+	case config.SSETransport:
+		url = fmt.Sprintf("http://127.0.0.1:%d/sse/v1/tool", port)
+	case config.StdioTransport:
+		url = "" // Not used for stdio
+	}
 
 	var err error
 	app, err = newApplication(ctx, appConfig)
@@ -288,7 +295,7 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 
 	case config.SSETransport:
 		// First subscribe to SSE events
-		client := sse.NewClient(url + "/events")
+		client := sse.NewClient(url)
 		events := make(chan *sse.Event)
 		err = client.SubscribeRaw(func(msg *sse.Event) {
 			// Only process tool_result events
