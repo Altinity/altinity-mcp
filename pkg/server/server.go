@@ -49,13 +49,17 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
-		mcp.WithDescription("Lists all tables in the ClickHouse database with detailed information"),
+		mcp.WithDescription("Lists all tables in a ClickHouse database with detailed information. Can be filtered by database."),
+		mcp.WithString("database",
+			mcp.Description("Optional: The database to list tables from. If not provided, lists tables from all databases."),
+		),
 	)
 
 	srv.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		log.Debug().Msg("Executing list_tables tool")
+		database := req.GetString("database")
 
-		tables, err := chClient.ListTables(ctx)
+		tables, err := chClient.ListTables(ctx, database)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to list tables")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
@@ -134,6 +138,10 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	describeTableTool := mcp.NewTool(
 		"describe_table",
 		mcp.WithDescription("Describes the structure of a ClickHouse table including columns, types, and constraints"),
+		mcp.WithString("database",
+			mcp.Required(),
+			mcp.Description("Name of the database the table belongs to"),
+		),
 		mcp.WithString("table_name",
 			mcp.Required(),
 			mcp.Description("Name of the table to describe"),
@@ -141,14 +149,18 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	)
 
 	srv.AddTool(describeTableTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		database, err := req.RequireString("database")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		tableName, err := req.RequireString("table_name")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		log.Debug().Str("table", tableName).Msg("Describing table structure")
+		log.Debug().Str("database", database).Str("table", tableName).Msg("Describing table structure")
 
-		columns, err := chClient.DescribeTable(ctx, tableName)
+		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
 		}
@@ -177,15 +189,15 @@ func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	srv.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		log.Debug().Msg("Reading database schema resource")
 
-		tables, err := chClient.ListTables(ctx)
+		// With an empty database string, ListTables will return tables from all databases
+		tables, err := chClient.ListTables(ctx, "")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get schema: %w", err)
 		}
 
 		schema := map[string]interface{}{
-			"database": chClient.GetDatabase(),
-			"tables":   tables,
-			"count":    len(tables),
+			"tables": tables,
+			"count":  len(tables),
 		}
 
 		jsonData, err := json.MarshalIndent(schema, "", "  ")
@@ -204,24 +216,25 @@ func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
 
 	// Table Structure Template Resource
 	tableTemplate := mcp.NewResourceTemplate(
-		"clickhouse://table/{table_name}",
+		"clickhouse://table/{database}/{table_name}",
 		"Table Structure",
 		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
 		mcp.WithTemplateMIMEType("application/json"),
 	)
 
 	srv.AddResourceTemplate(tableTemplate, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Extract table name from URI
+		// Extract database and table name from URI
 		uri := req.Params.URI
 		parts := strings.Split(uri, "/")
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("invalid table URI format")
+		if len(parts) < 5 { // clickhouse://table/{database}/{table_name}
+			return nil, fmt.Errorf("invalid table URI format: %s", uri)
 		}
+		database := parts[len(parts)-2]
 		tableName := parts[len(parts)-1]
 
-		log.Debug().Str("table", tableName).Msg("Reading table structure resource")
+		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
 
-		columns, err := chClient.DescribeTable(ctx, tableName)
+		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get table structure: %w", err)
 		}
@@ -249,6 +262,10 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	queryBuilderPrompt := mcp.NewPrompt(
 		"query_builder",
 		mcp.WithPromptDescription("Helps build efficient ClickHouse SQL queries"),
+		mcp.WithArgument("database",
+			mcp.ArgumentDescription("Name of the database for the query"),
+			mcp.RequiredArgument(),
+		),
 		mcp.WithArgument("table_name",
 			mcp.ArgumentDescription("Name of the table to query"),
 		),
@@ -258,14 +275,18 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	)
 
 	srv.AddPrompt(queryBuilderPrompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		database, ok := req.Params.Arguments["database"]
+		if !ok || database == "" {
+			return nil, fmt.Errorf("database parameter is required")
+		}
 		tableName := req.Params.Arguments["table_name"]
 		queryType := req.Params.Arguments["query_type"]
 
 		var promptText string
 		if tableName != "" {
-			promptText = fmt.Sprintf("Help me build a %s query for the ClickHouse table '%s'. ", queryType, tableName)
+			promptText = fmt.Sprintf("Help me build a %s query for the ClickHouse table '%s.%s'. ", queryType, database, tableName)
 		} else {
-			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse. ", queryType)
+			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType)
 		}
 
 		promptText += "Consider ClickHouse-specific optimizations like:\n" +
@@ -288,7 +309,7 @@ func RegisterPrompts(srv AltinityMCPServer) {
 			messages = append(messages, mcp.NewPromptMessage(
 				mcp.RoleUser,
 				mcp.NewEmbeddedResource(mcp.TextResourceContents{
-					URI:      fmt.Sprintf("clickhouse://table/%s", tableName),
+					URI:      fmt.Sprintf("clickhouse://table/%s/%s", database, tableName),
 					MIMEType: "application/json",
 					Text:     "", // Will be populated when resource is read
 				}),

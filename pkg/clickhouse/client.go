@@ -122,11 +122,6 @@ func (c *Client) connect() error {
 	return nil
 }
 
-// GetDatabase returns the configured database name
-func (c *Client) GetDatabase() string {
-	return c.config.Database
-}
-
 // Close closes the ClickHouse connection
 func (c *Client) Close() error {
 	c.cancelFunc()
@@ -155,7 +150,7 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // DescribeTable returns column information for a given table
-func (c *Client) DescribeTable(ctx context.Context, tableName string) ([]ColumnInfo, error) {
+func (c *Client) DescribeTable(ctx context.Context, database, tableName string) ([]ColumnInfo, error) {
 	query := `
 		SELECT
 			name,
@@ -172,7 +167,7 @@ func (c *Client) DescribeTable(ctx context.Context, tableName string) ([]ColumnI
 		ORDER BY position
 	`
 
-	rows, err := c.conn.Query(ctx, query, c.config.Database, tableName)
+	rows, err := c.conn.Query(ctx, query, database, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query table description for %s: %w", tableName, err)
 	}
@@ -199,20 +194,25 @@ func (c *Client) DescribeTable(ctx context.Context, tableName string) ([]ColumnI
 	return columns, nil
 }
 
-// ListTables returns a list of tables in the database
-func (c *Client) ListTables(ctx context.Context) ([]TableInfo, error) {
+// ListTables returns a list of tables in the database.
+// If the database parameter is empty, it lists tables from all databases.
+func (c *Client) ListTables(ctx context.Context, database string) ([]TableInfo, error) {
 	query := `
 		SELECT
 			name,
 			database,
 			engine
 		FROM system.tables
-		WHERE database = ?
-		ORDER BY name
 	`
+	args := []interface{}{}
+	if database != "" {
+		query += " WHERE database = ?"
+		args = append(args, database)
+	}
+	query += " ORDER BY database, name"
 
 	var tables []TableInfo
-	if err := c.conn.Select(ctx, &tables, query, c.config.Database); err != nil {
+	if err := c.conn.Select(ctx, &tables, query, args...); err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
 

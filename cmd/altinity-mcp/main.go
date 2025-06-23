@@ -343,7 +343,7 @@ func testConnection(ctx context.Context, cfg config.ClickHouseConfig) error {
 	}
 
 	// Test listing tables
-	tables, err := client.ListTables(ctx)
+	tables, err := client.ListTables(ctx, cfg.Database)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list tables")
 		return err

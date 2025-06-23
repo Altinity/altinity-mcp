@@ -138,6 +138,9 @@ func TestMCPServer(t *testing.T) {
 		t.Run("list_tables", func(t *testing.T) {
 			callReq := mcp.CallToolRequest{}
 			callReq.Params.Name = "list_tables"
+			callReq.Params.Arguments = map[string]interface{}{
+				"database": "default",
+			}
 
 			result, err := client.CallTool(ctx, callReq)
 			require.NoError(t, err)
@@ -154,6 +157,7 @@ func TestMCPServer(t *testing.T) {
 			callReq := mcp.CallToolRequest{}
 			callReq.Params.Name = "describe_table"
 			callReq.Params.Arguments = map[string]interface{}{
+				"database":   "default",
 				"table_name": "test",
 			}
 
@@ -304,14 +308,13 @@ func TestMCPServer(t *testing.T) {
 			textContent, ok := content.(mcp.TextResourceContents)
 			require.True(t, ok)
 			require.Equal(t, "application/json", textContent.MIMEType)
-			require.Contains(t, textContent.Text, "database")
 			require.Contains(t, textContent.Text, "tables")
 		})
 
 		// Test table resource
 		t.Run("table_resource", func(t *testing.T) {
 			readReq := mcp.ReadResourceRequest{}
-			readReq.Params.URI = "clickhouse://table/test"
+			readReq.Params.URI = "clickhouse://table/default/test"
 
 			result, err := client.ReadResource(ctx, readReq)
 			require.NoError(t, err)
@@ -334,6 +337,15 @@ func TestMCPServer(t *testing.T) {
 			_, err := client.ReadResource(ctx, readReq)
 			require.Error(t, err)
 		})
+
+		// Test invalid table resource URI
+		t.Run("invalid_table_resource_uri", func(t *testing.T) {
+			readReq := mcp.ReadResourceRequest{}
+			readReq.Params.URI = "clickhouse://table/test" // Missing database
+
+			_, err := client.ReadResource(ctx, readReq)
+			require.Error(t, err)
+		})
 	})
 
 	// Test Prompts
@@ -343,6 +355,7 @@ func TestMCPServer(t *testing.T) {
 			promptReq := mcp.GetPromptRequest{}
 			promptReq.Params.Name = "query_builder"
 			promptReq.Params.Arguments = map[string]string{
+				"database":   "default",
 				"table_name": "test",
 				"query_type": "select",
 			}
