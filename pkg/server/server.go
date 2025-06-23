@@ -12,7 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
+// AltinityMCPServer @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
 type AltinityMCPServer interface {
 	AddTools(tools ...server.ServerTool)
 	AddTool(tool mcp.Tool, handler server.ToolHandlerFunc)
@@ -57,7 +57,7 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 
 	srv.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		log.Debug().Msg("Executing list_tables tool")
-		database := req.GetString("database")
+		database := req.GetString("database", "")
 
 		tables, err := chClient.ListTables(ctx, database)
 		if err != nil {
@@ -286,7 +286,7 @@ func RegisterPrompts(srv AltinityMCPServer) {
 		if tableName != "" {
 			promptText = fmt.Sprintf("Help me build a %s query for the ClickHouse table '%s.%s'. ", queryType, database, tableName)
 		} else {
-			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType)
+			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType, tableName)
 		}
 
 		promptText += "Consider ClickHouse-specific optimizations like:\n" +
