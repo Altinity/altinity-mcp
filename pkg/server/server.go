@@ -12,6 +12,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
+type AltinityMCPServer interface {
+	AddTools(tools ...server.ServerTool)
+	AddTool(tool mcp.Tool, handler server.ToolHandlerFunc)
+	AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc)
+	AddPrompts(prompts ...server.ServerPrompt)
+	AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc)
+	AddResources(resources ...server.ServerResource)
+	AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc)
+}
+
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
 func NewClickHouseMCPServer(chClient *clickhouse.Client) *server.MCPServer {
 	// Create MCP server with comprehensive configuration
@@ -25,16 +36,16 @@ func NewClickHouseMCPServer(chClient *clickhouse.Client) *server.MCPServer {
 	)
 
 	// Register tools, resources, and prompts
-	registerTools(srv, chClient)
-	registerResources(srv, chClient)
-	registerPrompts(srv, chClient)
+	RegisterTools(srv, chClient)
+	RegisterResources(srv, chClient)
+	RegisterPrompts(srv)
 
 	log.Info().Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 	return srv
 }
 
-// registerTools adds the ClickHouse tools to the MCP server
-func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
+// RegisterTools adds the ClickHouse tools to the MCP server
+func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
@@ -153,8 +164,8 @@ func registerTools(srv *server.MCPServer, chClient *clickhouse.Client) {
 	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered")
 }
 
-// registerResources adds ClickHouse resources to the MCP server
-func registerResources(srv *server.MCPServer, chClient *clickhouse.Client) {
+// RegisterResources adds ClickHouse resources to the MCP server
+func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	// Database Schema Resource
 	schemaResource := mcp.NewResource(
 		"clickhouse://schema",
@@ -232,8 +243,8 @@ func registerResources(srv *server.MCPServer, chClient *clickhouse.Client) {
 	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
 }
 
-// registerPrompts adds ClickHouse prompts to the MCP server
-func registerPrompts(srv *server.MCPServer, chClient *clickhouse.Client) {
+// RegisterPrompts adds ClickHouse prompts to the MCP server
+func RegisterPrompts(srv AltinityMCPServer) {
 	// Query Builder Prompt
 	queryBuilderPrompt := mcp.NewPrompt(
 		"query_builder",
