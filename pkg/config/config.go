@@ -52,12 +52,20 @@ type ServerTLSConfig struct {
 	CaCert   string `json:"ca_cert" flag:"server-tls-ca-cert" desc:"Path to CA certificate for client certificate validation"`
 }
 
+// JWTConfig defines configuration for JWT authentication
+type JWTConfig struct {
+	Enabled    bool   `json:"enabled" flag:"allow-jwt-auth" desc:"Enable JWT authentication for ClickHouse connection"`
+	SecretKey  string `json:"secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT token verification"`
+	TokenParam string `json:"token_param" flag:"jwt-token-param" desc:"URL parameter name for JWT token" default:"token"`
+}
+
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
 	Transport MCPTransport    `json:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
 	Address   string          `json:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
 	Port      int             `json:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
 	TLS       ServerTLSConfig `json:"tls"`
+	JWT       JWTConfig       `json:"jwt"`
 }
 
 // LogLevel defines the logging level

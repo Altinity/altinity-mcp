@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -163,6 +164,25 @@ func main() {
 				Value:   "info",
 				Sources: cli.EnvVars("LOG_LEVEL"),
 			},
+			// JWT authentication flags
+			&cli.BoolFlag{
+				Name:    "allow-jwt-auth",
+				Usage:   "Enable JWT authentication for ClickHouse connection",
+				Value:   false,
+				Sources: cli.EnvVars("MCP_ALLOW_JWT_AUTH"),
+			},
+			&cli.StringFlag{
+				Name:    "jwt-secret-key",
+				Usage:   "Secret key for JWT token verification",
+				Value:   "",
+				Sources: cli.EnvVars("MCP_JWT_SECRET_KEY"),
+			},
+			&cli.StringFlag{
+				Name:    "jwt-token-param",
+				Usage:   "URL parameter name for JWT token",
+				Value:   "token",
+				Sources: cli.EnvVars("MCP_JWT_TOKEN_PARAM"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -290,6 +310,11 @@ func buildConfig(cmd *cli.Command) config.Config {
 				KeyFile:  cmd.String("server-tls-key-file"),
 				CaCert:   cmd.String("server-tls-ca-cert"),
 			},
+			JWT: config.JWTConfig{
+				Enabled:    cmd.Bool("allow-jwt-auth"),
+				SecretKey:  cmd.String("jwt-secret-key"),
+				TokenParam: cmd.String("jwt-token-param"),
+			},
 		},
 		Logging: config.LoggingConfig{
 			Level: logLevel,
@@ -325,7 +350,7 @@ func buildServerTLSConfig(cfg *config.ServerTLSConfig) (*tls.Config, error) {
 func testConnection(ctx context.Context, cfg config.ClickHouseConfig) error {
 	log.Info().Msg("Testing ClickHouse connection...")
 
-	client, err := clickhouse.NewClient(cfg)
+	client, err := clickhouse.NewClient(ctx, cfg)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create ClickHouse client")
 		return err
@@ -387,60 +412,72 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer app.Close()
 
-	return app.Start(ctx)
+	return app.Start()
 }
 
 type application struct {
 	config    config.Config
-	chClient  *clickhouse.Client
-	mcpServer *server.MCPServer
+	mcpServer *altinitymcp.ClickHouseJWTServer
 	httpSrv   *http.Server
 }
 
 func newApplication(ctx context.Context, cfg config.Config) (*application, error) {
-	// Create ClickHouse client
-	log.Debug().Msg("Connecting to ClickHouse...")
-	chClient, err := clickhouse.NewClient(cfg.ClickHouse)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
-	}
+	// Test connection to ClickHouse if JWT auth is not enabled
+	if !cfg.Server.JWT.Enabled {
+		log.Debug().Msg("Testing ClickHouse connection...")
+		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+		}
 
-	// Test connection
-	if err := chClient.Ping(ctx); err != nil {
-		_ = chClient.Close()
-		return nil, fmt.Errorf("ClickHouse connection test failed: %w", err)
+		// Test connection
+		if pingErr := chClient.Ping(ctx); pingErr != nil {
+			_ = chClient.Close()
+			return nil, fmt.Errorf("ClickHouse connection test failed: %w", pingErr)
+		}
+
+		log.Debug().Msg("ClickHouse connection established")
+		if closeErr := chClient.Close(); closeErr != nil {
+			return nil, fmt.Errorf("can't close clickhouse connection after ping: %w", err)
+		}
+	} else {
+		log.Debug().Msg("JWT authentication enabled, skipping default ClickHouse connection test")
+
+		// Validate JWT secret key is set when JWT auth is enabled
+		if cfg.Server.JWT.SecretKey == "" {
+			return nil, fmt.Errorf("JWT authentication is enabled but no secret key is provided")
+		}
 	}
-	log.Debug().Msg("ClickHouse connection established")
 
 	// Create MCP server
 	log.Debug().Msg("Creating MCP server...")
-	mcpServer := altinitymcp.NewClickHouseMCPServer(chClient)
+	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg.ClickHouse, cfg.Server.JWT)
 
 	return &application{
 		config:    cfg,
-		chClient:  chClient,
 		mcpServer: mcpServer,
 	}, nil
 }
 
 func (a *application) Close() {
-	if a.chClient != nil {
-		if err := a.chClient.Close(); err != nil {
-			log.Warn().Err(err).Msg("Failed to close ClickHouse client")
-		}
-	}
+	// No resources to close as the ClickHouse client is created and closed per request
+	log.Debug().Msg("Application resources cleaned up")
 }
 
-func (a *application) Start(ctx context.Context) error {
+func (a *application) Start() error {
 	// Start the server based on transport type
 	log.Info().
 		Str("transport", string(a.config.Server.Transport)).
+		Bool("jwt_enabled", a.config.Server.JWT.Enabled).
 		Msg("Starting MCP server...")
+
+	// Access the underlying MCPServer from our ClickHouseJWTServer
+	mcpServer := a.mcpServer.MCPServer
 
 	switch a.config.Server.Transport {
 	case config.StdioTransport:
 		log.Info().Msg("Starting MCP server with STDIO transport")
-		if err := server.ServeStdio(a.mcpServer); err != nil {
+		if err := server.ServeStdio(mcpServer); err != nil {
 			log.Error().Err(err).Msg("STDIO server failed")
 			return err
 		}
@@ -451,7 +488,7 @@ func (a *application) Start(ctx context.Context) error {
 			Str("address", addr).
 			Msg("Starting MCP server with HTTP transport")
 
-		httpServer := server.NewStreamableHTTPServer(a.mcpServer)
+		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/", httpServer)
 
@@ -462,7 +499,7 @@ func (a *application) Start(ctx context.Context) error {
 
 		if !a.config.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
-			if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("HTTP server failed")
 				return err
 			}
@@ -474,7 +511,7 @@ func (a *application) Start(ctx context.Context) error {
 				return err
 			}
 			a.httpSrv.TLSConfig = tlsConfig
-			if err := a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+			if err = a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("HTTPS server failed")
 				return err
 			}
@@ -486,18 +523,43 @@ func (a *application) Start(ctx context.Context) error {
 			Str("address", addr).
 			Msg("Starting MCP server with SSE transport")
 
-		sseServer := server.NewSSEServer(a.mcpServer)
-		mux := http.NewServeMux()
-		mux.Handle("/", sseServer)
+		// Check if we should use dynamic base path with JWT
+		var sseHandler http.Handler
+		if a.config.Server.JWT.Enabled {
+			log.Info().Msg("Using dynamic base path for JWT authentication")
+			sseServer := server.NewSSEServer(
+				mcpServer,
+				server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
+					// Extract token from URL and use it as path component
+					token := r.URL.Query().Get(a.config.Server.JWT.TokenParam)
+					if token != "" {
+						return "/" + token
+					}
+					return "/"
+				}),
+				server.WithBaseURL(fmt.Sprintf("http://%s:%d", a.config.Server.Address, a.config.Server.Port)),
+				server.WithUseFullURLForMessageEndpoint(true),
+			)
+
+			// Register custom handlers to ensure token is in the path
+			mux := http.NewServeMux()
+			mux.Handle("/{token}/sse", sseServer.SSEHandler())
+			mux.Handle("/{token}/message", sseServer.MessageHandler())
+			sseHandler = mux
+		} else {
+			// Use standard SSE server without dynamic paths
+			sseServer := server.NewSSEServer(mcpServer)
+			sseHandler = sseServer
+		}
 
 		a.httpSrv = &http.Server{
 			Addr:    addr,
-			Handler: mux,
+			Handler: sseHandler,
 		}
 
 		if !a.config.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
-			if err := a.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("SSE server failed")
 				return err
 			}
@@ -509,7 +571,7 @@ func (a *application) Start(ctx context.Context) error {
 				return err
 			}
 			a.httpSrv.TLSConfig = tlsConfig
-			if err := a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+			if err = a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("SSE server with TLS failed")
 				return err
 			}

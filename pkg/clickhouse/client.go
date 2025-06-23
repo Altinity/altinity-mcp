@@ -53,11 +53,11 @@ type Client struct {
 }
 
 // NewClient creates a new ClickHouse client
-func NewClient(cfg config.ClickHouseConfig) (*Client, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewClient(ctx context.Context, cfg config.ClickHouseConfig) (*Client, error) {
+	clickhouseCtx, cancel := context.WithCancel(ctx)
 	client := &Client{
 		config:     cfg,
-		ctx:        ctx,
+		ctx:        clickhouseCtx,
 		cancelFunc: cancel,
 	}
 
@@ -98,7 +98,7 @@ func (c *Client) connect() error {
 		settings["max_execution_time"] = c.config.MaxExecutionTime
 	}
 
-	conn, err := clickhouse.Open(&clickhouse.Options{
+	conn, openErr := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth: clickhouse.Auth{
 			Database: c.config.Database,
@@ -114,8 +114,8 @@ func (c *Client) connect() error {
 		ConnMaxLifetime: time.Hour,
 	})
 
-	if err != nil {
-		return err
+	if openErr != nil {
+		return openErr
 	}
 
 	c.conn = conn

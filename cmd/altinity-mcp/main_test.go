@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -81,7 +80,7 @@ func setupClickHouseContainer(t *testing.T, ctx context.Context) *config.ClickHo
 	}
 
 	// Create a client to set up the database
-	client, err := clickhouse.NewClient(*cfg)
+	client, err := clickhouse.NewClient(ctx, *cfg)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
 
@@ -112,7 +111,7 @@ func TestMCPServer(t *testing.T) {
 	chConfig := setupClickHouseContainer(t, ctx)
 
 	// Create a ClickHouse client
-	chClient, err := clickhouse.NewClient(*chConfig)
+	chClient, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, chClient.Close()) }()
 
@@ -120,8 +119,8 @@ func TestMCPServer(t *testing.T) {
 	testServer := mcptest.NewUnstartedServer(t)
 	testServerWrapper := &AltinityMCPTestServer{testServer}
 	// Add tools
-	altinityMcp.RegisterTools(testServerWrapper, chClient)
-	altinityMcp.RegisterResources(testServerWrapper, chClient)
+	altinityMcp.RegisterTools(testServerWrapper)
+	altinityMcp.RegisterResources(testServerWrapper)
 	altinityMcp.RegisterPrompts(testServerWrapper)
 
 	// Start the server
@@ -408,15 +407,4 @@ func TestMCPServer(t *testing.T) {
 			require.Error(t, err)
 		})
 	})
-}
-
-// Helper functions
-func isSelectQuery(query string) bool {
-	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
-}
-
-func hasLimitClause(query string) bool {
-	upper := strings.ToUpper(query)
-	return strings.Contains(upper, " LIMIT ")
 }

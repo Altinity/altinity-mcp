@@ -3,14 +3,33 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
+	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog/log"
 )
+
+var (
+	// ErrMissingToken is returned when JWT token is missing
+	ErrMissingToken = errors.New("missing JWT token")
+	// ErrInvalidToken is returned when JWT token is invalid
+	ErrInvalidToken = errors.New("invalid JWT token")
+)
+
+// ClickHouseJWTServer extends MCPServer with JWT auth capabilities
+type ClickHouseJWTServer struct {
+	*server.MCPServer
+	jwtConfig        config.JWTConfig
+	clickhouseConfig config.ClickHouseConfig
+}
 
 // AltinityMCPServer @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
 type AltinityMCPServer interface {
@@ -24,7 +43,7 @@ type AltinityMCPServer interface {
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
-func NewClickHouseMCPServer(chClient *clickhouse.Client) *server.MCPServer {
+func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.JWTConfig) *ClickHouseJWTServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -35,17 +54,121 @@ func NewClickHouseMCPServer(chClient *clickhouse.Client) *server.MCPServer {
 		server.WithRecovery(),
 	)
 
-	// Register tools, resources, and prompts
-	RegisterTools(srv, chClient)
-	RegisterResources(srv, chClient)
-	RegisterPrompts(srv)
+	chJwtServer := &ClickHouseJWTServer{
+		MCPServer:        srv,
+		jwtConfig:        jwtConfig,
+		clickhouseConfig: chConfig,
+	}
 
-	log.Info().Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
-	return srv
+	// Register tools, resources, and prompts
+	RegisterTools(chJwtServer)
+	RegisterResources(chJwtServer)
+	RegisterPrompts(chJwtServer)
+
+	log.Info().
+		Bool("jwt_enabled", jwtConfig.Enabled).
+		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
+
+	return chJwtServer
+}
+
+// GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
+func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
+	if !s.jwtConfig.Enabled || tokenParam == "" {
+		// If JWT auth is disabled or no token provided, use the default config
+		client, err := clickhouse.NewClient(ctx, s.clickhouseConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+		}
+		return client, nil
+	}
+
+	// Parse and validate JWT token
+	token, err := jwt.Parse(tokenParam, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.jwtConfig.SecretKey), nil
+	})
+
+	if err != nil || !token.Valid {
+		log.Error().Err(err).Msg("Invalid JWT token")
+		return nil, ErrInvalidToken
+	}
+
+	// Extract ClickHouse config from token claims
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims format")
+	}
+
+	// Create a new ClickHouse config from the claims
+	chConfig := s.clickhouseConfig // Use default as base
+
+	if host, ok := claims["host"].(string); ok && host != "" {
+		chConfig.Host = host
+	}
+	if port, ok := claims["port"].(float64); ok && port > 0 {
+		chConfig.Port = int(port)
+	}
+	if database, ok := claims["database"].(string); ok && database != "" {
+		chConfig.Database = database
+	}
+	if username, ok := claims["username"].(string); ok && username != "" {
+		chConfig.Username = username
+	}
+	if password, ok := claims["password"].(string); ok && password != "" {
+		chConfig.Password = password
+	}
+	if protocol, ok := claims["protocol"].(string); ok && protocol != "" {
+		chConfig.Protocol = config.ClickHouseProtocol(protocol)
+	}
+
+	// Create client with the configured parameters
+	client, err := clickhouse.NewClient(ctx, chConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client from JWT: %w", err)
+	}
+
+	return client, nil
+}
+
+// ExtractTokenFromRequest extracts JWT token from various request types
+func (s *ClickHouseJWTServer) ExtractTokenFromRequest(req interface{}) string {
+	tokenParam := s.jwtConfig.TokenParam
+
+	// Extract token based on request type
+	switch r := req.(type) {
+	case *http.Request:
+		if r != nil && r.URL != nil {
+			return r.URL.Query().Get(tokenParam)
+		}
+	case mcp.CallToolRequest:
+		if args := r.GetArguments(); args != nil {
+			if token, ok := args[tokenParam].(string); ok {
+				return token
+			}
+		}
+	case mcp.ReadResourceRequest:
+		// Try to extract token from URI
+		if r.Params.URI != "" {
+			// Simple string-based extraction
+			uriParts := strings.Split(r.Params.URI, "?")
+			if len(uriParts) > 1 {
+				queryParams, err := url.ParseQuery(uriParts[1])
+				if err == nil && queryParams.Get(tokenParam) != "" {
+					return queryParams.Get(tokenParam)
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // RegisterTools adds the ClickHouse tools to the MCP server
-func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
+func RegisterTools(srv AltinityMCPServer) {
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
@@ -58,6 +181,23 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 	srv.AddTool(listTablesTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		log.Debug().Msg("Executing list_tables tool")
 		database := req.GetString("database", "")
+
+		// Get the ClickHouse client from JWT token or default config
+		chJwtServer, ok := srv.(*ClickHouseJWTServer)
+		if !ok {
+			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
+		}
+
+		// Extract token from request
+		token := chJwtServer.ExtractTokenFromRequest(req)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		}
+		defer chClient.Close()
 
 		tables, err := chClient.ListTables(ctx, database)
 		if err != nil {
@@ -120,6 +260,23 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 			query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 		}
 
+		// Get the ClickHouse client from JWT token or default config
+		chJwtServer, ok := srv.(*ClickHouseJWTServer)
+		if !ok {
+			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
+		}
+
+		// Extract token from request
+		token := chJwtServer.ExtractTokenFromRequest(req)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		}
+		defer chClient.Close()
+
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("query", query).Msg("Query execution failed")
@@ -160,6 +317,23 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 
 		log.Debug().Str("database", database).Str("table", tableName).Msg("Describing table structure")
 
+		// Get the ClickHouse client from JWT token or default config
+		chJwtServer, ok := srv.(*ClickHouseJWTServer)
+		if !ok {
+			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
+		}
+
+		// Extract token from request
+		token := chJwtServer.ExtractTokenFromRequest(req)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		}
+		defer chClient.Close()
+
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
@@ -177,7 +351,7 @@ func RegisterTools(srv AltinityMCPServer, chClient *clickhouse.Client) {
 }
 
 // RegisterResources adds ClickHouse resources to the MCP server
-func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
+func RegisterResources(srv AltinityMCPServer) {
 	// Database Schema Resource
 	schemaResource := mcp.NewResource(
 		"clickhouse://schema",
@@ -188,6 +362,23 @@ func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
 
 	srv.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		log.Debug().Msg("Reading database schema resource")
+
+		// Get the ClickHouse client from JWT token or default config
+		chJwtServer, ok := srv.(*ClickHouseJWTServer)
+		if !ok {
+			return nil, fmt.Errorf("server does not support JWT authentication")
+		}
+
+		// Extract token from request
+		token := chJwtServer.ExtractTokenFromRequest(req)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
+		}
+		defer chClient.Close()
 
 		// With an empty database string, ListTables will return tables from all databases
 		tables, err := chClient.ListTables(ctx, "")
@@ -233,6 +424,23 @@ func RegisterResources(srv AltinityMCPServer, chClient *clickhouse.Client) {
 		tableName := parts[len(parts)-1]
 
 		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
+
+		// Get the ClickHouse client from JWT token or default config
+		chJwtServer, ok := srv.(*ClickHouseJWTServer)
+		if !ok {
+			return nil, fmt.Errorf("server does not support JWT authentication")
+		}
+
+		// Extract token from request
+		token := chJwtServer.ExtractTokenFromRequest(req)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
+		}
+		defer chClient.Close()
 
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
@@ -286,7 +494,7 @@ func RegisterPrompts(srv AltinityMCPServer) {
 		if tableName != "" {
 			promptText = fmt.Sprintf("Help me build a %s query for the ClickHouse table '%s.%s'. ", queryType, database, tableName)
 		} else {
-			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType, tableName)
+			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType, database)
 		}
 
 		promptText += "Consider ClickHouse-specific optimizations like:\n" +

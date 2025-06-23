@@ -1,4 +1,7 @@
 .aider*
 *.pcap
+*.log
+*.exe
 .vscode/
 .idea/
+.kilocode/
