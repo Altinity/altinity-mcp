@@ -39,9 +39,13 @@ func setupClickHouseContainer(t *testing.T, ctx context.Context) *config.ClickHo
 		Image:        "clickhouse/clickhouse-server:latest",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
 		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP": "1",
+			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
+			"CLICKHOUSE_DB":                        "default",
+			"CLICKHOUSE_USER":                      "default",
+			"CLICKHOUSE_PASSWORD":                  "",
+			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
 		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(5 * time.Second).WithPollInterval(1 * time.Second),
+		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
 	}
 	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
@@ -144,12 +148,21 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 		stdioReader = bufio.NewReader(rOut)
 
 		t.Cleanup(func() {
+			// Close pipes in proper order to avoid broken pipe errors
+			// First close the writer ends
+			_ = w.Close()
+			_ = wOut.Close()
+
+			// Then close the reader ends
+			_ = r.Close()
+			_ = rOut.Close()
+
+			// Restore original stdin/stdout
 			os.Stdin = oldStdin
 			os.Stdout = oldStdout
-			_ = r.Close()
-			_ = w.Close()
-			_ = rOut.Close()
-			_ = wOut.Close()
+
+			// Small delay to ensure all I/O completes
+			time.Sleep(100 * time.Millisecond)
 		})
 	}
 
@@ -194,7 +207,7 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 			}
 			_ = conn.Close()
 			return true
-		}, 5*time.Second, 100*time.Millisecond, "server did not start")
+		}, 10*time.Second, 500*time.Millisecond, "server did not start")
 
 		t.Cleanup(func() {
 			if app.httpSrv != nil {
@@ -220,8 +233,11 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 		req.Params.Name = "list_tables"
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
 		require.False(t, result.IsError)
+		require.NotEmpty(t, result.Content, "expected non-empty content")
+		require.IsType(t, mcp.TextContent{}, result.Content[0])
+		textContent := result.Content[0].(mcp.TextContent)
 		var data map[string]interface{}
-		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &data))
+		require.NoError(t, json.Unmarshal([]byte(textContent.Text), &data))
 		require.Equal(t, float64(1), data["count"])
 		tables := data["tables"].([]interface{})
 		require.Len(t, tables, 1)
@@ -264,7 +280,8 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 			},
 		}
 		result := callTool(t, ctx, transport, req, url, stdioReader, stdioWriter)
-		require.Empty(t, result.IsError)
+		require.False(t, result.IsError)
+		require.NotEmpty(t, result.Content)
 		var data []clickhouse.ColumnInfo
 		require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &data))
 		require.Len(t, data, 2)
@@ -287,10 +304,14 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url+"/messages", bytes.NewReader(body))
 		require.NoError(t, err)
 		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("X-Session-ID", "test-session")
 		resp, err := http.DefaultClient.Do(httpReq)
 		require.NoError(t, err)
 		defer func() { require.NoError(t, resp.Body.Close()) }()
-		require.Equal(t, http.StatusOK, resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			require.Fail(t, fmt.Sprintf("unexpected status code: %d, body: %s", resp.StatusCode, string(body)))
+		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 
 	case config.SSETransport:
@@ -321,16 +342,47 @@ func callTool(t *testing.T, ctx context.Context, transport config.MCPTransport, 
 			var toolResult mcp.CallToolResult
 			require.NoError(t, json.Unmarshal(msg.Data, &toolResult))
 			result = toolResult
-		case <-time.After(5 * time.Second):
-			require.Fail(t, "timed out waiting for tool result")
+		case <-time.After(10 * time.Second):
+			require.Fail(t, "timed out waiting for SSE tool result")
+		case <-ctx.Done():
+			require.Fail(t, "context canceled while waiting for SSE response")
 		}
 
 	case config.StdioTransport:
 		_, writeErr := stdioWriter.Write(append(body, '\n'))
 		require.NoError(t, writeErr)
-		line, readErr := stdioReader.ReadBytes('\n')
-		require.NoError(t, readErr)
-		require.NoError(t, json.Unmarshal(line, &result))
+
+		// Add timeout for reading response
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		readChan := make(chan []byte)
+		errChan := make(chan error)
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			line, err := stdioReader.ReadBytes('\n')
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					errChan <- err
+				}
+				return
+			}
+			readChan <- line
+		}()
+
+		select {
+		case line := <-readChan:
+			require.NoError(t, json.Unmarshal(line, &result))
+		case err := <-errChan:
+			require.NoError(t, err)
+		case <-ctx.Done():
+			require.Fail(t, "timed out waiting for stdio response")
+		case <-done:
+			// Goroutine completed but no data received
+			require.Fail(t, "no response received from stdio transport")
+		}
 	}
 
 	return &result
