@@ -17,6 +17,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/r3labs/sse/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -134,38 +135,6 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	var stdioReader *bufio.Reader
 	var stdioWriter io.Writer
 
-	if transport == config.StdioTransport {
-		oldStdin := os.Stdin
-		oldStdout := os.Stdout
-		r, w, err := os.Pipe()
-		require.NoError(t, err)
-		os.Stdin = r
-		stdioWriter = w
-
-		rOut, wOut, err := os.Pipe()
-		require.NoError(t, err)
-		os.Stdout = wOut
-		stdioReader = bufio.NewReader(rOut)
-
-		t.Cleanup(func() {
-			// Close pipes in proper order to avoid broken pipe errors
-			// First close the writer ends
-			_ = w.Close()
-			_ = wOut.Close()
-
-			// Then close the reader ends
-			_ = r.Close()
-			_ = rOut.Close()
-
-			// Restore original stdin/stdout
-			os.Stdin = oldStdin
-			os.Stdout = oldStdout
-
-			// Small delay to ensure all I/O completes
-			time.Sleep(100 * time.Millisecond)
-		})
-	}
-
 	port := getFreePort(t)
 	appConfig := config.Config{
 		ClickHouse: chConfig,
@@ -190,15 +159,62 @@ func testTransport(t *testing.T, ctx context.Context, chConfig config.ClickHouse
 	t.Cleanup(app.Close)
 
 	errChan := make(chan error, 1)
-	go func() {
-		startErr := app.Start(ctx)
-		if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
-			errChan <- err
-		}
-		close(errChan)
-	}()
 
-	if transport != config.StdioTransport {
+	if transport == config.StdioTransport {
+		stdinPipeR, stdinPipeW := io.Pipe()
+		stdoutPipeR, stdoutPipeW := io.Pipe()
+		stdioReader = bufio.NewReader(stdoutPipeR)
+		stdioWriter = stdinPipeW
+
+		listenCtx, cancelListen := context.WithCancel(ctx)
+
+		go func() {
+			stdioServer := server.NewStdioServer(app.mcpServer)
+			err := stdioServer.Listen(listenCtx, stdinPipeR, stdoutPipeW)
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+				errChan <- err
+			}
+			close(errChan)
+		}()
+
+		t.Cleanup(func() {
+			cancelListen()
+			// Close pipes to unblock Listen
+			_ = stdinPipeW.Close()
+			_ = stdoutPipeR.Close()
+			// check for server errors
+			if err, ok := <-errChan; ok {
+				require.NoError(t, err, "stdio server returned an error")
+			}
+		})
+
+		// Handle initialize call
+		initReq := mcp.Request{
+			Version: "2.0",
+			Method:  "initialize",
+			ID:      "1",
+		}
+		initBody, err := json.Marshal(initReq)
+		require.NoError(t, err)
+		_, err = stdioWriter.Write(append(initBody, '\n'))
+		require.NoError(t, err)
+
+		// Read response
+		line, err := stdioReader.ReadBytes('\n')
+		require.NoError(t, err)
+		var initResp mcp.Response
+		require.NoError(t, json.Unmarshal(line, &initResp))
+		require.NotNil(t, initResp.Result)
+		require.Nil(t, initResp.Error)
+	} else {
+		go func() {
+			startErr := app.Start(ctx)
+			if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
+				errChan <- startErr
+			}
+			close(errChan)
+		}()
+
 		// Wait for server to start
 		require.Eventually(t, func() bool {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 1*time.Second)
