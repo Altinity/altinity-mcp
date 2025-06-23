@@ -125,6 +125,24 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 		chConfig.Protocol = config.ClickHouseProtocol(protocol)
 	}
 
+	// Handle TLS configuration from JWT claims
+	if tlsEnabled, ok := claims["tls_enabled"].(bool); ok && tlsEnabled {
+		chConfig.TLS.Enabled = true
+		
+		if caCert, ok := claims["tls_ca_cert"].(string); ok && caCert != "" {
+			chConfig.TLS.CaCert = caCert
+		}
+		if clientCert, ok := claims["tls_client_cert"].(string); ok && clientCert != "" {
+			chConfig.TLS.ClientCert = clientCert
+		}
+		if clientKey, ok := claims["tls_client_key"].(string); ok && clientKey != "" {
+			chConfig.TLS.ClientKey = clientKey
+		}
+		if insecureSkipVerify, ok := claims["tls_insecure_skip_verify"].(bool); ok {
+			chConfig.TLS.InsecureSkipVerify = insecureSkipVerify
+		}
+	}
+
 	// Create client with the configured parameters
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {

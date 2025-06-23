@@ -11,7 +11,7 @@ TOKEN=$(go run "${CUR_DIR}/jwt_token_generator.go" \
   --port=${CLICKHOUSE_PORT:-8123} \
   --database="${CLICKHOUSE_DB:-default}" \
   --username="${CLICKHOUSE_USER:-default}" \
-  --password="${CLICKHOUSE_USER:-default}" \
+  --password="${CLICKHOUSE_PASSWORD:-}" \
   --protocol="http" \
   --expiry=3600 | grep -A 1 "JWT Token:" | tail -n 1)
 

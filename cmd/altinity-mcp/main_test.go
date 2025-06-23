@@ -28,6 +28,77 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// TestJWTTokenGeneration tests JWT token generation with TLS configuration
+func TestJWTTokenGeneration(t *testing.T) {
+	t.Parallel()
+
+	// Test basic JWT token generation
+	t.Run("basic_token", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":     "localhost",
+			"port":     float64(8123),
+			"database": "default",
+			"username": "default",
+			"protocol": "http",
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+		require.NotEmpty(t, tokenString)
+
+		// Parse and verify the token
+		parsedToken, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return []byte("test-secret"), nil
+		})
+		require.NoError(t, err)
+		require.True(t, parsedToken.Valid)
+
+		parsedClaims, ok := parsedToken.Claims.(jwt.MapClaims)
+		require.True(t, ok)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"])
+	})
+
+	// Test JWT token with TLS configuration
+	t.Run("token_with_tls", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":                     "secure.clickhouse.com",
+			"port":                     float64(9440),
+			"database":                 "secure_db",
+			"username":                 "secure_user",
+			"protocol":                 "tcp",
+			"tls_enabled":              true,
+			"tls_ca_cert":              "/path/to/ca.crt",
+			"tls_client_cert":          "/path/to/client.crt",
+			"tls_client_key":           "/path/to/client.key",
+			"tls_insecure_skip_verify": false,
+			"exp":                      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+		require.NotEmpty(t, tokenString)
+
+		// Parse and verify the token
+		parsedToken, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return []byte("test-secret"), nil
+		})
+		require.NoError(t, err)
+		require.True(t, parsedToken.Valid)
+
+		parsedClaims, ok := parsedToken.Claims.(jwt.MapClaims)
+		require.True(t, ok)
+		require.Equal(t, true, parsedClaims["tls_enabled"])
+		require.Equal(t, "/path/to/ca.crt", parsedClaims["tls_ca_cert"])
+		require.Equal(t, "/path/to/client.crt", parsedClaims["tls_client_cert"])
+		require.Equal(t, "/path/to/client.key", parsedClaims["tls_client_key"])
+		require.Equal(t, false, parsedClaims["tls_insecure_skip_verify"])
+	})
+}
+
 type AltinityMCPTestServer struct {
 	*mcptest.Server
 }
