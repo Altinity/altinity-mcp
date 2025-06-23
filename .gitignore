@@ -1,2 +1,4 @@
 .aider*
 *.pcap
+.vscode/
+.idea/
