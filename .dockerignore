@@ -1,0 +1,42 @@
+# Ignore jwt_auth folder
+jwt_auth/
+
+# Ignore .github folder
+.github/
+
+# Ignore helm folder
+helm/
+
+# Ignore common development files
+.git/
+.gitignore
+*.md
+README.md
+
+# Ignore test files
+*_test.go
+testdata/
+
+# Ignore build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+build/
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore temporary files
+*.tmp
+*.temp
+*.log
