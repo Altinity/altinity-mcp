@@ -21,7 +21,16 @@ echo "Generated token: $TOKEN"
 # Start the MCP server with JWT authentication in the background
 echo "Starting MCP server with JWT authentication..."
 go run "${CUR_DIR}/../../cmd/altinity-mcp/main.go" --allow-jwt-auth --jwt-secret-key="test-secret-key" --transport=sse --address=127.0.0.1 --port=8080 &
-SERVER_PID=$!
+GO_RUN_PID=$!
+
+# Get the actual server process PID (child of go run)
+sleep 1
+SERVER_PID=$(pgrep -P $GO_RUN_PID)
+if [ -z "$SERVER_PID" ]; then
+    echo "Warning: Could not find server process PID, using go run PID"
+    SERVER_PID=$GO_RUN_PID
+fi
+echo "Server PID: $SERVER_PID"
 
 # Wait for server to start
 sleep 2
@@ -36,7 +45,8 @@ sleep 5
 
 # Clean up
 echo -e "\n\nStopping client and server... ${SERVER_PID} ${CURL_PATH_PID}"
-kill $SERVER_PID
-kill $CURL_PATH_PID
+kill $CURL_PATH_PID 2>/dev/null || true
+kill $SERVER_PID 2>/dev/null || true
+kill $GO_RUN_PID 2>/dev/null || true
 
 echo "Test completed"
