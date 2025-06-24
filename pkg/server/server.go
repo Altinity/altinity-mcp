@@ -72,13 +72,18 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 // GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
 func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	if !s.jwtConfig.Enabled || tokenParam == "" {
-		// If JWT auth is disabled or no token provided, use the default config
+	if !s.jwtConfig.Enabled {
+		// If JWT auth is disabled, use the default config
 		client, err := clickhouse.NewClient(ctx, s.clickhouseConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 		}
 		return client, nil
+	}
+
+	if tokenParam == "" {
+		// JWT auth is enabled but no token provided
+		return nil, ErrMissingToken
 	}
 
 	// Parse and validate JWT token
