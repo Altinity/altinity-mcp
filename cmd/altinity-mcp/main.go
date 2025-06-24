@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -34,6 +35,19 @@ func main() {
 		Version:     fmt.Sprintf("%s (%s) built on %s", version, commit, date),
 		Authors:     []any{"Altinity <support@altinity.com>"},
 		Flags: []cli.Flag{
+			// Configuration file flags
+			&cli.StringFlag{
+				Name:    "config",
+				Usage:   "Path to configuration file (YAML or JSON)",
+				Value:   "",
+				Sources: cli.EnvVars("CONFIG_FILE"),
+			},
+			&cli.IntFlag{
+				Name:    "config-reload-time",
+				Usage:   "Configuration reload interval in seconds (0 to disable)",
+				Value:   0,
+				Sources: cli.EnvVars("CONFIG_RELOAD_TIME"),
+			},
 			// ClickHouse configuration flags
 			&cli.StringFlag{
 				Name:    "clickhouse-host",
@@ -205,7 +219,10 @@ func main() {
 				Name:  "test-connection",
 				Usage: "Test connection to ClickHouse",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					cfg := buildConfig(cmd)
+					cfg, err := buildConfig(cmd)
+					if err != nil {
+						return err
+					}
 					return testConnection(ctx, cfg.ClickHouse)
 				},
 			},
@@ -241,8 +258,30 @@ func setupLogging(level string) error {
 	return nil
 }
 
-// buildConfig builds the application configuration from CLI flags
-func buildConfig(cmd *cli.Command) config.Config {
+// buildConfig builds the application configuration from CLI flags and config file
+func buildConfig(cmd *cli.Command) (config.Config, error) {
+	var cfg config.Config
+	
+	// Load from config file if specified
+	configFile := cmd.String("config")
+	if configFile != "" {
+		log.Debug().Str("config_file", configFile).Msg("Loading configuration from file")
+		fileCfg, err := config.LoadConfigFromFile(configFile)
+		if err != nil {
+			return cfg, fmt.Errorf("failed to load config file: %w", err)
+		}
+		cfg = *fileCfg
+		log.Info().Str("config_file", configFile).Msg("Configuration loaded from file")
+	}
+
+	// Override with CLI flags (CLI flags take precedence over config file)
+	overrideWithCLIFlags(&cfg, cmd)
+	
+	return cfg, nil
+}
+
+// overrideWithCLIFlags overrides config values with CLI flags if they are set
+func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
 	// Parse ClickHouse protocol
 	var chProtocol config.ClickHouseProtocol
 	switch strings.ToLower(cmd.String("clickhouse-protocol")) {
@@ -282,43 +321,119 @@ func buildConfig(cmd *cli.Command) config.Config {
 		logLevel = config.InfoLevel
 	}
 
-	return config.Config{
-		ClickHouse: config.ClickHouseConfig{
-			Host:             cmd.String("clickhouse-host"),
-			Port:             cmd.Int("clickhouse-port"),
-			Database:         cmd.String("clickhouse-database"),
-			Username:         cmd.String("clickhouse-username"),
-			Password:         cmd.String("clickhouse-password"),
-			Protocol:         chProtocol,
-			ReadOnly:         cmd.Bool("read-only"),
-			MaxExecutionTime: cmd.Int("clickhouse-max-execution-time"),
-			TLS: config.TLSConfig{
-				Enabled:            cmd.Bool("clickhouse-tls"),
-				CaCert:             cmd.String("clickhouse-tls-ca-cert"),
-				ClientCert:         cmd.String("clickhouse-tls-client-cert"),
-				ClientKey:          cmd.String("clickhouse-tls-client-key"),
-				InsecureSkipVerify: cmd.Bool("clickhouse-tls-insecure-skip-verify"),
-			},
-		},
-		Server: config.ServerConfig{
-			Transport: mcpTransport,
-			Address:   cmd.String("address"),
-			Port:      cmd.Int("port"),
-			TLS: config.ServerTLSConfig{
-				Enabled:  cmd.Bool("server-tls"),
-				CertFile: cmd.String("server-tls-cert-file"),
-				KeyFile:  cmd.String("server-tls-key-file"),
-				CaCert:   cmd.String("server-tls-ca-cert"),
-			},
-			JWT: config.JWTConfig{
-				Enabled:    cmd.Bool("allow-jwt-auth"),
-				SecretKey:  cmd.String("jwt-secret-key"),
-				TokenParam: cmd.String("jwt-token-param"),
-			},
-		},
-		Logging: config.LoggingConfig{
-			Level: logLevel,
-		},
+	// Override ClickHouse config with CLI flags
+	if cmd.IsSet("clickhouse-host") {
+		cfg.ClickHouse.Host = cmd.String("clickhouse-host")
+	} else if cfg.ClickHouse.Host == "" {
+		cfg.ClickHouse.Host = "localhost"
+	}
+	
+	if cmd.IsSet("clickhouse-port") {
+		cfg.ClickHouse.Port = cmd.Int("clickhouse-port")
+	} else if cfg.ClickHouse.Port == 0 {
+		cfg.ClickHouse.Port = 8123
+	}
+	
+	if cmd.IsSet("clickhouse-database") {
+		cfg.ClickHouse.Database = cmd.String("clickhouse-database")
+	} else if cfg.ClickHouse.Database == "" {
+		cfg.ClickHouse.Database = "default"
+	}
+	
+	if cmd.IsSet("clickhouse-username") {
+		cfg.ClickHouse.Username = cmd.String("clickhouse-username")
+	} else if cfg.ClickHouse.Username == "" {
+		cfg.ClickHouse.Username = "default"
+	}
+	
+	if cmd.IsSet("clickhouse-password") {
+		cfg.ClickHouse.Password = cmd.String("clickhouse-password")
+	}
+	
+	if cmd.IsSet("clickhouse-protocol") {
+		cfg.ClickHouse.Protocol = chProtocol
+	} else if cfg.ClickHouse.Protocol == "" {
+		cfg.ClickHouse.Protocol = config.HTTPProtocol
+	}
+	
+	if cmd.IsSet("read-only") {
+		cfg.ClickHouse.ReadOnly = cmd.Bool("read-only")
+	}
+	
+	if cmd.IsSet("clickhouse-max-execution-time") {
+		cfg.ClickHouse.MaxExecutionTime = cmd.Int("clickhouse-max-execution-time")
+	} else if cfg.ClickHouse.MaxExecutionTime == 0 {
+		cfg.ClickHouse.MaxExecutionTime = 600
+	}
+
+	// Override TLS config with CLI flags
+	if cmd.IsSet("clickhouse-tls") {
+		cfg.ClickHouse.TLS.Enabled = cmd.Bool("clickhouse-tls")
+	}
+	if cmd.IsSet("clickhouse-tls-ca-cert") {
+		cfg.ClickHouse.TLS.CaCert = cmd.String("clickhouse-tls-ca-cert")
+	}
+	if cmd.IsSet("clickhouse-tls-client-cert") {
+		cfg.ClickHouse.TLS.ClientCert = cmd.String("clickhouse-tls-client-cert")
+	}
+	if cmd.IsSet("clickhouse-tls-client-key") {
+		cfg.ClickHouse.TLS.ClientKey = cmd.String("clickhouse-tls-client-key")
+	}
+	if cmd.IsSet("clickhouse-tls-insecure-skip-verify") {
+		cfg.ClickHouse.TLS.InsecureSkipVerify = cmd.Bool("clickhouse-tls-insecure-skip-verify")
+	}
+
+	// Override Server config with CLI flags
+	if cmd.IsSet("transport") {
+		cfg.Server.Transport = mcpTransport
+	} else if cfg.Server.Transport == "" {
+		cfg.Server.Transport = config.StdioTransport
+	}
+	
+	if cmd.IsSet("address") {
+		cfg.Server.Address = cmd.String("address")
+	} else if cfg.Server.Address == "" {
+		cfg.Server.Address = "0.0.0.0"
+	}
+	
+	if cmd.IsSet("port") {
+		cfg.Server.Port = cmd.Int("port")
+	} else if cfg.Server.Port == 0 {
+		cfg.Server.Port = 8080
+	}
+
+	// Override Server TLS config with CLI flags
+	if cmd.IsSet("server-tls") {
+		cfg.Server.TLS.Enabled = cmd.Bool("server-tls")
+	}
+	if cmd.IsSet("server-tls-cert-file") {
+		cfg.Server.TLS.CertFile = cmd.String("server-tls-cert-file")
+	}
+	if cmd.IsSet("server-tls-key-file") {
+		cfg.Server.TLS.KeyFile = cmd.String("server-tls-key-file")
+	}
+	if cmd.IsSet("server-tls-ca-cert") {
+		cfg.Server.TLS.CaCert = cmd.String("server-tls-ca-cert")
+	}
+
+	// Override JWT config with CLI flags
+	if cmd.IsSet("allow-jwt-auth") {
+		cfg.Server.JWT.Enabled = cmd.Bool("allow-jwt-auth")
+	}
+	if cmd.IsSet("jwt-secret-key") {
+		cfg.Server.JWT.SecretKey = cmd.String("jwt-secret-key")
+	}
+	if cmd.IsSet("jwt-token-param") {
+		cfg.Server.JWT.TokenParam = cmd.String("jwt-token-param")
+	} else if cfg.Server.JWT.TokenParam == "" {
+		cfg.Server.JWT.TokenParam = "token"
+	}
+
+	// Override Logging config with CLI flags
+	if cmd.IsSet("log-level") {
+		cfg.Logging.Level = logLevel
+	} else if cfg.Logging.Level == "" {
+		cfg.Logging.Level = config.InfoLevel
 	}
 }
 
@@ -397,7 +512,11 @@ func testConnection(ctx context.Context, cfg config.ClickHouseConfig) error {
 
 // runServer is the main server action
 func runServer(ctx context.Context, cmd *cli.Command) error {
-	cfg := buildConfig(cmd)
+	cfg, err := buildConfig(cmd)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to build configuration")
+		return err
+	}
 
 	log.Info().
 		Str("version", version).
@@ -405,7 +524,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("build_date", date).
 		Msg("Starting Altinity MCP Server")
 
-	app, err := newApplication(ctx, cfg)
+	app, err := newApplication(ctx, cfg, cmd)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to initialize application")
 		return err
@@ -416,12 +535,16 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 }
 
 type application struct {
-	config    config.Config
-	mcpServer *altinitymcp.ClickHouseJWTServer
-	httpSrv   *http.Server
+	config         config.Config
+	mcpServer      *altinitymcp.ClickHouseJWTServer
+	httpSrv        *http.Server
+	configFile     string
+	configReloadTime int
+	configMutex    sync.RWMutex
+	stopConfigReload chan struct{}
 }
 
-func newApplication(ctx context.Context, cfg config.Config) (*application, error) {
+func newApplication(ctx context.Context, cfg config.Config, cmd *cli.Command) (*application, error) {
 	// Test connection to ClickHouse if JWT auth is not enabled
 	if !cfg.Server.JWT.Enabled {
 		log.Debug().Msg("Testing ClickHouse connection...")
@@ -462,28 +585,124 @@ func newApplication(ctx context.Context, cfg config.Config) (*application, error
 	log.Debug().Msg("Creating MCP server...")
 	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg.ClickHouse, cfg.Server.JWT)
 
-	return &application{
-		config:    cfg,
-		mcpServer: mcpServer,
-	}, nil
+	app := &application{
+		config:           cfg,
+		mcpServer:        mcpServer,
+		configFile:       cmd.String("config"),
+		configReloadTime: cmd.Int("config-reload-time"),
+		stopConfigReload: make(chan struct{}),
+	}
+
+	// Start config reload goroutine if enabled
+	if app.configFile != "" && app.configReloadTime > 0 {
+		go app.configReloadLoop(ctx, cmd)
+	}
+
+	return app, nil
 }
 
 func (a *application) Close() {
+	// Stop config reload goroutine
+	if a.configFile != "" && a.configReloadTime > 0 {
+		close(a.stopConfigReload)
+	}
+	
 	// No resources to close as the ClickHouse client is created and closed per request
 	log.Debug().Msg("Application resources cleaned up")
 }
 
+// configReloadLoop periodically reloads configuration from file
+func (a *application) configReloadLoop(ctx context.Context, cmd *cli.Command) {
+	ticker := time.NewTicker(time.Duration(a.configReloadTime) * time.Second)
+	defer ticker.Stop()
+
+	log.Info().
+		Str("config_file", a.configFile).
+		Int("reload_interval", a.configReloadTime).
+		Msg("Starting configuration reload loop")
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := a.reloadConfig(cmd); err != nil {
+				log.Error().
+					Err(err).
+					Str("config_file", a.configFile).
+					Msg("Failed to reload configuration")
+			}
+		case <-a.stopConfigReload:
+			log.Debug().Msg("Configuration reload loop stopped")
+			return
+		case <-ctx.Done():
+			log.Debug().Msg("Configuration reload loop stopped due to context cancellation")
+			return
+		}
+	}
+}
+
+// reloadConfig reloads configuration from file and updates the application
+func (a *application) reloadConfig(cmd *cli.Command) error {
+	log.Debug().Str("config_file", a.configFile).Msg("Reloading configuration")
+
+	// Load new config from file
+	newCfg, err := config.LoadConfigFromFile(a.configFile)
+	if err != nil {
+		return fmt.Errorf("failed to load config file: %w", err)
+	}
+
+	// Override with CLI flags
+	overrideWithCLIFlags(newCfg, cmd)
+
+	// Update logging level if changed
+	a.configMutex.Lock()
+	oldLogLevel := a.config.Logging.Level
+	a.config = *newCfg
+	a.configMutex.Unlock()
+
+	if oldLogLevel != newCfg.Logging.Level {
+		if err := setupLogging(string(newCfg.Logging.Level)); err != nil {
+			log.Error().Err(err).Msg("Failed to update logging level")
+		} else {
+			log.Info().
+				Str("old_level", string(oldLogLevel)).
+				Str("new_level", string(newCfg.Logging.Level)).
+				Msg("Logging level updated")
+		}
+	}
+
+	// Create new MCP server with updated config
+	newMCPServer := altinitymcp.NewClickHouseMCPServer(newCfg.ClickHouse, newCfg.Server.JWT)
+	
+	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
+	a.configMutex.Lock()
+	a.mcpServer = newMCPServer
+	a.configMutex.Unlock()
+
+	log.Info().Str("config_file", a.configFile).Msg("Configuration reloaded successfully")
+	return nil
+}
+
+// GetCurrentConfig returns a copy of the current configuration (thread-safe)
+func (a *application) GetCurrentConfig() config.Config {
+	a.configMutex.RLock()
+	defer a.configMutex.RUnlock()
+	return a.config
+}
+
 func (a *application) Start() error {
+	// Get current config (thread-safe)
+	cfg := a.GetCurrentConfig()
+	
 	// Start the server based on transport type
 	log.Info().
-		Str("transport", string(a.config.Server.Transport)).
-		Bool("jwt_enabled", a.config.Server.JWT.Enabled).
+		Str("transport", string(cfg.Server.Transport)).
+		Bool("jwt_enabled", cfg.Server.JWT.Enabled).
 		Msg("Starting MCP server...")
 
 	// Access the underlying MCPServer from our ClickHouseJWTServer
 	mcpServer := a.mcpServer.MCPServer
 
-	switch a.config.Server.Transport {
+	switch cfg.Server.Transport {
 	case config.StdioTransport:
 		log.Info().Msg("Starting MCP server with STDIO transport")
 		if err := server.ServeStdio(mcpServer); err != nil {
@@ -492,7 +711,7 @@ func (a *application) Start() error {
 		}
 
 	case config.HTTPTransport:
-		addr := fmt.Sprintf("%s:%d", a.config.Server.Address, a.config.Server.Port)
+		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
 		log.Info().
 			Str("address", addr).
 			Msg("Starting MCP server with HTTP transport")
@@ -506,7 +725,7 @@ func (a *application) Start() error {
 			Handler: mux,
 		}
 
-		if !a.config.Server.TLS.Enabled {
+		if !cfg.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
 			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("HTTP server failed")
@@ -514,27 +733,27 @@ func (a *application) Start() error {
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
-			tlsConfig, err := buildServerTLSConfig(&a.config.Server.TLS)
+			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to build server TLS config")
 				return err
 			}
 			a.httpSrv.TLSConfig = tlsConfig
-			if err = a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err = a.httpSrv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("HTTPS server failed")
 				return err
 			}
 		}
 
 	case config.SSETransport:
-		addr := fmt.Sprintf("%s:%d", a.config.Server.Address, a.config.Server.Port)
+		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
 		log.Info().
 			Str("address", addr).
 			Msg("Starting MCP server with SSE transport")
 
 		// Check if we should use dynamic base path with JWT
 		var sseHandler http.Handler
-		if a.config.Server.JWT.Enabled {
+		if cfg.Server.JWT.Enabled {
 			log.Info().Msg("Using dynamic base path for JWT authentication")
 			
 			// Create a wrapper that injects the token into the context
@@ -555,7 +774,7 @@ func (a *application) Start() error {
 				mcpServer,
 				server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
 					// Extract token from URL and use it as path component
-					token := r.URL.Query().Get(a.config.Server.JWT.TokenParam)
+					token := r.URL.Query().Get(cfg.Server.JWT.TokenParam)
 					if token != "" {
 						return "/" + token
 					}
@@ -565,7 +784,7 @@ func (a *application) Start() error {
 					}
 					return "/"
 				}),
-				server.WithBaseURL(fmt.Sprintf("http://%s:%d", a.config.Server.Address, a.config.Server.Port)),
+				server.WithBaseURL(fmt.Sprintf("http://%s:%d", cfg.Server.Address, cfg.Server.Port)),
 				server.WithUseFullURLForMessageEndpoint(true),
 			)
 
@@ -585,7 +804,7 @@ func (a *application) Start() error {
 			Handler: sseHandler,
 		}
 
-		if !a.config.Server.TLS.Enabled {
+		if !cfg.Server.TLS.Enabled {
 			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
 			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("SSE server failed")
@@ -593,20 +812,20 @@ func (a *application) Start() error {
 			}
 		} else {
 			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
-			tlsConfig, err := buildServerTLSConfig(&a.config.Server.TLS)
+			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
 			if err != nil {
 				log.Error().Err(err).Msg("Failed to build server TLS config")
 				return err
 			}
 			a.httpSrv.TLSConfig = tlsConfig
-			if err = a.httpSrv.ListenAndServeTLS(a.config.Server.TLS.CertFile, a.config.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err = a.httpSrv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Error().Err(err).Msg("SSE server with TLS failed")
 				return err
 			}
 		}
 
 	default:
-		return fmt.Errorf("unsupported transport type: %s", a.config.Server.Transport)
+		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
 
 	return nil

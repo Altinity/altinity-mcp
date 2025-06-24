@@ -1,5 +1,15 @@
 package config
 
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
 // ClickHouseProtocol defines the protocol used to connect to ClickHouse
 type ClickHouseProtocol string
 
@@ -92,4 +102,69 @@ type Config struct {
 	ClickHouse ClickHouseConfig `json:"clickhouse"`
 	Server     ServerConfig     `json:"server"`
 	Logging    LoggingConfig    `json:"logging"`
+}
+
+// LoadConfigFromFile loads configuration from a YAML or JSON file
+func LoadConfigFromFile(filename string) (*Config, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file %s: %w", filename, err)
+	}
+
+	config := &Config{}
+	
+	// Determine file format by extension
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, config); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML config file %s: %w", filename, err)
+		}
+	case ".json":
+		if err := json.Unmarshal(data, config); err != nil {
+			return nil, fmt.Errorf("failed to parse JSON config file %s: %w", filename, err)
+		}
+	default:
+		// Try YAML first, then JSON
+		if err := yaml.Unmarshal(data, config); err != nil {
+			if jsonErr := json.Unmarshal(data, config); jsonErr != nil {
+				return nil, fmt.Errorf("failed to parse config file %s as YAML or JSON: YAML error: %v, JSON error: %v", filename, err, jsonErr)
+			}
+		}
+	}
+
+	return config, nil
+}
+
+// SaveConfigToFile saves configuration to a YAML or JSON file
+func (c *Config) SaveConfigToFile(filename string) error {
+	var data []byte
+	var err error
+
+	// Determine file format by extension
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".yaml", ".yml":
+		data, err = yaml.Marshal(c)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config to YAML: %w", err)
+		}
+	case ".json":
+		data, err = json.MarshalIndent(c, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal config to JSON: %w", err)
+		}
+	default:
+		// Default to YAML
+		data, err = yaml.Marshal(c)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config to YAML: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(filename, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file %s: %w", filename, err)
+	}
+
+	return nil
 }
