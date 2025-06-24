@@ -527,6 +527,21 @@ func (a *application) Start() error {
 		var sseHandler http.Handler
 		if a.config.Server.JWT.Enabled {
 			log.Info().Msg("Using dynamic base path for JWT authentication")
+			
+			// Create a wrapper that injects the token into the context
+			tokenInjector := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Extract token from path
+					token := r.PathValue("token")
+					if token != "" {
+						// Inject token into request context
+						ctx := context.WithValue(r.Context(), "jwt_token", token)
+						r = r.WithContext(ctx)
+					}
+					next.ServeHTTP(w, r)
+				})
+			}
+
 			sseServer := server.NewSSEServer(
 				mcpServer,
 				server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
@@ -545,10 +560,10 @@ func (a *application) Start() error {
 				server.WithUseFullURLForMessageEndpoint(true),
 			)
 
-			// Register custom handlers to ensure token is in the path
+			// Register custom handlers to ensure token is in the path and inject it into context
 			mux := http.NewServeMux()
-			mux.Handle("/{token}/sse", sseServer.SSEHandler())
-			mux.Handle("/{token}/message", sseServer.MessageHandler())
+			mux.Handle("/{token}/sse", tokenInjector(sseServer.SSEHandler()))
+			mux.Handle("/{token}/message", tokenInjector(sseServer.MessageHandler()))
 			sseHandler = mux
 		} else {
 			// Use standard SSE server without dynamic paths

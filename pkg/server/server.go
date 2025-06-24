@@ -158,34 +158,59 @@ func (s *ClickHouseJWTServer) ExtractTokenFromRequest(req interface{}) string {
 
 	// Extract token based on request type
 	switch r := req.(type) {
-	case *http.Request:
-		if r != nil && r.URL != nil {
-			token := r.URL.Query().Get(tokenParam)
-			if token != "" {
-				return token
-			}
-			token = r.PathValue(tokenParam)
-			if token != "" {
-				return token
-			}
-		}
 	case mcp.CallToolRequest:
+		// For tool requests, check if token is passed as an argument
 		if args := r.GetArguments(); args != nil {
-			if token, ok := args[tokenParam].(string); ok {
+			if token, ok := args[tokenParam].(string); ok && token != "" {
 				return token
 			}
 		}
 	case mcp.ReadResourceRequest:
-		// Try to extract token from URI
+		// For resource requests, extract token from URI
 		if r.Params.URI != "" {
-			// Simple string-based extraction
-			uriParts := strings.Split(r.Params.URI, "?")
-			if len(uriParts) > 1 {
-				queryParams, err := url.ParseQuery(uriParts[1])
-				if err == nil && queryParams.Get(tokenParam) != "" {
-					return queryParams.Get(tokenParam)
+			return s.extractTokenFromURI(r.Params.URI)
+		}
+	}
+
+	return ""
+}
+
+// extractTokenFromURI extracts JWT token from URI
+// Supports both query parameter (?token=...) and path-based token (/{token}/...)
+func (s *ClickHouseJWTServer) extractTokenFromURI(uri string) string {
+	tokenParam := s.jwtConfig.TokenParam
+
+	// First try to extract from query parameters
+	if strings.Contains(uri, "?") {
+		uriParts := strings.Split(uri, "?")
+		if len(uriParts) > 1 {
+			queryParams, err := url.ParseQuery(uriParts[1])
+			if err == nil {
+				if token := queryParams.Get(tokenParam); token != "" {
+					return token
 				}
 			}
+		}
+	}
+
+	// For SSE transport, token might be embedded in the path
+	// Expected format: clickhouse://table/{database}/{table_name}?token=...
+	// or for SSE with dynamic paths: /{token}/resource_uri
+	
+	// Try to extract token from path segments
+	// This handles cases where the SSE server uses dynamic base paths with tokens
+	if strings.HasPrefix(uri, "clickhouse://") {
+		// Standard resource URI - token should be in query params (handled above)
+		return ""
+	}
+
+	// Handle potential path-based token extraction for SSE transport
+	// If URI starts with a path segment that looks like a token, extract it
+	pathParts := strings.Split(strings.TrimPrefix(uri, "/"), "/")
+	if len(pathParts) > 0 && pathParts[0] != "" {
+		// Simple heuristic: if first path segment looks like a JWT token (contains dots)
+		if strings.Count(pathParts[0], ".") >= 2 {
+			return pathParts[0]
 		}
 	}
 
@@ -213,8 +238,16 @@ func RegisterTools(srv AltinityMCPServer) {
 			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
 		}
 
-		// Extract token from request
+		// Extract token from request or context
 		token := chJwtServer.ExtractTokenFromRequest(req)
+		if token == "" {
+			// Try to get token from context (set by SSE server)
+			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+				if tokenStr, ok := tokenFromCtx.(string); ok {
+					token = tokenStr
+				}
+			}
+		}
 
 		// Get ClickHouse client
 		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
@@ -291,8 +324,16 @@ func RegisterTools(srv AltinityMCPServer) {
 			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
 		}
 
-		// Extract token from request
+		// Extract token from request or context
 		token := chJwtServer.ExtractTokenFromRequest(req)
+		if token == "" {
+			// Try to get token from context (set by SSE server)
+			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+				if tokenStr, ok := tokenFromCtx.(string); ok {
+					token = tokenStr
+				}
+			}
+		}
 
 		// Get ClickHouse client
 		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
@@ -348,8 +389,16 @@ func RegisterTools(srv AltinityMCPServer) {
 			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
 		}
 
-		// Extract token from request
+		// Extract token from request or context
 		token := chJwtServer.ExtractTokenFromRequest(req)
+		if token == "" {
+			// Try to get token from context (set by SSE server)
+			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+				if tokenStr, ok := tokenFromCtx.(string); ok {
+					token = tokenStr
+				}
+			}
+		}
 
 		// Get ClickHouse client
 		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
@@ -394,8 +443,16 @@ func RegisterResources(srv AltinityMCPServer) {
 			return nil, fmt.Errorf("server does not support JWT authentication")
 		}
 
-		// Extract token from request
+		// Extract token from request or context
 		token := chJwtServer.ExtractTokenFromRequest(req)
+		if token == "" {
+			// Try to get token from context (set by SSE server)
+			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+				if tokenStr, ok := tokenFromCtx.(string); ok {
+					token = tokenStr
+				}
+			}
+		}
 
 		// Get ClickHouse client
 		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
@@ -456,8 +513,16 @@ func RegisterResources(srv AltinityMCPServer) {
 			return nil, fmt.Errorf("server does not support JWT authentication")
 		}
 
-		// Extract token from request
+		// Extract token from request or context
 		token := chJwtServer.ExtractTokenFromRequest(req)
+		if token == "" {
+			// Try to get token from context (set by SSE server)
+			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+				if tokenStr, ok := tokenFromCtx.(string); ok {
+					token = tokenStr
+				}
+			}
+		}
 
 		// Get ClickHouse client
 		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
