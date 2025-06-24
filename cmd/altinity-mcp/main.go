@@ -432,13 +432,22 @@ func newApplication(ctx context.Context, cfg config.Config) (*application, error
 
 		// Test connection
 		if pingErr := chClient.Ping(ctx); pingErr != nil {
+			log.Error().
+				Err(pingErr).
+				Str("host", cfg.ClickHouse.Host).
+				Int("port", cfg.ClickHouse.Port).
+				Str("database", cfg.ClickHouse.Database).
+				Msg("ClickHouse connection test failed during application startup")
 			_ = chClient.Close()
 			return nil, fmt.Errorf("ClickHouse connection test failed: %w", pingErr)
 		}
 
 		log.Debug().Msg("ClickHouse connection established")
 		if closeErr := chClient.Close(); closeErr != nil {
-			return nil, fmt.Errorf("can't close clickhouse connection after ping: %w", err)
+			log.Error().
+				Err(closeErr).
+				Msg("Failed to close ClickHouse connection after successful ping")
+			return nil, fmt.Errorf("can't close clickhouse connection after ping: %w", closeErr)
 		}
 	} else {
 		log.Debug().Msg("JWT authentication enabled, skipping default ClickHouse connection test")

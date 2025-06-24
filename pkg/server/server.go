@@ -194,7 +194,11 @@ func RegisterTools(srv AltinityMCPServer) {
 
 		tables, err := chClient.ListTables(ctx, database)
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to list tables")
+			log.Error().
+				Err(err).
+				Str("database", database).
+				Str("tool", "list_tables").
+				Msg("ClickHouse operation failed: list tables")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
 		}
 
@@ -272,7 +276,12 @@ func RegisterTools(srv AltinityMCPServer) {
 
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
-			log.Error().Err(err).Str("query", query).Msg("Query execution failed")
+			log.Error().
+				Err(err).
+				Str("query", query).
+				Float64("limit", limit).
+				Str("tool", "execute_query").
+				Msg("ClickHouse operation failed: query execution")
 			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
 		}
 
@@ -329,6 +338,12 @@ func RegisterTools(srv AltinityMCPServer) {
 
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("database", database).
+				Str("table", tableName).
+				Str("tool", "describe_table").
+				Msg("ClickHouse operation failed: describe table")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
 		}
 
@@ -376,6 +391,10 @@ func RegisterResources(srv AltinityMCPServer) {
 		// With an empty database string, ListTables will return tables from all databases
 		tables, err := chClient.ListTables(ctx, "")
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("resource", "schema").
+				Msg("ClickHouse operation failed: get schema")
 			return nil, fmt.Errorf("failed to get schema: %w", err)
 		}
 
@@ -437,6 +456,12 @@ func RegisterResources(srv AltinityMCPServer) {
 
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
+			log.Error().
+				Err(err).
+				Str("database", database).
+				Str("table", tableName).
+				Str("resource", "table_structure").
+				Msg("ClickHouse operation failed: get table structure")
 			return nil, fmt.Errorf("failed to get table structure: %w", err)
 		}
 

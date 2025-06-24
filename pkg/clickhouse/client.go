@@ -115,6 +115,13 @@ func (c *Client) connect() error {
 	})
 
 	if openErr != nil {
+		log.Error().
+			Err(openErr).
+			Str("host", c.config.Host).
+			Int("port", c.config.Port).
+			Str("database", c.config.Database).
+			Str("protocol", string(c.config.Protocol)).
+			Msg("ClickHouse connection failed")
 		return openErr
 	}
 
@@ -142,6 +149,11 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("no active connection to ping")
 	}
 	if err := c.conn.Ping(ctx); err != nil {
+		log.Error().
+			Err(err).
+			Str("host", c.config.Host).
+			Int("port", c.config.Port).
+			Msg("ClickHouse ping failed")
 		return fmt.Errorf("ping failed: %w", err)
 	}
 
@@ -169,6 +181,12 @@ func (c *Client) DescribeTable(ctx context.Context, database, tableName string) 
 
 	rows, err := c.conn.Query(ctx, query, database, tableName)
 	if err != nil {
+		log.Error().
+			Err(err).
+			Str("database", database).
+			Str("table", tableName).
+			Str("query", query).
+			Msg("ClickHouse query failed: describe table")
 		return nil, fmt.Errorf("failed to query table description for %s: %w", tableName, err)
 	}
 	defer func() {
@@ -181,12 +199,22 @@ func (c *Client) DescribeTable(ctx context.Context, database, tableName string) 
 	for rows.Next() {
 		var col ColumnInfo
 		if err := rows.ScanStruct(&col); err != nil {
+			log.Error().
+				Err(err).
+				Str("database", database).
+				Str("table", tableName).
+				Msg("ClickHouse scan failed: describe table row")
 			return nil, fmt.Errorf("failed to scan row for describe table %s: %w", tableName, err)
 		}
 		columns = append(columns, col)
 	}
 
 	if err := rows.Err(); err != nil {
+		log.Error().
+			Err(err).
+			Str("database", database).
+			Str("table", tableName).
+			Msg("ClickHouse iteration failed: describe table rows")
 		return nil, fmt.Errorf("error iterating rows for describe table %s: %w", tableName, err)
 	}
 
@@ -213,6 +241,11 @@ func (c *Client) ListTables(ctx context.Context, database string) ([]TableInfo, 
 
 	var tables []TableInfo
 	if err := c.conn.Select(ctx, &tables, query, args...); err != nil {
+		log.Error().
+			Err(err).
+			Str("database", database).
+			Str("query", query).
+			Msg("ClickHouse query failed: list tables")
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
 
@@ -241,6 +274,10 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 	}
 
 	if err := rows.Scan(scannables...); err != nil {
+		log.Error().
+			Err(err).
+			Int("column_count", len(scannables)).
+			Msg("ClickHouse scan failed: query result row")
 		return nil, fmt.Errorf("failed to scan row: %w", err)
 	}
 
@@ -270,6 +307,11 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 
 	rows, err := c.conn.Query(ctx, query, args...)
 	if err != nil {
+		log.Error().
+			Err(err).
+			Str("query", truncateString(query, 200)).
+			Int("arg_count", len(args)).
+			Msg("ClickHouse query failed: execute select")
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer func() {
@@ -298,6 +340,11 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 	}
 
 	if err := rows.Err(); err != nil {
+		log.Error().
+			Err(err).
+			Str("query", truncateString(query, 200)).
+			Int("rows_processed", len(result.Rows)).
+			Msg("ClickHouse iteration failed: select query rows")
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 
@@ -317,6 +364,11 @@ func (c *Client) executeNonSelect(ctx context.Context, query string, args ...int
 
 	err := c.conn.Exec(ctx, query, args...)
 	if err != nil {
+		log.Error().
+			Err(err).
+			Str("query", truncateString(query, 200)).
+			Int("arg_count", len(args)).
+			Msg("ClickHouse exec failed: execute non-select")
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 
