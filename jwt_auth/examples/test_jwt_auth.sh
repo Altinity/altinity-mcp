@@ -14,7 +14,7 @@ TOKEN=$(go run "${CUR_DIR}/jwt_token_generator.go" \
   --password="${CLICKHOUSE_PASSWORD:-}" \
   --tls="${CLICKHOUSE_TLS:-False}" \
   --protocol="http" \
-  --expiry=3600 | grep -A 1 "JWT Token:" | tail -n 1)
+  --expiry="${TOKEN_EXPIRE:-86400}" | grep -A 1 "JWT Token:" | tail -n 1)
 
 echo "Generated token: $TOKEN"
 

@@ -195,7 +195,13 @@ func RegisterTools(srv AltinityMCPServer) {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
 		}
-		defer chClient.Close()
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msg("list_tables: can't close clickhouse")
+			}
+		}()
 
 		tables, err := chClient.ListTables(ctx, database)
 		if err != nil {
@@ -277,7 +283,13 @@ func RegisterTools(srv AltinityMCPServer) {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
 		}
-		defer chClient.Close()
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msg("execute_query: can't close clickhouse")
+			}
+		}()
 
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
@@ -339,7 +351,13 @@ func RegisterTools(srv AltinityMCPServer) {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
 		}
-		defer chClient.Close()
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msg("describe_table: can't close clickhouse")
+			}
+		}()
 
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
@@ -391,7 +409,13 @@ func RegisterResources(srv AltinityMCPServer) {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
 		}
-		defer chClient.Close()
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msg("clickhouse://schema: can't close clickhouse")
+			}
+		}()
 
 		// With an empty database string, ListTables will return tables from all databases
 		tables, err := chClient.ListTables(ctx, "")
@@ -434,7 +458,8 @@ func RegisterResources(srv AltinityMCPServer) {
 		// Extract database and table name from URI
 		uri := req.Params.URI
 		parts := strings.Split(uri, "/")
-		if len(parts) < 5 { // clickhouse://table/{database}/{table_name}
+		// expected clickhouse://table/{database}/{table_name}
+		if len(parts) < 5 {
 			return nil, fmt.Errorf("invalid table URI format: %s", uri)
 		}
 		database := parts[len(parts)-2]
@@ -457,7 +482,13 @@ func RegisterResources(srv AltinityMCPServer) {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
 		}
-		defer chClient.Close()
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msgf("clickhouse://table/%s/%s: can't close clickhouse", database, tableName)
+			}
+		}()
 
 		columns, err := chClient.DescribeTable(ctx, database, tableName)
 		if err != nil {
