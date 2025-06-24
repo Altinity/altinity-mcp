@@ -112,7 +112,7 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 	}
 
 	config := &Config{}
-	
+
 	// Determine file format by extension
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
@@ -134,37 +134,4 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 	}
 
 	return config, nil
-}
-
-// SaveConfigToFile saves configuration to a YAML or JSON file
-func (c *Config) SaveConfigToFile(filename string) error {
-	var data []byte
-	var err error
-
-	// Determine file format by extension
-	ext := strings.ToLower(filepath.Ext(filename))
-	switch ext {
-	case ".yaml", ".yml":
-		data, err = yaml.Marshal(c)
-		if err != nil {
-			return fmt.Errorf("failed to marshal config to YAML: %w", err)
-		}
-	case ".json":
-		data, err = json.MarshalIndent(c, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal config to JSON: %w", err)
-		}
-	default:
-		// Default to YAML
-		data, err = yaml.Marshal(c)
-		if err != nil {
-			return fmt.Errorf("failed to marshal config to YAML: %w", err)
-		}
-	}
-
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return fmt.Errorf("failed to write config file %s: %w", filename, err)
-	}
-
-	return nil
 }
