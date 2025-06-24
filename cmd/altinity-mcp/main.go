@@ -535,6 +535,10 @@ func (a *application) Start() error {
 					if token != "" {
 						return "/" + token
 					}
+					token = r.PathValue("token")
+					if token != "" {
+						return "/" + token
+					}
 					return "/"
 				}),
 				server.WithBaseURL(fmt.Sprintf("http://%s:%d", a.config.Server.Address, a.config.Server.Port)),

@@ -128,7 +128,7 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 	// Handle TLS configuration from JWT claims
 	if tlsEnabled, ok := claims["tls_enabled"].(bool); ok && tlsEnabled {
 		chConfig.TLS.Enabled = true
-		
+
 		if caCert, ok := claims["tls_ca_cert"].(string); ok && caCert != "" {
 			chConfig.TLS.CaCert = caCert
 		}
@@ -160,7 +160,14 @@ func (s *ClickHouseJWTServer) ExtractTokenFromRequest(req interface{}) string {
 	switch r := req.(type) {
 	case *http.Request:
 		if r != nil && r.URL != nil {
-			return r.URL.Query().Get(tokenParam)
+			token := r.URL.Query().Get(tokenParam)
+			if token != "" {
+				return token
+			}
+			token = r.PathValue(tokenParam)
+			if token != "" {
+				return token
+			}
 		}
 	case mcp.CallToolRequest:
 		if args := r.GetArguments(); args != nil {
