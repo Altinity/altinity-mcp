@@ -2,94 +2,23 @@
 # This configuration is equivalent to running with:
 # -allow-jwt-auth --jwt-secret-key=test-secret-key --transport=sse --port=8080 --log-level=debug --read-only
 
-replicaCount: 1
-
 image:
-  repository: ghcr.io/altinity/altinity-mcp
-  pullPolicy: IfNotPresent
   tag: "master"
 
-imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
-
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""
-
-podAnnotations: {}
-
-podSecurityContext: {}
-
-securityContext: {}
-
 service:
-  type: ClusterIP
-  port: 8080
   annotations:
     edge-proxy.altinity.com/port-mapping: 443:tls-to-tcp:8080
     edge-proxy.altinity.com/tls-server-name: mcp-github-jwt.altinity-skaeser-playground.dev.altinity.cloud
 
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: chart-example.local
-      paths:
-        - path: /
-          pathType: Prefix
-  tls: []
-
-resources: {}
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 100
-  targetCPUUtilizationPercentage: 80
-
-nodeSelector: {}
-
-tolerations: []
-
-affinity: {}
-
-# Configuration for the altinity-mcp application
 config:
-  # ClickHouse configuration
   clickhouse:
-    host: "localhost"
-    port: 8123
-    database: "default"
-    username: "default"
-    password: ""
-    protocol: "http"
     readOnly: true
-    maxExecutionTime: 30
-    tls:
-      enabled: false
-      caCert: ""
-      clientCert: ""
-      clientKey: ""
-      insecureSkipVerify: false
   
-  # Server configuration
   server:
     transport: "sse"
-    address: "0.0.0.0"
-    port: 8080
-    tls:
-      enabled: false
-      certFile: ""
-      keyFile: ""
-      caCert: ""
     jwt:
       enabled: true
       secretKey: "test-secret-key"
-      tokenParam: "token"
   
-  # Logging configuration
   logging:
     level: "debug"
