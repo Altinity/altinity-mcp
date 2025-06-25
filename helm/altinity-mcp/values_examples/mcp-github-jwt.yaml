@@ -4,6 +4,7 @@
 
 image:
   tag: "main"
+  pullPolicy: Always
 
 service:
   annotations:
