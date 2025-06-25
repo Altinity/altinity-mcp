@@ -119,3 +119,6 @@ config:
   # Logging configuration
   logging:
     level: "info"
+  
+  # Default limit for query results
+  limit: 1000
