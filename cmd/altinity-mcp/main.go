@@ -275,9 +275,9 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	status := map[string]interface{}{
-		"status": "healthy",
+		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"version": version,
+		"version":   version,
 	}
 
 	// If JWT auth is disabled, test ClickHouse connection for readiness
@@ -307,7 +307,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(status)
 			return
 		}
-		
+
 		status["clickhouse"] = "connected"
 	} else {
 		status["auth"] = "jwt_enabled"
@@ -321,7 +321,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 // buildConfig builds the application configuration from CLI flags and config file
 func buildConfig(cmd *cli.Command) (config.Config, error) {
 	var cfg config.Config
-	
+
 	// Load from config file if specified
 	configFile := cmd.String("config")
 	if configFile != "" {
@@ -336,7 +336,7 @@ func buildConfig(cmd *cli.Command) (config.Config, error) {
 
 	// Override with CLI flags (CLI flags take precedence over config file)
 	overrideWithCLIFlags(&cfg, cmd)
-	
+
 	return cfg, nil
 }
 
@@ -387,39 +387,39 @@ func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
 	} else if cfg.ClickHouse.Host == "" {
 		cfg.ClickHouse.Host = "localhost"
 	}
-	
+
 	if cmd.IsSet("clickhouse-port") {
 		cfg.ClickHouse.Port = cmd.Int("clickhouse-port")
 	} else if cfg.ClickHouse.Port == 0 {
 		cfg.ClickHouse.Port = 8123
 	}
-	
+
 	if cmd.IsSet("clickhouse-database") {
 		cfg.ClickHouse.Database = cmd.String("clickhouse-database")
 	} else if cfg.ClickHouse.Database == "" {
 		cfg.ClickHouse.Database = "default"
 	}
-	
+
 	if cmd.IsSet("clickhouse-username") {
 		cfg.ClickHouse.Username = cmd.String("clickhouse-username")
 	} else if cfg.ClickHouse.Username == "" {
 		cfg.ClickHouse.Username = "default"
 	}
-	
+
 	if cmd.IsSet("clickhouse-password") {
 		cfg.ClickHouse.Password = cmd.String("clickhouse-password")
 	}
-	
+
 	if cmd.IsSet("clickhouse-protocol") {
 		cfg.ClickHouse.Protocol = chProtocol
 	} else if cfg.ClickHouse.Protocol == "" {
 		cfg.ClickHouse.Protocol = config.HTTPProtocol
 	}
-	
+
 	if cmd.IsSet("read-only") {
 		cfg.ClickHouse.ReadOnly = cmd.Bool("read-only")
 	}
-	
+
 	if cmd.IsSet("clickhouse-max-execution-time") {
 		cfg.ClickHouse.MaxExecutionTime = cmd.Int("clickhouse-max-execution-time")
 	} else if cfg.ClickHouse.MaxExecutionTime == 0 {
@@ -449,13 +449,13 @@ func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
 	} else if cfg.Server.Transport == "" {
 		cfg.Server.Transport = config.StdioTransport
 	}
-	
+
 	if cmd.IsSet("address") {
 		cfg.Server.Address = cmd.String("address")
 	} else if cfg.Server.Address == "" {
 		cfg.Server.Address = "0.0.0.0"
 	}
-	
+
 	if cmd.IsSet("port") {
 		cfg.Server.Port = cmd.Int("port")
 	} else if cfg.Server.Port == 0 {
@@ -595,12 +595,12 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 }
 
 type application struct {
-	config         config.Config
-	mcpServer      *altinitymcp.ClickHouseJWTServer
-	httpSrv        *http.Server
-	configFile     string
+	config           config.Config
+	mcpServer        *altinitymcp.ClickHouseJWTServer
+	httpSrv          *http.Server
+	configFile       string
 	configReloadTime int
-	configMutex    sync.RWMutex
+	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
 }
 
@@ -666,7 +666,7 @@ func (a *application) Close() {
 	if a.configFile != "" && a.configReloadTime > 0 {
 		close(a.stopConfigReload)
 	}
-	
+
 	// No resources to close as the ClickHouse client is created and closed per request
 	log.Debug().Msg("Application resources cleaned up")
 }
@@ -732,7 +732,7 @@ func (a *application) reloadConfig(cmd *cli.Command) error {
 
 	// Create new MCP server with updated config
 	newMCPServer := altinitymcp.NewClickHouseMCPServer(newCfg.ClickHouse, newCfg.Server.JWT)
-	
+
 	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
 	a.configMutex.Lock()
 	a.mcpServer = newMCPServer
@@ -752,7 +752,7 @@ func (a *application) GetCurrentConfig() config.Config {
 func (a *application) Start() error {
 	// Get current config (thread-safe)
 	cfg := a.GetCurrentConfig()
-	
+
 	// Start the server based on transport type
 	log.Info().
 		Str("transport", string(cfg.Server.Transport)).
@@ -816,7 +816,7 @@ func (a *application) Start() error {
 		var sseHandler http.Handler
 		if cfg.Server.JWT.Enabled {
 			log.Info().Msg("Using dynamic base path for JWT authentication")
-			
+
 			// Create a wrapper that injects the token into the context
 			tokenInjector := func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -846,7 +846,7 @@ func (a *application) Start() error {
 					return "/"
 				}),
 				server.WithBaseURL(fmt.Sprintf("http://%s:%d", cfg.Server.Address, cfg.Server.Port)),
-				server.WithUseFullURLForMessageEndpoint(true),
+				server.WithUseFullURLForMessageEndpoint(false),
 			)
 
 			// Register custom handlers to ensure token is in the path and inject it into context
