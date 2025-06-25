@@ -12,13 +12,13 @@ service:
 
 config:
   clickhouse:
-    readOnly: true
+    read_only: true
   
   server:
     transport: "sse"
     jwt:
       enabled: true
-      secretKey: "test-secret-key"
+      secret_key: "test-secret-key"
   
   logging:
     level: "debug"

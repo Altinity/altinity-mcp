@@ -92,14 +92,14 @@ config:
     username: "default"
     password: ""
     protocol: "http"
-    readOnly: false
-    maxExecutionTime: 30
+    read_only: false
+    max_execution_time: 30
     tls:
       enabled: false
-      caCert: ""
-      clientCert: ""
-      clientKey: ""
-      insecureSkipVerify: false
+      ca_cert: ""
+      client_cert: ""
+      client_key: ""
+      insecure_skip_verify: false
   
   # Server configuration
   server:
@@ -108,13 +108,13 @@ config:
     port: 8080
     tls:
       enabled: false
-      certFile: ""
-      keyFile: ""
-      caCert: ""
+      cert_file: ""
+      key_file: ""
+      ca_cert: ""
     jwt:
       enabled: false
-      secretKey: ""
-      tokenParam: "token"
+      secret_key: ""
+      token_param: "token"
   
   # Logging configuration
   logging:
