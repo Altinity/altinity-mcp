@@ -128,6 +128,9 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 	if protocol, ok := claims["protocol"].(string); ok && protocol != "" {
 		chConfig.Protocol = config.ClickHouseProtocol(protocol)
 	}
+	if limit, ok := claims["limit"].(float64); ok && limit > 0 {
+		chConfig.Limit = int(limit)
+	}
 
 	// Handle TLS configuration from JWT claims
 	if tlsEnabled, ok := claims["tls_enabled"].(bool); ok && tlsEnabled {
