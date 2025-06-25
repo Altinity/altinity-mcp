@@ -36,7 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config
-            - /etc/altinity-mcp/config.json
+            - /etc/altinity-mcp/config.yaml
           ports:
             - name: http
               containerPort: {{ .Values.config.server.port }}
