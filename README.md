@@ -209,6 +209,7 @@ go run ./jwt_auth/examples/jwt_token_generator.go \
   --database "analytics" \
   --username "user123"
 ```
+More details in [jwt_authentication.md](./jwt_auth/docs/jwt_authentication.md)
 
 ## TLS Configuration
 

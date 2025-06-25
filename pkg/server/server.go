@@ -256,11 +256,12 @@ func RegisterTools(srv AltinityMCPServer) {
 		}
 
 		// Get optional limit parameter, use server default if not provided
-		limit := float64(chJwtServer.clickhouseConfig.Limit) // use server default
+		defaultLimit := float64(chJwtServer.clickhouseConfig.Limit)
+		limit := defaultLimit
 		if limitVal, exists := req.GetArguments()["limit"]; exists {
 			if l, ok := limitVal.(float64); ok {
-				if l > 10000 {
-					return mcp.NewToolResultError("Limit cannot exceed 10,000 rows"), nil
+				if l > defaultLimit {
+					return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %.0f rows", defaultLimit)), nil
 				}
 				if l > 0 {
 					limit = l
