@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -256,6 +257,65 @@ func setupLogging(level string) error {
 
 	log.Debug().Str("level", level).Msg("Logging configured")
 	return nil
+}
+
+// healthHandler provides a health check endpoint for Kubernetes probes
+func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get current config (thread-safe)
+	cfg := a.GetCurrentConfig()
+
+	// For basic health check, we'll return 200 OK
+	// For readiness, we should test ClickHouse connection if JWT auth is disabled
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	status := map[string]interface{}{
+		"status": "healthy",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"version": version,
+	}
+
+	// If JWT auth is disabled, test ClickHouse connection for readiness
+	if !cfg.Server.JWT.Enabled {
+		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
+		if err != nil {
+			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
+			status["status"] = "unhealthy"
+			status["error"] = "failed to create ClickHouse client"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(status)
+			return
+		}
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Warn().Err(closeErr).Msg("Health check: failed to close ClickHouse client")
+			}
+		}()
+
+		if err := chClient.Ping(ctx); err != nil {
+			log.Error().Err(err).Msg("Health check: ClickHouse ping failed")
+			status["status"] = "unhealthy"
+			status["error"] = "ClickHouse connection failed"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(status)
+			return
+		}
+		
+		status["clickhouse"] = "connected"
+	} else {
+		status["auth"] = "jwt_enabled"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(status)
 }
 
 // buildConfig builds the application configuration from CLI flags and config file
@@ -719,6 +779,7 @@ func (a *application) Start() error {
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/", httpServer)
+		mux.HandleFunc("/health", a.healthHandler)
 
 		a.httpSrv = &http.Server{
 			Addr:    addr,
@@ -792,11 +853,15 @@ func (a *application) Start() error {
 			mux := http.NewServeMux()
 			mux.Handle("/{token}/sse", tokenInjector(sseServer.SSEHandler()))
 			mux.Handle("/{token}/message", tokenInjector(sseServer.MessageHandler()))
+			mux.HandleFunc("/health", a.healthHandler)
 			sseHandler = mux
 		} else {
 			// Use standard SSE server without dynamic paths
 			sseServer := server.NewSSEServer(mcpServer)
-			sseHandler = sseServer
+			mux := http.NewServeMux()
+			mux.Handle("/", sseServer)
+			mux.HandleFunc("/health", a.healthHandler)
+			sseHandler = mux
 		}
 
 		a.httpSrv = &http.Server{
