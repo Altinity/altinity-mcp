@@ -199,10 +199,10 @@ func main() {
 				Sources: cli.EnvVars("MCP_JWT_TOKEN_PARAM"),
 			},
 			&cli.IntFlag{
-				Name:    "limit",
+				Name:    "clickhouse-limit",
 				Usage:   "Default limit for query results",
 				Value:   1000,
-				Sources: cli.EnvVars("MCP_LIMIT"),
+				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -503,8 +503,8 @@ func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
 	}
 
 	// Override Limit config with CLI flags
-	if cmd.IsSet("limit") {
-		cfg.Limit = cmd.Int("limit")
+	if cmd.IsSet("clickhouse-limit") {
+		cfg.Limit = cmd.Int("clickhouse-limit")
 	} else if cfg.Limit == 0 {
 		cfg.Limit = 1000
 	}
