@@ -72,9 +72,11 @@ docker run -it altinity-mcp --clickhouse-host host.docker.internal
 ### Using Helm
 
 ```bash
+git checkout https://github.com/Altinity/altinity-mcp
+cd altinity-mcp
 helm install altinity-mcp ./helm/altinity-mcp \
-  --set clickhouse.host=clickhouse.example.com \
-  --set clickhouse.database=default
+  --set config.clickhouse.host=clickhouse.example.com \
+  --set config.clickhouse.database=default
 ```
 
 ## Configuration
