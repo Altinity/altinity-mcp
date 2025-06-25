@@ -277,12 +277,6 @@ func RegisterTools(srv AltinityMCPServer) {
 			query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 		}
 
-		// Get the ClickHouse client from JWT token or default config
-		chJwtServer, ok := srv.(*ClickHouseJWTServer)
-		if !ok {
-			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-		}
-
 		// Extract token from context
 		token := chJwtServer.ExtractTokenFromCtx(ctx)
 
