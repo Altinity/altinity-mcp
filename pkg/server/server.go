@@ -27,7 +27,6 @@ type ClickHouseJWTServer struct {
 	*server.MCPServer
 	jwtConfig        config.JWTConfig
 	clickhouseConfig config.ClickHouseConfig
-	defaultLimit     int
 }
 
 // AltinityMCPServer @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
@@ -42,7 +41,7 @@ type AltinityMCPServer interface {
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
-func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.JWTConfig, defaultLimit int) *ClickHouseJWTServer {
+func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.JWTConfig) *ClickHouseJWTServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -57,7 +56,6 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 		MCPServer:        srv,
 		jwtConfig:        jwtConfig,
 		clickhouseConfig: chConfig,
-		defaultLimit:     defaultLimit,
 	}
 
 	// Register tools, resources, and prompts
@@ -67,7 +65,7 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 	log.Info().
 		Bool("jwt_enabled", jwtConfig.Enabled).
-		Int("default_limit", defaultLimit).
+		Int("default_limit", chConfig.Limit).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
 	return chJwtServer
@@ -255,7 +253,7 @@ func RegisterTools(srv AltinityMCPServer) {
 		}
 
 		// Get optional limit parameter, use server default if not provided
-		limit := float64(chJwtServer.defaultLimit) // use server default
+		limit := float64(chJwtServer.clickhouseConfig.Limit) // use server default
 		if limitVal, exists := req.GetArguments()["limit"]; exists {
 			if l, ok := limitVal.(float64); ok {
 				if l > 10000 {

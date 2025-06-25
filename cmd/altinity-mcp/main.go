@@ -502,11 +502,11 @@ func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
 		cfg.Logging.Level = config.InfoLevel
 	}
 
-	// Override Limit config with CLI flags
+	// Override ClickHouse Limit config with CLI flags
 	if cmd.IsSet("clickhouse-limit") {
-		cfg.Limit = cmd.Int("clickhouse-limit")
-	} else if cfg.Limit == 0 {
-		cfg.Limit = 1000
+		cfg.ClickHouse.Limit = cmd.Int("clickhouse-limit")
+	} else if cfg.ClickHouse.Limit == 0 {
+		cfg.ClickHouse.Limit = 1000
 	}
 }
 
@@ -656,7 +656,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd *cli.Command) (*
 
 	// Create MCP server
 	log.Debug().Msg("Creating MCP server...")
-	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg.ClickHouse, cfg.Server.JWT, cfg.Limit)
+	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg.ClickHouse, cfg.Server.JWT)
 
 	app := &application{
 		config:           cfg,
@@ -744,7 +744,7 @@ func (a *application) reloadConfig(cmd *cli.Command) error {
 	}
 
 	// Create new MCP server with updated config
-	newMCPServer := altinitymcp.NewClickHouseMCPServer(newCfg.ClickHouse, newCfg.Server.JWT, newCfg.Limit)
+	newMCPServer := altinitymcp.NewClickHouseMCPServer(newCfg.ClickHouse, newCfg.Server.JWT)
 
 	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
 	a.configMutex.Lock()

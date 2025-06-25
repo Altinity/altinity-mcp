@@ -40,6 +40,7 @@ type ClickHouseConfig struct {
 	TLS              TLSConfig          `json:"tls" yaml:"tls"`
 	ReadOnly         bool               `json:"read_only" yaml:"read_only" flag:"read-only" desc:"Connect to ClickHouse in read-only mode"`
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
+	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Default limit for query results"`
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -102,7 +103,6 @@ type Config struct {
 	ClickHouse ClickHouseConfig `json:"clickhouse" yaml:"clickhouse"`
 	Server     ServerConfig     `json:"server" yaml:"server"`
 	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
-	Limit      int              `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Default limit for query results"`
 }
 
 // LoadConfigFromFile loads configuration from a YAML or JSON file
