@@ -102,7 +102,7 @@ type Config struct {
 	ClickHouse ClickHouseConfig `json:"clickhouse" yaml:"clickhouse"`
 	Server     ServerConfig     `json:"server" yaml:"server"`
 	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
-	Limit      int              `json:"limit" yaml:"limit" flag:"limit" desc:"Default limit for query results"`
+	Limit      int              `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Default limit for query results"`
 }
 
 // LoadConfigFromFile loads configuration from a YAML or JSON file

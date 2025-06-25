@@ -29,7 +29,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --clickhouse-database analytics \
   --clickhouse-username reader \
   --clickhouse-password secret123 \
-  --limit 5000
+  --clickhouse-limit 5000
 ```
 
 ### Using HTTP Transport
@@ -137,6 +137,7 @@ All configuration options can be set via environment variables:
 export CLICKHOUSE_HOST=localhost
 export CLICKHOUSE_PORT=8123
 export CLICKHOUSE_DATABASE=analytics
+export CLICKHOUSE_LIMIT=5000
 export MCP_TRANSPORT=http
 export MCP_PORT=8080
 export LOG_LEVEL=debug
@@ -286,10 +287,10 @@ go test -v ./cmd/altinity-mcp/...
 
 ```bash
 helm install altinity-mcp ./helm/altinity-mcp \
-  --set clickhouse.host=clickhouse-service \
-  --set clickhouse.database=analytics \
-  --set server.transport=http \
-  --set server.port=8080
+  --set config.clickhouse.host=clickhouse-service \
+  --set config.clickhouse.database=analytics \
+  --set config.server.transport=http \
+  --set config.server.port=8080
 ```
 
 ### Docker Compose
@@ -320,6 +321,7 @@ services:
 
 - `--config`: Path to configuration file (YAML or JSON)
 - `--log-level`: Logging level (debug/info/warn/error)
+- `--clickhouse-limit`: Default limit for query results (default: 1000)
 
 ### ClickHouse Flags
 
