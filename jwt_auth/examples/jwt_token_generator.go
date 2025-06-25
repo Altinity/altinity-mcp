@@ -17,6 +17,7 @@ func main() {
 		username              = flag.String("username", "default", "ClickHouse username")
 		password              = flag.String("password", "", "ClickHouse password")
 		protocol              = flag.String("protocol", "http", "ClickHouse protocol (http/tcp)")
+		limit                 = flag.Int("limit", 1000, "Default limit for query results")
 		expiry                = flag.Int("expiry", 3600, "Token expiry time in seconds")
 		tlsEnabled            = flag.Bool("tls", false, "Enable TLS for ClickHouse connection")
 		tlsCaCert             = flag.String("tls-ca-cert", "", "Path to CA certificate for ClickHouse connection")
@@ -39,6 +40,11 @@ func main() {
 	// Only include password if provided
 	if *password != "" {
 		claims["password"] = *password
+	}
+
+	// Include limit if provided
+	if *limit > 0 {
+		claims["limit"] = *limit
 	}
 
 	// Include TLS configuration if enabled

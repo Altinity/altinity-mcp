@@ -28,7 +28,8 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --clickhouse-protocol tcp \
   --clickhouse-database analytics \
   --clickhouse-username reader \
-  --clickhouse-password secret123
+  --clickhouse-password secret123 \
+  --limit 5000
 ```
 
 ### Using HTTP Transport
@@ -76,7 +77,8 @@ git checkout https://github.com/Altinity/altinity-mcp
 cd altinity-mcp
 helm install altinity-mcp ./helm/altinity-mcp \
   --set config.clickhouse.host=clickhouse.example.com \
-  --set config.clickhouse.database=default
+  --set config.clickhouse.database=default \
+  --set config.limit=5000
 ```
 
 ## Configuration
@@ -162,7 +164,7 @@ Executes SQL queries against ClickHouse with optional result limiting.
 
 **Parameters:**
 - `query` (required): The SQL query to execute
-- `limit` (optional): Maximum number of rows to return
+- `limit` (optional): Maximum number of rows to return (default: server configured limit, max: 10,000)
 
 ## Available Resources
 
