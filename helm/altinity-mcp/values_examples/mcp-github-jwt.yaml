@@ -3,7 +3,7 @@
 # -allow-jwt-auth --jwt-secret-key=test-secret-key --transport=sse --port=8080 --log-level=debug --read-only
 
 image:
-  tag: "master"
+  tag: "main"
 
 service:
   annotations:
