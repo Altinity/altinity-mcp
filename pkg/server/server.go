@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -645,6 +646,6 @@ func isSelectQuery(query string) bool {
 }
 
 func hasLimitClause(query string) bool {
-	upper := strings.ToUpper(query)
-	return strings.Contains(upper, " LIMIT ")
+	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
+	return hasLimit
 }

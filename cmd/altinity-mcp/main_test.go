@@ -14,7 +14,6 @@ import (
 	altinityMcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -100,15 +99,6 @@ func TestJWTTokenGeneration(t *testing.T) {
 	})
 }
 
-type AltinityMCPTestServer struct {
-	*mcptest.Server
-}
-
-// AddResourceTemplate, currently doesn't implements in mcptest https://github.com/mark3labs/mcp-go/issues/436
-func (s *AltinityMCPTestServer) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
-
-}
-
 // setupClickHouseContainer sets up a ClickHouse container for testing.
 func setupClickHouseContainer(t *testing.T, ctx context.Context) *config.ClickHouseConfig {
 	t.Helper()
@@ -189,11 +179,10 @@ func TestMCPServer(t *testing.T) {
 
 	// Create a test server
 	testServer := mcptest.NewUnstartedServer(t)
-	testServerWrapper := &AltinityMCPTestServer{testServer}
 	// Add tools
-	altinityMcp.RegisterTools(testServerWrapper)
-	altinityMcp.RegisterResources(testServerWrapper)
-	altinityMcp.RegisterPrompts(testServerWrapper)
+	altinityMcp.RegisterTools(testServer)
+	altinityMcp.RegisterResources(testServer)
+	altinityMcp.RegisterPrompts(testServer)
 
 	// Start the server
 	err = testServer.Start(ctx)
@@ -216,7 +205,7 @@ func TestMCPServer(t *testing.T) {
 			result, err := client.CallTool(ctx, callReq)
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			require.False(t, result.IsError)
+			require.False(t, result.IsError, "unexpected result=%#v", result)
 
 			text := getTextContent(result)
 			require.Contains(t, text, "test")
