@@ -27,7 +27,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.21'
+        go-version: '1.24'
 
     - name: Install cross-compilation tools
       run: |
@@ -37,11 +37,7 @@ jobs:
     - name: Build binary for ${{ matrix.platform }}
       run: |
         mkdir -p build/linux/${{ matrix.platform }}
-        if [ "${{ matrix.platform }}" = "arm64" ]; then
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
-        else
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
-        fi
+        CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
