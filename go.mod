@@ -1,6 +1,6 @@
 module github.com/altinity/altinity-mcp
 
-go 1.24
+go 1.21
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.37.2
