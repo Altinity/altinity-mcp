@@ -346,8 +346,16 @@ func buildConfig(cmd *cli.Command) (config.Config, error) {
 	return cfg, nil
 }
 
+// CommandInterface defines the interface needed by overrideWithCLIFlags
+type CommandInterface interface {
+	String(name string) string
+	Int(name string) int
+	Bool(name string) bool
+	IsSet(name string) bool
+}
+
 // overrideWithCLIFlags overrides config values with CLI flags if they are set
-func overrideWithCLIFlags(cfg *config.Config, cmd *cli.Command) {
+func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	// Parse ClickHouse protocol
 	var chProtocol config.ClickHouseProtocol
 	switch strings.ToLower(cmd.String("clickhouse-protocol")) {
