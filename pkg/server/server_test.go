@@ -836,10 +836,21 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// Create a token with invalid claims structure which not contains required fields
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-		})
+		// Create a custom claims struct that is not jwt.MapClaims
+		type CustomClaims struct {
+			Host string `json:"host"`
+			jwt.RegisteredClaims
+		}
+
+		customClaims := CustomClaims{
+			Host: "test-host",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
+		}
+
+		// Create a token with custom claims structure that cannot be cast to jwt.MapClaims
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, customClaims)
 		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
