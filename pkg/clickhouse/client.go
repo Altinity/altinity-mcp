@@ -257,7 +257,8 @@ func (c *Client) ListTables(ctx context.Context, database string) ([]TableInfo, 
 	}
 	query += " ORDER BY database, name"
 
-	var tables []TableInfo
+	// Initialize the slice to ensure it's never nil
+	tables := make([]TableInfo, 0)
 	if err := c.conn.Select(ctx, &tables, query, args...); err != nil {
 		log.Error().
 			Err(err).
