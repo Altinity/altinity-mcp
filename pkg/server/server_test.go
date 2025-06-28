@@ -534,7 +534,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 
 	t.Run("ReadResource_InvalidTableURI", func(t *testing.T) {
 		// Test reading table structure resource with invalid URI
-		result, err := testServer.ReadResource(ctx, "clickhouse://table/invalid")
+		_, err := testServer.ReadResource(ctx, "clickhouse://table/invalid")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid table URI format")
 	})
@@ -553,7 +553,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 
 	t.Run("GetPrompt_QueryBuilder_MissingDatabase", func(t *testing.T) {
 		// Test query builder prompt with missing database
-		result, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
+		_, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
 			"table_name": "test",
 			"query_type": "select",
 		})
@@ -573,7 +573,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 
 	t.Run("GetPrompt_PerformanceAnalysis_MissingQuery", func(t *testing.T) {
 		// Test performance analysis prompt with missing query
-		result, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{})
+		_, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "query parameter is required")
 	})
@@ -788,8 +788,10 @@ func TestGetClickHouseClient(t *testing.T) {
 		}
 
 		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString(jwtConfig.SecretKey)
+		require.NoError(t, err)
 		// This will fail because we're using RS256 but the server expects HS256
-		_, err := server.GetClickHouseClient(ctx, "invalid.token.here")
+		_, err = server.GetClickHouseClient(ctx, tokenString)
 		require.Equal(t, ErrInvalidToken, err)
 	})
 
@@ -1075,7 +1077,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 
 	t.Run("invalid_types", func(t *testing.T) {
 		claims := jwt.MapClaims{
-			"host": 123,     // Should be string
+			"host": 123,       // Should be string
 			"port": "invalid", // Should be number
 		}
 
