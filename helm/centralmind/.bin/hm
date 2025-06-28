@@ -1,6 +1,0 @@
-# quick install
-#  k config use-context aws-prod-demo
-helm upgrade  --install mcp-$1 ./ -f values.yaml -f mcp-$1.yaml \
-  -n demo --kube-context aws-prod-demo
-# -n  altinity-cloud-managed-clickhouse
-#--reuse-values=false --force

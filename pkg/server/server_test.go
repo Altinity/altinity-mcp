@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
-	"os"
 	"testing"
 	"time"
 
@@ -18,11 +16,6 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 )
-
-// TestMain sets up logging for the test suite.
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
-}
 
 // AltinityTestServer wraps mcptest functionality to provide additional functionality
 // specific to Altinity MCP server testing.
@@ -444,7 +437,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
-		
+
 		// Verify we get some content back
 		textContent := testServer.GetTextContent(result)
 		require.NotEmpty(t, textContent)
@@ -469,11 +462,11 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Protocol: config.HTTPProtocol,
 		Limit:    1000,
 	}
-	
+
 	jwtConfig := config.JWTConfig{
 		Enabled: false,
 	}
-	
+
 	server := NewClickHouseMCPServer(chConfig, jwtConfig)
 	require.NotNil(t, server)
 	require.NotNil(t, server.MCPServer)
@@ -484,7 +477,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 // TestGetClickHouseClient tests the JWT client creation
 func TestGetClickHouseClient(t *testing.T) {
 	ctx := context.Background()
-	
+
 	t.Run("without_jwt", func(t *testing.T) {
 		chConfig := config.ClickHouseConfig{
 			Host:     "localhost",
@@ -494,19 +487,19 @@ func TestGetClickHouseClient(t *testing.T) {
 			Protocol: config.HTTPProtocol,
 			Limit:    1000,
 		}
-		
+
 		jwtConfig := config.JWTConfig{
 			Enabled: false,
 		}
-		
+
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
-		
+
 		// This will fail to connect but we're testing the logic, not the connection
 		_, err := server.GetClickHouseClient(ctx, "")
 		// We expect an error because we're not actually connecting to ClickHouse
 		require.Error(t, err)
 	})
-	
+
 	t.Run("with_jwt_missing_token", func(t *testing.T) {
 		chConfig := config.ClickHouseConfig{
 			Host:     "localhost",
@@ -516,18 +509,18 @@ func TestGetClickHouseClient(t *testing.T) {
 			Protocol: config.HTTPProtocol,
 			Limit:    1000,
 		}
-		
+
 		jwtConfig := config.JWTConfig{
-			Enabled: true,
+			Enabled:   true,
 			SecretKey: "test-secret",
 		}
-		
+
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
-		
+
 		_, err := server.GetClickHouseClient(ctx, "")
 		require.Equal(t, ErrMissingToken, err)
 	})
-	
+
 	t.Run("with_jwt_invalid_token", func(t *testing.T) {
 		chConfig := config.ClickHouseConfig{
 			Host:     "localhost",
@@ -537,14 +530,14 @@ func TestGetClickHouseClient(t *testing.T) {
 			Protocol: config.HTTPProtocol,
 			Limit:    1000,
 		}
-		
+
 		jwtConfig := config.JWTConfig{
-			Enabled: true,
+			Enabled:   true,
 			SecretKey: "test-secret",
 		}
-		
+
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
-		
+
 		_, err := server.GetClickHouseClient(ctx, "invalid-token")
 		require.Equal(t, ErrInvalidToken, err)
 	})
@@ -553,19 +546,19 @@ func TestGetClickHouseClient(t *testing.T) {
 // TestExtractTokenFromCtx tests token extraction from context
 func TestExtractTokenFromCtx(t *testing.T) {
 	server := &ClickHouseJWTServer{}
-	
+
 	t.Run("no_token", func(t *testing.T) {
 		ctx := context.Background()
 		token := server.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
 	})
-	
+
 	t.Run("with_token", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwt_token", "test-token")
 		token := server.ExtractTokenFromCtx(ctx)
 		require.Equal(t, "test-token", token)
 	})
-	
+
 	t.Run("wrong_type", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwt_token", 123)
 		token := server.ExtractTokenFromCtx(ctx)
@@ -582,7 +575,7 @@ func TestHelperFunctions(t *testing.T) {
 		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
 		require.False(t, isSelectQuery("CREATE TABLE test (id INT)"))
 	})
-	
+
 	t.Run("hasLimitClause", func(t *testing.T) {
 		require.True(t, hasLimitClause("SELECT * FROM table LIMIT 100"))
 		require.True(t, hasLimitClause("select * from table limit 50"))
@@ -598,14 +591,14 @@ func TestGetClickHouseJWTServerFromContext(t *testing.T) {
 		server := GetClickHouseJWTServerFromContext(ctx)
 		require.Nil(t, server)
 	})
-	
+
 	t.Run("with_server", func(t *testing.T) {
 		expectedServer := &ClickHouseJWTServer{}
 		ctx := context.WithValue(context.Background(), "clickhouse_jwt_server", expectedServer)
 		server := GetClickHouseJWTServerFromContext(ctx)
 		require.Equal(t, expectedServer, server)
 	})
-	
+
 	t.Run("wrong_type", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "clickhouse_jwt_server", "not-a-server")
 		server := GetClickHouseJWTServerFromContext(ctx)
