@@ -89,6 +89,28 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 	}
 
 	// Parse and validate JWT token
+	claims, err := s.parseAndValidateJWT(tokenParam)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create ClickHouse config from JWT claims
+	chConfig, err := s.buildConfigFromClaims(claims)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create client with the configured parameters
+	client, err := clickhouse.NewClient(ctx, chConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client from JWT: %w", err)
+	}
+
+	return client, nil
+}
+
+// parseAndValidateJWT parses and validates a JWT token
+func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenParam, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -108,6 +130,11 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 		return nil, fmt.Errorf("invalid token claims format")
 	}
 
+	return claims, nil
+}
+
+// buildConfigFromClaims builds a ClickHouse config from JWT claims
+func (s *ClickHouseJWTServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
 	// Create a new ClickHouse config from the claims
 	chConfig := s.ClickhouseConfig // Use default as base
 
@@ -151,13 +178,7 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 		}
 	}
 
-	// Create client with the configured parameters
-	client, err := clickhouse.NewClient(ctx, chConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ClickHouse client from JWT: %w", err)
-	}
-
-	return client, nil
+	return chConfig, nil
 }
 
 // ExtractTokenFromCtx extracts JWT token from context
