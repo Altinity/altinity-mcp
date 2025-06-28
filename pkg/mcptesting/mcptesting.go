@@ -34,22 +34,28 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 		Enabled: false,
 	}
 
-	// Create the ClickHouse JWT server
-	chJwtServer := altinitymcp.NewClickHouseMCPServer(*chConfig, jwtConfig)
-
-	// Create an mcptest server that wraps the underlying MCP server from our ClickHouse JWT server
+	// Create an mcptest server first
 	testServer := mcptest.NewUnstartedServer(t)
 	
-	// Create wrapper but don't register tools again - they're already registered in NewClickHouseMCPServer
+	// Create a ClickHouse JWT server but don't use NewClickHouseMCPServer to avoid double registration
+	// Instead, create the server manually and register tools only once
+	srv := server.NewMCPServer(
+		"Altinity ClickHouse MCP Server",
+		"1.0.0",
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+		server.WithRecovery(),
+	)
+
+	chJwtServer := &altinitymcp.ClickHouseJWTServer{
+		MCPServer:        srv,
+		JwtConfig:        jwtConfig,
+		ClickhouseConfig: *chConfig,
+	}
+	
+	// Register tools, resources, and prompts using the server wrapper (only once)
 	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer}
-	
-	// Copy the already registered tools, resources, and prompts from the ClickHouse JWT server
-	// to the test server by accessing the underlying MCP server
-	mcpServer := chJwtServer.MCPServer
-	
-	// We need to manually copy the handlers since mcptest.Server doesn't have direct access
-	// to the registered handlers from the original server. Instead, we'll register them
-	// through our wrapper which will inject the proper context.
 	altinitymcp.RegisterTools(wrapper)
 	altinitymcp.RegisterResources(wrapper)
 	altinitymcp.RegisterPrompts(wrapper)
