@@ -145,7 +145,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 	})
 }
 
-// mockCommand implements the interface needed by overrideWithCLIFlags for testing
+// mockCommand implements CommandInterface for testing
 type mockCommand struct {
 	flags    map[string]interface{}
 	setFlags map[string]bool
