@@ -156,7 +156,7 @@ func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, h
 		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-		return callResourceHandlerWithServer(ctx, req, handler, w)
+		return callResourceTemplateHandlerWithServer(ctx, req, handler, w)
 	}
 	w.testServer.AddResourceTemplate(template, wrappedHandler)
 }
@@ -280,6 +280,13 @@ func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfi
 // callResourceHandlerWithServer is a helper function to call resource handlers with proper server context
 func callResourceHandlerWithServer(ctx context.Context, req mcp.ReadResourceRequest, handler server.ResourceHandlerFunc, srv AltinityMCPServer) ([]mcp.ResourceContents, error) {
 	// The resource handlers in server.go expect to be called with a server that implements AltinityMCPServer
+	// We need to temporarily replace the server casting logic for testing
+	return handler(ctx, req)
+}
+
+// callResourceTemplateHandlerWithServer is a helper function to call resource template handlers with proper server context
+func callResourceTemplateHandlerWithServer(ctx context.Context, req mcp.ReadResourceRequest, handler server.ResourceTemplateHandlerFunc, srv AltinityMCPServer) ([]mcp.ResourceContents, error) {
+	// The resource template handlers in server.go expect to be called with a server that implements AltinityMCPServer
 	// We need to temporarily replace the server casting logic for testing
 	return handler(ctx, req)
 }
