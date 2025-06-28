@@ -82,14 +82,19 @@ func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 	// Convert server.ServerTool to mcptest.ServerTool
 	for _, tool := range tools {
 		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// Preserve existing JWT token from context, or set empty if none exists
-			existingToken := ""
+			// Preserve existing JWT token from context
 			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-				if tokenStr, ok := tokenFromCtx.(string); ok {
-					existingToken = tokenStr
+				if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
+					// Token exists and is not empty, preserve it
+					ctx = context.WithValue(ctx, "jwt_token", tokenStr)
+				} else {
+					// Token exists but is empty or wrong type, set empty
+					ctx = context.WithValue(ctx, "jwt_token", "")
 				}
+			} else {
+				// No token in context, set empty
+				ctx = context.WithValue(ctx, "jwt_token", "")
 			}
-			ctx = context.WithValue(ctx, "jwt_token", existingToken)
 			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return tool.Handler(ctx, req)
 		})
@@ -99,14 +104,19 @@ func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	// Create a wrapper that injects the ClickHouse JWT server into context
 	wrappedHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Preserve existing JWT token from context, or set empty if none exists
-		existingToken := ""
+		// Preserve existing JWT token from context
 		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok {
-				existingToken = tokenStr
+			if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
+				// Token exists and is not empty, preserve it
+				ctx = context.WithValue(ctx, "jwt_token", tokenStr)
+			} else {
+				// Token exists but is empty or wrong type, set empty
+				ctx = context.WithValue(ctx, "jwt_token", "")
 			}
+		} else {
+			// No token in context, set empty
+			ctx = context.WithValue(ctx, "jwt_token", "")
 		}
-		ctx = context.WithValue(ctx, "jwt_token", existingToken)
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 
 		// Call the original handler from the server package
@@ -243,20 +253,19 @@ func (s *AltinityTestServer) GetClickHouseClient() *clickhouse.Client {
 
 // CallTool is a helper method to call a tool
 func (s *AltinityTestServer) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	// Preserve existing JWT token from context, or set empty if none exists and JWT is disabled
+	// Ensure JWT token is properly set in context
 	if s.chJwtServer != nil {
-		existingToken := ""
 		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok {
-				existingToken = tokenStr
+			if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
+				// Token exists and is not empty, preserve it
+				ctx = context.WithValue(ctx, "jwt_token", tokenStr)
+			} else {
+				// Token exists but is empty or wrong type, set empty
+				ctx = context.WithValue(ctx, "jwt_token", "")
 			}
-		}
-		// Only set empty token if JWT is disabled and no token exists
-		if !s.chJwtServer.JwtConfig.Enabled && existingToken == "" {
+		} else {
+			// No token in context, set empty
 			ctx = context.WithValue(ctx, "jwt_token", "")
-		} else if existingToken != "" {
-			// Preserve the existing token
-			ctx = context.WithValue(ctx, "jwt_token", existingToken)
 		}
 	}
 
