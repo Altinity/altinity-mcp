@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -853,6 +854,17 @@ func TestGetClickHouseClient(t *testing.T) {
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, customClaims)
 		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
+
+		tokenParsed, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// Validate signing method
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(jwtConfig.SecretKey), nil
+		})
+		require.NoError(t, err)
+		_, ok := tokenParsed.Claims.(jwt.MapClaims)
+		require.False(t, ok)
 
 		// This should fail because claims are not MapClaims - test the parseAndValidateJWT method directly
 		_, err = server.parseAndValidateJWT(tokenString)
