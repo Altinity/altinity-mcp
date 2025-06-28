@@ -2,10 +2,6 @@ package mcptesting
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -43,9 +39,11 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create an mcptest server that wraps the underlying MCP server from our ClickHouse JWT server
 	testServer := mcptest.NewUnstartedServer(t)
 	
-	// Copy the capabilities and handlers from our ClickHouse JWT server to the test server
-	// This is a bit of a hack, but necessary because mcptest.Server doesn't have a way to wrap an existing server
-	copyServerConfiguration(testServer, chJwtServer, chConfig)
+	// Register tools, resources, and prompts using the server wrapper
+	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer}
+	altinitymcp.RegisterTools(wrapper)
+	altinitymcp.RegisterResources(wrapper)
+	altinitymcp.RegisterPrompts(wrapper)
 
 	return &AltinityTestServer{
 		testServer:  testServer,
@@ -55,193 +53,43 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	}
 }
 
-// copyServerConfiguration copies the tools, resources, and prompts from the ClickHouse JWT server to the test server
-func copyServerConfiguration(testServer *mcptest.Server, chJwtServer *altinitymcp.ClickHouseJWTServer, chConfig *config.ClickHouseConfig) {
-	// Register tools, resources, and prompts on the test server
-	// We pass the test server as the AltinityMCPServer interface, but the handlers will use the chJwtServer
-	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer, chConfig: chConfig}
-	altinitymcp.RegisterTools(wrapper)
-	altinitymcp.RegisterResources(wrapper)
-	altinitymcp.RegisterPrompts(wrapper)
-}
-
 // testServerWrapper wraps mcptest.Server to implement the AltinityMCPServer interface
 // while delegating JWT functionality to the ClickHouseJWTServer
 type testServerWrapper struct {
 	testServer  *mcptest.Server
 	chJwtServer *altinitymcp.ClickHouseJWTServer
-	chConfig    *config.ClickHouseConfig
 }
 
 func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 	// Convert server.ServerTool to mcptest.ServerTool
 	for _, tool := range tools {
 		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// Inject JWT token into context for testing (empty since JWT is disabled)
+			// Inject JWT token and server into context for testing
 			ctx = context.WithValue(ctx, "jwt_token", "")
+			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return tool.Handler(ctx, req)
 		})
 	}
 }
 
 func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
-	// Create a custom handler that uses our ClickHouse JWT server directly
+	// Create a wrapper that injects the ClickHouse JWT server into context
 	wrappedHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Inject JWT token into context for testing (empty since JWT is disabled)
+		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
+		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 		
-		// Call the handler with the ClickHouseJWTServer as the receiver
-		// We need to create a custom context that will work with our server
-		return w.callToolWithJWTServer(ctx, req, tool.Name)
+		// Call the original handler from the server package
+		return handler(ctx, req)
 	}
 	w.testServer.AddTool(tool, wrappedHandler)
 }
 
-// callToolWithJWTServer handles tool calls by delegating to the appropriate tool handler
-func (w *testServerWrapper) callToolWithJWTServer(ctx context.Context, req mcp.CallToolRequest, toolName string) (*mcp.CallToolResult, error) {
-	switch toolName {
-	case "list_tables":
-		return w.handleListTables(ctx, req)
-	case "execute_query":
-		return w.handleExecuteQuery(ctx, req)
-	case "describe_table":
-		return w.handleDescribeTable(ctx, req)
-	default:
-		return mcp.NewToolResultError(fmt.Sprintf("Unknown tool: %s", toolName)), nil
-	}
-}
-
-// handleListTables implements the list_tables tool logic
-func (w *testServerWrapper) handleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	database := req.GetString("database", "")
-	
-	// Extract token from context
-	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
-	
-	// Get ClickHouse client
-	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			// Log error but don't fail the test
-		}
-	}()
-
-	tables, err := chClient.ListTables(ctx, database)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
-	}
-
-	response := map[string]interface{}{
-		"tables": tables,
-		"count":  len(tables),
-	}
-
-	jsonData, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(jsonData)), nil
-}
-
-// handleExecuteQuery implements the execute_query tool logic
-func (w *testServerWrapper) handleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	query, err := req.RequireString("query")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
-	// Get optional limit parameter, use server default if not provided
-	defaultLimit := float64(w.chConfig.Limit)
-	limit := defaultLimit
-	if limitVal, exists := req.GetArguments()["limit"]; exists {
-		if l, ok := limitVal.(float64); ok {
-			if l > defaultLimit {
-				return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %.0f rows", defaultLimit)), nil
-			}
-			if l > 0 {
-				limit = l
-			}
-		}
-	}
-
-	// Add LIMIT clause for SELECT queries if not already present
-	if isSelectQuery(query) && !hasLimitClause(query) {
-		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
-	}
-
-	// Extract token from context
-	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			// Log error but don't fail the test
-		}
-	}()
-
-	result, err := chClient.ExecuteQuery(ctx, query)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
-	}
-
-	jsonData, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(jsonData)), nil
-}
-
-// handleDescribeTable implements the describe_table tool logic
-func (w *testServerWrapper) handleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	database, err := req.RequireString("database")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	tableName, err := req.RequireString("table_name")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
-	// Extract token from context
-	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			// Log error but don't fail the test
-		}
-	}()
-
-	columns, err := chClient.DescribeTable(ctx, database, tableName)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
-	}
-
-	jsonData, err := json.MarshalIndent(columns, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(jsonData)), nil
-}
-
 func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
 	w.testServer.AddPrompt(prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		// Inject JWT token into context for testing (empty since JWT is disabled)
+		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
+		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 		return handler(ctx, req)
 	})
 }
@@ -250,18 +98,20 @@ func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
 	// Convert server.ServerPrompt to mcptest.ServerPrompt
 	for _, prompt := range prompts {
 		w.testServer.AddPrompt(prompt.Prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			// Inject JWT token into context for testing (empty since JWT is disabled)
+			// Inject JWT token and server into context for testing
 			ctx = context.WithValue(ctx, "jwt_token", "")
+			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return prompt.Handler(ctx, req)
 		})
 	}
 }
 
 func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc) {
-	// Wrap the handler to inject JWT context
+	// Wrap the handler to inject JWT context and server
 	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Inject JWT token into context for testing (empty since JWT is disabled)
+		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
+		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 		return handler(ctx, req)
 	}
 	w.testServer.AddResource(resource, wrappedHandler)
@@ -271,18 +121,20 @@ func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
 	// Convert server.ServerResource to mcptest.ServerResource
 	for _, resource := range resources {
 		w.testServer.AddResource(resource.Resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			// Inject JWT token into context for testing (empty since JWT is disabled)
+			// Inject JWT token and server into context for testing
 			ctx = context.WithValue(ctx, "jwt_token", "")
+			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return resource.Handler(ctx, req)
 		})
 	}
 }
 
 func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
-	// Wrap the handler to inject JWT context
+	// Wrap the handler to inject JWT context and server
 	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Inject JWT token into context for testing (empty since JWT is disabled)
+		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
+		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 		return handler(ctx, req)
 	}
 	w.testServer.AddResourceTemplate(template, wrappedHandler)
@@ -413,13 +265,3 @@ func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTe
 	return s
 }
 
-// Helper functions for query processing
-func isSelectQuery(query string) bool {
-	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
-}
-
-func hasLimitClause(query string) bool {
-	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
-	return hasLimit
-}
