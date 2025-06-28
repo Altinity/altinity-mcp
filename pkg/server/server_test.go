@@ -812,7 +812,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		token := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims(claims))
 		tokenString, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
 		require.NoError(t, err)
-		
+
 		// This will fail because we're using 'none' but the server expects HS256
 		_, err = server.GetClickHouseClient(ctx, tokenString)
 		require.Equal(t, ErrInvalidToken, err)
@@ -828,9 +828,10 @@ func TestGetClickHouseClient(t *testing.T) {
 			Limit:    1000,
 		}
 
+		jwtSecret := "test-secret"
 		jwtConfig := config.JWTConfig{
 			Enabled:   true,
-			SecretKey: "test-secret",
+			SecretKey: jwtSecret,
 		}
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
@@ -839,7 +840,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		})
-		tokenString, err := token.SignedString([]byte("test-secret"))
+		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
 		// This should fail because claims are not MapClaims
