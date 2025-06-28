@@ -16,6 +16,7 @@ import (
 // specific to Altinity MCP server testing.
 type AltinityTestServer struct {
 	testServer       *mcptest.Server
+	chJwtServer      *altinitymcp.ClickHouseJWTServer
 	t                *testing.T
 	clickhouseClient *clickhouse.Client
 	chConfig         *config.ClickHouseConfig
@@ -34,18 +35,20 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create the ClickHouse JWT server
 	chJwtServer := altinitymcp.NewClickHouseMCPServer(*chConfig, jwtConfig)
 
-	// Create an unstarted mcptest server
-	chJwtServer.MCPServer = mcptest.NewUnstartedServer(t)
-
-	// Register all Altinity MCP components
-	altinitymcp.RegisterTools(chJwtServer.MCPServer)
-	altinitymcp.RegisterResources(chJwtServer.MCPServer)
-	altinitymcp.RegisterPrompts(chJwtServer.MCPServer)
+	// Create an unstarted mcptest server that wraps our MCP server
+	testServer := mcptest.NewUnstartedServer(t)
+	
+	// Copy the tools, resources, and prompts from our server to the test server
+	// We need to re-register them on the test server since we can't directly use chJwtServer.MCPServer
+	altinitymcp.RegisterTools(testServer)
+	altinitymcp.RegisterResources(testServer)
+	altinitymcp.RegisterPrompts(testServer)
 
 	return &AltinityTestServer{
-		testServer: chJwtServer.MCPServer,
-		t:          t,
-		chConfig:   chConfig,
+		testServer:  testServer,
+		chJwtServer: chJwtServer,
+		t:           t,
+		chConfig:    chConfig,
 	}
 }
 
@@ -89,6 +92,12 @@ func (s *AltinityTestServer) GetClickHouseClient() *clickhouse.Client {
 
 // CallTool is a helper method to call a tool
 func (s *AltinityTestServer) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	// Inject JWT token into context if we have a ClickHouse JWT server
+	if s.chJwtServer != nil {
+		// For testing purposes, we can inject an empty token since JWT is disabled by default
+		ctx = context.WithValue(ctx, "jwt_token", "")
+	}
+
 	callReq := mcp.CallToolRequest{}
 	callReq.Params.Name = toolName
 	callReq.Params.Arguments = args
@@ -161,7 +170,9 @@ func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfi
 
 // WithJWTAuth configures the server to use JWT authentication
 func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTestServer {
-	// This would need to be implemented based on how JWT is handled in the mcptest server
-	// For now, it's a placeholder for future implementation
+	// Recreate the ClickHouse JWT server with the new JWT config
+	if s.chConfig != nil {
+		s.chJwtServer = altinitymcp.NewClickHouseMCPServer(*s.chConfig, jwtConfig)
+	}
 	return s
 }
