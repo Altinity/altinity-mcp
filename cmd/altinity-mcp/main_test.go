@@ -101,7 +101,8 @@ func TestJWTTokenGeneration(t *testing.T) {
 // setupClickHouseContainer sets up a ClickHouse container for testing.
 func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
-	ctx := t.Context()
+	ctx := context.Background() // Use background context instead of test context to avoid cancellation issues
+
 	req := testcontainers.ContainerRequest{
 		Image:        "clickhouse/clickhouse-server:latest",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
@@ -121,7 +122,12 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		require.NoError(t, chContainer.Terminate(ctx))
+		// Use a fresh context for cleanup to avoid cancellation issues
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := chContainer.Terminate(cleanupCtx); err != nil {
+			t.Logf("Warning: failed to terminate container: %v", err)
+		}
 	})
 
 	host, err := chContainer.Host(ctx)
@@ -139,6 +145,7 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 		Protocol:         config.TCPProtocol,
 		ReadOnly:         false,
 		MaxExecutionTime: 60,
+		Limit:            1000,
 	}
 
 	// Create a client to set up the database
@@ -170,12 +177,17 @@ func TestMCPTestingWrapper(t *testing.T) {
 
 	// Test our wrapper methods
 	t.Run("CallTool", func(t *testing.T) {
-		// Prepare a request
-		_, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
+		// Test list_tables tool - this should succeed since we have a real ClickHouse container
+		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
 			"database": "default",
 		})
-		// We expect an error since we're not actually connecting to ClickHouse
-		require.Error(t, err)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+		
+		// Verify we get some content back
+		textContent := testServer.GetTextContent(result)
+		require.NotEmpty(t, textContent)
 	})
 
 	t.Run("GetTextContent", func(t *testing.T) {
