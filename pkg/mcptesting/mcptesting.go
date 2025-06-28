@@ -2,6 +2,10 @@ package mcptesting
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -79,13 +83,157 @@ func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 }
 
 func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
-	// Wrap the handler to inject JWT context and delegate to our ClickHouse JWT server
+	// Create a custom handler that uses our ClickHouse JWT server directly
 	wrappedHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Inject JWT token into context for testing (empty since JWT is disabled)
 		ctx = context.WithValue(ctx, "jwt_token", "")
-		return handler(ctx, req)
+		
+		// Call the handler with the ClickHouseJWTServer as the receiver
+		// We need to create a custom context that will work with our server
+		return w.callToolWithJWTServer(ctx, req, tool.Name)
 	}
 	w.testServer.AddTool(tool, wrappedHandler)
+}
+
+// callToolWithJWTServer handles tool calls by delegating to the appropriate tool handler
+func (w *testServerWrapper) callToolWithJWTServer(ctx context.Context, req mcp.CallToolRequest, toolName string) (*mcp.CallToolResult, error) {
+	switch toolName {
+	case "list_tables":
+		return w.handleListTables(ctx, req)
+	case "execute_query":
+		return w.handleExecuteQuery(ctx, req)
+	case "describe_table":
+		return w.handleDescribeTable(ctx, req)
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("Unknown tool: %s", toolName)), nil
+	}
+}
+
+// handleListTables implements the list_tables tool logic
+func (w *testServerWrapper) handleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	database := req.GetString("database", "")
+	
+	// Extract token from context
+	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
+	
+	// Get ClickHouse client
+	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			// Log error but don't fail the test
+		}
+	}()
+
+	tables, err := chClient.ListTables(ctx, database)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
+	}
+
+	response := map[string]interface{}{
+		"tables": tables,
+		"count":  len(tables),
+	}
+
+	jsonData, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(string(jsonData)), nil
+}
+
+// handleExecuteQuery implements the execute_query tool logic
+func (w *testServerWrapper) handleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Get optional limit parameter, use server default if not provided
+	defaultLimit := float64(w.chJwtServer.clickhouseConfig.Limit)
+	limit := defaultLimit
+	if limitVal, exists := req.GetArguments()["limit"]; exists {
+		if l, ok := limitVal.(float64); ok {
+			if l > defaultLimit {
+				return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %.0f rows", defaultLimit)), nil
+			}
+			if l > 0 {
+				limit = l
+			}
+		}
+	}
+
+	// Add LIMIT clause for SELECT queries if not already present
+	if isSelectQuery(query) && !hasLimitClause(query) {
+		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
+	}
+
+	// Extract token from context
+	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
+
+	// Get ClickHouse client
+	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			// Log error but don't fail the test
+		}
+	}()
+
+	result, err := chClient.ExecuteQuery(ctx, query)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
+	}
+
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(string(jsonData)), nil
+}
+
+// handleDescribeTable implements the describe_table tool logic
+func (w *testServerWrapper) handleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	database, err := req.RequireString("database")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	tableName, err := req.RequireString("table_name")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Extract token from context
+	token := w.chJwtServer.ExtractTokenFromCtx(ctx)
+
+	// Get ClickHouse client
+	chClient, err := w.chJwtServer.GetClickHouseClient(ctx, token)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			// Log error but don't fail the test
+		}
+	}()
+
+	columns, err := chClient.DescribeTable(ctx, database, tableName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
+	}
+
+	jsonData, err := json.MarshalIndent(columns, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(string(jsonData)), nil
 }
 
 func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
@@ -261,4 +409,15 @@ func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTe
 		s.chJwtServer = altinitymcp.NewClickHouseMCPServer(*s.chConfig, jwtConfig)
 	}
 	return s
+}
+
+// Helper functions for query processing
+func isSelectQuery(query string) bool {
+	trimmed := strings.TrimSpace(strings.ToUpper(query))
+	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
+}
+
+func hasLimitClause(query string) bool {
+	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
+	return hasLimit
 }
