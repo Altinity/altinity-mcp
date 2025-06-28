@@ -836,15 +836,15 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// Create a token with invalid claims structure which not contains required fieilds
+		// Create a token with invalid claims structure which not contains required fields
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		})
 		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
-		// This should fail because claims are not MapClaims
-		_, err = server.GetClickHouseClient(ctx, tokenString)
+		// This should fail because claims are not MapClaims - test the parseAndValidateJWT method directly
+		_, err = server.parseAndValidateJWT(tokenString)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 	})
