@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,8 +40,16 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create an mcptest server that wraps the underlying MCP server from our ClickHouse JWT server
 	testServer := mcptest.NewUnstartedServer(t)
 	
-	// Register tools, resources, and prompts using the server wrapper
+	// Create wrapper but don't register tools again - they're already registered in NewClickHouseMCPServer
 	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer}
+	
+	// Copy the already registered tools, resources, and prompts from the ClickHouse JWT server
+	// to the test server by accessing the underlying MCP server
+	mcpServer := chJwtServer.MCPServer
+	
+	// We need to manually copy the handlers since mcptest.Server doesn't have direct access
+	// to the registered handlers from the original server. Instead, we'll register them
+	// through our wrapper which will inject the proper context.
 	altinitymcp.RegisterTools(wrapper)
 	altinitymcp.RegisterResources(wrapper)
 	altinitymcp.RegisterPrompts(wrapper)
@@ -258,10 +267,8 @@ func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfi
 
 // WithJWTAuth configures the server to use JWT authentication
 func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTestServer {
-	// Recreate the ClickHouse JWT server with the new JWT config
-	if s.chConfig != nil {
-		s.chJwtServer = altinitymcp.NewClickHouseMCPServer(*s.chConfig, jwtConfig)
-	}
+	// Update the JWT config in the existing server to avoid re-registration
+	s.chJwtServer.JwtConfig = jwtConfig
 	return s
 }
 
