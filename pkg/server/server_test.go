@@ -836,28 +836,24 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// Create a custom claims struct that is not jwt.MapClaims
-		type CustomClaims struct {
-			Host string `json:"host"`
-			jwt.RegisteredClaims
+		// Create a token with a disallowed claim key
+		claims := map[string]interface{}{
+			"host":            "test-host",
+			"port":            float64(9000),
+			"database":        "test-db",
+			"invalid_claim":   "this should not be allowed", // This key is not in whitelist
+			"exp":             time.Now().Add(time.Hour).Unix(),
 		}
 
-		customClaims := CustomClaims{
-			Host: "test-host",
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			},
-		}
-
-		// Create a token with custom claims structure
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, customClaims)
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
 		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
-		// This should fail because parseAndValidateJWT expects MapClaims but token was created with CustomClaims
+		// This should fail because the token contains a disallowed claim key
 		_, err = server.parseAndValidateJWT(tokenString)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
+		require.Contains(t, err.Error(), "disallowed claim key 'invalid_claim'")
 	})
 }
 

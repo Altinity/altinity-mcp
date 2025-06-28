@@ -110,9 +110,7 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 // parseAndValidateJWT parses and validates a JWT token
 func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapClaims, error) {
-	// Use ParseWithClaims to ensure we get MapClaims and catch type assertion issues early
-	claims := jwt.MapClaims{}
-	token, err := jwt.ParseWithClaims(tokenParam, claims, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.Parse(tokenParam, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -125,13 +123,60 @@ func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapCla
 		return nil, ErrInvalidToken
 	}
 
-	// Verify that claims are actually MapClaims (this should always be true with ParseWithClaims)
-	mapClaims, ok := token.Claims.(jwt.MapClaims)
+	// Extract ClickHouse config from token claims
+	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
 		return nil, fmt.Errorf("invalid token claims format")
 	}
 
-	return mapClaims, nil
+	// Validate claims against whitelist
+	if err := s.validateClaimsWhitelist(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+// validateClaimsWhitelist validates that JWT claims only contain allowed keys
+func (s *ClickHouseJWTServer) validateClaimsWhitelist(claims jwt.MapClaims) error {
+	// Define whitelist of allowed claim keys
+	allowedKeys := map[string]bool{
+		// Standard JWT claims
+		"iss": true, // issuer
+		"sub": true, // subject
+		"aud": true, // audience
+		"exp": true, // expiration time
+		"nbf": true, // not before
+		"iat": true, // issued at
+		"jti": true, // JWT ID
+		
+		// ClickHouse connection claims
+		"host":                     true,
+		"port":                     true,
+		"database":                 true,
+		"username":                 true,
+		"password":                 true,
+		"protocol":                 true,
+		"limit":                    true,
+		"read_only":                true,
+		"max_execution_time":       true,
+		
+		// TLS configuration claims
+		"tls_enabled":              true,
+		"tls_ca_cert":              true,
+		"tls_client_cert":          true,
+		"tls_client_key":           true,
+		"tls_insecure_skip_verify": true,
+	}
+
+	// Check for any disallowed keys
+	for key := range claims {
+		if !allowedKeys[key] {
+			return fmt.Errorf("invalid token claims format: disallowed claim key '%s'", key)
+		}
+	}
+
+	return nil
 }
 
 // buildConfigFromClaims builds a ClickHouse config from JWT claims
