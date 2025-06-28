@@ -836,7 +836,7 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// Create a token with invalid claims structure
+		// Create a token with invalid claims structure which not contains required fieilds
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		})
