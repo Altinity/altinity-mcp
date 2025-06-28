@@ -26,13 +26,16 @@ type AltinityTestServer struct {
 func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *AltinityTestServer {
 	t.Helper()
 
-	// Create an unstarted mcptest server
-	testServer := mcptest.NewUnstartedServer(t)
+	// Create JWT config for testing (disabled by default)
+	jwtConfig := config.JWTConfig{
+		Enabled: false,
+	}
 
-	// Register all Altinity MCP components
-	altinitymcp.RegisterTools(testServer)
-	altinitymcp.RegisterResources(testServer)
-	altinitymcp.RegisterPrompts(testServer)
+	// Create the ClickHouse JWT server
+	chJwtServer := altinitymcp.NewClickHouseMCPServer(*chConfig, jwtConfig)
+
+	// Create an unstarted mcptest server with the MCP server
+	testServer := mcptest.NewUnstartedServerWithMCPServer(t, chJwtServer.MCPServer)
 
 	return &AltinityTestServer{
 		testServer: testServer,
