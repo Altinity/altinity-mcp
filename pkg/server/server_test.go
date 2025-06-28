@@ -855,7 +855,8 @@ func TestGetClickHouseClient(t *testing.T) {
 		tokenString, err := token.SignedString([]byte(jwtSecret))
 		require.NoError(t, err)
 
-		tokenParsed, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Parse with custom claims to verify the token structure
+		tokenParsed, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 			// Validate signing method
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -863,8 +864,12 @@ func TestGetClickHouseClient(t *testing.T) {
 			return []byte(jwtConfig.SecretKey), nil
 		})
 		require.NoError(t, err)
-		_, ok := tokenParsed.Claims.(jwt.MapClaims)
-		require.False(t, ok)
+		
+		// Verify that when parsed with ParseWithClaims, it's not MapClaims
+		_, ok := tokenParsed.Claims.(*CustomClaims)
+		require.True(t, ok) // Should be CustomClaims
+		_, ok = tokenParsed.Claims.(jwt.MapClaims)
+		require.False(t, ok) // Should NOT be MapClaims
 
 		// This should fail because claims are not MapClaims - test the parseAndValidateJWT method directly
 		_, err = server.parseAndValidateJWT(tokenString)
