@@ -465,6 +465,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+		_ = result // Use the result to avoid unused variable error
 	})
 
 	t.Run("CallTool_ExecuteQuery_ExceedsLimit", func(t *testing.T) {
@@ -476,6 +477,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.True(t, result.IsError, "Expected error for limit exceeding default")
+		_ = result // Use the result to avoid unused variable error
 	})
 
 	t.Run("CallTool_ExecuteQuery_InvalidQuery", func(t *testing.T) {
@@ -486,6 +488,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.True(t, result.IsError, "Expected error for invalid query")
+		_ = result // Use the result to avoid unused variable error
 	})
 
 	t.Run("CallTool_DescribeTable", func(t *testing.T) {
@@ -808,8 +811,8 @@ func TestGetClickHouseClient(t *testing.T) {
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// Create a token with invalid claims structure
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		})
 		tokenString, err := token.SignedString([]byte("test-secret"))
 		require.NoError(t, err)
@@ -829,6 +832,7 @@ func TestExtractTokenFromCtx(t *testing.T) {
 		ctx := context.Background()
 		token := server.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
+		_ = token // Use the token to avoid unused variable error
 	})
 
 	t.Run("with_token", func(t *testing.T) {
@@ -1036,7 +1040,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		require.Equal(t, "jwt-db", config.Database)
 		require.Equal(t, "jwt-user", config.Username)
 		require.Equal(t, "jwt-pass", config.Password)
-		require.Equal(t, config.TCPProtocol, config.Protocol)
+		require.Equal(t, "tcp", string(config.Protocol))
 		require.Equal(t, 500, config.Limit)
 	})
 
