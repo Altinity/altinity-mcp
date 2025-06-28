@@ -130,7 +130,7 @@ func (c *Client) connect() error {
 	// Test the connection with a ping to ensure it's actually working
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if pingErr := c.conn.Ping(ctx); pingErr != nil {
 		log.Error().
 			Err(pingErr).
@@ -235,8 +235,10 @@ func (c *Client) DescribeTable(ctx context.Context, database, tableName string) 
 			Msg("ClickHouse iteration failed: describe table rows")
 		return nil, fmt.Errorf("error iterating rows for describe table %s: %w", tableName, err)
 	}
-
-	log.Debug().Int("column_count", len(columns)).Str("table", tableName).Msg("Retrieved table description")
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("`%s`.`%s` columns not found", database, tableName)
+	}
+	log.Debug().Int("column_count", len(columns)).Str("database", database).Str("table", tableName).Msg("Retrieved table description")
 	return columns, nil
 }
 

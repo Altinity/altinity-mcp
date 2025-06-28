@@ -30,7 +30,6 @@ type ClickHouseJWTServer struct {
 	ClickhouseConfig config.ClickHouseConfig
 }
 
-// AltinityMCPServer @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
 type AltinityMCPServer interface {
 	AddTools(tools ...server.ServerTool)
 	AddTool(tool mcp.Tool, handler server.ToolHandlerFunc)
@@ -327,7 +326,7 @@ func RegisterResources(srv AltinityMCPServer) {
 		}
 		database := parts[len(parts)-2]
 		tableName := parts[len(parts)-1]
-		
+
 		// Validate that database and table name are not empty
 		if database == "" || tableName == "" {
 			return nil, fmt.Errorf("invalid table URI format: %s", uri)
@@ -483,13 +482,13 @@ func RegisterPrompts(srv AltinityMCPServer) {
 			"Provide specific recommendations for improvement."
 
 		schemaPrompt := "\n\nTo get the database schema, use the resource: clickhouse://schema"
-		
+
 		return mcp.NewGetPromptResult(
 			"ClickHouse Performance Analysis",
 			[]mcp.PromptMessage{
 				mcp.NewPromptMessage(
 					mcp.RoleUser,
-					mcp.NewTextContent(promptText + schemaPrompt),
+					mcp.NewTextContent(promptText+schemaPrompt),
 				),
 			},
 		), nil

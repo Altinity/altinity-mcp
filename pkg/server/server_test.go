@@ -130,7 +130,7 @@ func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.Re
 		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-		
+
 		// Call the handler directly with the wrapper as the server parameter
 		// since the handler expects an AltinityMCPServer interface
 		return callResourceHandlerWithServer(ctx, req, handler, w)
@@ -551,9 +551,14 @@ func TestMCPTestingWrapper(t *testing.T) {
 
 	t.Run("ReadResource_InvalidTableURI", func(t *testing.T) {
 		// Test reading table structure resource with invalid URI
-		_, err := testServer.ReadResource(ctx, "clickhouse://table/invalid")
+		_, err := testServer.ReadResource(ctx, "invalid://table/default/invalid")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid table URI format")
+		require.Contains(t, err.Error(), "handler not found for resource URI 'invalid://table/default/invalid': resource not found")
+
+		// Test reading table structure resource with valid URI, but not exists table
+		_, err = testServer.ReadResource(ctx, "clickhouse://table/default/not_exists")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "`default`.`not_exists` columns not found")
 	})
 
 	t.Run("GetPrompt_QueryBuilder", func(t *testing.T) {
