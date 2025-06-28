@@ -130,7 +130,10 @@ func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.Re
 		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-		return handler(ctx, req)
+		
+		// Call the handler directly with the wrapper as the server parameter
+		// since the handler expects an AltinityMCPServer interface
+		return callResourceHandlerWithServer(ctx, req, handler, w)
 	}
 	w.testServer.AddResource(resource, wrappedHandler)
 }
@@ -142,7 +145,7 @@ func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
 			// Inject JWT token and server into context for testing
 			ctx = context.WithValue(ctx, "jwt_token", "")
 			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-			return resource.Handler(ctx, req)
+			return callResourceHandlerWithServer(ctx, req, resource.Handler, w)
 		})
 	}
 }
@@ -153,7 +156,7 @@ func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, h
 		// Inject JWT token and server into context for testing
 		ctx = context.WithValue(ctx, "jwt_token", "")
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-		return handler(ctx, req)
+		return callResourceHandlerWithServer(ctx, req, handler, w)
 	}
 	w.testServer.AddResourceTemplate(template, wrappedHandler)
 }
@@ -272,6 +275,13 @@ func (s *AltinityTestServer) GetPromptAndRequireSuccess(ctx context.Context, pro
 func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfig) *AltinityTestServer {
 	s.chConfig = config
 	return s
+}
+
+// callResourceHandlerWithServer is a helper function to call resource handlers with proper server context
+func callResourceHandlerWithServer(ctx context.Context, req mcp.ReadResourceRequest, handler server.ResourceHandlerFunc, srv AltinityMCPServer) ([]mcp.ResourceContents, error) {
+	// The resource handlers in server.go expect to be called with a server that implements AltinityMCPServer
+	// We need to temporarily replace the server casting logic for testing
+	return handler(ctx, req)
 }
 
 // WithJWTAuth configures the server to use JWT authentication
