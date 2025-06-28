@@ -66,8 +66,24 @@ func TestNewClient(t *testing.T) {
 	t.Run("invalid_config", func(t *testing.T) {
 		ctx := context.Background()
 		cfg := config.ClickHouseConfig{
-			Host:     "invalid-host",
+			Host:     "invalid-host-that-does-not-exist",
 			Port:     9999,
+			Database: "default",
+			Username: "default",
+			Protocol: config.TCPProtocol,
+		}
+		
+		client, err := NewClient(ctx, cfg)
+		require.Error(t, err)
+		require.Nil(t, client)
+		require.Contains(t, err.Error(), "failed to connect to ClickHouse")
+	})
+
+	t.Run("valid_config_but_no_server", func(t *testing.T) {
+		ctx := context.Background()
+		cfg := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     19999, // Use a port that's unlikely to be in use
 			Database: "default",
 			Username: "default",
 			Protocol: config.TCPProtocol,

@@ -126,6 +126,24 @@ func (c *Client) connect() error {
 	}
 
 	c.conn = conn
+
+	// Test the connection with a ping to ensure it's actually working
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	if pingErr := c.conn.Ping(ctx); pingErr != nil {
+		log.Error().
+			Err(pingErr).
+			Str("host", c.config.Host).
+			Int("port", c.config.Port).
+			Str("database", c.config.Database).
+			Str("protocol", string(c.config.Protocol)).
+			Msg("ClickHouse ping failed during connection")
+		c.conn.Close()
+		c.conn = nil
+		return fmt.Errorf("connection ping failed: %w", pingErr)
+	}
+
 	return nil
 }
 
