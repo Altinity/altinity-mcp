@@ -251,10 +251,16 @@ func RegisterResources(srv AltinityMCPServer) {
 	srv.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		log.Debug().Msg("Reading database schema resource")
 
-		// Get the ClickHouse client from JWT token or default config
-		chJwtServer, ok := srv.(*ClickHouseJWTServer)
-		if !ok {
-			return nil, fmt.Errorf("server does not support JWT authentication")
+		// Get the ClickHouse JWT server from context (for testing) or cast from srv
+		var chJwtServer *ClickHouseJWTServer
+		if serverFromCtx := GetClickHouseJWTServerFromContext(ctx); serverFromCtx != nil {
+			chJwtServer = serverFromCtx
+		} else {
+			var ok bool
+			chJwtServer, ok = srv.(*ClickHouseJWTServer)
+			if !ok {
+				return nil, fmt.Errorf("server does not support JWT authentication")
+			}
 		}
 
 		// Extract token from context
@@ -324,10 +330,16 @@ func RegisterResources(srv AltinityMCPServer) {
 
 		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
 
-		// Get the ClickHouse client from JWT token or default config
-		chJwtServer, ok := srv.(*ClickHouseJWTServer)
-		if !ok {
-			return nil, fmt.Errorf("server does not support JWT authentication")
+		// Get the ClickHouse JWT server from context (for testing) or cast from srv
+		var chJwtServer *ClickHouseJWTServer
+		if serverFromCtx := GetClickHouseJWTServerFromContext(ctx); serverFromCtx != nil {
+			chJwtServer = serverFromCtx
+		} else {
+			var ok bool
+			chJwtServer, ok = srv.(*ClickHouseJWTServer)
+			if !ok {
+				return nil, fmt.Errorf("server does not support JWT authentication")
+			}
 		}
 
 		// Extract token from context
@@ -423,15 +435,12 @@ func RegisterPrompts(srv AltinityMCPServer) {
 			),
 		}
 
-		// Add table schema if table name is provided
+		// Add table schema reference if table name is provided
 		if tableName != "" {
+			schemaPrompt := fmt.Sprintf("\n\nTo get the table schema, use the resource: clickhouse://table/%s/%s", database, tableName)
 			messages = append(messages, mcp.NewPromptMessage(
 				mcp.RoleUser,
-				mcp.NewEmbeddedResource(mcp.TextResourceContents{
-					URI:      fmt.Sprintf("clickhouse://table/%s/%s", database, tableName),
-					MIMEType: "application/json",
-					Text:     "", // Will be populated when resource is read
-				}),
+				mcp.NewTextContent(schemaPrompt),
 			))
 		}
 
@@ -468,20 +477,14 @@ func RegisterPrompts(srv AltinityMCPServer) {
 			"- Alternative query structures\n\n" +
 			"Provide specific recommendations for improvement."
 
+		schemaPrompt := "\n\nTo get the database schema, use the resource: clickhouse://schema"
+		
 		return mcp.NewGetPromptResult(
 			"ClickHouse Performance Analysis",
 			[]mcp.PromptMessage{
 				mcp.NewPromptMessage(
 					mcp.RoleUser,
-					mcp.NewTextContent(promptText),
-				),
-				mcp.NewPromptMessage(
-					mcp.RoleUser,
-					mcp.NewEmbeddedResource(mcp.TextResourceContents{
-						URI:      "clickhouse://schema",
-						MIMEType: "application/json",
-						Text:     "", // Will be populated when resource is read
-					}),
+					mcp.NewTextContent(promptText + schemaPrompt),
 				),
 			},
 		), nil
