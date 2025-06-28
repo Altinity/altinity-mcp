@@ -202,7 +202,7 @@ func (s *AltinityTestServer) GetClickHouseClient() *clickhouse.Client {
 // CallTool is a helper method to call a tool
 func (s *AltinityTestServer) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	// Inject JWT token into context if we have a ClickHouse JWT server
-	if s.chJwtServer != nil {
+	if s.chJwtServer != nil && (ctx.Value("jwt_token") == nil || ctx.Value("jwt_token").(string) == "") {
 		// For testing purposes, we can inject an empty token since JWT is disabled by default
 		ctx = context.WithValue(ctx, "jwt_token", "")
 	}
@@ -838,11 +838,11 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		// Create a token with a disallowed claim key
 		claims := map[string]interface{}{
-			"host":            "test-host",
-			"port":            float64(9000),
-			"database":        "test-db",
-			"invalid_claim":   "this should not be allowed", // This key is not in whitelist
-			"exp":             time.Now().Add(time.Hour).Unix(),
+			"host":          "test-host",
+			"port":          float64(9000),
+			"database":      "test-db",
+			"invalid_claim": "this should not be allowed", // This key is not in whitelist
+			"exp":           time.Now().Add(time.Hour).Unix(),
 		}
 
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
@@ -904,12 +904,12 @@ func TestJWTWithRealClickHouse(t *testing.T) {
 		// Create a valid JWT token with ClickHouse config
 		claims := map[string]interface{}{
 			"host":     chConfig.Host,
-			"port":     float64(chConfig.Port),
+			"port":     chConfig.Port,
 			"database": chConfig.Database,
 			"username": chConfig.Username,
 			"password": chConfig.Password,
 			"protocol": string(chConfig.Protocol),
-			"limit":    float64(chConfig.Limit),
+			"limit":    chConfig.Limit,
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
