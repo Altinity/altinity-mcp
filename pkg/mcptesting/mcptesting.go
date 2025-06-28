@@ -9,6 +9,7 @@ import (
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,14 +36,12 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create the ClickHouse JWT server
 	chJwtServer := altinitymcp.NewClickHouseMCPServer(*chConfig, jwtConfig)
 
-	// Create an unstarted mcptest server that wraps our MCP server
+	// Create an mcptest server that wraps the underlying MCP server from our ClickHouse JWT server
 	testServer := mcptest.NewUnstartedServer(t)
 	
-	// Copy the tools, resources, and prompts from our server to the test server
-	// We need to re-register them on the test server since we can't directly use chJwtServer.MCPServer
-	altinitymcp.RegisterTools(testServer)
-	altinitymcp.RegisterResources(testServer)
-	altinitymcp.RegisterPrompts(testServer)
+	// Copy the capabilities and handlers from our ClickHouse JWT server to the test server
+	// This is a bit of a hack, but necessary because mcptest.Server doesn't have a way to wrap an existing server
+	copyServerConfiguration(testServer, chJwtServer)
 
 	return &AltinityTestServer{
 		testServer:  testServer,
@@ -50,6 +49,93 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 		t:           t,
 		chConfig:    chConfig,
 	}
+}
+
+// copyServerConfiguration copies the tools, resources, and prompts from the ClickHouse JWT server to the test server
+func copyServerConfiguration(testServer *mcptest.Server, chJwtServer *altinitymcp.ClickHouseJWTServer) {
+	// Register tools, resources, and prompts on the test server
+	// We pass the test server as the AltinityMCPServer interface, but the handlers will use the chJwtServer
+	altinitymcp.RegisterTools(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
+	altinitymcp.RegisterResources(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
+	altinitymcp.RegisterPrompts(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
+}
+
+// testServerWrapper wraps mcptest.Server to implement the AltinityMCPServer interface
+// while delegating JWT functionality to the ClickHouseJWTServer
+type testServerWrapper struct {
+	testServer  *mcptest.Server
+	chJwtServer *altinitymcp.ClickHouseJWTServer
+}
+
+func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
+	// Convert server.ServerTool to mcptest.ServerTool
+	for _, tool := range tools {
+		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// Inject JWT token into context for testing (empty since JWT is disabled)
+			ctx = context.WithValue(ctx, "jwt_token", "")
+			return tool.Handler(ctx, req)
+		})
+	}
+}
+
+func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	// Wrap the handler to inject JWT context and delegate to our ClickHouse JWT server
+	wrappedHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Inject JWT token into context for testing (empty since JWT is disabled)
+		ctx = context.WithValue(ctx, "jwt_token", "")
+		return handler(ctx, req)
+	}
+	w.testServer.AddTool(tool, wrappedHandler)
+}
+
+func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
+	w.testServer.AddPrompt(prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		// Inject JWT token into context for testing (empty since JWT is disabled)
+		ctx = context.WithValue(ctx, "jwt_token", "")
+		return handler(ctx, req)
+	})
+}
+
+func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
+	// Convert server.ServerPrompt to mcptest.ServerPrompt
+	for _, prompt := range prompts {
+		w.testServer.AddPrompt(prompt.Prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			// Inject JWT token into context for testing (empty since JWT is disabled)
+			ctx = context.WithValue(ctx, "jwt_token", "")
+			return prompt.Handler(ctx, req)
+		})
+	}
+}
+
+func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc) {
+	// Wrap the handler to inject JWT context
+	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		// Inject JWT token into context for testing (empty since JWT is disabled)
+		ctx = context.WithValue(ctx, "jwt_token", "")
+		return handler(ctx, req)
+	}
+	w.testServer.AddResource(resource, wrappedHandler)
+}
+
+func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
+	// Convert server.ServerResource to mcptest.ServerResource
+	for _, resource := range resources {
+		w.testServer.AddResource(resource.Resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			// Inject JWT token into context for testing (empty since JWT is disabled)
+			ctx = context.WithValue(ctx, "jwt_token", "")
+			return resource.Handler(ctx, req)
+		})
+	}
+}
+
+func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
+	// Wrap the handler to inject JWT context
+	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		// Inject JWT token into context for testing (empty since JWT is disabled)
+		ctx = context.WithValue(ctx, "jwt_token", "")
+		return handler(ctx, req)
+	}
+	w.testServer.AddResourceTemplate(template, wrappedHandler)
 }
 
 // Start starts the test server and connects to the ClickHouse database if a config is provided.
