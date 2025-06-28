@@ -97,9 +97,14 @@ func TestBuildConfig(t *testing.T) {
 // TestOverrideWithCLIFlags tests CLI flag override functionality
 func TestOverrideWithCLIFlags(t *testing.T) {
 	t.Run("protocol_override", func(t *testing.T) {
-		cmd := &cli.Command{}
-		cmd.Flags = []cli.Flag{
-			&cli.StringFlag{Name: "clickhouse-protocol", Value: "tcp"},
+		// Create a mock command that simulates flag being set
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"clickhouse-protocol": "tcp",
+			},
+			setFlags: map[string]bool{
+				"clickhouse-protocol": true,
+			},
 		}
 
 		cfg := &config.Config{}
@@ -108,9 +113,14 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 	})
 
 	t.Run("transport_override", func(t *testing.T) {
-		cmd := &cli.Command{}
-		cmd.Flags = []cli.Flag{
-			&cli.StringFlag{Name: "transport", Value: "http"},
+		// Create a mock command that simulates flag being set
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"transport": "http",
+			},
+			setFlags: map[string]bool{
+				"transport": true,
+			},
 		}
 
 		cfg := &config.Config{}
@@ -119,15 +129,57 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 	})
 
 	t.Run("log_level_override", func(t *testing.T) {
-		cmd := &cli.Command{}
-		cmd.Flags = []cli.Flag{
-			&cli.StringFlag{Name: "log-level", Value: "debug"},
+		// Create a mock command that simulates flag being set
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"log-level": "debug",
+			},
+			setFlags: map[string]bool{
+				"log-level": true,
+			},
 		}
 
 		cfg := &config.Config{}
 		overrideWithCLIFlags(cfg, cmd)
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
 	})
+}
+
+// mockCommand implements the interface needed by overrideWithCLIFlags for testing
+type mockCommand struct {
+	flags    map[string]interface{}
+	setFlags map[string]bool
+}
+
+func (m *mockCommand) String(name string) string {
+	if val, ok := m.flags[name]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+func (m *mockCommand) Int(name string) int {
+	if val, ok := m.flags[name]; ok {
+		if i, ok := val.(int); ok {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *mockCommand) Bool(name string) bool {
+	if val, ok := m.flags[name]; ok {
+		if b, ok := val.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func (m *mockCommand) IsSet(name string) bool {
+	return m.setFlags[name]
 }
 
 // TestBuildServerTLSConfig tests server TLS configuration building
