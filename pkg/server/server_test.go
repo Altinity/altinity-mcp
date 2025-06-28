@@ -803,16 +803,17 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		server := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// Create a token with wrong signing method
+		// Create a token with wrong signing method (use none algorithm which doesn't require special keys)
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),
 		}
 
-		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claims))
-		tokenString, err := token.SignedString(jwtConfig.SecretKey)
+		token := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
 		require.NoError(t, err)
-		// This will fail because we're using RS256 but the server expects HS256
+		
+		// This will fail because we're using 'none' but the server expects HS256
 		_, err = server.GetClickHouseClient(ctx, tokenString)
 		require.Equal(t, ErrInvalidToken, err)
 	})
