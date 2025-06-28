@@ -429,7 +429,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 	defer testServer.Close()
 
 	// Test our wrapper methods
-	t.Run("CallTool", func(t *testing.T) {
+	t.Run("CallTool_ListTables", func(t *testing.T) {
 		// Test list_tables tool - this should succeed since we have a real ClickHouse container
 		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
 			"database": "default",
@@ -441,6 +441,138 @@ func TestMCPTestingWrapper(t *testing.T) {
 		// Verify we get some content back
 		textContent := testServer.GetTextContent(result)
 		require.NotEmpty(t, textContent)
+	})
+
+	t.Run("CallTool_ExecuteQuery", func(t *testing.T) {
+		// Test execute_query tool with SELECT
+		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
+			"query": "SELECT * FROM test",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+
+		textContent := testServer.GetTextContent(result)
+		require.NotEmpty(t, textContent)
+	})
+
+	t.Run("CallTool_ExecuteQuery_WithLimit", func(t *testing.T) {
+		// Test execute_query tool with custom limit
+		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
+			"query": "SELECT * FROM test",
+			"limit": float64(5),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+	})
+
+	t.Run("CallTool_ExecuteQuery_ExceedsLimit", func(t *testing.T) {
+		// Test execute_query tool with limit exceeding default
+		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
+			"query": "SELECT * FROM test",
+			"limit": float64(2000), // Exceeds default limit of 1000
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Expected error for limit exceeding default")
+	})
+
+	t.Run("CallTool_ExecuteQuery_InvalidQuery", func(t *testing.T) {
+		// Test execute_query tool with invalid query
+		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
+			"query": "INVALID SQL QUERY",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Expected error for invalid query")
+	})
+
+	t.Run("CallTool_DescribeTable", func(t *testing.T) {
+		// Test describe_table tool
+		result, err := testServer.CallTool(ctx, "describe_table", map[string]interface{}{
+			"database":   "default",
+			"table_name": "test",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+
+		textContent := testServer.GetTextContent(result)
+		require.NotEmpty(t, textContent)
+	})
+
+	t.Run("CallTool_DescribeTable_MissingParams", func(t *testing.T) {
+		// Test describe_table tool with missing parameters
+		result, err := testServer.CallTool(ctx, "describe_table", map[string]interface{}{
+			"database": "default",
+			// missing table_name
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Expected error for missing table_name")
+	})
+
+	t.Run("ReadResource_Schema", func(t *testing.T) {
+		// Test reading schema resource
+		result, err := testServer.ReadResource(ctx, "clickhouse://schema")
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotEmpty(t, result.Contents)
+	})
+
+	t.Run("ReadResource_TableStructure", func(t *testing.T) {
+		// Test reading table structure resource
+		result, err := testServer.ReadResource(ctx, "clickhouse://table/default/test")
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotEmpty(t, result.Contents)
+	})
+
+	t.Run("ReadResource_InvalidTableURI", func(t *testing.T) {
+		// Test reading table structure resource with invalid URI
+		result, err := testServer.ReadResource(ctx, "clickhouse://table/invalid")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid table URI format")
+	})
+
+	t.Run("GetPrompt_QueryBuilder", func(t *testing.T) {
+		// Test query builder prompt
+		result, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
+			"database":   "default",
+			"table_name": "test",
+			"query_type": "select",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotEmpty(t, result.Messages)
+	})
+
+	t.Run("GetPrompt_QueryBuilder_MissingDatabase", func(t *testing.T) {
+		// Test query builder prompt with missing database
+		result, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
+			"table_name": "test",
+			"query_type": "select",
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "database parameter is required")
+	})
+
+	t.Run("GetPrompt_PerformanceAnalysis", func(t *testing.T) {
+		// Test performance analysis prompt
+		result, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{
+			"query": "SELECT * FROM test",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotEmpty(t, result.Messages)
+	})
+
+	t.Run("GetPrompt_PerformanceAnalysis_MissingQuery", func(t *testing.T) {
+		// Test performance analysis prompt with missing query
+		result, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "query parameter is required")
 	})
 
 	t.Run("GetTextContent", func(t *testing.T) {
@@ -541,6 +673,152 @@ func TestGetClickHouseClient(t *testing.T) {
 		_, err := server.GetClickHouseClient(ctx, "invalid-token")
 		require.Equal(t, ErrInvalidToken, err)
 	})
+
+	t.Run("with_jwt_valid_token", func(t *testing.T) {
+		chConfig := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+			Protocol: config.HTTPProtocol,
+			Limit:    1000,
+		}
+
+		jwtConfig := config.JWTConfig{
+			Enabled:   true,
+			SecretKey: "test-secret",
+		}
+
+		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+		// Create a valid JWT token
+		claims := map[string]interface{}{
+			"host":     "test-host",
+			"port":     float64(9000),
+			"database": "test-db",
+			"username": "test-user",
+			"password": "test-pass",
+			"protocol": "tcp",
+			"limit":    float64(500),
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+
+		// This will fail to connect but we're testing the JWT parsing logic
+		_, err = server.GetClickHouseClient(ctx, tokenString)
+		// We expect a connection error, not a JWT error
+		require.Error(t, err)
+		require.NotEqual(t, ErrMissingToken, err)
+		require.NotEqual(t, ErrInvalidToken, err)
+	})
+
+	t.Run("with_jwt_token_with_tls", func(t *testing.T) {
+		chConfig := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+			Protocol: config.HTTPProtocol,
+			Limit:    1000,
+		}
+
+		jwtConfig := config.JWTConfig{
+			Enabled:   true,
+			SecretKey: "test-secret",
+		}
+
+		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+		// Create a valid JWT token with TLS configuration
+		claims := map[string]interface{}{
+			"host":                     "secure-host",
+			"port":                     float64(9440),
+			"database":                 "secure-db",
+			"username":                 "secure-user",
+			"password":                 "secure-pass",
+			"protocol":                 "tcp",
+			"limit":                    float64(2000),
+			"tls_enabled":              true,
+			"tls_ca_cert":              "/path/to/ca.crt",
+			"tls_client_cert":          "/path/to/client.crt",
+			"tls_client_key":           "/path/to/client.key",
+			"tls_insecure_skip_verify": true,
+			"exp":                      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+
+		// This will fail to connect but we're testing the JWT parsing logic
+		_, err = server.GetClickHouseClient(ctx, tokenString)
+		// We expect a connection error, not a JWT error
+		require.Error(t, err)
+		require.NotEqual(t, ErrMissingToken, err)
+		require.NotEqual(t, ErrInvalidToken, err)
+	})
+
+	t.Run("with_jwt_wrong_signing_method", func(t *testing.T) {
+		chConfig := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+			Protocol: config.HTTPProtocol,
+			Limit:    1000,
+		}
+
+		jwtConfig := config.JWTConfig{
+			Enabled:   true,
+			SecretKey: "test-secret",
+		}
+
+		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+		// Create a token with wrong signing method
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claims))
+		// This will fail because we're using RS256 but the server expects HS256
+		_, err := server.GetClickHouseClient(ctx, "invalid.token.here")
+		require.Equal(t, ErrInvalidToken, err)
+	})
+
+	t.Run("with_jwt_invalid_claims", func(t *testing.T) {
+		chConfig := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+			Protocol: config.HTTPProtocol,
+			Limit:    1000,
+		}
+
+		jwtConfig := config.JWTConfig{
+			Enabled:   true,
+			SecretKey: "test-secret",
+		}
+
+		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+		// Create a token with invalid claims structure
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		})
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+
+		// This should fail because claims are not MapClaims
+		_, err = server.GetClickHouseClient(ctx, tokenString)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid token claims format")
+	})
 }
 
 // TestExtractTokenFromCtx tests token extraction from context
@@ -563,6 +841,65 @@ func TestExtractTokenFromCtx(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwt_token", 123)
 		token := server.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
+	})
+}
+
+// TestJWTWithRealClickHouse tests JWT authentication with a real ClickHouse container
+func TestJWTWithRealClickHouse(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create JWT config
+	jwtConfig := config.JWTConfig{
+		Enabled:   true,
+		SecretKey: "test-secret-key",
+	}
+
+	// Create test server with JWT enabled
+	testServer := NewAltinityTestServer(t, chConfig).WithJWTAuth(jwtConfig)
+
+	// Start the server
+	err := testServer.Start(ctx)
+	require.NoError(t, err)
+	defer testServer.Close()
+
+	t.Run("jwt_enabled_with_valid_token", func(t *testing.T) {
+		// Create a valid JWT token with ClickHouse config
+		claims := map[string]interface{}{
+			"host":     chConfig.Host,
+			"port":     float64(chConfig.Port),
+			"database": chConfig.Database,
+			"username": chConfig.Username,
+			"password": chConfig.Password,
+			"protocol": string(chConfig.Protocol),
+			"limit":    float64(chConfig.Limit),
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret-key"))
+		require.NoError(t, err)
+
+		// Inject token into context
+		ctxWithToken := context.WithValue(ctx, "jwt_token", tokenString)
+
+		// Test list_tables tool with JWT
+		result, err := testServer.CallTool(ctxWithToken, "list_tables", map[string]interface{}{
+			"database": "default",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
+	})
+
+	t.Run("jwt_enabled_without_token", func(t *testing.T) {
+		// Test without token - should fail
+		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
+			"database": "default",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Expected error when JWT is enabled but no token provided")
 	})
 }
 
@@ -603,5 +940,145 @@ func TestGetClickHouseJWTServerFromContext(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "clickhouse_jwt_server", "not-a-server")
 		server := GetClickHouseJWTServerFromContext(ctx)
 		require.Nil(t, server)
+	})
+}
+
+// TestParseAndValidateJWT tests JWT parsing and validation
+func TestParseAndValidateJWT(t *testing.T) {
+	chConfig := config.ClickHouseConfig{
+		Host:     "localhost",
+		Port:     8123,
+		Database: "default",
+		Username: "default",
+		Protocol: config.HTTPProtocol,
+		Limit:    1000,
+	}
+
+	jwtConfig := config.JWTConfig{
+		Enabled:   true,
+		SecretKey: "test-secret",
+	}
+
+	server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+	t.Run("valid_token", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":     "test-host",
+			"port":     float64(9000),
+			"database": "test-db",
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+
+		parsedClaims, err := server.parseAndValidateJWT(tokenString)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+		require.Equal(t, float64(9000), parsedClaims["port"])
+		require.Equal(t, "test-db", parsedClaims["database"])
+	})
+
+	t.Run("invalid_token", func(t *testing.T) {
+		_, err := server.parseAndValidateJWT("invalid-token")
+		require.Equal(t, ErrInvalidToken, err)
+	})
+
+	t.Run("expired_token", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		require.NoError(t, err)
+
+		_, err = server.parseAndValidateJWT(tokenString)
+		require.Equal(t, ErrInvalidToken, err)
+	})
+}
+
+// TestBuildConfigFromClaims tests building ClickHouse config from JWT claims
+func TestBuildConfigFromClaims(t *testing.T) {
+	chConfig := config.ClickHouseConfig{
+		Host:     "default-host",
+		Port:     8123,
+		Database: "default",
+		Username: "default",
+		Protocol: config.HTTPProtocol,
+		Limit:    1000,
+	}
+
+	jwtConfig := config.JWTConfig{
+		Enabled:   true,
+		SecretKey: "test-secret",
+	}
+
+	server := NewClickHouseMCPServer(chConfig, jwtConfig)
+
+	t.Run("basic_claims", func(t *testing.T) {
+		claims := jwt.MapClaims{
+			"host":     "jwt-host",
+			"port":     float64(9000),
+			"database": "jwt-db",
+			"username": "jwt-user",
+			"password": "jwt-pass",
+			"protocol": "tcp",
+			"limit":    float64(500),
+		}
+
+		config, err := server.buildConfigFromClaims(claims)
+		require.NoError(t, err)
+		require.Equal(t, "jwt-host", config.Host)
+		require.Equal(t, 9000, config.Port)
+		require.Equal(t, "jwt-db", config.Database)
+		require.Equal(t, "jwt-user", config.Username)
+		require.Equal(t, "jwt-pass", config.Password)
+		require.Equal(t, config.TCPProtocol, config.Protocol)
+		require.Equal(t, 500, config.Limit)
+	})
+
+	t.Run("tls_claims", func(t *testing.T) {
+		claims := jwt.MapClaims{
+			"tls_enabled":              true,
+			"tls_ca_cert":              "/path/to/ca.crt",
+			"tls_client_cert":          "/path/to/client.crt",
+			"tls_client_key":           "/path/to/client.key",
+			"tls_insecure_skip_verify": true,
+		}
+
+		config, err := server.buildConfigFromClaims(claims)
+		require.NoError(t, err)
+		require.True(t, config.TLS.Enabled)
+		require.Equal(t, "/path/to/ca.crt", config.TLS.CaCert)
+		require.Equal(t, "/path/to/client.crt", config.TLS.ClientCert)
+		require.Equal(t, "/path/to/client.key", config.TLS.ClientKey)
+		require.True(t, config.TLS.InsecureSkipVerify)
+	})
+
+	t.Run("empty_claims", func(t *testing.T) {
+		claims := jwt.MapClaims{}
+
+		config, err := server.buildConfigFromClaims(claims)
+		require.NoError(t, err)
+		// Should use default values
+		require.Equal(t, "default-host", config.Host)
+		require.Equal(t, 8123, config.Port)
+		require.Equal(t, "default", config.Database)
+	})
+
+	t.Run("invalid_types", func(t *testing.T) {
+		claims := jwt.MapClaims{
+			"host": 123,     // Should be string
+			"port": "invalid", // Should be number
+		}
+
+		config, err := server.buildConfigFromClaims(claims)
+		require.NoError(t, err)
+		// Should use default values for invalid types
+		require.Equal(t, "default-host", config.Host)
+		require.Equal(t, 8123, config.Port)
 	})
 }
