@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 )
