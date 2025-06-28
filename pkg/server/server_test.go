@@ -243,10 +243,21 @@ func (s *AltinityTestServer) GetClickHouseClient() *clickhouse.Client {
 
 // CallTool is a helper method to call a tool
 func (s *AltinityTestServer) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	// Inject JWT token into context if we have a ClickHouse JWT server
-	if s.chJwtServer != nil && (ctx.Value("jwt_token") == nil || ctx.Value("jwt_token").(string) == "") {
-		// For testing purposes, we can inject an empty token since JWT is disabled by default
-		ctx = context.WithValue(ctx, "jwt_token", "")
+	// Preserve existing JWT token from context, or set empty if none exists and JWT is disabled
+	if s.chJwtServer != nil {
+		existingToken := ""
+		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+			if tokenStr, ok := tokenFromCtx.(string); ok {
+				existingToken = tokenStr
+			}
+		}
+		// Only set empty token if JWT is disabled and no token exists
+		if !s.chJwtServer.JwtConfig.Enabled && existingToken == "" {
+			ctx = context.WithValue(ctx, "jwt_token", "")
+		} else if existingToken != "" {
+			// Preserve the existing token
+			ctx = context.WithValue(ctx, "jwt_token", existingToken)
+		}
 	}
 
 	callReq := mcp.CallToolRequest{}
