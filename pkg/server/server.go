@@ -26,8 +26,8 @@ var (
 // ClickHouseJWTServer extends MCPServer with JWT auth capabilities
 type ClickHouseJWTServer struct {
 	*server.MCPServer
-	jwtConfig        config.JWTConfig
-	clickhouseConfig config.ClickHouseConfig
+	JwtConfig        config.JWTConfig
+	ClickhouseConfig config.ClickHouseConfig
 }
 
 // AltinityMCPServer @todo remove after resolve https://github.com/mark3labs/mcp-go/issues/436
@@ -55,8 +55,8 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 	chJwtServer := &ClickHouseJWTServer{
 		MCPServer:        srv,
-		jwtConfig:        jwtConfig,
-		clickhouseConfig: chConfig,
+		JwtConfig:        jwtConfig,
+		ClickhouseConfig: chConfig,
 	}
 
 	// Register tools, resources, and prompts
@@ -74,9 +74,9 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 // GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
 func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	if !s.jwtConfig.Enabled {
+	if !s.JwtConfig.Enabled {
 		// If JWT auth is disabled, use the default config
-		client, err := clickhouse.NewClient(ctx, s.clickhouseConfig)
+		client, err := clickhouse.NewClient(ctx, s.ClickhouseConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 		}
@@ -94,7 +94,7 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(s.jwtConfig.SecretKey), nil
+		return []byte(s.JwtConfig.SecretKey), nil
 	})
 
 	if err != nil || !token.Valid {
@@ -109,7 +109,7 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 	}
 
 	// Create a new ClickHouse config from the claims
-	chConfig := s.clickhouseConfig // Use default as base
+	chConfig := s.ClickhouseConfig // Use default as base
 
 	if host, ok := claims["host"].(string); ok && host != "" {
 		chConfig.Host = host
@@ -534,7 +534,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	// Get optional limit parameter, use server default if not provided
-	defaultLimit := float64(chJwtServer.clickhouseConfig.Limit)
+	defaultLimit := float64(chJwtServer.ClickhouseConfig.Limit)
 	limit := defaultLimit
 	if limitVal, exists := req.GetArguments()["limit"]; exists {
 		if l, ok := limitVal.(float64); ok {
