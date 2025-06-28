@@ -45,7 +45,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	
 	// Copy the capabilities and handlers from our ClickHouse JWT server to the test server
 	// This is a bit of a hack, but necessary because mcptest.Server doesn't have a way to wrap an existing server
-	copyServerConfiguration(testServer, chJwtServer)
+	copyServerConfiguration(testServer, chJwtServer, chConfig)
 
 	return &AltinityTestServer{
 		testServer:  testServer,
@@ -56,12 +56,13 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 }
 
 // copyServerConfiguration copies the tools, resources, and prompts from the ClickHouse JWT server to the test server
-func copyServerConfiguration(testServer *mcptest.Server, chJwtServer *altinitymcp.ClickHouseJWTServer) {
+func copyServerConfiguration(testServer *mcptest.Server, chJwtServer *altinitymcp.ClickHouseJWTServer, chConfig *config.ClickHouseConfig) {
 	// Register tools, resources, and prompts on the test server
 	// We pass the test server as the AltinityMCPServer interface, but the handlers will use the chJwtServer
-	altinitymcp.RegisterTools(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
-	altinitymcp.RegisterResources(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
-	altinitymcp.RegisterPrompts(&testServerWrapper{testServer: testServer, chJwtServer: chJwtServer})
+	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer, chConfig: chConfig}
+	altinitymcp.RegisterTools(wrapper)
+	altinitymcp.RegisterResources(wrapper)
+	altinitymcp.RegisterPrompts(wrapper)
 }
 
 // testServerWrapper wraps mcptest.Server to implement the AltinityMCPServer interface
@@ -69,6 +70,7 @@ func copyServerConfiguration(testServer *mcptest.Server, chJwtServer *altinitymc
 type testServerWrapper struct {
 	testServer  *mcptest.Server
 	chJwtServer *altinitymcp.ClickHouseJWTServer
+	chConfig    *config.ClickHouseConfig
 }
 
 func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
@@ -153,7 +155,7 @@ func (w *testServerWrapper) handleExecuteQuery(ctx context.Context, req mcp.Call
 	}
 
 	// Get optional limit parameter, use server default if not provided
-	defaultLimit := float64(w.chJwtServer.clickhouseConfig.Limit)
+	defaultLimit := float64(w.chConfig.Limit)
 	limit := defaultLimit
 	if limitVal, exists := req.GetArguments()["limit"]; exists {
 		if l, ok := limitVal.(float64); ok {
