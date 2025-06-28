@@ -322,11 +322,16 @@ func RegisterResources(srv AltinityMCPServer) {
 		uri := req.Params.URI
 		parts := strings.Split(uri, "/")
 		// expected clickhouse://table/{database}/{table_name}
-		if len(parts) < 5 {
+		if len(parts) < 5 || parts[0] != "clickhouse:" || parts[1] != "" || parts[2] != "table" {
 			return nil, fmt.Errorf("invalid table URI format: %s", uri)
 		}
 		database := parts[len(parts)-2]
 		tableName := parts[len(parts)-1]
+		
+		// Validate that database and table name are not empty
+		if database == "" || tableName == "" {
+			return nil, fmt.Errorf("invalid table URI format: %s", uri)
+		}
 
 		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
 
