@@ -376,6 +376,287 @@ func TestReloadConfig(t *testing.T) {
 	})
 }
 
+// TestTestConnection tests the testConnection function
+func TestTestConnection(t *testing.T) {
+	t.Run("invalid_config", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Host:     "nonexistent-host",
+			Port:     9999,
+			Database: "nonexistent",
+			Username: "invalid",
+			Password: "invalid",
+			Protocol: config.HTTPProtocol,
+		}
+
+		ctx := context.Background()
+		err := testConnection(ctx, cfg)
+		require.Error(t, err)
+		// Should fail to create client or ping
+	})
+
+	t.Run("context_cancellation", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+			Password: "",
+			Protocol: config.HTTPProtocol,
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		err := testConnection(ctx, cfg)
+		require.Error(t, err)
+		// Should fail due to cancelled context
+	})
+}
+
+// TestRunServer tests the runServer function
+func TestRunServer(t *testing.T) {
+	t.Run("invalid_config", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config": "/nonexistent/config.yaml",
+			},
+			setFlags: map[string]bool{
+				"config": true,
+			},
+		}
+
+		ctx := context.Background()
+		err := runServer(ctx, &cli.Command{})
+		require.Error(t, err)
+		// Should fail to build configuration
+	})
+
+	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"clickhouse-host":                "nonexistent-host",
+				"clickhouse-port":                9999,
+				"clickhouse-database":            "default",
+				"clickhouse-username":            "default",
+				"clickhouse-password":            "",
+				"clickhouse-protocol":            "http",
+				"clickhouse-max-execution-time":  600,
+				"read-only":                      false,
+				"transport":                      "stdio",
+				"address":                        "0.0.0.0",
+				"port":                           8080,
+				"log-level":                      "info",
+				"clickhouse-limit":               1000,
+				"allow-jwt-auth":                 false,
+			},
+			setFlags: map[string]bool{
+				"clickhouse-host": true,
+			},
+		}
+
+		ctx := context.Background()
+		err := runServer(ctx, cmd)
+		require.Error(t, err)
+		// Should fail to create application due to ClickHouse connection failure
+	})
+}
+
+// TestNewApplication tests the newApplication function
+func TestNewApplication(t *testing.T) {
+	t.Run("jwt_enabled_without_secret", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWT: config.JWTConfig{
+					Enabled:   true,
+					SecretKey: "", // Empty secret key should cause error
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":               "",
+				"config-reload-time":   0,
+			},
+			setFlags: map[string]bool{},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.Error(t, err)
+		require.Nil(t, app)
+		require.Contains(t, err.Error(), "JWT authentication is enabled but no secret key is provided")
+	})
+
+	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWT: config.JWTConfig{
+					Enabled:   true,
+					SecretKey: "test-secret-key",
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":               "",
+				"config-reload-time":   0,
+			},
+			setFlags: map[string]bool{},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.NoError(t, err)
+		require.NotNil(t, app)
+		require.NotNil(t, app.mcpServer)
+		app.Close()
+	})
+
+	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "nonexistent-host",
+				Port:     9999,
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWT: config.JWTConfig{
+					Enabled: false,
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":               "",
+				"config-reload-time":   0,
+			},
+			setFlags: map[string]bool{},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.Error(t, err)
+		require.Nil(t, app)
+		// Should fail due to ClickHouse connection test failure
+	})
+
+	t.Run("successful_creation_with_config_reload", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `
+clickhouse:
+  host: "localhost"
+  port: 8123
+  database: "default"
+server:
+  jwt:
+    enabled: true
+    secret_key: "test-secret"
+`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWT: config.JWTConfig{
+					Enabled:   true,
+					SecretKey: "test-secret-key",
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":               tmpFile.Name(),
+				"config-reload-time":   1, // Enable config reload
+			},
+			setFlags: map[string]bool{
+				"config":               true,
+				"config-reload-time":   true,
+			},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.NoError(t, err)
+		require.NotNil(t, app)
+		require.NotNil(t, app.mcpServer)
+		require.Equal(t, tmpFile.Name(), app.configFile)
+		require.Equal(t, 1, app.configReloadTime)
+		
+		// Give a moment for the config reload goroutine to start
+		time.Sleep(100 * time.Millisecond)
+		
+		app.Close()
+	})
+
+	t.Run("clickhouse_ping_failure", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "127.0.0.1", // Use localhost IP
+				Port:     9999,        // Invalid port
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWT: config.JWTConfig{
+					Enabled: false,
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":               "",
+				"config-reload-time":   0,
+			},
+			setFlags: map[string]bool{},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.Error(t, err)
+		require.Nil(t, app)
+		// Should fail due to ClickHouse ping failure
+	})
+}
+
 // TestBuildConfigWithFile tests configuration building with file
 func TestBuildConfigWithFile(t *testing.T) {
 	t.Run("with_valid_config_file", func(t *testing.T) {
