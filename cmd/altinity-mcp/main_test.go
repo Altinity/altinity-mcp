@@ -44,7 +44,7 @@ func TestSetupLogging(t *testing.T) {
 	t.Run("case_insensitive", func(t *testing.T) {
 		err := setupLogging("DEBUG")
 		require.NoError(t, err)
-		
+
 		err = setupLogging("Info")
 		require.NoError(t, err)
 	})
@@ -421,7 +421,10 @@ func TestTestConnection(t *testing.T) {
 		req := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp"},
-			WaitingFor:   wait.ForHTTP("/ping").OnExposedPort(),
+			Env: map[string]string{
+				"CLICKHOUSE_SKIP_USER_SETUP": "1",
+			},
+			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -527,8 +530,8 @@ func TestNewApplication(t *testing.T) {
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":               "",
-				"config-reload-time":   0,
+				"config":             "",
+				"config-reload-time": 0,
 			},
 			setFlags: map[string]bool{},
 		}
@@ -560,8 +563,8 @@ func TestNewApplication(t *testing.T) {
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":               "",
-				"config-reload-time":   0,
+				"config":             "",
+				"config-reload-time": 0,
 			},
 			setFlags: map[string]bool{},
 		}
@@ -593,8 +596,8 @@ func TestNewApplication(t *testing.T) {
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":               "",
-				"config-reload-time":   0,
+				"config":             "",
+				"config-reload-time": 0,
 			},
 			setFlags: map[string]bool{},
 		}
@@ -645,12 +648,12 @@ server:
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":               tmpFile.Name(),
-				"config-reload-time":   1, // Enable config reload
+				"config":             tmpFile.Name(),
+				"config-reload-time": 1, // Enable config reload
 			},
 			setFlags: map[string]bool{
-				"config":               true,
-				"config-reload-time":   true,
+				"config":             true,
+				"config-reload-time": true,
 			},
 		}
 
@@ -661,10 +664,10 @@ server:
 		require.NotNil(t, app.mcpServer)
 		require.Equal(t, tmpFile.Name(), app.configFile)
 		require.Equal(t, 1, app.configReloadTime)
-		
+
 		// Give a moment for the config reload goroutine to start
 		time.Sleep(100 * time.Millisecond)
-		
+
 		app.Close()
 	})
 
@@ -687,8 +690,8 @@ server:
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":               "",
-				"config-reload-time":   0,
+				"config":             "",
+				"config-reload-time": 0,
 			},
 			setFlags: map[string]bool{},
 		}
@@ -726,20 +729,20 @@ logging:
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"config":                         tmpFile.Name(),
-				"clickhouse-host":                "cli-host", // This should override config file
-				"clickhouse-limit":               2000,
-				"clickhouse-port":                8123,
-				"clickhouse-database":            "default",
-				"clickhouse-username":            "default",
-				"clickhouse-password":            "",
-				"clickhouse-protocol":            "http",
-				"clickhouse-max-execution-time":  600,
-				"read-only":                      false,
-				"transport":                      "stdio",
-				"address":                        "0.0.0.0",
-				"port":                           8080,
-				"log-level":                      "info",
+				"config":                        tmpFile.Name(),
+				"clickhouse-host":               "cli-host", // This should override config file
+				"clickhouse-limit":              2000,
+				"clickhouse-port":               8123,
+				"clickhouse-database":           "default",
+				"clickhouse-username":           "default",
+				"clickhouse-password":           "",
+				"clickhouse-protocol":           "http",
+				"clickhouse-max-execution-time": 600,
+				"read-only":                     false,
+				"transport":                     "stdio",
+				"address":                       "0.0.0.0",
+				"port":                          8080,
+				"log-level":                     "info",
 			},
 			setFlags: map[string]bool{
 				"config":           true,
@@ -751,7 +754,7 @@ logging:
 
 		cfg, err := buildConfig(cmd)
 		require.NoError(t, err)
-		
+
 		// CLI flag should override config file
 		require.Equal(t, "cli-host", cfg.ClickHouse.Host)
 		// Config file values should be used where CLI flags aren't set
@@ -770,36 +773,36 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	t.Run("all_clickhouse_flags", func(t *testing.T) {
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"clickhouse-host":                "test-host",
-				"clickhouse-port":                9000,
-				"clickhouse-database":            "test-db",
-				"clickhouse-username":            "test-user",
-				"clickhouse-password":            "test-pass",
-				"clickhouse-protocol":            "tcp",
-				"read-only":                      true,
-				"clickhouse-max-execution-time":  300,
-				"clickhouse-tls":                 true,
-				"clickhouse-tls-ca-cert":         "/path/to/ca.crt",
-				"clickhouse-tls-client-cert":     "/path/to/client.crt",
-				"clickhouse-tls-client-key":      "/path/to/client.key",
+				"clickhouse-host":                     "test-host",
+				"clickhouse-port":                     9000,
+				"clickhouse-database":                 "test-db",
+				"clickhouse-username":                 "test-user",
+				"clickhouse-password":                 "test-pass",
+				"clickhouse-protocol":                 "tcp",
+				"read-only":                           true,
+				"clickhouse-max-execution-time":       300,
+				"clickhouse-tls":                      true,
+				"clickhouse-tls-ca-cert":              "/path/to/ca.crt",
+				"clickhouse-tls-client-cert":          "/path/to/client.crt",
+				"clickhouse-tls-client-key":           "/path/to/client.key",
 				"clickhouse-tls-insecure-skip-verify": true,
-				"clickhouse-limit":               5000,
+				"clickhouse-limit":                    5000,
 			},
 			setFlags: map[string]bool{
-				"clickhouse-host":                true,
-				"clickhouse-port":                true,
-				"clickhouse-database":            true,
-				"clickhouse-username":            true,
-				"clickhouse-password":            true,
-				"clickhouse-protocol":            true,
-				"read-only":                      true,
-				"clickhouse-max-execution-time":  true,
-				"clickhouse-tls":                 true,
-				"clickhouse-tls-ca-cert":         true,
-				"clickhouse-tls-client-cert":     true,
-				"clickhouse-tls-client-key":      true,
+				"clickhouse-host":                     true,
+				"clickhouse-port":                     true,
+				"clickhouse-database":                 true,
+				"clickhouse-username":                 true,
+				"clickhouse-password":                 true,
+				"clickhouse-protocol":                 true,
+				"read-only":                           true,
+				"clickhouse-max-execution-time":       true,
+				"clickhouse-tls":                      true,
+				"clickhouse-tls-ca-cert":              true,
+				"clickhouse-tls-client-cert":          true,
+				"clickhouse-tls-client-key":           true,
 				"clickhouse-tls-insecure-skip-verify": true,
-				"clickhouse-limit":               true,
+				"clickhouse-limit":                    true,
 			},
 		}
 
@@ -825,28 +828,28 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	t.Run("all_server_flags", func(t *testing.T) {
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
-				"transport":              "sse",
-				"address":                "127.0.0.1",
-				"port":                   9090,
-				"server-tls":             true,
-				"server-tls-cert-file":   "/path/to/server.crt",
-				"server-tls-key-file":    "/path/to/server.key",
-				"server-tls-ca-cert":     "/path/to/server-ca.crt",
-				"allow-jwt-auth":         true,
-				"jwt-secret-key":         "secret123",
-				"jwt-token-param":        "auth_token",
+				"transport":            "sse",
+				"address":              "127.0.0.1",
+				"port":                 9090,
+				"server-tls":           true,
+				"server-tls-cert-file": "/path/to/server.crt",
+				"server-tls-key-file":  "/path/to/server.key",
+				"server-tls-ca-cert":   "/path/to/server-ca.crt",
+				"allow-jwt-auth":       true,
+				"jwt-secret-key":       "secret123",
+				"jwt-token-param":      "auth_token",
 			},
 			setFlags: map[string]bool{
-				"transport":              true,
-				"address":                true,
-				"port":                   true,
-				"server-tls":             true,
-				"server-tls-cert-file":   true,
-				"server-tls-key-file":    true,
-				"server-tls-ca-cert":     true,
-				"allow-jwt-auth":         true,
-				"jwt-secret-key":         true,
-				"jwt-token-param":        true,
+				"transport":            true,
+				"address":              true,
+				"port":                 true,
+				"server-tls":           true,
+				"server-tls-cert-file": true,
+				"server-tls-key-file":  true,
+				"server-tls-ca-cert":   true,
+				"allow-jwt-auth":       true,
+				"jwt-secret-key":       true,
+				"jwt-token-param":      true,
 			},
 		}
 
