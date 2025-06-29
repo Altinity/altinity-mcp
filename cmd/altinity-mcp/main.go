@@ -325,7 +325,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildConfig builds the application configuration from CLI flags and config file
-func buildConfig(cmd *cli.Command) (config.Config, error) {
+func buildConfig(cmd CommandInterface) (config.Config, error) {
 	var cfg config.Config
 
 	// Load from config file if specified
@@ -625,7 +625,7 @@ type application struct {
 	stopConfigReload chan struct{}
 }
 
-func newApplication(ctx context.Context, cfg config.Config, cmd *cli.Command) (*application, error) {
+func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
 	// Test connection to ClickHouse if JWT auth is not enabled
 	if !cfg.Server.JWT.Enabled {
 		log.Debug().Msg("Testing ClickHouse connection...")
@@ -693,7 +693,7 @@ func (a *application) Close() {
 }
 
 // configReloadLoop periodically reloads configuration from file
-func (a *application) configReloadLoop(ctx context.Context, cmd *cli.Command) {
+func (a *application) configReloadLoop(ctx context.Context, cmd CommandInterface) {
 	ticker := time.NewTicker(time.Duration(a.configReloadTime) * time.Second)
 	defer ticker.Stop()
 
@@ -722,7 +722,7 @@ func (a *application) configReloadLoop(ctx context.Context, cmd *cli.Command) {
 }
 
 // reloadConfig reloads configuration from file and updates the application
-func (a *application) reloadConfig(cmd *cli.Command) error {
+func (a *application) reloadConfig(cmd CommandInterface) error {
 	log.Debug().Str("config_file", a.configFile).Msg("Reloading configuration")
 
 	// Load new config from file

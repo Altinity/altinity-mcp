@@ -299,11 +299,10 @@ func TestConfigReloadLoop(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Create a mock command
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"log-level": "info",
-			},
+		// Create a mock CLI command
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "log-level", Value: "info"},
 		}
 
 		// Start the reload loop in a goroutine
@@ -334,11 +333,10 @@ func TestConfigReloadLoop(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 
-		// Create a mock command
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"log-level": "info",
-			},
+		// Create a mock CLI command
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "log-level", Value: "info"},
 		}
 
 		// Start the reload loop in a goroutine
@@ -368,7 +366,10 @@ func TestReloadConfig(t *testing.T) {
 			configFile: "/nonexistent/config.yaml",
 		}
 
-		cmd := &mockCommand{}
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "log-level", Value: "info"},
+		}
 		err := app.reloadConfig(cmd)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to load config file")
@@ -398,17 +399,22 @@ logging:
 		require.NoError(t, err)
 		tmpFile.Close()
 
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"config":           tmpFile.Name(),
-				"clickhouse-host":  "cli-host", // This should override config file
-				"clickhouse-limit": 2000,
-			},
-			setFlags: map[string]bool{
-				"config":           true,
-				"clickhouse-host":  true,
-				"clickhouse-limit": true,
-			},
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "config", Value: tmpFile.Name()},
+			&cli.StringFlag{Name: "clickhouse-host", Value: "cli-host"},
+			&cli.IntFlag{Name: "clickhouse-limit", Value: 2000},
+			&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
+			&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-password", Value: ""},
+			&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
+			&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
+			&cli.BoolFlag{Name: "read-only", Value: false},
+			&cli.StringFlag{Name: "transport", Value: "stdio"},
+			&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
+			&cli.IntFlag{Name: "port", Value: 8080},
+			&cli.StringFlag{Name: "log-level", Value: "info"},
 		}
 
 		cfg, err := buildConfig(cmd)
