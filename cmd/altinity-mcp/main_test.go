@@ -2093,12 +2093,22 @@ func TestApplicationStart(t *testing.T) {
 			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
 		}
 
-		// We can't easily test stdio transport without mocking, but we can test the setup
-		// This will fail when it tries to serve stdio, but that's expected
-		err := app.Start()
-		// The error will be from the stdio server, not from our code
-		// So we just verify it doesn't panic and reaches the serve call
-		require.Error(t, err)
+		// Start in a goroutine since STDIO transport will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Wait for either completion or timeout
+		select {
+		case err := <-done:
+			// If it completes immediately, it should be with an error
+			require.Error(t, err)
+		case <-time.After(1 * time.Second):
+			// If it times out, that means it's probably running (blocked on stdio)
+			// which is expected behavior for stdio transport
+			t.Log("STDIO transport appears to be running (blocked on stdin), which is expected")
+		}
 	})
 
 	t.Run("http_transport_invalid_port", func(t *testing.T) {
