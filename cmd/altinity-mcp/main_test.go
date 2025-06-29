@@ -2273,7 +2273,7 @@ func TestApplicationStart(t *testing.T) {
 
 		err := app.Start()
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "Failed to build server TLS config")
+		require.Contains(t, err.Error(), "failed to read server CA certificate")
 	})
 
 	t.Run("http_transport_successful_start", func(t *testing.T) {
