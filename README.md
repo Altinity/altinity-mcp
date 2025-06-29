@@ -1,6 +1,6 @@
 # Altinity MCP Server
 
-[![Coverage Status](https://coveralls.io/repos/github/altinity/altinity-mcp/badge.svg?branch=main)](https://coveralls.io/github/altinity/altinity-mcp?branch=main)
+[![Coverage Status](https://coveralls.io/repos/github/Altinity/altinity-mcp/badge.svg)](https://coveralls.io/github/Altinity/altinity-mcp)
 
 A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse databases. This server enables AI assistants and other MCP clients to query, analyze, and interact with ClickHouse databases through a standardized protocol.
 
