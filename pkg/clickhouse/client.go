@@ -127,11 +127,7 @@ func (c *Client) connect() error {
 
 	c.conn = conn
 
-	// Test the connection with a ping to ensure it's actually working
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if pingErr := c.conn.Ping(ctx); pingErr != nil {
+	if pingErr := c.conn.Ping(context.Background()); pingErr != nil {
 		log.Error().
 			Err(pingErr).
 			Str("host", c.config.Host).
@@ -139,7 +135,7 @@ func (c *Client) connect() error {
 			Str("database", c.config.Database).
 			Str("protocol", string(c.config.Protocol)).
 			Msg("ClickHouse ping failed during connection")
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return fmt.Errorf("connection ping failed: %w", pingErr)
 	}
@@ -252,7 +248,7 @@ func (c *Client) ListTables(ctx context.Context, database string) ([]TableInfo, 
 			engine
 		FROM system.tables
 	`
-	args := []interface{}{}
+	args := make([]interface{}, 0)
 	if database != "" {
 		query += " WHERE database = ?"
 		args = append(args, database)

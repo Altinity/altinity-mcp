@@ -494,7 +494,7 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	return cfg
 }
 
-// TestMCPTestingWrapper tests the mcptesting wrapper functionality.
+// TestMCPTestingWrapper tests the AltinityTestServer wrapper functionality.
 func TestMCPTestingWrapper(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
@@ -686,11 +686,11 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Enabled: false,
 	}
 
-	server := NewClickHouseMCPServer(chConfig, jwtConfig)
-	require.NotNil(t, server)
-	require.NotNil(t, server.MCPServer)
-	require.Equal(t, jwtConfig, server.JwtConfig)
-	require.Equal(t, chConfig, server.ClickhouseConfig)
+	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+	require.NotNil(t, srv)
+	require.NotNil(t, srv.MCPServer)
+	require.Equal(t, jwtConfig, srv.JwtConfig)
+	require.Equal(t, chConfig, srv.ClickhouseConfig)
 }
 
 // TestGetClickHouseClient tests the JWT client creation
@@ -711,10 +711,10 @@ func TestGetClickHouseClient(t *testing.T) {
 			Enabled: false,
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// This will fail to connect but we're testing the logic, not the connection
-		_, err := server.GetClickHouseClient(ctx, "")
+		_, err := srv.GetClickHouseClient(ctx, "")
 		// We expect an error because we're not actually connecting to ClickHouse
 		require.Error(t, err)
 	})
@@ -734,9 +734,9 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		_, err := server.GetClickHouseClient(ctx, "")
+		_, err := srv.GetClickHouseClient(ctx, "")
 		require.Equal(t, ErrMissingToken, err)
 	})
 
@@ -755,9 +755,9 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		_, err := server.GetClickHouseClient(ctx, "invalid-token")
+		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
 		require.Equal(t, ErrInvalidToken, err)
 	})
 
@@ -776,7 +776,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// Create a valid JWT token
 		claims := map[string]interface{}{
@@ -795,7 +795,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		require.NoError(t, err)
 
 		// This will fail to connect but we're testing the JWT parsing logic
-		_, err = server.GetClickHouseClient(ctx, tokenString)
+		_, err = srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWT error
 		require.Error(t, err)
 		require.NotEqual(t, ErrMissingToken, err)
@@ -817,7 +817,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// Create a valid JWT token with TLS configuration
 		claims := map[string]interface{}{
@@ -841,7 +841,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		require.NoError(t, err)
 
 		// This will fail to connect but we're testing the JWT parsing logic
-		_, err = server.GetClickHouseClient(ctx, tokenString)
+		_, err = srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWT error
 		require.Error(t, err)
 		require.NotEqual(t, ErrMissingToken, err)
@@ -863,7 +863,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// Create a token with wrong signing method (use none algorithm which doesn't require special keys)
 		claims := map[string]interface{}{
@@ -876,7 +876,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		require.NoError(t, err)
 
 		// This will fail because we're using 'none' but the server expects HS256
-		_, err = server.GetClickHouseClient(ctx, tokenString)
+		_, err = srv.GetClickHouseClient(ctx, tokenString)
 		require.Equal(t, ErrInvalidToken, err)
 	})
 
@@ -896,7 +896,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: jwtSecret,
 		}
 
-		server := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 		// Create a token with a disallowed claim key
 		claims := map[string]interface{}{
@@ -912,7 +912,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		require.NoError(t, err)
 
 		// This should fail because the token contains a disallowed claim key
-		_, err = server.parseAndValidateJWT(tokenString)
+		_, err = srv.parseAndValidateJWT(tokenString)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 		require.Contains(t, err.Error(), "disallowed claim key 'invalid_claim'")
@@ -921,24 +921,24 @@ func TestGetClickHouseClient(t *testing.T) {
 
 // TestExtractTokenFromCtx tests token extraction from context
 func TestExtractTokenFromCtx(t *testing.T) {
-	server := &ClickHouseJWTServer{}
+	srv := &ClickHouseJWTServer{}
 
 	t.Run("no_token", func(t *testing.T) {
 		ctx := context.Background()
-		token := server.ExtractTokenFromCtx(ctx)
+		token := srv.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
 		_ = token // Use the token to avoid unused variable error
 	})
 
 	t.Run("with_token", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwt_token", "test-token")
-		token := server.ExtractTokenFromCtx(ctx)
+		token := srv.ExtractTokenFromCtx(ctx)
 		require.Equal(t, "test-token", token)
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwt_token", 123)
-		token := server.ExtractTokenFromCtx(ctx)
+		token := srv.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
 	})
 }
@@ -1029,21 +1029,21 @@ func TestHelperFunctions(t *testing.T) {
 func TestGetClickHouseJWTServerFromContext(t *testing.T) {
 	t.Run("no_server", func(t *testing.T) {
 		ctx := context.Background()
-		server := GetClickHouseJWTServerFromContext(ctx)
-		require.Nil(t, server)
+		srv := GetClickHouseJWTServerFromContext(ctx)
+		require.Nil(t, srv)
 	})
 
 	t.Run("with_server", func(t *testing.T) {
 		expectedServer := &ClickHouseJWTServer{}
 		ctx := context.WithValue(context.Background(), "clickhouse_jwt_server", expectedServer)
-		server := GetClickHouseJWTServerFromContext(ctx)
-		require.Equal(t, expectedServer, server)
+		srv := GetClickHouseJWTServerFromContext(ctx)
+		require.Equal(t, expectedServer, srv)
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "clickhouse_jwt_server", "not-a-server")
-		server := GetClickHouseJWTServerFromContext(ctx)
-		require.Nil(t, server)
+		srv := GetClickHouseJWTServerFromContext(ctx)
+		require.Nil(t, srv)
 	})
 }
 
@@ -1063,7 +1063,7 @@ func TestParseAndValidateJWT(t *testing.T) {
 		SecretKey: "test-secret",
 	}
 
-	server := NewClickHouseMCPServer(chConfig, jwtConfig)
+	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 	t.Run("valid_token", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -1077,7 +1077,7 @@ func TestParseAndValidateJWT(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("test-secret"))
 		require.NoError(t, err)
 
-		parsedClaims, err := server.parseAndValidateJWT(tokenString)
+		parsedClaims, err := srv.parseAndValidateJWT(tokenString)
 		require.NoError(t, err)
 		require.Equal(t, "test-host", parsedClaims["host"])
 		require.Equal(t, float64(9000), parsedClaims["port"])
@@ -1085,7 +1085,7 @@ func TestParseAndValidateJWT(t *testing.T) {
 	})
 
 	t.Run("invalid_token", func(t *testing.T) {
-		_, err := server.parseAndValidateJWT("invalid-token")
+		_, err := srv.parseAndValidateJWT("invalid-token")
 		require.Equal(t, ErrInvalidToken, err)
 	})
 
@@ -1099,7 +1099,7 @@ func TestParseAndValidateJWT(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("test-secret"))
 		require.NoError(t, err)
 
-		_, err = server.parseAndValidateJWT(tokenString)
+		_, err = srv.parseAndValidateJWT(tokenString)
 		require.Equal(t, ErrInvalidToken, err)
 	})
 }
@@ -1120,7 +1120,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		SecretKey: "test-secret",
 	}
 
-	server := NewClickHouseMCPServer(chConfig, jwtConfig)
+	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
 	t.Run("basic_claims", func(t *testing.T) {
 		claims := jwt.MapClaims{
@@ -1133,15 +1133,15 @@ func TestBuildConfigFromClaims(t *testing.T) {
 			"limit":    float64(500),
 		}
 
-		config, err := server.buildConfigFromClaims(claims)
+		cfg, err := srv.buildConfigFromClaims(claims)
 		require.NoError(t, err)
-		require.Equal(t, "jwt-host", config.Host)
-		require.Equal(t, 9000, config.Port)
-		require.Equal(t, "jwt-db", config.Database)
-		require.Equal(t, "jwt-user", config.Username)
-		require.Equal(t, "jwt-pass", config.Password)
-		require.Equal(t, "tcp", string(config.Protocol))
-		require.Equal(t, 500, config.Limit)
+		require.Equal(t, "jwt-host", cfg.Host)
+		require.Equal(t, 9000, cfg.Port)
+		require.Equal(t, "jwt-db", cfg.Database)
+		require.Equal(t, "jwt-user", cfg.Username)
+		require.Equal(t, "jwt-pass", cfg.Password)
+		require.Equal(t, "tcp", string(cfg.Protocol))
+		require.Equal(t, 500, cfg.Limit)
 	})
 
 	t.Run("tls_claims", func(t *testing.T) {
@@ -1153,24 +1153,24 @@ func TestBuildConfigFromClaims(t *testing.T) {
 			"tls_insecure_skip_verify": true,
 		}
 
-		config, err := server.buildConfigFromClaims(claims)
+		cfg, err := srv.buildConfigFromClaims(claims)
 		require.NoError(t, err)
-		require.True(t, config.TLS.Enabled)
-		require.Equal(t, "/path/to/ca.crt", config.TLS.CaCert)
-		require.Equal(t, "/path/to/client.crt", config.TLS.ClientCert)
-		require.Equal(t, "/path/to/client.key", config.TLS.ClientKey)
-		require.True(t, config.TLS.InsecureSkipVerify)
+		require.True(t, cfg.TLS.Enabled)
+		require.Equal(t, "/path/to/ca.crt", cfg.TLS.CaCert)
+		require.Equal(t, "/path/to/client.crt", cfg.TLS.ClientCert)
+		require.Equal(t, "/path/to/client.key", cfg.TLS.ClientKey)
+		require.True(t, cfg.TLS.InsecureSkipVerify)
 	})
 
 	t.Run("empty_claims", func(t *testing.T) {
 		claims := jwt.MapClaims{}
 
-		config, err := server.buildConfigFromClaims(claims)
+		cfg, err := srv.buildConfigFromClaims(claims)
 		require.NoError(t, err)
 		// Should use default values
-		require.Equal(t, "default-host", config.Host)
-		require.Equal(t, 8123, config.Port)
-		require.Equal(t, "default", config.Database)
+		require.Equal(t, "default-host", cfg.Host)
+		require.Equal(t, 8123, cfg.Port)
+		require.Equal(t, "default", cfg.Database)
 	})
 
 	t.Run("invalid_types", func(t *testing.T) {
@@ -1179,10 +1179,10 @@ func TestBuildConfigFromClaims(t *testing.T) {
 			"port": "invalid", // Should be number
 		}
 
-		config, err := server.buildConfigFromClaims(claims)
+		cfg, err := srv.buildConfigFromClaims(claims)
 		require.NoError(t, err)
 		// Should use default values for invalid types
-		require.Equal(t, "default-host", config.Host)
-		require.Equal(t, 8123, config.Port)
+		require.Equal(t, "default-host", cfg.Host)
+		require.Equal(t, 8123, cfg.Port)
 	})
 }
