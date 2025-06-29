@@ -421,7 +421,7 @@ func TestTestConnection(t *testing.T) {
 		req := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp"},
-			WaitingFor:   wait.ForHTTP("/ping").OnPort("8123"),
+			WaitingFor:   wait.ForHTTP("/ping").OnExposedPort(),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
