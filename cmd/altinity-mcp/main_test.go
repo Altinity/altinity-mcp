@@ -1192,10 +1192,10 @@ func TestHealthHandler(t *testing.T) {
 			},
 		}
 
-		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		httpReq := httptest.NewRequest(http.MethodGet, "/health", nil)
 		w := httptest.NewRecorder()
 
-		app.healthHandler(w, req)
+		app.healthHandler(w, httpReq)
 
 		require.Equal(t, http.StatusOK, w.Code)
 		require.Contains(t, w.Body.String(), "healthy")
