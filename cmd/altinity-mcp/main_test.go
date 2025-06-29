@@ -399,22 +399,29 @@ logging:
 		require.NoError(t, err)
 		tmpFile.Close()
 
-		cmd := &cli.Command{}
-		cmd.Flags = []cli.Flag{
-			&cli.StringFlag{Name: "config", Value: tmpFile.Name()},
-			&cli.StringFlag{Name: "clickhouse-host", Value: "cli-host"},
-			&cli.IntFlag{Name: "clickhouse-limit", Value: 2000},
-			&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
-			&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
-			&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
-			&cli.StringFlag{Name: "clickhouse-password", Value: ""},
-			&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
-			&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
-			&cli.BoolFlag{Name: "read-only", Value: false},
-			&cli.StringFlag{Name: "transport", Value: "stdio"},
-			&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
-			&cli.IntFlag{Name: "port", Value: 8080},
-			&cli.StringFlag{Name: "log-level", Value: "info"},
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":                         tmpFile.Name(),
+				"clickhouse-host":                "cli-host", // This should override config file
+				"clickhouse-limit":               2000,
+				"clickhouse-port":                8123,
+				"clickhouse-database":            "default",
+				"clickhouse-username":            "default",
+				"clickhouse-password":            "",
+				"clickhouse-protocol":            "http",
+				"clickhouse-max-execution-time":  600,
+				"read-only":                      false,
+				"transport":                      "stdio",
+				"address":                        "0.0.0.0",
+				"port":                           8080,
+				"log-level":                      "info",
+			},
+			setFlags: map[string]bool{
+				"config":           true,
+				"clickhouse-host":  true, // Mark this as explicitly set to override config file
+				"clickhouse-limit": true,
+				// Don't mark other flags as set so they use config file values
+			},
 		}
 
 		cfg, err := buildConfig(cmd)
