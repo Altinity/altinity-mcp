@@ -1259,7 +1259,7 @@ func TestHealthHandler(t *testing.T) {
 		ctx := context.Background()
 
 		// Start ClickHouse container
-		req := testcontainers.ContainerRequest{
+		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp"},
 			Env: map[string]string{
@@ -1269,7 +1269,7 @@ func TestHealthHandler(t *testing.T) {
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: req,
+			ContainerRequest: containerReq,
 			Started:          true,
 		})
 		if err != nil {
@@ -1479,7 +1479,7 @@ func TestTestConnection(t *testing.T) {
 		ctx := context.Background()
 
 		// Start ClickHouse container
-		req := testcontainers.ContainerRequest{
+		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp"},
 			Env: map[string]string{
@@ -1489,7 +1489,7 @@ func TestTestConnection(t *testing.T) {
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: req,
+			ContainerRequest: containerReq,
 			Started:          true,
 		})
 		if err != nil {
@@ -2378,7 +2378,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	ctx := context.Background()
 
 	// Start ClickHouse container
-	req := testcontainers.ContainerRequest{
+	containerReq := testcontainers.ContainerRequest{
 		Image:        "clickhouse/clickhouse-server:latest",
 		ExposedPorts: []string{"8123/tcp"},
 		Env: map[string]string{
@@ -2388,7 +2388,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	}
 
 	clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
+		ContainerRequest: containerReq,
 		Started:          true,
 	})
 	if err != nil {
