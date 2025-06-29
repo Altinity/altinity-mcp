@@ -149,18 +149,18 @@ func (s *ClickHouseJWTServer) validateClaimsWhitelist(claims jwt.MapClaims) erro
 		"nbf": true, // not before
 		"iat": true, // issued at
 		"jti": true, // JWT ID
-		
+
 		// ClickHouse connection claims
-		"host":                     true,
-		"port":                     true,
-		"database":                 true,
-		"username":                 true,
-		"password":                 true,
-		"protocol":                 true,
-		"limit":                    true,
-		"read_only":                true,
-		"max_execution_time":       true,
-		
+		"host":               true,
+		"port":               true,
+		"database":           true,
+		"username":           true,
+		"password":           true,
+		"protocol":           true,
+		"limit":              true,
+		"read_only":          true,
+		"max_execution_time": true,
+
 		// TLS configuration claims
 		"tls_enabled":              true,
 		"tls_ca_cert":              true,
@@ -725,8 +725,8 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 // GetClickHouseJWTServerFromContext extracts the ClickHouseJWTServer from context
 func GetClickHouseJWTServerFromContext(ctx context.Context) *ClickHouseJWTServer {
-	if server := ctx.Value("clickhouse_jwt_server"); server != nil {
-		if chJwtServer, ok := server.(*ClickHouseJWTServer); ok {
+	if srv := ctx.Value("clickhouse_jwt_server"); srv != nil {
+		if chJwtServer, ok := srv.(*ClickHouseJWTServer); ok {
 			return chJwtServer
 		}
 	}
