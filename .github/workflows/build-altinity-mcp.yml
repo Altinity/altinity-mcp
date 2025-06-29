@@ -11,7 +11,34 @@ env:
   IMAGE_NAME: altinity/altinity-mcp
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Run go vet
+      run: go vet ./...
+
+    - name: Run tests with coverage
+      run: go test -coverprofile=coverage.out -coverpkg=$(go list ./... | grep -v jwt_auth | tr '\n' ',' | sed 's/,$//') ./...
+
+    - name: Send coverage to Coveralls
+      uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        file: coverage.out
+
   build-and-push-platforms:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -33,18 +60,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
-
-    - name: Run go vet
-      run: go vet ./...
-
-    - name: Run tests with coverage
-      run: go test -coverprofile=coverage.out -coverpkg=$(go list ./... | grep -v jwt_auth | tr '\n' ',' | sed 's/,$//') ./...
-
-    - name: Send coverage to Coveralls
-      uses: coverallsapp/github-action@v2
-      with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        file: coverage.out
 
     - name: Build binary for ${{ matrix.platform }}
       run: |
