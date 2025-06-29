@@ -292,7 +292,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
 			status["status"] = "unhealthy"
-			status["error"] = "failed to create ClickHouse client"
+			status["error"] = "ClickHouse connection failed"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(status)
