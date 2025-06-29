@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
@@ -206,5 +210,392 @@ func TestBuildServerTLSConfig(t *testing.T) {
 		tlsConfig, err := buildServerTLSConfig(cfg)
 		require.Error(t, err)
 		require.Nil(t, tlsConfig)
+	})
+}
+
+// TestHealthHandler tests the health check endpoint
+func TestHealthHandler(t *testing.T) {
+	t.Run("method_not_allowed", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					JWT: config.JWTConfig{Enabled: false},
+				},
+			},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/health", nil)
+		w := httptest.NewRecorder()
+
+		app.healthHandler(w, req)
+
+		require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
+
+	t.Run("jwt_enabled", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					JWT: config.JWTConfig{Enabled: true},
+				},
+			},
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		w := httptest.NewRecorder()
+
+		app.healthHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "healthy")
+		require.Contains(t, w.Body.String(), "jwt_enabled")
+	})
+}
+
+// TestApplication tests application lifecycle methods
+func TestApplication(t *testing.T) {
+	t.Run("get_current_config", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host: "test-host",
+				Port: 9000,
+			},
+		}
+		app := &application{config: cfg}
+
+		result := app.GetCurrentConfig()
+		require.Equal(t, "test-host", result.ClickHouse.Host)
+		require.Equal(t, 9000, result.ClickHouse.Port)
+	})
+
+	t.Run("close", func(t *testing.T) {
+		app := &application{
+			stopConfigReload: make(chan struct{}),
+			configFile:       "test.yaml",
+			configReloadTime: 10,
+		}
+
+		// This should not panic
+		app.Close()
+	})
+
+	t.Run("close_without_config_reload", func(t *testing.T) {
+		app := &application{}
+
+		// This should not panic
+		app.Close()
+	})
+}
+
+// TestConfigReloadLoop tests the configuration reload functionality
+func TestConfigReloadLoop(t *testing.T) {
+	t.Run("stop_via_channel", func(t *testing.T) {
+		app := &application{
+			stopConfigReload: make(chan struct{}),
+			configFile:       "test.yaml",
+			configReloadTime: 1, // 1 second for faster test
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create a mock command
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"log-level": "info",
+			},
+		}
+
+		// Start the reload loop in a goroutine
+		done := make(chan struct{})
+		go func() {
+			app.configReloadLoop(ctx, cmd)
+			close(done)
+		}()
+
+		// Stop it immediately
+		close(app.stopConfigReload)
+
+		// Wait for it to finish with timeout
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatal("configReloadLoop did not stop in time")
+		}
+	})
+
+	t.Run("stop_via_context", func(t *testing.T) {
+		app := &application{
+			stopConfigReload: make(chan struct{}),
+			configFile:       "test.yaml",
+			configReloadTime: 1, // 1 second for faster test
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Create a mock command
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"log-level": "info",
+			},
+		}
+
+		// Start the reload loop in a goroutine
+		done := make(chan struct{})
+		go func() {
+			app.configReloadLoop(ctx, cmd)
+			close(done)
+		}()
+
+		// Cancel the context
+		cancel()
+
+		// Wait for it to finish with timeout
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatal("configReloadLoop did not stop in time")
+		}
+	})
+}
+
+// TestReloadConfig tests configuration reloading
+func TestReloadConfig(t *testing.T) {
+	t.Run("nonexistent_file", func(t *testing.T) {
+		app := &application{
+			configFile: "/nonexistent/config.yaml",
+		}
+
+		cmd := &mockCommand{}
+		err := app.reloadConfig(cmd)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to load config file")
+	})
+}
+
+// TestBuildConfigWithFile tests configuration building with file
+func TestBuildConfigWithFile(t *testing.T) {
+	t.Run("with_valid_config_file", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `
+clickhouse:
+  host: "config-host"
+  port: 9000
+  database: "config-db"
+server:
+  transport: "http"
+  port: 9090
+logging:
+  level: "debug"
+`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":           tmpFile.Name(),
+				"clickhouse-host":  "cli-host", // This should override config file
+				"clickhouse-limit": 2000,
+			},
+			setFlags: map[string]bool{
+				"config":           true,
+				"clickhouse-host":  true,
+				"clickhouse-limit": true,
+			},
+		}
+
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+		
+		// CLI flag should override config file
+		require.Equal(t, "cli-host", cfg.ClickHouse.Host)
+		// Config file values should be used where CLI flags aren't set
+		require.Equal(t, 9000, cfg.ClickHouse.Port)
+		require.Equal(t, "config-db", cfg.ClickHouse.Database)
+		require.Equal(t, config.HTTPTransport, cfg.Server.Transport)
+		require.Equal(t, 9090, cfg.Server.Port)
+		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
+		// CLI flag should set limit
+		require.Equal(t, 2000, cfg.ClickHouse.Limit)
+	})
+}
+
+// TestOverrideWithCLIFlagsExtended tests more CLI flag override scenarios
+func TestOverrideWithCLIFlagsExtended(t *testing.T) {
+	t.Run("all_clickhouse_flags", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"clickhouse-host":                "test-host",
+				"clickhouse-port":                9000,
+				"clickhouse-database":            "test-db",
+				"clickhouse-username":            "test-user",
+				"clickhouse-password":            "test-pass",
+				"clickhouse-protocol":            "tcp",
+				"read-only":                      true,
+				"clickhouse-max-execution-time":  300,
+				"clickhouse-tls":                 true,
+				"clickhouse-tls-ca-cert":         "/path/to/ca.crt",
+				"clickhouse-tls-client-cert":     "/path/to/client.crt",
+				"clickhouse-tls-client-key":      "/path/to/client.key",
+				"clickhouse-tls-insecure-skip-verify": true,
+				"clickhouse-limit":               5000,
+			},
+			setFlags: map[string]bool{
+				"clickhouse-host":                true,
+				"clickhouse-port":                true,
+				"clickhouse-database":            true,
+				"clickhouse-username":            true,
+				"clickhouse-password":            true,
+				"clickhouse-protocol":            true,
+				"read-only":                      true,
+				"clickhouse-max-execution-time":  true,
+				"clickhouse-tls":                 true,
+				"clickhouse-tls-ca-cert":         true,
+				"clickhouse-tls-client-cert":     true,
+				"clickhouse-tls-client-key":      true,
+				"clickhouse-tls-insecure-skip-verify": true,
+				"clickhouse-limit":               true,
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, "test-host", cfg.ClickHouse.Host)
+		require.Equal(t, 9000, cfg.ClickHouse.Port)
+		require.Equal(t, "test-db", cfg.ClickHouse.Database)
+		require.Equal(t, "test-user", cfg.ClickHouse.Username)
+		require.Equal(t, "test-pass", cfg.ClickHouse.Password)
+		require.Equal(t, config.TCPProtocol, cfg.ClickHouse.Protocol)
+		require.True(t, cfg.ClickHouse.ReadOnly)
+		require.Equal(t, 300, cfg.ClickHouse.MaxExecutionTime)
+		require.True(t, cfg.ClickHouse.TLS.Enabled)
+		require.Equal(t, "/path/to/ca.crt", cfg.ClickHouse.TLS.CaCert)
+		require.Equal(t, "/path/to/client.crt", cfg.ClickHouse.TLS.ClientCert)
+		require.Equal(t, "/path/to/client.key", cfg.ClickHouse.TLS.ClientKey)
+		require.True(t, cfg.ClickHouse.TLS.InsecureSkipVerify)
+		require.Equal(t, 5000, cfg.ClickHouse.Limit)
+	})
+
+	t.Run("all_server_flags", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"transport":              "sse",
+				"address":                "127.0.0.1",
+				"port":                   9090,
+				"server-tls":             true,
+				"server-tls-cert-file":   "/path/to/server.crt",
+				"server-tls-key-file":    "/path/to/server.key",
+				"server-tls-ca-cert":     "/path/to/server-ca.crt",
+				"allow-jwt-auth":         true,
+				"jwt-secret-key":         "secret123",
+				"jwt-token-param":        "auth_token",
+			},
+			setFlags: map[string]bool{
+				"transport":              true,
+				"address":                true,
+				"port":                   true,
+				"server-tls":             true,
+				"server-tls-cert-file":   true,
+				"server-tls-key-file":    true,
+				"server-tls-ca-cert":     true,
+				"allow-jwt-auth":         true,
+				"jwt-secret-key":         true,
+				"jwt-token-param":        true,
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, config.SSETransport, cfg.Server.Transport)
+		require.Equal(t, "127.0.0.1", cfg.Server.Address)
+		require.Equal(t, 9090, cfg.Server.Port)
+		require.True(t, cfg.Server.TLS.Enabled)
+		require.Equal(t, "/path/to/server.crt", cfg.Server.TLS.CertFile)
+		require.Equal(t, "/path/to/server.key", cfg.Server.TLS.KeyFile)
+		require.Equal(t, "/path/to/server-ca.crt", cfg.Server.TLS.CaCert)
+		require.True(t, cfg.Server.JWT.Enabled)
+		require.Equal(t, "secret123", cfg.Server.JWT.SecretKey)
+		require.Equal(t, "auth_token", cfg.Server.JWT.TokenParam)
+	})
+
+	t.Run("defaults_when_not_set", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags:    map[string]interface{}{},
+			setFlags: map[string]bool{},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		// Should use defaults when not set
+		require.Equal(t, "localhost", cfg.ClickHouse.Host)
+		require.Equal(t, 8123, cfg.ClickHouse.Port)
+		require.Equal(t, "default", cfg.ClickHouse.Database)
+		require.Equal(t, "default", cfg.ClickHouse.Username)
+		require.Equal(t, config.HTTPProtocol, cfg.ClickHouse.Protocol)
+		require.Equal(t, 600, cfg.ClickHouse.MaxExecutionTime)
+		require.Equal(t, config.StdioTransport, cfg.Server.Transport)
+		require.Equal(t, "0.0.0.0", cfg.Server.Address)
+		require.Equal(t, 8080, cfg.Server.Port)
+		require.Equal(t, "token", cfg.Server.JWT.TokenParam)
+		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
+		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+	})
+
+	t.Run("invalid_protocol_defaults_to_http", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"clickhouse-protocol": "invalid",
+			},
+			setFlags: map[string]bool{
+				"clickhouse-protocol": true,
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, config.HTTPProtocol, cfg.ClickHouse.Protocol)
+	})
+
+	t.Run("invalid_transport_defaults_to_stdio", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"transport": "invalid",
+			},
+			setFlags: map[string]bool{
+				"transport": true,
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, config.StdioTransport, cfg.Server.Transport)
+	})
+
+	t.Run("invalid_log_level_defaults_to_info", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"log-level": "invalid",
+			},
+			setFlags: map[string]bool{
+				"log-level": true,
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 	})
 }
