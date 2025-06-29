@@ -270,6 +270,138 @@ func setupLogging(level string) error {
 	return nil
 }
 
+// createTokenInjector creates a middleware that injects JWT token from path into request context
+func (a *application) createTokenInjector() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Extract token from path
+			token := r.PathValue("token")
+			if token != "" {
+				// Inject token into request context
+				ctx := context.WithValue(r.Context(), "jwt_token", token)
+				r = r.WithContext(ctx)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// startHTTPServerWithTLS starts the HTTP server with or without TLS
+func (a *application) startHTTPServerWithTLS(cfg config.Config, addr string) error {
+	if !cfg.Server.TLS.Enabled {
+		protocol := "http"
+		log.Info().Str("url", fmt.Sprintf("%s://%s", protocol, addr)).Msg("HTTP server listening")
+		if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error().Err(err).Msg("HTTP server failed")
+			return err
+		}
+	} else {
+		protocol := "https"
+		log.Info().Str("url", fmt.Sprintf("%s://%s", protocol, addr)).Msg("HTTPS server listening")
+		tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to build server TLS config")
+			return err
+		}
+		a.httpSrv.TLSConfig = tlsConfig
+		if err = a.httpSrv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error().Err(err).Msg("HTTPS server failed")
+			return err
+		}
+	}
+	return nil
+}
+
+// startHTTPServer starts the HTTP transport server
+func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPServer) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+	log.Info().
+		Str("address", addr).
+		Msg("Starting MCP server with HTTP transport")
+
+	var httpHandler http.Handler
+	if cfg.Server.JWT.Enabled {
+		log.Info().Msg("Using dynamic base path for JWT authentication")
+
+		tokenInjector := a.createTokenInjector()
+		httpServer := server.NewStreamableHTTPServer(mcpServer)
+
+		// Register custom handlers to ensure token is in the path and inject it into context
+		mux := http.NewServeMux()
+		mux.Handle("/{token}/", tokenInjector(httpServer))
+		mux.HandleFunc("/health", a.healthHandler)
+		httpHandler = mux
+	} else {
+		// Use standard HTTP server without dynamic paths
+		httpServer := server.NewStreamableHTTPServer(mcpServer)
+		mux := http.NewServeMux()
+		mux.Handle("/", httpServer)
+		mux.HandleFunc("/health", a.healthHandler)
+		httpHandler = mux
+	}
+
+	a.httpSrv = &http.Server{
+		Addr:    addr,
+		Handler: httpHandler,
+	}
+
+	return a.startHTTPServerWithTLS(cfg, addr)
+}
+
+// startSSEServer starts the SSE transport server
+func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPServer) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+	log.Info().
+		Str("address", addr).
+		Msg("Starting MCP server with SSE transport")
+
+	var sseHandler http.Handler
+	if cfg.Server.JWT.Enabled {
+		log.Info().Msg("Using dynamic base path for JWT authentication")
+
+		tokenInjector := a.createTokenInjector()
+
+		sseServer := server.NewSSEServer(
+			mcpServer,
+			server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
+				// Extract token from URL and use it as path component
+				token := r.URL.Query().Get(cfg.Server.JWT.TokenParam)
+				if token != "" {
+					return "/" + token
+				}
+				token = r.PathValue("token")
+				if token != "" {
+					return "/" + token
+				}
+				return "/"
+			}),
+			server.WithBaseURL(fmt.Sprintf("http://%s:%d", cfg.Server.Address, cfg.Server.Port)),
+			server.WithUseFullURLForMessageEndpoint(false),
+		)
+
+		// Register custom handlers to ensure token is in the path and inject it into context
+		mux := http.NewServeMux()
+		mux.Handle("/{token}/sse", tokenInjector(sseServer.SSEHandler()))
+		mux.Handle("/{token}/message", tokenInjector(sseServer.MessageHandler()))
+		mux.HandleFunc("/health", a.healthHandler)
+		sseHandler = mux
+	} else {
+		// Use standard SSE server without dynamic paths
+		sseServer := server.NewSSEServer(mcpServer)
+		mux := http.NewServeMux()
+		mux.Handle("/", sseServer)
+		mux.HandleFunc("/health", a.healthHandler)
+		sseHandler = mux
+	}
+
+	a.httpSrv = &http.Server{
+		Addr:    addr,
+		Handler: sseHandler,
+	}
+
+	return a.startHTTPServerWithTLS(cfg, addr)
+}
+
 // healthHandler provides a health check endpoint for Kubernetes probes
 func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -797,123 +929,10 @@ func (a *application) Start() error {
 		}
 
 	case config.HTTPTransport:
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
-		log.Info().
-			Str("address", addr).
-			Msg("Starting MCP server with HTTP transport")
-
-		httpServer := server.NewStreamableHTTPServer(mcpServer)
-		mux := http.NewServeMux()
-		mux.Handle("/", httpServer)
-		mux.HandleFunc("/health", a.healthHandler)
-
-		a.httpSrv = &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		}
-
-		if !cfg.Server.TLS.Enabled {
-			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("HTTP server listening")
-			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error().Err(err).Msg("HTTP server failed")
-				return err
-			}
-		} else {
-			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("HTTPS server listening")
-			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to build server TLS config")
-				return err
-			}
-			a.httpSrv.TLSConfig = tlsConfig
-			if err = a.httpSrv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error().Err(err).Msg("HTTPS server failed")
-				return err
-			}
-		}
+		return a.startHTTPServer(cfg, mcpServer)
 
 	case config.SSETransport:
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
-		log.Info().
-			Str("address", addr).
-			Msg("Starting MCP server with SSE transport")
-
-		// Check if we should use dynamic base path with JWT
-		var sseHandler http.Handler
-		if cfg.Server.JWT.Enabled {
-			log.Info().Msg("Using dynamic base path for JWT authentication")
-
-			// Create a wrapper that injects the token into the context
-			tokenInjector := func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					// Extract token from path
-					token := r.PathValue("token")
-					if token != "" {
-						// Inject token into request context
-						ctx := context.WithValue(r.Context(), "jwt_token", token)
-						r = r.WithContext(ctx)
-					}
-					next.ServeHTTP(w, r)
-				})
-			}
-
-			sseServer := server.NewSSEServer(
-				mcpServer,
-				server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
-					// Extract token from URL and use it as path component
-					token := r.URL.Query().Get(cfg.Server.JWT.TokenParam)
-					if token != "" {
-						return "/" + token
-					}
-					token = r.PathValue("token")
-					if token != "" {
-						return "/" + token
-					}
-					return "/"
-				}),
-				server.WithBaseURL(fmt.Sprintf("http://%s:%d", cfg.Server.Address, cfg.Server.Port)),
-				server.WithUseFullURLForMessageEndpoint(false),
-			)
-
-			// Register custom handlers to ensure token is in the path and inject it into context
-			mux := http.NewServeMux()
-			mux.Handle("/{token}/sse", tokenInjector(sseServer.SSEHandler()))
-			mux.Handle("/{token}/message", tokenInjector(sseServer.MessageHandler()))
-			mux.HandleFunc("/health", a.healthHandler)
-			sseHandler = mux
-		} else {
-			// Use standard SSE server without dynamic paths
-			sseServer := server.NewSSEServer(mcpServer)
-			mux := http.NewServeMux()
-			mux.Handle("/", sseServer)
-			mux.HandleFunc("/health", a.healthHandler)
-			sseHandler = mux
-		}
-
-		a.httpSrv = &http.Server{
-			Addr:    addr,
-			Handler: sseHandler,
-		}
-
-		if !cfg.Server.TLS.Enabled {
-			log.Info().Str("url", fmt.Sprintf("http://%s", addr)).Msg("SSE server listening")
-			if err := a.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error().Err(err).Msg("SSE server failed")
-				return err
-			}
-		} else {
-			log.Info().Str("url", fmt.Sprintf("https://%s", addr)).Msg("SSE server listening with TLS")
-			tlsConfig, err := buildServerTLSConfig(&cfg.Server.TLS)
-			if err != nil {
-				log.Error().Err(err).Msg("Failed to build server TLS config")
-				return err
-			}
-			a.httpSrv.TLSConfig = tlsConfig
-			if err = a.httpSrv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error().Err(err).Msg("SSE server with TLS failed")
-				return err
-			}
-		}
+		return a.startSSEServer(cfg, mcpServer)
 
 	default:
 		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
