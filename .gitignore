@@ -6,4 +6,4 @@
 .idea/
 .kilocode/
 build/
-coverage/
+coverage.out

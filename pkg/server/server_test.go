@@ -43,8 +43,8 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create a ClickHouse JWT server but don't use NewClickHouseMCPServer to avoid double registration
 	// Instead, create the server manually and register tools only once
 	srv := server.NewMCPServer(
-		"Altinity ClickHouse MCP Server",
-		"1.0.0",
+		"Altinity ClickHouse MCP Test Server",
+		"test",
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -954,14 +954,6 @@ func TestJWTWithRealClickHouse(t *testing.T) {
 		SecretKey: "test-secret-key",
 	}
 
-	// Create test server with JWT enabled
-	testServer := NewAltinityTestServer(t, chConfig).WithJWTAuth(jwtConfig)
-
-	// Start the server
-	err := testServer.Start(ctx)
-	require.NoError(t, err)
-	defer testServer.Close()
-
 	t.Run("jwt_enabled_with_valid_token", func(t *testing.T) {
 		// Create a valid JWT token with ClickHouse config
 		claims := map[string]interface{}{
@@ -980,10 +972,17 @@ func TestJWTWithRealClickHouse(t *testing.T) {
 		require.NoError(t, err)
 
 		// Inject token into context
-		ctxWithToken := context.WithValue(ctx, "jwt_token", tokenString)
+		contextWithToken := context.WithValue(ctx, "jwt_token", tokenString)
+
+		// Create test server with JWT enabled
+		// Start the server
+		testServer := NewAltinityTestServer(t, chConfig).WithJWTAuth(jwtConfig)
+		err = testServer.Start(contextWithToken)
+		require.NoError(t, err)
+		defer testServer.Close()
 
 		// Test list_tables tool with JWT
-		result, err := testServer.CallTool(ctxWithToken, "list_tables", map[string]interface{}{
+		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
 			"database": "default",
 		})
 		require.NoError(t, err)
@@ -992,13 +991,19 @@ func TestJWTWithRealClickHouse(t *testing.T) {
 	})
 
 	t.Run("jwt_enabled_without_token", func(t *testing.T) {
+		// Create test server with JWT enabled
+		// Start the server
+		testServer := NewAltinityTestServer(t, chConfig).WithJWTAuth(jwtConfig)
+		err := testServer.Start(ctx)
+		require.NoError(t, err)
+		defer testServer.Close()
 		// Test without token - should fail
 		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
 			"database": "default",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, result)
-		require.True(t, result.IsError, "Expected error when JWT is enabled but no token provided")
+		require.True(t, result.IsError, "Expected error when JWT is enabled but no token provided, result=%#v", result)
 	})
 }
 
