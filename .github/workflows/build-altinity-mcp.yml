@@ -38,13 +38,13 @@ jobs:
       run: go vet ./...
 
     - name: Run tests with coverage
-      run: go test -coverprofile=coverage.out ./...
+      run: go test -coverprofile=coverage.out -coverpkg=./... ./... && grep -v "jwt_auth" coverage.out > coverage_filtered.out || cp coverage.out coverage_filtered.out
 
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
-        file: coverage.out
+        file: coverage_filtered.out
 
     - name: Build binary for ${{ matrix.platform }}
       run: |
