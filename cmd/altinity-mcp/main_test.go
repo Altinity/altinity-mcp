@@ -11,6 +11,8 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/urfave/cli/v3"
 )
 
@@ -411,47 +413,89 @@ func TestTestConnection(t *testing.T) {
 		require.Error(t, err)
 		// Should fail due to cancelled context
 	})
+
+	t.Run("successful_connection_with_testcontainer", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Start ClickHouse container
+		req := testcontainers.ContainerRequest{
+			Image:        "clickhouse/clickhouse-server:latest",
+			ExposedPorts: []string{"8123/tcp"},
+			WaitingFor:   wait.ForHTTP("/ping").OnPort("8123"),
+		}
+
+		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err != nil {
+			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+		}
+		defer func() {
+			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
+				t.Logf("Failed to terminate container: %v", termErr)
+			}
+		}()
+
+		// Get the mapped port
+		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
+		require.NoError(t, err)
+
+		host, err := clickhouseContainer.Host(ctx)
+		require.NoError(t, err)
+
+		cfg := config.ClickHouseConfig{
+			Host:     host,
+			Port:     mappedPort.Int(),
+			Database: "default",
+			Username: "default",
+			Password: "",
+			Protocol: config.HTTPProtocol,
+		}
+
+		// Test connection
+		err = testConnection(ctx, cfg)
+		require.NoError(t, err)
+	})
 }
 
 // TestRunServer tests the runServer function
 func TestRunServer(t *testing.T) {
-	t.Run("invalid_config", func(t *testing.T) {
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"config": "/nonexistent/config.yaml",
-			},
-			setFlags: map[string]bool{
-				"config": true,
-			},
+	t.Run("invalid_config_file", func(t *testing.T) {
+		// Create a CLI command with invalid config file
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "config", Value: "/nonexistent/config.yaml"},
 		}
 
 		ctx := context.Background()
-		err := runServer(ctx, &cli.Command{})
+		err := runServer(ctx, cmd)
 		require.Error(t, err)
 		// Should fail to build configuration
 	})
 
 	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"clickhouse-host":                "nonexistent-host",
-				"clickhouse-port":                9999,
-				"clickhouse-database":            "default",
-				"clickhouse-username":            "default",
-				"clickhouse-password":            "",
-				"clickhouse-protocol":            "http",
-				"clickhouse-max-execution-time":  600,
-				"read-only":                      false,
-				"transport":                      "stdio",
-				"address":                        "0.0.0.0",
-				"port":                           8080,
-				"log-level":                      "info",
-				"clickhouse-limit":               1000,
-				"allow-jwt-auth":                 false,
-			},
-			setFlags: map[string]bool{
-				"clickhouse-host": true,
-			},
+		// Create a CLI command with invalid ClickHouse settings
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "config", Value: ""},
+			&cli.StringFlag{Name: "clickhouse-host", Value: "nonexistent-host"},
+			&cli.IntFlag{Name: "clickhouse-port", Value: 9999},
+			&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-password", Value: ""},
+			&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
+			&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
+			&cli.BoolFlag{Name: "read-only", Value: false},
+			&cli.StringFlag{Name: "transport", Value: "stdio"},
+			&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
+			&cli.IntFlag{Name: "port", Value: 8080},
+			&cli.StringFlag{Name: "log-level", Value: "info"},
+			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
+			&cli.BoolFlag{Name: "allow-jwt-auth", Value: false},
+			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
+			&cli.StringFlag{Name: "jwt-token-param", Value: "token"},
+			&cli.IntFlag{Name: "config-reload-time", Value: 0},
 		}
 
 		ctx := context.Background()
