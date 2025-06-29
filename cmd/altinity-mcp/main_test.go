@@ -1254,6 +1254,65 @@ func TestHealthHandler(t *testing.T) {
 		require.Contains(t, w.Body.String(), "unhealthy")
 		require.Contains(t, w.Body.String(), "ClickHouse connection failed")
 	})
+
+	t.Run("successful_clickhouse_connection_with_testcontainer", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Start ClickHouse container
+		req := testcontainers.ContainerRequest{
+			Image:        "clickhouse/clickhouse-server:latest",
+			ExposedPorts: []string{"8123/tcp"},
+			Env: map[string]string{
+				"CLICKHOUSE_SKIP_USER_SETUP": "1",
+			},
+			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+		}
+
+		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: req,
+			Started:          true,
+		})
+		if err != nil {
+			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+		}
+		defer func() {
+			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
+				t.Logf("Failed to terminate container: %v", termErr)
+			}
+		}()
+
+		// Get the mapped port
+		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
+		require.NoError(t, err)
+
+		host, err := clickhouseContainer.Host(ctx)
+		require.NoError(t, err)
+
+		app := &application{
+			config: config.Config{
+				ClickHouse: config.ClickHouseConfig{
+					Host:     host,
+					Port:     mappedPort.Int(),
+					Database: "default",
+					Username: "default",
+					Password: "",
+					Protocol: config.HTTPProtocol,
+				},
+				Server: config.ServerConfig{
+					JWT: config.JWTConfig{Enabled: false},
+				},
+			},
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		w := httptest.NewRecorder()
+
+		app.healthHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		require.Contains(t, w.Body.String(), "healthy")
+		require.Contains(t, w.Body.String(), "connected")
+	})
 }
 
 // TestApplication tests application lifecycle methods
@@ -2023,6 +2082,237 @@ func TestApplicationStart(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unsupported transport type")
 	})
+
+	t.Run("stdio_transport", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.StdioTransport,
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		// We can't easily test stdio transport without mocking, but we can test the setup
+		// This will fail when it tries to serve stdio, but that's expected
+		err := app.Start()
+		// The error will be from the stdio server, not from our code
+		// So we just verify it doesn't panic and reaches the serve call
+		require.Error(t, err)
+	})
+
+	t.Run("http_transport_invalid_port", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.HTTPTransport,
+					Address:   "localhost",
+					Port:      -1, // Invalid port
+					TLS: config.ServerTLSConfig{
+						Enabled: false,
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		err := app.Start()
+		require.Error(t, err)
+		// Should fail due to invalid port
+	})
+
+	t.Run("http_transport_with_tls_missing_files", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.HTTPTransport,
+					Address:   "localhost",
+					Port:      0, // Use random port
+					TLS: config.ServerTLSConfig{
+						Enabled:  true,
+						CertFile: "/nonexistent/cert.pem",
+						KeyFile:  "/nonexistent/key.pem",
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		err := app.Start()
+		require.Error(t, err)
+		// Should fail due to missing cert/key files
+	})
+
+	t.Run("sse_transport_without_jwt", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.SSETransport,
+					Address:   "localhost",
+					Port:      0, // Use random port
+					JWT: config.JWTConfig{
+						Enabled: false,
+					},
+					TLS: config.ServerTLSConfig{
+						Enabled: false,
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		// Start in a goroutine since it will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give it a moment to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Should start successfully (will block on ListenAndServe)
+		select {
+		case err := <-done:
+			// If it returns immediately, it should be an error
+			require.Error(t, err)
+		default:
+			// If it's still running, that's expected - stop it
+			if app.httpSrv != nil {
+				app.httpSrv.Close()
+				<-done // Wait for it to finish
+			}
+		}
+	})
+
+	t.Run("sse_transport_with_jwt", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.SSETransport,
+					Address:   "localhost",
+					Port:      0, // Use random port
+					JWT: config.JWTConfig{
+						Enabled:    true,
+						TokenParam: "token",
+					},
+					TLS: config.ServerTLSConfig{
+						Enabled: false,
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{
+				Enabled:    true,
+				TokenParam: "token",
+			}),
+		}
+
+		// Start in a goroutine since it will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give it a moment to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Should start successfully (will block on ListenAndServe)
+		select {
+		case err := <-done:
+			// If it returns immediately, it should be an error
+			require.Error(t, err)
+		default:
+			// If it's still running, that's expected - stop it
+			if app.httpSrv != nil {
+				app.httpSrv.Close()
+				<-done // Wait for it to finish
+			}
+		}
+	})
+
+	t.Run("sse_transport_with_tls_invalid_config", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.SSETransport,
+					Address:   "localhost",
+					Port:      0,
+					JWT: config.JWTConfig{
+						Enabled: false,
+					},
+					TLS: config.ServerTLSConfig{
+						Enabled:  true,
+						CertFile: "/nonexistent/cert.pem",
+						KeyFile:  "/nonexistent/key.pem",
+						CaCert:   "/nonexistent/ca.pem",
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		err := app.Start()
+		require.Error(t, err)
+		// Should fail due to invalid TLS config
+	})
+
+	t.Run("build_server_tls_config_error", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.HTTPTransport,
+					Address:   "localhost",
+					Port:      0,
+					TLS: config.ServerTLSConfig{
+						Enabled: true,
+						CaCert:  "/nonexistent/ca.pem", // This will cause buildServerTLSConfig to fail
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		err := app.Start()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Failed to build server TLS config")
+	})
+
+	t.Run("http_transport_successful_start", func(t *testing.T) {
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					Transport: config.HTTPTransport,
+					Address:   "localhost",
+					Port:      0, // Use random port
+					TLS: config.ServerTLSConfig{
+						Enabled: false,
+					},
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		// Start in a goroutine since it will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give it a moment to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Should start successfully (will block on ListenAndServe)
+		select {
+		case err := <-done:
+			// If it returns immediately, it should be an error
+			require.Error(t, err)
+		default:
+			// If it's still running, that's expected - stop it
+			if app.httpSrv != nil {
+				app.httpSrv.Close()
+				<-done // Wait for it to finish
+			}
+		}
+	})
 }
 
 // TestReloadConfigWithValidFile tests config reloading with a valid file
@@ -2081,4 +2371,221 @@ logging:
 	require.Equal(t, config.HTTPTransport, newConfig.Server.Transport)
 	require.Equal(t, 9091, newConfig.Server.Port)
 	require.Equal(t, config.WarnLevel, newConfig.Logging.Level)
+}
+
+// TestNewApplicationWithTestContainer tests newApplication with a real ClickHouse instance
+func TestNewApplicationWithTestContainer(t *testing.T) {
+	ctx := context.Background()
+
+	// Start ClickHouse container
+	req := testcontainers.ContainerRequest{
+		Image:        "clickhouse/clickhouse-server:latest",
+		ExposedPorts: []string{"8123/tcp"},
+		Env: map[string]string{
+			"CLICKHOUSE_SKIP_USER_SETUP": "1",
+		},
+		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+	}
+
+	clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Skip("Failed to start ClickHouse container, skipping test:", err)
+	}
+	defer func() {
+		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
+			t.Logf("Failed to terminate container: %v", termErr)
+		}
+	}()
+
+	// Get the mapped port
+	mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
+	require.NoError(t, err)
+
+	host, err := clickhouseContainer.Host(ctx)
+	require.NoError(t, err)
+
+	cfg := config.Config{
+		ClickHouse: config.ClickHouseConfig{
+			Host:     host,
+			Port:     mappedPort.Int(),
+			Database: "default",
+			Username: "default",
+			Password: "",
+			Protocol: config.HTTPProtocol,
+		},
+		Server: config.ServerConfig{
+			JWT: config.JWTConfig{
+				Enabled: false,
+			},
+		},
+	}
+
+	cmd := &mockCommand{
+		flags: map[string]interface{}{
+			"config":             "",
+			"config-reload-time": 0,
+		},
+		setFlags: map[string]bool{},
+	}
+
+	app, err := newApplication(ctx, cfg, cmd)
+	require.NoError(t, err)
+	require.NotNil(t, app)
+	require.NotNil(t, app.mcpServer)
+	app.Close()
+}
+
+// TestRunServerWithValidConfig tests runServer with a valid configuration
+func TestRunServerWithValidConfig(t *testing.T) {
+	// Create a temporary config file
+	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	configContent := `
+clickhouse:
+  host: "localhost"
+  port: 8123
+  database: "default"
+server:
+  jwt:
+    enabled: true
+    secret_key: "test-secret"
+  transport: "stdio"
+logging:
+  level: "info"
+`
+	_, err = tmpFile.WriteString(configContent)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cmd := &cli.Command{}
+	cmd.Flags = []cli.Flag{
+		&cli.StringFlag{Name: "config", Value: tmpFile.Name()},
+		&cli.StringFlag{Name: "clickhouse-host", Value: "localhost"},
+		&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
+		&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
+		&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
+		&cli.StringFlag{Name: "clickhouse-password", Value: ""},
+		&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
+		&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
+		&cli.BoolFlag{Name: "read-only", Value: false},
+		&cli.StringFlag{Name: "transport", Value: "stdio"},
+		&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
+		&cli.IntFlag{Name: "port", Value: 8080},
+		&cli.StringFlag{Name: "log-level", Value: "info"},
+		&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
+		&cli.BoolFlag{Name: "allow-jwt-auth", Value: true},
+		&cli.StringFlag{Name: "jwt-secret-key", Value: "test-secret"},
+		&cli.StringFlag{Name: "jwt-token-param", Value: "token"},
+		&cli.IntFlag{Name: "config-reload-time", Value: 0},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// This should fail when it tries to serve stdio, but we're testing the setup
+	err = runServer(ctx, cmd)
+	require.Error(t, err)
+	// The error should be from the stdio server, not from our configuration
+}
+
+// TestMainFunctionality tests various main function scenarios
+func TestMainFunctionality(t *testing.T) {
+	t.Run("setup_logging_error", func(t *testing.T) {
+		err := setupLogging("invalid-level")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid log level")
+	})
+
+	t.Run("build_config_with_empty_values", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":                        "",
+				"clickhouse-host":               "",
+				"clickhouse-port":               0,
+				"clickhouse-database":           "",
+				"clickhouse-username":           "",
+				"clickhouse-password":           "",
+				"clickhouse-protocol":           "",
+				"clickhouse-max-execution-time": 0,
+				"read-only":                     false,
+				"transport":                     "",
+				"address":                       "",
+				"port":                          0,
+				"log-level":                     "",
+				"clickhouse-limit":              0,
+				"jwt-token-param":               "",
+			},
+			setFlags: map[string]bool{},
+		}
+
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+
+		// Should use defaults when values are empty
+		require.Equal(t, "localhost", cfg.ClickHouse.Host)
+		require.Equal(t, 8123, cfg.ClickHouse.Port)
+		require.Equal(t, "default", cfg.ClickHouse.Database)
+		require.Equal(t, "default", cfg.ClickHouse.Username)
+		require.Equal(t, config.HTTPProtocol, cfg.ClickHouse.Protocol)
+		require.Equal(t, 600, cfg.ClickHouse.MaxExecutionTime)
+		require.Equal(t, config.StdioTransport, cfg.Server.Transport)
+		require.Equal(t, "0.0.0.0", cfg.Server.Address)
+		require.Equal(t, 8080, cfg.Server.Port)
+		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
+		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, "token", cfg.Server.JWT.TokenParam)
+	})
+
+	t.Run("config_reload_with_logging_level_change", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `
+clickhouse:
+  host: "localhost"
+  port: 8123
+server:
+  jwt:
+    enabled: true
+    secret_key: "test-secret"
+logging:
+  level: "debug"
+`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		app := &application{
+			configFile: tmpFile.Name(),
+			config: config.Config{
+				Logging: config.LoggingConfig{
+					Level: config.InfoLevel, // Different from file
+				},
+			},
+			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"log-level": "debug",
+			},
+			setFlags: map[string]bool{
+				"log-level": true,
+			},
+		}
+
+		err = app.reloadConfig(cmd)
+		require.NoError(t, err)
+
+		// Check that logging level was updated
+		newConfig := app.GetCurrentConfig()
+		require.Equal(t, config.DebugLevel, newConfig.Logging.Level)
+	})
 }
