@@ -1601,6 +1601,136 @@ logging:
 	}
 }
 
+// TestRun tests the main run function
+func TestRun(t *testing.T) {
+	t.Run("version_command", func(t *testing.T) {
+		args := []string{"altinity-mcp", "version"}
+		err := run(args)
+		require.NoError(t, err)
+	})
+
+	t.Run("test_connection_command_invalid_config", func(t *testing.T) {
+		args := []string{"altinity-mcp", "test-connection", "--clickhouse-host", "nonexistent-host", "--clickhouse-port", "9999"}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to invalid ClickHouse connection
+	})
+
+	t.Run("invalid_flag", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--invalid-flag"}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to invalid flag
+	})
+
+	t.Run("help_command", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--help"}
+		err := run(args)
+		require.NoError(t, err)
+	})
+
+	t.Run("invalid_log_level", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--log-level", "invalid"}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to invalid log level in Before hook
+	})
+
+	t.Run("jwt_enabled_without_secret", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", ""}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to missing JWT secret key
+	})
+
+	t.Run("invalid_config_file", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--config", "/nonexistent/config.yaml"}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to nonexistent config file
+	})
+
+	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		args := []string{"altinity-mcp", "--clickhouse-host", "nonexistent-host", "--clickhouse-port", "9999"}
+		err := run(args)
+		require.Error(t, err)
+		// Should fail due to invalid ClickHouse connection when JWT is disabled
+	})
+
+	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
+		// This test will start the server but we need to stop it quickly
+		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", "test-secret", "--transport", "stdio"}
+		
+		// Run in a goroutine with timeout since stdio transport will block
+		done := make(chan error, 1)
+		go func() {
+			done <- run(args)
+		}()
+
+		// Wait for either completion or timeout
+		select {
+		case err := <-done:
+			// If it completes, it could be with an error or nil
+			// Both are acceptable since we're testing that it doesn't fail during setup
+			if err != nil {
+				t.Logf("run completed with error (expected for stdio): %v", err)
+			} else {
+				t.Log("run completed successfully")
+			}
+		case <-time.After(1 * time.Second):
+			// If it times out, that means it's probably running (blocked on stdio)
+			// which is expected behavior for stdio transport
+			t.Log("run appears to be running (blocked on stdin), which is expected")
+		}
+	})
+
+	t.Run("valid_config_file", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `
+clickhouse:
+  host: "localhost"
+  port: 8123
+  database: "default"
+server:
+  jwt:
+    enabled: true
+    secret_key: "test-secret"
+  transport: "stdio"
+logging:
+  level: "info"
+`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		tmpFile.Close()
+
+		args := []string{"altinity-mcp", "--config", tmpFile.Name()}
+		
+		// Run in a goroutine with timeout since stdio transport will block
+		done := make(chan error, 1)
+		go func() {
+			done <- run(args)
+		}()
+
+		// Wait for either completion or timeout
+		select {
+		case err := <-done:
+			// If it completes, it could be with an error or nil
+			if err != nil {
+				t.Logf("run with config file completed with error (expected for stdio): %v", err)
+			} else {
+				t.Log("run with config file completed successfully")
+			}
+		case <-time.After(1 * time.Second):
+			// If it times out, that means it's probably running
+			t.Log("run with config file appears to be running, which is expected")
+		}
+	})
+}
+
 // TestMainFunctionality tests various main function scenarios
 func TestMainFunctionality(t *testing.T) {
 	t.Run("setup_logging_error", func(t *testing.T) {

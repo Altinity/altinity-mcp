@@ -29,6 +29,13 @@ var (
 )
 
 func main() {
+	if err := run(os.Args); err != nil {
+		log.Fatal().Err(err).Msg("Application failed")
+	}
+}
+
+// run contains the main application logic, extracted for testability
+func run(args []string) error {
 	app := &cli.Command{
 		Name:        "altinity-mcp",
 		Usage:       "Altinity MCP Server - ClickHouse Model Context Protocol Server",
@@ -236,9 +243,7 @@ func main() {
 		},
 	}
 
-	if err := app.Run(context.Background(), os.Args); err != nil {
-		log.Fatal().Err(err).Msg("Application failed")
-	}
+	return app.Run(context.Background(), args)
 }
 
 // setupLogging configures the global logger
