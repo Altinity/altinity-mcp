@@ -287,7 +287,12 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 }
 
 // startHTTPServerWithTLS starts the HTTP server with or without TLS
-func (a *application) startHTTPServerWithTLS(cfg config.Config, addr string) error {
+func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport string) error {
+	if cfg.Server.JWT.Enabled {
+		addr += "/{token}/" + transport
+	} else {
+		addr += "/" + transport
+	}
 	if !cfg.Server.TLS.Enabled {
 		protocol := "http"
 		log.Info().Str("url", fmt.Sprintf("%s://%s", protocol, addr)).Msg("HTTP server listening")
@@ -328,14 +333,14 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/", tokenInjector(httpServer))
+		mux.Handle("/{token}/http", tokenInjector(httpServer))
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
-		mux.Handle("/", httpServer)
+		mux.Handle("/http", httpServer)
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	}
@@ -345,7 +350,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		Handler: httpHandler,
 	}
 
-	return a.startHTTPServerWithTLS(cfg, addr)
+	return a.startHTTPServerWithTLS(cfg, addr, "http")
 }
 
 // startSSEServer starts the SSE transport server
@@ -389,7 +394,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
 		mux := http.NewServeMux()
-		mux.Handle("/", sseServer)
+		mux.Handle("/sse", sseServer)
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	}
@@ -399,7 +404,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		Handler: sseHandler,
 	}
 
-	return a.startHTTPServerWithTLS(cfg, addr)
+	return a.startHTTPServerWithTLS(cfg, addr, "sse")
 }
 
 // healthHandler provides a health check endpoint for Kubernetes probes
