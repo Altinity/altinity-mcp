@@ -57,8 +57,10 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 		ClickhouseConfig: *chConfig,
 	}
 
-	// Register tools, resources, and prompts using the server wrapper (only once)
+	// Create wrapper that will register tools/resources/prompts with the test server
 	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer}
+	
+	// Register tools, resources, and prompts directly with the wrapper
 	RegisterTools(wrapper)
 	RegisterResources(wrapper)
 	RegisterPrompts(wrapper)
