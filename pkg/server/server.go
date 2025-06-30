@@ -239,6 +239,13 @@ func (s *ClickHouseJWTServer) ExtractTokenFromCtx(ctx context.Context) string {
 
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
+	// Get the ClickHouseJWTServer instance
+	chJwtServer, ok := srv.(*ClickHouseJWTServer)
+	if !ok {
+		log.Error().Msg("Server does not implement ClickHouseJWTServer")
+		return
+	}
+
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
@@ -248,7 +255,7 @@ func RegisterTools(srv AltinityMCPServer) {
 		),
 	)
 
-	srv.AddTool(listTablesTool, HandleListTables)
+	srv.AddTool(listTablesTool, chJwtServer.HandleListTables)
 
 	// Execute Query Tool
 	executeQueryTool := mcp.NewTool(
@@ -263,7 +270,7 @@ func RegisterTools(srv AltinityMCPServer) {
 		),
 	)
 
-	srv.AddTool(executeQueryTool, HandleExecuteQuery)
+	srv.AddTool(executeQueryTool, chJwtServer.HandleExecuteQuery)
 
 	// Describe Table Tool
 	describeTableTool := mcp.NewTool(
@@ -279,13 +286,20 @@ func RegisterTools(srv AltinityMCPServer) {
 		),
 	)
 
-	srv.AddTool(describeTableTool, HandleDescribeTable)
+	srv.AddTool(describeTableTool, chJwtServer.HandleDescribeTable)
 
 	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered")
 }
 
 // RegisterResources adds ClickHouse resources to the MCP server
 func RegisterResources(srv AltinityMCPServer) {
+	// Get the ClickHouseJWTServer instance
+	chJwtServer, ok := srv.(*ClickHouseJWTServer)
+	if !ok {
+		log.Error().Msg("Server does not implement ClickHouseJWTServer")
+		return
+	}
+
 	// Database Schema Resource
 	schemaResource := mcp.NewResource(
 		"clickhouse://schema",
@@ -297,23 +311,19 @@ func RegisterResources(srv AltinityMCPServer) {
 	srv.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		log.Debug().Msg("Reading database schema resource")
 
-		// Get the ClickHouse JWT server from context (for testing) or cast from srv
-		var chJwtServer *ClickHouseJWTServer
+		// Get the ClickHouse JWT server from context (for testing) or use the one from registration
+		var serverToUse *ClickHouseJWTServer
 		if serverFromCtx := GetClickHouseJWTServerFromContext(ctx); serverFromCtx != nil {
-			chJwtServer = serverFromCtx
+			serverToUse = serverFromCtx
 		} else {
-			var ok bool
-			chJwtServer, ok = srv.(*ClickHouseJWTServer)
-			if !ok {
-				return nil, fmt.Errorf("server does not support JWT authentication")
-			}
+			serverToUse = chJwtServer
 		}
 
 		// Extract token from context
-		token := chJwtServer.ExtractTokenFromCtx(ctx)
+		token := serverToUse.ExtractTokenFromCtx(ctx)
 
 		// Get ClickHouse client
-		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		chClient, err := serverToUse.GetClickHouseClient(ctx, token)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -381,23 +391,19 @@ func RegisterResources(srv AltinityMCPServer) {
 
 		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
 
-		// Get the ClickHouse JWT server from context (for testing) or cast from srv
-		var chJwtServer *ClickHouseJWTServer
+		// Get the ClickHouse JWT server from context (for testing) or use the one from registration
+		var serverToUse *ClickHouseJWTServer
 		if serverFromCtx := GetClickHouseJWTServerFromContext(ctx); serverFromCtx != nil {
-			chJwtServer = serverFromCtx
+			serverToUse = serverFromCtx
 		} else {
-			var ok bool
-			chJwtServer, ok = srv.(*ClickHouseJWTServer)
-			if !ok {
-				return nil, fmt.Errorf("server does not support JWT authentication")
-			}
+			serverToUse = chJwtServer
 		}
 
 		// Extract token from context
-		token := chJwtServer.ExtractTokenFromCtx(ctx)
+		token := serverToUse.ExtractTokenFromCtx(ctx)
 
 		// Get ClickHouse client
-		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		chClient, err := serverToUse.GetClickHouseClient(ctx, token)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to get ClickHouse client")
 			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -545,21 +551,15 @@ func RegisterPrompts(srv AltinityMCPServer) {
 }
 
 // HandleListTables implements the list_tables tool handler
-func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *ClickHouseJWTServer) HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	database := req.GetString("database", "")
 	log.Debug().Str("database", database).Msg("Executing list_tables tool")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-	}
-
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := s.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -596,20 +596,14 @@ func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 // HandleExecuteQuery implements the execute_query tool handler
-func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *ClickHouseJWTServer) HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, err := req.RequireString("query")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-	}
-
 	// Get optional limit parameter, use server default if not provided
-	defaultLimit := float64(chJwtServer.ClickhouseConfig.Limit)
+	defaultLimit := float64(s.ClickhouseConfig.Limit)
 	limit := defaultLimit
 	if limitVal, exists := req.GetArguments()["limit"]; exists {
 		if l, ok := limitVal.(float64); ok {
@@ -633,10 +627,10 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := s.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -669,7 +663,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 }
 
 // HandleDescribeTable implements the describe_table tool handler
-func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *ClickHouseJWTServer) HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	database, err := req.RequireString("database")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -681,17 +675,11 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 	log.Debug().Str("database", database).Str("table", tableName).Msg("Describing table structure")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-	}
-
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := s.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
