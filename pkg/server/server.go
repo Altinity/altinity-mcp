@@ -546,8 +546,8 @@ func RegisterPrompts(srv AltinityMCPServer) {
 
 // HandleListTables implements the list_tables tool handler
 func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	log.Debug().Msg("Executing list_tables tool")
 	database := req.GetString("database", "")
+	log.Debug().Str("database", database).Msg("Executing list_tables tool")
 
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
