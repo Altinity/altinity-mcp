@@ -58,9 +58,9 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 		ClickhouseConfig: chConfig,
 	}
 
-	// Register tools using method handlers for production
-	registerProductionTools(chJwtServer)
-	registerProductionResources(chJwtServer)
+	// Register tools, resources, and prompts
+	RegisterTools(chJwtServer)
+	RegisterResources(chJwtServer)
 	RegisterPrompts(chJwtServer)
 
 	log.Info().
@@ -71,182 +71,6 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 	return chJwtServer
 }
 
-// registerProductionTools registers tools using method handlers for production use
-func registerProductionTools(chJwtServer *ClickHouseJWTServer) {
-	// List Tables Tool
-	listTablesTool := mcp.NewTool(
-		"list_tables",
-		mcp.WithDescription("Lists all tables in a ClickHouse database with detailed information. Can be filtered by database."),
-		mcp.WithString("database",
-			mcp.Description("Optional: The database to list tables from. If not provided, lists tables from all databases."),
-		),
-	)
-
-	chJwtServer.AddTool(listTablesTool, chJwtServer.HandleListTables)
-
-	// Execute Query Tool
-	executeQueryTool := mcp.NewTool(
-		"execute_query",
-		mcp.WithDescription("Executes a SQL query against ClickHouse and returns the results"),
-		mcp.WithString("query",
-			mcp.Required(),
-			mcp.Description("SQL query to execute (SELECT, INSERT, CREATE, etc.)"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of rows to return (default: 1000, max: 10000)"),
-		),
-	)
-
-	chJwtServer.AddTool(executeQueryTool, chJwtServer.HandleExecuteQuery)
-
-	// Describe Table Tool
-	describeTableTool := mcp.NewTool(
-		"describe_table",
-		mcp.WithDescription("Describes the structure of a ClickHouse table including columns, types, and constraints"),
-		mcp.WithString("database",
-			mcp.Required(),
-			mcp.Description("Name of the database the table belongs to"),
-		),
-		mcp.WithString("table_name",
-			mcp.Required(),
-			mcp.Description("Name of the table to describe"),
-		),
-	)
-
-	chJwtServer.AddTool(describeTableTool, chJwtServer.HandleDescribeTable)
-
-	log.Info().Int("tool_count", 3).Msg("ClickHouse production tools registered")
-}
-
-// registerProductionResources registers resources using method handlers for production use
-func registerProductionResources(chJwtServer *ClickHouseJWTServer) {
-	// Database Schema Resource
-	schemaResource := mcp.NewResource(
-		"clickhouse://schema",
-		"Database Schema",
-		mcp.WithResourceDescription("Complete schema information for the ClickHouse database"),
-		mcp.WithMIMEType("application/json"),
-	)
-
-	chJwtServer.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		log.Debug().Msg("Reading database schema resource")
-
-		// Extract token from context
-		token := chJwtServer.ExtractTokenFromCtx(ctx)
-
-		// Get ClickHouse client
-		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to get ClickHouse client")
-			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
-		}
-		defer func() {
-			if closeErr := chClient.Close(); closeErr != nil {
-				log.Error().
-					Err(err).
-					Msg("clickhouse://schema: can't close clickhouse")
-			}
-		}()
-
-		// With an empty database string, ListTables will return tables from all databases
-		tables, err := chClient.ListTables(ctx, "")
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("resource", "schema").
-				Msg("ClickHouse operation failed: get schema")
-			return nil, fmt.Errorf("failed to get schema: %w", err)
-		}
-
-		schema := map[string]interface{}{
-			"tables": tables,
-			"count":  len(tables),
-		}
-
-		jsonData, err := json.MarshalIndent(schema, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal schema: %w", err)
-		}
-
-		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      "clickhouse://schema",
-				MIMEType: "application/json",
-				Text:     string(jsonData),
-			},
-		}, nil
-	})
-
-	// Table Structure Template Resource
-	tableTemplate := mcp.NewResourceTemplate(
-		"clickhouse://table/{database}/{table_name}",
-		"Table Structure",
-		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
-		mcp.WithTemplateMIMEType("application/json"),
-	)
-
-	chJwtServer.AddResourceTemplate(tableTemplate, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Extract database and table name from URI
-		uri := req.Params.URI
-		parts := strings.Split(uri, "/")
-		// expected clickhouse://table/{database}/{table_name}
-		if len(parts) < 5 || parts[0] != "clickhouse:" || parts[1] != "" || parts[2] != "table" {
-			return nil, fmt.Errorf("invalid table URI format: %s", uri)
-		}
-		database := parts[len(parts)-2]
-		tableName := parts[len(parts)-1]
-
-		// Validate that database and table name are not empty
-		if database == "" || tableName == "" {
-			return nil, fmt.Errorf("invalid table URI format: %s", uri)
-		}
-
-		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
-
-		// Extract token from context
-		token := chJwtServer.ExtractTokenFromCtx(ctx)
-
-		// Get ClickHouse client
-		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to get ClickHouse client")
-			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
-		}
-		defer func() {
-			if closeErr := chClient.Close(); closeErr != nil {
-				log.Error().
-					Err(err).
-					Msgf("clickhouse://table/%s/%s: can't close clickhouse", database, tableName)
-			}
-		}()
-
-		columns, err := chClient.DescribeTable(ctx, database, tableName)
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("database", database).
-				Str("table", tableName).
-				Str("resource", "table_structure").
-				Msg("ClickHouse operation failed: get table structure")
-			return nil, fmt.Errorf("failed to get table structure: %w", err)
-		}
-
-		jsonData, err := json.MarshalIndent(columns, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal table structure: %w", err)
-		}
-
-		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      uri,
-				MIMEType: "application/json",
-				Text:     string(jsonData),
-			},
-		}, nil
-	})
-
-	log.Info().Int("resource_count", 2).Msg("ClickHouse production resources registered")
-}
 
 // GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
 func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
@@ -416,6 +240,63 @@ func (s *ClickHouseJWTServer) ExtractTokenFromCtx(ctx context.Context) string {
 
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
+	// Check if this is a production ClickHouseJWTServer or a test wrapper
+	if chJwtServer, ok := srv.(*ClickHouseJWTServer); ok {
+		// Production: use method handlers
+		registerToolsWithMethods(chJwtServer)
+	} else {
+		// Testing: use context-based handlers
+		registerToolsWithContext(srv)
+	}
+}
+
+func registerToolsWithMethods(chJwtServer *ClickHouseJWTServer) {
+	// List Tables Tool
+	listTablesTool := mcp.NewTool(
+		"list_tables",
+		mcp.WithDescription("Lists all tables in a ClickHouse database with detailed information. Can be filtered by database."),
+		mcp.WithString("database",
+			mcp.Description("Optional: The database to list tables from. If not provided, lists tables from all databases."),
+		),
+	)
+
+	chJwtServer.AddTool(listTablesTool, chJwtServer.HandleListTables)
+
+	// Execute Query Tool
+	executeQueryTool := mcp.NewTool(
+		"execute_query",
+		mcp.WithDescription("Executes a SQL query against ClickHouse and returns the results"),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("SQL query to execute (SELECT, INSERT, CREATE, etc.)"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of rows to return (default: 1000, max: 10000)"),
+		),
+	)
+
+	chJwtServer.AddTool(executeQueryTool, chJwtServer.HandleExecuteQuery)
+
+	// Describe Table Tool
+	describeTableTool := mcp.NewTool(
+		"describe_table",
+		mcp.WithDescription("Describes the structure of a ClickHouse table including columns, types, and constraints"),
+		mcp.WithString("database",
+			mcp.Required(),
+			mcp.Description("Name of the database the table belongs to"),
+		),
+		mcp.WithString("table_name",
+			mcp.Required(),
+			mcp.Description("Name of the table to describe"),
+		),
+	)
+
+	chJwtServer.AddTool(describeTableTool, chJwtServer.HandleDescribeTable)
+
+	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered (production)")
+}
+
+func registerToolsWithContext(srv AltinityMCPServer) {
 	// List Tables Tool
 	listTablesTool := mcp.NewTool(
 		"list_tables",
@@ -458,11 +339,151 @@ func RegisterTools(srv AltinityMCPServer) {
 
 	srv.AddTool(describeTableTool, HandleDescribeTable)
 
-	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered")
+	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered (testing)")
 }
 
 // RegisterResources adds ClickHouse resources to the MCP server
 func RegisterResources(srv AltinityMCPServer) {
+	// Check if this is a production ClickHouseJWTServer or a test wrapper
+	if chJwtServer, ok := srv.(*ClickHouseJWTServer); ok {
+		// Production: use method handlers
+		registerResourcesWithMethods(chJwtServer)
+	} else {
+		// Testing: use context-based handlers
+		registerResourcesWithContext(srv)
+	}
+}
+
+func registerResourcesWithMethods(chJwtServer *ClickHouseJWTServer) {
+	// Database Schema Resource
+	schemaResource := mcp.NewResource(
+		"clickhouse://schema",
+		"Database Schema",
+		mcp.WithResourceDescription("Complete schema information for the ClickHouse database"),
+		mcp.WithMIMEType("application/json"),
+	)
+
+	chJwtServer.AddResource(schemaResource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		log.Debug().Msg("Reading database schema resource")
+
+		// Extract token from context
+		token := chJwtServer.ExtractTokenFromCtx(ctx)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
+		}
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msg("clickhouse://schema: can't close clickhouse")
+			}
+		}()
+
+		// With an empty database string, ListTables will return tables from all databases
+		tables, err := chClient.ListTables(ctx, "")
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("resource", "schema").
+				Msg("ClickHouse operation failed: get schema")
+			return nil, fmt.Errorf("failed to get schema: %w", err)
+		}
+
+		schema := map[string]interface{}{
+			"tables": tables,
+			"count":  len(tables),
+		}
+
+		jsonData, err := json.MarshalIndent(schema, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal schema: %w", err)
+		}
+
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:      "clickhouse://schema",
+				MIMEType: "application/json",
+				Text:     string(jsonData),
+			},
+		}, nil
+	})
+
+	// Table Structure Template Resource
+	tableTemplate := mcp.NewResourceTemplate(
+		"clickhouse://table/{database}/{table_name}",
+		"Table Structure",
+		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
+		mcp.WithTemplateMIMEType("application/json"),
+	)
+
+	chJwtServer.AddResourceTemplate(tableTemplate, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		// Extract database and table name from URI
+		uri := req.Params.URI
+		parts := strings.Split(uri, "/")
+		// expected clickhouse://table/{database}/{table_name}
+		if len(parts) < 5 || parts[0] != "clickhouse:" || parts[1] != "" || parts[2] != "table" {
+			return nil, fmt.Errorf("invalid table URI format: %s", uri)
+		}
+		database := parts[len(parts)-2]
+		tableName := parts[len(parts)-1]
+
+		// Validate that database and table name are not empty
+		if database == "" || tableName == "" {
+			return nil, fmt.Errorf("invalid table URI format: %s", uri)
+		}
+
+		log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
+
+		// Extract token from context
+		token := chJwtServer.ExtractTokenFromCtx(ctx)
+
+		// Get ClickHouse client
+		chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to get ClickHouse client")
+			return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
+		}
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().
+					Err(err).
+					Msgf("clickhouse://table/%s/%s: can't close clickhouse", database, tableName)
+			}
+		}()
+
+		columns, err := chClient.DescribeTable(ctx, database, tableName)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("database", database).
+				Str("table", tableName).
+				Str("resource", "table_structure").
+				Msg("ClickHouse operation failed: get table structure")
+			return nil, fmt.Errorf("failed to get table structure: %w", err)
+		}
+
+		jsonData, err := json.MarshalIndent(columns, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal table structure: %w", err)
+		}
+
+		return []mcp.ResourceContents{
+			mcp.TextResourceContents{
+				URI:      uri,
+				MIMEType: "application/json",
+				Text:     string(jsonData),
+			},
+		}, nil
+	})
+
+	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered (production)")
+}
+
+func registerResourcesWithContext(srv AltinityMCPServer) {
 	// Database Schema Resource
 	schemaResource := mcp.NewResource(
 		"clickhouse://schema",
@@ -600,7 +621,7 @@ func RegisterResources(srv AltinityMCPServer) {
 		}, nil
 	})
 
-	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
+	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered (testing)")
 }
 
 // RegisterPrompts adds ClickHouse prompts to the MCP server
