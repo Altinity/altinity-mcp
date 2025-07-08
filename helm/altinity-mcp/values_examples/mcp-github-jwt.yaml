@@ -16,7 +16,7 @@ config:
     read_only: true
   
   server:
-    transport: "http"
+    transport: "sse"
     jwt:
       enabled: true
       secret_key: "test-secret-key"
