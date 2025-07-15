@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -70,7 +72,6 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 	return chJwtServer
 }
-
 
 // GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
 func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
@@ -311,7 +312,7 @@ func RegisterResources(srv AltinityMCPServer) {
 }
 
 // HandleSchemaResource handles the schema resource
-func HandleSchemaResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	log.Debug().Msg("Reading database schema resource")
 
 	// Get the ClickHouse JWT server from context
@@ -757,8 +758,6 @@ func GetClickHouseJWTServerFromContext(ctx context.Context) *ClickHouseJWTServer
 
 // OpenAPIHandler handles OpenAPI schema and REST API endpoints
 func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	
 	// Extract token from URL path
 	pathParts := strings.Split(r.URL.Path, "/")
 	var token string
@@ -789,7 +788,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		s.handleListTablesOpenAPI(w, r, token)
 	case strings.HasSuffix(r.URL.Path, "/describe_table"):
 		s.handleDescribeTableOpenAPI(w, r, token)
-	case strings.HasSuffix(r.URL.Path, "/query"):
+	case strings.HasSuffix(r.URL.Path, "/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
@@ -797,7 +796,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, r *http.Request, hostURL, token string) {
+func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -806,15 +805,15 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, r *http.
 		},
 		"servers": []map[string]interface{}{
 			{
-				"url":         fmt.Sprintf("%s/{jwt_token}/openapi", hostURL),
+				"url":         "{host_url}/{jwt_token}/openapi",
 				"description": "ClickHouse server URL",
 				"variables": map[string]interface{}{
 					"host_url": map[string]interface{}{
-						"default": "https://mcp.<your-tenant>.altinity.cloud",
+						"default":     hostURL,
 						"description": "Base URL",
 					},
 					"jwt_token": map[string]interface{}{
-						"default":     "",
+						"default":     token,
 						"description": "Paste your JWT token here",
 						"x-oai-meta": map[string]interface{}{
 							"securityType": "user_api_key",
@@ -889,7 +888,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, r *http.
 					},
 				},
 			},
-			"/query": map[string]interface{}{
+			"/execute_query": map[string]interface{}{
 				"get": map[string]interface{}{
 					"summary":     "Executes a SQL query against ClickHouse and returns the results",
 					"operationId": "execute_query",
@@ -931,7 +930,9 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, r *http.
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(schema)
+	if encodeErr := json.NewEncoder(w).Encode(schema); encodeErr != nil {
+		log.Err(encodeErr).Msg("can't encode /openapi schema")
+	}
 }
 
 func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
@@ -941,16 +942,20 @@ func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *
 	}
 
 	database := r.URL.Query().Get("database")
-	
+
 	ctx := context.WithValue(r.Context(), "jwt_token", token)
-	
+
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer chClient.Close()
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Send()
+		}
+	}()
 
 	tables, err := chClient.ListTables(ctx, database)
 	if err != nil {
@@ -964,7 +969,9 @@ func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if encodeErr := json.NewEncoder(w).Encode(response); encodeErr != nil {
+		log.Err(encodeErr).Msg("can't encode /openapi/list_tables result")
+	}
 }
 
 func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
@@ -982,14 +989,18 @@ func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, 
 	}
 
 	ctx := context.WithValue(r.Context(), "jwt_token", token)
-	
+
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer chClient.Close()
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Send()
+		}
+	}()
 
 	columns, err := chClient.DescribeTable(ctx, database, tableName)
 	if err != nil {
@@ -998,7 +1009,9 @@ func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(columns)
+	if encodeErr := json.NewEncoder(w).Encode(columns); encodeErr != nil {
+		log.Err(encodeErr).Msg("can't encode /openapi/describe_table result")
+	}
 }
 
 func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
@@ -1017,7 +1030,7 @@ func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	limit := s.ClickhouseConfig.Limit
 	if limitStr != "" {
 		var err error
-		limit, err = fmt.Atoi(limitStr)
+		limit, err = strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 {
 			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
 			return
@@ -1034,14 +1047,18 @@ func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	ctx := context.WithValue(r.Context(), "jwt_token", token)
-	
+
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer chClient.Close()
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Send()
+		}
+	}()
 
 	result, err := chClient.ExecuteQuery(ctx, query)
 	if err != nil {
@@ -1050,7 +1067,9 @@ func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	if encodeErr := json.NewEncoder(w).Encode(result); encodeErr != nil {
+		log.Err(encodeErr).Msg("can't encode /openapi/execute_query result")
+	}
 }
 
 // Helper functions
