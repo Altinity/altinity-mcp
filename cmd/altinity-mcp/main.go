@@ -324,6 +324,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		Str("address", addr).
 		Msg("Starting MCP server with HTTP transport")
 
+	// Create a middleware to inject the ClickHouseJWTServer into context
+	serverInjector := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Inject the ClickHouseJWTServer into the context
+			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
 	var httpHandler http.Handler
 	if cfg.Server.JWT.Enabled {
 		log.Info().Msg("Using dynamic base path for JWT authentication")
@@ -333,14 +342,14 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/http", tokenInjector(httpServer))
+		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
-		mux.Handle("/http", httpServer)
+		mux.Handle("/http", serverInjector(httpServer))
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	}
@@ -359,6 +368,15 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 	log.Info().
 		Str("address", addr).
 		Msg("Starting MCP server with SSE transport")
+
+	// Create a middleware to inject the ClickHouseJWTServer into context
+	serverInjector := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Inject the ClickHouseJWTServer into the context
+			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 
 	var sseHandler http.Handler
 	if cfg.Server.JWT.Enabled {
@@ -386,15 +404,15 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/sse", tokenInjector(sseServer.SSEHandler()))
-		mux.Handle("/{token}/message", tokenInjector(sseServer.MessageHandler()))
+		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
+		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
 		mux := http.NewServeMux()
-		mux.Handle("/sse", sseServer)
+		mux.Handle("/sse", serverInjector(sseServer))
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	}
