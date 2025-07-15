@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
@@ -61,7 +59,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 
 	// Create wrapper that will register tools/resources/prompts with the test server
 	wrapper := &testServerWrapper{testServer: testServer, chJwtServer: chJwtServer}
-	
+
 	// Register tools, resources, and prompts directly with the wrapper
 	RegisterTools(wrapper)
 	RegisterResources(wrapper)
@@ -261,20 +259,6 @@ func (s *AltinityTestServer) GetPromptAndRequireSuccess(ctx context.Context, pro
 func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfig) *AltinityTestServer {
 	s.chConfig = config
 	return s
-}
-
-// callResourceHandlerWithServer is a helper function to call resource handlers with proper server context
-func callResourceHandlerWithServer(ctx context.Context, req mcp.ReadResourceRequest, handler server.ResourceHandlerFunc, srv AltinityMCPServer) ([]mcp.ResourceContents, error) {
-	// The resource handlers in server.go expect to be called with a server that implements AltinityMCPServer
-	// We need to temporarily replace the server casting logic for testing
-	return handler(ctx, req)
-}
-
-// callResourceTemplateHandlerWithServer is a helper function to call resource template handlers with proper server context
-func callResourceTemplateHandlerWithServer(ctx context.Context, req mcp.ReadResourceRequest, handler server.ResourceTemplateHandlerFunc, srv AltinityMCPServer) ([]mcp.ResourceContents, error) {
-	// The resource template handlers in server.go expect to be called with a server that implements AltinityMCPServer
-	// We need to temporarily replace the server casting logic for testing
-	return handler(ctx, req)
 }
 
 // WithJWTAuth configures the server to use JWT authentication
@@ -637,7 +621,7 @@ func TestGetClickHouseClient(t *testing.T) {
 
 		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
 
-		// This will fail to connect but we're testing the logic, not the connection
+		// This will fail to connect, but we're testing the logic, not the connection
 		_, err := srv.GetClickHouseClient(ctx, "")
 		// We expect an error because we're not actually connecting to ClickHouse
 		require.Error(t, err)
@@ -718,7 +702,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("test-secret"))
 		require.NoError(t, err)
 
-		// This will fail to connect but we're testing the JWT parsing logic
+		// This will fail to connect, but we're testing the JWT parsing logic
 		_, err = srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWT error
 		require.Error(t, err)
@@ -764,7 +748,7 @@ func TestGetClickHouseClient(t *testing.T) {
 		tokenString, err := token.SignedString([]byte("test-secret"))
 		require.NoError(t, err)
 
-		// This will fail to connect but we're testing the JWT parsing logic
+		// This will fail to connect, but we're testing the JWT parsing logic
 		_, err = srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWT error
 		require.Error(t, err)
