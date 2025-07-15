@@ -81,22 +81,8 @@ type testServerWrapper struct {
 }
 
 func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
-	// Convert server.ServerTool to mcptest.ServerTool
 	for _, tool := range tools {
 		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// Preserve existing JWT token from context
-			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-				if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
-					// Token exists and is not empty, preserve it
-					ctx = context.WithValue(ctx, "jwt_token", tokenStr)
-				} else {
-					// Token exists but is empty or wrong type, set empty
-					ctx = context.WithValue(ctx, "jwt_token", "")
-				}
-			} else {
-				// No token in context, set empty
-				ctx = context.WithValue(ctx, "jwt_token", "")
-			}
 			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return tool.Handler(ctx, req)
 		})
@@ -104,56 +90,22 @@ func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 }
 
 func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
-	// Create a wrapper that injects the ClickHouse JWT server into context
-	wrappedHandler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Preserve existing JWT token from context
-		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
-				// Token exists and is not empty, preserve it
-				ctx = context.WithValue(ctx, "jwt_token", tokenStr)
-			} else {
-				// Token exists but is empty or wrong type, set empty
-				ctx = context.WithValue(ctx, "jwt_token", "")
-			}
-		} else {
-			// No token in context, set empty
-			ctx = context.WithValue(ctx, "jwt_token", "")
-		}
+	w.testServer.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-
-		// Call the original handler from the server package
 		return handler(ctx, req)
-	}
-	w.testServer.AddTool(tool, wrappedHandler)
+	})
 }
 
 func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
 	w.testServer.AddPrompt(prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		// Preserve existing JWT token from context, or set empty if none exists
-		existingToken := ""
-		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok {
-				existingToken = tokenStr
-			}
-		}
-		ctx = context.WithValue(ctx, "jwt_token", existingToken)
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 		return handler(ctx, req)
 	})
 }
 
 func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
-	// Convert server.ServerPrompt to mcptest.ServerPrompt
 	for _, prompt := range prompts {
 		w.testServer.AddPrompt(prompt.Prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			// Preserve existing JWT token from context, or set empty if none exists
-			existingToken := ""
-			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-				if tokenStr, ok := tokenFromCtx.(string); ok {
-					existingToken = tokenStr
-				}
-			}
-			ctx = context.WithValue(ctx, "jwt_token", existingToken)
 			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
 			return prompt.Handler(ctx, req)
 		})
@@ -161,58 +113,26 @@ func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
 }
 
 func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc) {
-	// Wrap the handler to inject JWT context and server
-	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Preserve existing JWT token from context, or set empty if none exists
-		existingToken := ""
-		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok {
-				existingToken = tokenStr
-			}
-		}
-		ctx = context.WithValue(ctx, "jwt_token", existingToken)
+	w.testServer.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-
-		// Call the handler directly with the wrapper as the server parameter
-		// since the handler expects an AltinityMCPServer interface
-		return callResourceHandlerWithServer(ctx, req, handler, w)
-	}
-	w.testServer.AddResource(resource, wrappedHandler)
+		return handler(ctx, req)
+	})
 }
 
 func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
-	// Convert server.ServerResource to mcptest.ServerResource
 	for _, resource := range resources {
 		w.testServer.AddResource(resource.Resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			// Preserve existing JWT token from context, or set empty if none exists
-			existingToken := ""
-			if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-				if tokenStr, ok := tokenFromCtx.(string); ok {
-					existingToken = tokenStr
-				}
-			}
-			ctx = context.WithValue(ctx, "jwt_token", existingToken)
 			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-			return callResourceHandlerWithServer(ctx, req, resource.Handler, w)
+			return resource.Handler(ctx, req)
 		})
 	}
 }
 
 func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
-	// Wrap the handler to inject JWT context and server
-	wrappedHandler := func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		// Preserve existing JWT token from context, or set empty if none exists
-		existingToken := ""
-		if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok {
-				existingToken = tokenStr
-			}
-		}
-		ctx = context.WithValue(ctx, "jwt_token", existingToken)
+	w.testServer.AddResourceTemplate(template, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
-		return callResourceTemplateHandlerWithServer(ctx, req, handler, w)
-	}
-	w.testServer.AddResourceTemplate(template, wrappedHandler)
+		return handler(ctx, req)
+	})
 }
 
 // Start starts the test server and connects to the ClickHouse database if a config is provided.
