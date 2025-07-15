@@ -755,6 +755,304 @@ func GetClickHouseJWTServerFromContext(ctx context.Context) *ClickHouseJWTServer
 	return nil
 }
 
+// OpenAPIHandler handles OpenAPI schema and REST API endpoints
+func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// Extract token from URL path
+	pathParts := strings.Split(r.URL.Path, "/")
+	var token string
+	for i, part := range pathParts {
+		if part == "openapi" && i > 0 {
+			token = pathParts[i-1]
+			break
+		}
+	}
+
+	// Get host URL from request
+	hostURL := fmt.Sprintf("%s://%s", "https", r.Host)
+	if r.TLS == nil {
+		hostURL = fmt.Sprintf("%s://%s", "http", r.Host)
+	}
+
+	switch r.URL.Path {
+	case fmt.Sprintf("/%s/openapi", token), "/openapi":
+		if r.Method == http.MethodGet && r.URL.Query().Get("schema") != "" {
+			s.serveOpenAPISchema(w, r, hostURL, token)
+			return
+		}
+	}
+
+	// Route to appropriate handler based on path suffix
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/list_tables"):
+		s.handleListTablesOpenAPI(w, r, token)
+	case strings.HasSuffix(r.URL.Path, "/describe_table"):
+		s.handleDescribeTableOpenAPI(w, r, token)
+	case strings.HasSuffix(r.URL.Path, "/query"):
+		s.handleExecuteQueryOpenAPI(w, r, token)
+	default:
+		// Serve OpenAPI schema by default
+		s.serveOpenAPISchema(w, r, hostURL, token)
+	}
+}
+
+func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, r *http.Request, hostURL, token string) {
+	schema := map[string]interface{}{
+		"openapi": "3.1.0",
+		"info": map[string]interface{}{
+			"title":   "ClickHouse SQL Interface",
+			"version": "1.0.0",
+		},
+		"servers": []map[string]interface{}{
+			{
+				"url":         fmt.Sprintf("%s/{jwt_token}/openapi", hostURL),
+				"description": "ClickHouse server URL",
+				"variables": map[string]interface{}{
+					"host_url": map[string]interface{}{
+						"default": "https://mcp.<your-tenant>.altinity.cloud",
+						"description": "Base URL",
+					},
+					"jwt_token": map[string]interface{}{
+						"default":     "",
+						"description": "Paste your JWT token here",
+						"x-oai-meta": map[string]interface{}{
+							"securityType": "user_api_key",
+						},
+					},
+				},
+			},
+		},
+		"paths": map[string]interface{}{
+			"/list_tables": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Lists all tables in a ClickHouse database with detailed information. Can be filtered by database.",
+					"operationId": "list_tables",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "database",
+							"in":          "query",
+							"required":    false,
+							"description": "Optional: The database to list tables from. If not provided, lists tables from all databases.",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "JSON list available tables from ClickHouse",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{},
+								},
+							},
+						},
+					},
+				},
+			},
+			"/describe_table": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Describes the structure of a ClickHouse table including columns, types, and constraints",
+					"operationId": "describe_table",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "database",
+							"in":          "query",
+							"required":    true,
+							"description": "Name of the database the table belongs to",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+						{
+							"name":        "table_name",
+							"in":          "query",
+							"required":    true,
+							"description": "Name of the table to describe",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "JSON result from ClickHouse",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "string",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"/query": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Executes a SQL query against ClickHouse and returns the results",
+					"operationId": "execute_query",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "query",
+							"in":          "query",
+							"required":    true,
+							"description": "SQL query to execute (SELECT, INSERT, CREATE, etc.)",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+						{
+							"name":        "limit",
+							"in":          "query",
+							"required":    false,
+							"description": "Optional: Maximum number of rows to return (default: 1000, max: 10000)",
+							"schema": map[string]interface{}{
+								"type": "integer",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "JSON result from ClickHouse",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "string",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(schema)
+}
+
+func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	database := r.URL.Query().Get("database")
+	
+	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	
+	// Get ClickHouse client
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer chClient.Close()
+
+	tables, err := chClient.ListTables(ctx, database)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to list tables: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"tables": tables,
+		"count":  len(tables),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	database := r.URL.Query().Get("database")
+	tableName := r.URL.Query().Get("table_name")
+
+	if database == "" || tableName == "" {
+		http.Error(w, "Both database and table_name parameters are required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	
+	// Get ClickHouse client
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer chClient.Close()
+
+	columns, err := chClient.DescribeTable(ctx, database, tableName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to describe table: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(columns)
+}
+
+func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		http.Error(w, "Query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := s.ClickhouseConfig.Limit
+	if limitStr != "" {
+		var err error
+		limit, err = fmt.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
+			return
+		}
+		if limit > 10000 {
+			http.Error(w, "Limit cannot exceed 10000", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Add LIMIT clause for SELECT queries if not already present
+	if isSelectQuery(query) && !hasLimitClause(query) {
+		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
+	}
+
+	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	
+	// Get ClickHouse client
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer chClient.Close()
+
+	result, err := chClient.ExecuteQuery(ctx, query)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Query execution failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 // Helper functions
 func isSelectQuery(query string) bool {
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
