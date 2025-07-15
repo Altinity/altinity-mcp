@@ -34,17 +34,18 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --clickhouse-limit 5000
 ```
 
-### Using HTTP Transport
+### Using HTTP Transport with OpenAPI
 
 ```bash
 ./altinity-mcp \
   --transport http \
   --address 0.0.0.0 \
   --port 8080 \
-  --clickhouse-host localhost
+  --clickhouse-host localhost \
+  --openapi
 ```
 
-### Using SSE Transport with JWT Authentication
+### Using SSE Transport with JWT Authentication and OpenAPI
 
 ```bash
 ./altinity-mcp \
@@ -52,7 +53,8 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --port 8080 \
   --allow-jwt-auth \
   --jwt-secret-key "your-secret-key" \
-  --clickhouse-host localhost
+  --clickhouse-host localhost \
+  --openapi
 ```
 
 ## Installation
@@ -325,6 +327,7 @@ services:
 - `--config`: Path to configuration file (YAML or JSON)
 - `--log-level`: Logging level (debug/info/warn/error)
 - `--clickhouse-limit`: Default limit for query results (default: 1000)
+- `--openapi`: Enable OpenAPI endpoints for GPTs integration (default: false)
 
 ### ClickHouse Flags
 
