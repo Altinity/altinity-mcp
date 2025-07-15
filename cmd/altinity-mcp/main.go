@@ -343,6 +343,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
+		mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	} else {
@@ -350,6 +354,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(httpServer))
+		mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	}
@@ -406,6 +414,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
 		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
+		mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	} else {
@@ -413,6 +425,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		sseServer := server.NewSSEServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/sse", serverInjector(sseServer))
+		mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+		mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	}
