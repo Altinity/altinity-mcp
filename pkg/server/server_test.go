@@ -492,6 +492,17 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.NotEmpty(t, textContent)
 	})
 
+	t.Run("CallTool_DescribeTable_InvalidDatabase", func(t *testing.T) {
+		// Test describe_table with invalid database
+		result, err := testServer.CallTool(ctx, "describe_table", map[string]interface{}{
+			"database": "invalid_db",
+			"table_name": "test",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Expected error for invalid database")
+	})
+
 	t.Run("CallTool_DescribeTable_MissingParams", func(t *testing.T) {
 		// Test describe_table tool with missing parameters
 		result, err := testServer.CallTool(ctx, "describe_table", map[string]interface{}{
