@@ -758,6 +758,12 @@ func GetClickHouseJWTServerFromContext(ctx context.Context) *ClickHouseJWTServer
 
 // OpenAPIHandler handles OpenAPI schema and REST API endpoints
 func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Request) {
+	// Get server instance from context
+	chJwtServer := GetClickHouseJWTServerFromContext(r.Context())
+	if chJwtServer == nil {
+		http.Error(w, "Server configuration error", http.StatusInternalServerError)
+		return
+	}
 	// Extract token from URL path
 	pathParts := strings.Split(r.URL.Path, "/")
 	var token string

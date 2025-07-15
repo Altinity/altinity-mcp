@@ -211,6 +211,12 @@ func run(args []string) error {
 				Value:   1000,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
+			&cli.BoolFlag{
+				Name:    "openapi",
+				Usage:   "Enable OpenAPI endpoints",
+				Value:   false,
+				Sources: cli.EnvVars("MCP_OPENAPI"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -343,10 +349,12 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
-		mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+		if a.openAPIEnabled {
+			mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	} else {
@@ -354,10 +362,12 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(httpServer))
-		mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+		if a.openAPIEnabled {
+			mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
 	}
@@ -799,6 +809,7 @@ type application struct {
 	configReloadTime int
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
+	openAPIEnabled   bool
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
@@ -848,6 +859,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		configFile:       cmd.String("config"),
 		configReloadTime: cmd.Int("config-reload-time"),
 		stopConfigReload: make(chan struct{}),
+		openAPIEnabled:   cmd.Bool("openapi"),
 	}
 
 	// Start config reload goroutine if enabled
