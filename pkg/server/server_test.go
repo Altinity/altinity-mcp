@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/mux"
+
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
