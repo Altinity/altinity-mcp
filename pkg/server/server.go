@@ -624,12 +624,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	// Get default limit based on server type
-	var defaultLimit float64
-	if srv, ok := chJwtServer.(*ClickHouseJWTServer); ok {
-		defaultLimit = float64(srv.ClickhouseConfig.Limit)
-	} else {
-		defaultLimit = 1000 // fallback
-	}
+	defaultLimit := float64(chJwtServer.ClickhouseConfig.Limit)
 
 	// Get optional limit parameter, use server default if not provided
 	limit := defaultLimit
