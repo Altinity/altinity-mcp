@@ -402,6 +402,202 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	return cfg
 }
 
+// TestOpenAPIHandlers tests the OpenAPI handler functions
+func TestOpenAPIHandlers(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	jwtSecret := "test-secret-key"
+
+	// Test cases with different configurations
+	testCases := []struct {
+		name        string
+		jwtEnabled  bool
+		tokenParam  string
+		expectError bool
+	}{
+		{"without_jwt", false, "", false},
+		{"with_jwt_valid", true, "valid-token", false},
+		{"with_jwt_invalid", true, "invalid-token", true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			jwtConfig := config.JWTConfig{
+				Enabled:    tc.jwtEnabled,
+				SecretKey:  jwtSecret,
+				TokenParam: "token",
+			}
+
+			// Create valid JWT token
+			validClaims := map[string]interface{}{
+				"host":     chConfig.Host,
+				"port":     float64(chConfig.Port),
+				"database": chConfig.Database,
+				"username": chConfig.Username,
+				"password": chConfig.Password,
+				"protocol": string(chConfig.Protocol),
+				"exp":      time.Now().Add(time.Hour).Unix(),
+			}
+			validToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims))
+			validTokenString, _ := validToken.SignedString([]byte(jwtSecret))
+
+			// Set up chJwtServer with ClickHouse config and JWT
+			chJwtServer := &ClickHouseJWTServer{
+				ClickhouseConfig: *chConfig,
+				JwtConfig:        jwtConfig,
+			}
+
+			// Create test server
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Inject token if needed
+				ctx := r.Context()
+				if tc.tokenParam == "valid-token" {
+					ctx = context.WithValue(ctx, "jwt_token", validTokenString)
+				} else if tc.tokenParam == "invalid-token" {
+					ctx = context.WithValue(ctx, "jwt_token", "invalid-token")
+				}
+				ctx = context.WithValue(ctx, "clickhouse_jwt_server", chJwtServer)
+				r = r.WithContext(ctx)
+				
+				chJwtServer.OpenAPIHandler(w, r)
+			}))
+			defer testServer.Close()
+
+			// Helper function to make requests
+			makeRequest := func(path string, token string) *http.Response {
+				req := httptest.NewRequest("GET", path, nil)
+				if token != "" {
+					q := req.URL.Query()
+					q.Add(jwtConfig.TokenParam, token)
+					req.URL.RawQuery = q.Encode()
+				}
+				w := httptest.NewRecorder()
+				testServer.Config.Handler.ServeHTTP(w, req)
+				return w.Result()
+			}
+
+			t.Run("OpenAPI_schema", func(t *testing.T) {
+				// Add token through path for some cases
+				path := testServer.URL
+				if tc.jwtEnabled {
+					path = fmt.Sprintf("%s/%s/openapi", testServer.URL, tc.tokenParam)
+				}
+
+				resp := makeRequest(path, tc.tokenParam)
+				if tc.expectError {
+					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				} else {
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+					
+					var schema map[string]interface{}
+					err := json.NewDecoder(resp.Body).Decode(&schema)
+					require.NoError(t, err)
+					require.Contains(t, schema, "openapi")
+				}
+			})
+
+			t.Run("ListTables_OpenAPI", func(t *testing.T) {
+				path := fmt.Sprintf("%s/list_tables", testServer.URL)
+				if tc.jwtEnabled {
+					path = fmt.Sprintf("%s/%s/list_tables", testServer.URL, tc.tokenParam)
+				}
+
+				resp := makeRequest(path, tc.tokenParam)
+				if tc.expectError {
+					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				} else {
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+					
+					var result struct {
+						Tables []string `json:"tables"`
+						Count  int      `json:"count"`
+					}
+					err := json.NewDecoder(resp.Body).Decode(&result)
+					require.NoError(t, err)
+					require.Greater(t, result.Count, 0)
+					require.Contains(t, result.Tables, "test")
+				}
+			})
+
+			t.Run("DescribeTable_OpenAPI", func(t *testing.T) {
+				path := fmt.Sprintf("%s/describe_table?database=default&table_name=test", testServer.URL)
+				if tc.jwtEnabled {
+					path = fmt.Sprintf("%s/%s/describe_table?database=default&table_name=test", testServer.URL, tc.tokenParam)
+				}
+
+				resp := makeRequest(path, tc.tokenParam)
+				if tc.expectError {
+					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				} else {
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+					
+					var columns []clickhouse.ColumnInfo
+					err := json.NewDecoder(resp.Body).Decode(&columns)
+					require.NoError(t, err)
+					require.Greater(t, len(columns), 0)
+					require.Equal(t, "id", columns[0].Name)
+				}
+			})
+
+			t.Run("ExecuteQuery_OpenAPI", func(t *testing.T) {
+				path := fmt.Sprintf("%s/execute_query?query=SELECT+*+FROM+test", testServer.URL)
+				if tc.jwtEnabled {
+					path = fmt.Sprintf("%s/%s/execute_query?query=SELECT+*+FROM+test", testServer.URL, tc.tokenParam)
+				}
+
+				resp := makeRequest(path, tc.tokenParam)
+				if tc.expectError {
+					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				} else {
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+					
+					var result clickhouse.QueryResult
+					err := json.NewDecoder(resp.Body).Decode(&result)
+					require.NoError(t, err)
+					require.Equal(t, 2, result.Count)
+					require.Equal(t, []string{"id", "value"}, result.Columns)
+					require.Equal(t, 2, len(result.Rows))
+				}
+			})
+		})
+	}
+
+	// Additional error case tests
+	t.Run("ErrorConditions", func(t *testing.T) {
+		jwtConfig := config.JWTConfig{Enabled: false}
+		chJwtServer := &ClickHouseJWTServer{
+			ClickhouseConfig: *chConfig,
+			JwtConfig:        jwtConfig,
+		}
+
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", chJwtServer)
+			r = r.WithContext(ctx)
+			chJwtServer.OpenAPIHandler(w, r)
+		}))
+		defer testServer.Close()
+
+		t.Run("MissingParams_DescribeTable", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/describe_table", testServer.URL))
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+
+		t.Run("InvalidExecuteQuery", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/execute_query", testServer.URL))
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+
+		t.Run("ExecuteQueryInvalidLimit", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+	})
+}
+
 // TestMCPTestingWrapper tests the AltinityTestServer wrapper functionality.
 func TestMCPTestingWrapper(t *testing.T) {
 	ctx := context.Background()
