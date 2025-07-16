@@ -465,6 +465,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				req := httptest.NewRequest("GET", path, nil)
 				// Inject the appropriate token into context
 				if token != "" {
+					t.Logf("SUKA!!! %s GET %s jwt_token!!!=%s", t.Name(), path, token)
 					req = req.WithContext(context.WithValue(req.Context(), "jwt_token", token))
 				}
 				w := httptest.NewRecorder()
@@ -494,9 +495,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 			})
 
 			t.Run("ListTables_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/list_tables", testServer.URL)
+				path := fmt.Sprintf("%s/openapi/list_tables", testServer.URL)
 				if tc.jwtEnabled {
-					path = fmt.Sprintf("%s/%s/list_tables", testServer.URL, tc.tokenParam)
+					path = fmt.Sprintf("%s/%s/openapi/list_tables", testServer.URL, tc.tokenParam)
 				}
 
 				resp := makeRequest(path, tc.tokenParam)
@@ -530,9 +531,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 			})
 
 			t.Run("DescribeTable_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/describe_table?database=default&table_name=test", testServer.URL)
+				path := fmt.Sprintf("%s/openapi/describe_table?database=default&table_name=test", testServer.URL)
 				if tc.jwtEnabled {
-					path = fmt.Sprintf("%s/%s/describe_table?database=default&table_name=test", testServer.URL, tc.tokenParam)
+					path = fmt.Sprintf("%s/%s/openapi/describe_table?database=default&table_name=test", testServer.URL, tc.tokenParam)
 				}
 
 				resp := makeRequest(path, tc.tokenParam)
@@ -551,9 +552,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 			})
 
 			t.Run("ExecuteQuery_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/execute_query?query=SELECT+*+FROM+test", testServer.URL)
+				path := fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL)
 				if tc.jwtEnabled {
-					path = fmt.Sprintf("%s/%s/execute_query?query=SELECT+*+FROM+test", testServer.URL, tc.tokenParam)
+					path = fmt.Sprintf("%s/%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL, tc.tokenParam)
 				}
 
 				resp := makeRequest(path, tc.tokenParam)
@@ -590,17 +591,17 @@ func TestOpenAPIHandlers(t *testing.T) {
 		defer testServer.Close()
 
 		t.Run("MissingParams_DescribeTable", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/describe_table", testServer.URL))
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/describe_table", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
 
 		t.Run("InvalidExecuteQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/execute_query", testServer.URL))
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
 
 		t.Run("ExecuteQueryInvalidLimit", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
 	})
