@@ -632,7 +632,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		})
 
 		t.Run("ExecuteQuery_InvalidQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INVALID SQL QUERY", testServer.URL))
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=%s", testServer.URL, "INVALID%20SQL%20QUERY"))
 			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 		})
 
