@@ -604,6 +604,52 @@ func TestOpenAPIHandlers(t *testing.T) {
 			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
+
+		t.Run("MethodNotAllowed_ListTables", func(t *testing.T) {
+			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/list_tables", testServer.URL), nil)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+		})
+
+		t.Run("MethodNotAllowed_DescribeTable", func(t *testing.T) {
+			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/describe_table", testServer.URL), nil)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+		})
+
+		t.Run("MethodNotAllowed_ExecuteQuery", func(t *testing.T) {
+			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/execute_query", testServer.URL), nil)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+		})
+
+		t.Run("ExecuteQuery_MissingQuery", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query", testServer.URL))
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
+
+		t.Run("ExecuteQuery_InvalidQuery", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INVALID SQL QUERY", testServer.URL))
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		})
+
+		t.Run("ExecuteQuery_InsertQuery", func(t *testing.T) {
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INSERT INTO test VALUES (3, 'three')", testServer.URL))
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("ExecuteQuery_ContextTimeout", func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+			defer cancel()
+			
+			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT sleepEachRow(1) FROM system.numbers LIMIT 10", testServer.URL), nil)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		})
 	})
 }
 
