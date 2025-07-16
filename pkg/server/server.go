@@ -799,11 +799,11 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 
 	// Route to appropriate handler based on path suffix
 	switch {
-	case strings.HasSuffix(r.URL.Path, "/list_tables"):
+	case strings.HasSuffix(r.URL.Path, "/openapi/list_tables"):
 		s.handleListTablesOpenAPI(w, r, token)
-	case strings.HasSuffix(r.URL.Path, "/describe_table"):
+	case strings.HasSuffix(r.URL.Path, "/openapi/describe_table"):
 		s.handleDescribeTableOpenAPI(w, r, token)
-	case strings.HasSuffix(r.URL.Path, "/execute_query"):
+	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
