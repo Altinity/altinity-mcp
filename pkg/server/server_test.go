@@ -469,11 +469,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 			// Helper function to make requests
 			makeRequest := func(path string, token string) *http.Response {
 				req := httptest.NewRequest("GET", path, nil)
-				if token != "" {
-					q := req.URL.Query()
-					q.Add(jwtConfig.TokenParam, token)
-					req.URL.RawQuery = q.Encode()
-				}
+				// Use token as path parameter, not query string
 				w := httptest.NewRecorder()
 				testServer.Config.Handler.ServeHTTP(w, req)
 				return w.Result()
