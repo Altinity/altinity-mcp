@@ -412,6 +412,18 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 func TestOpenAPIHandlers(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
 	jwtSecret := "test-secret-key"
+	// Create valid JWT token
+	validClaims := map[string]interface{}{
+		"host":     chConfig.Host,
+		"port":     float64(chConfig.Port),
+		"database": chConfig.Database,
+		"username": chConfig.Username,
+		"password": chConfig.Password,
+		"protocol": string(chConfig.Protocol),
+		"exp":      time.Now().Add(time.Hour).Unix(),
+	}
+	validToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims))
+	validTokenString, _ := validToken.SignedString([]byte(jwtSecret))
 
 	// Test cases with different configurations
 	testCases := []struct {
@@ -421,8 +433,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 		expectError bool
 	}{
 		{"without_jwt", false, "", false},
-		{"with_jwt_valid", true, "valid-token", false},
 		{"with_jwt_invalid", true, "invalid-token", true},
+		{"with_jwt_valid", true, validTokenString, false},
 	}
 
 	for _, tc := range testCases {
@@ -432,19 +444,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 				SecretKey:  jwtSecret,
 				TokenParam: "token",
 			}
-
-			// Create valid JWT token
-			validClaims := map[string]interface{}{
-				"host":     chConfig.Host,
-				"port":     float64(chConfig.Port),
-				"database": chConfig.Database,
-				"username": chConfig.Username,
-				"password": chConfig.Password,
-				"protocol": string(chConfig.Protocol),
-				"exp":      time.Now().Add(time.Hour).Unix(),
-			}
-			validToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims))
-			validTokenString, _ := validToken.SignedString([]byte(jwtSecret))
 
 			// Set up chJwtServer with ClickHouse config and JWT
 			chJwtServer := &ClickHouseJWTServer{
@@ -466,11 +465,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				req := httptest.NewRequest("GET", path, nil)
 				// Inject the appropriate token into context
 				if token != "" {
-					if token == "valid-token" {
-						req = req.WithContext(context.WithValue(req.Context(), "jwt_token", validTokenString))
-					} else {
-						req = req.WithContext(context.WithValue(req.Context(), "jwt_token", token))
-					}
+					req = req.WithContext(context.WithValue(req.Context(), "jwt_token", token))
 				}
 				w := httptest.NewRecorder()
 				testServer.Config.Handler.ServeHTTP(w, req)
@@ -479,7 +474,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 			t.Run("OpenAPI_schema", func(t *testing.T) {
 				// Add token through path for some cases
-				path := testServer.URL
+				path := testServer.URL + "/openapi"
 				if tc.jwtEnabled {
 					path = fmt.Sprintf("%s/%s/openapi", testServer.URL, tc.tokenParam)
 				}
