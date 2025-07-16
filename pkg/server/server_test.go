@@ -454,16 +454,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 			// Create test server
 			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Inject token if needed
-				ctx := r.Context()
-				if tc.tokenParam == "valid-token" {
-					ctx = context.WithValue(ctx, "jwt_token", validTokenString)
-				} else if tc.tokenParam == "invalid-token" {
-					ctx = context.WithValue(ctx, "jwt_token", "invalid-token")
-				}
-				ctx = context.WithValue(ctx, "clickhouse_jwt_server", chJwtServer)
+				// Always inject the server into context
+				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", chJwtServer)
 				r = r.WithContext(ctx)
-
 				chJwtServer.OpenAPIHandler(w, r)
 			}))
 			defer testServer.Close()
@@ -471,7 +464,14 @@ func TestOpenAPIHandlers(t *testing.T) {
 			// Helper function to make requests
 			makeRequest := func(path string, token string) *http.Response {
 				req := httptest.NewRequest("GET", path, nil)
-				// Use token as path parameter, not query string
+				// Inject the appropriate token into context
+				if token != "" {
+					if token == "valid-token" {
+						req = req.WithContext(context.WithValue(req.Context(), "jwt_token", validTokenString))
+					} else {
+						req = req.WithContext(context.WithValue(req.Context(), "jwt_token", token))
+					}
+				}
 				w := httptest.NewRecorder()
 				testServer.Config.Handler.ServeHTTP(w, req)
 				return w.Result()
