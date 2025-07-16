@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -506,14 +508,18 @@ func TestOpenAPIHandlers(t *testing.T) {
 				if tc.expectError {
 					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 				} else {
-					require.Equal(t, http.StatusOK, resp.StatusCode)
-					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+					bodyBytes, err := io.ReadAll(resp.Body)
+					require.NoError(t, err)
+					require.NoError(t, resp.Body.Close())
+					resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+					require.Equal(t, http.StatusOK, resp.StatusCode, "unexpected status: %d, response body %s", resp.StatusCode, bodyBytes)
+					require.Equal(t, "application/json", resp.Header.Get("Content-Type"), "unexpected Content-Type: %s, response body %s", resp.Header.Get("Content-Type"), bodyBytes)
 
 					var result struct {
 						Tables []clickhouse.TableInfo `json:"tables"`
 						Count  int                    `json:"count"`
 					}
-					err := json.NewDecoder(resp.Body).Decode(&result)
+					err = json.NewDecoder(resp.Body).Decode(&result)
 					require.NoError(t, err)
 					require.Greater(t, result.Count, 0)
 					// Verify test table exists in results
