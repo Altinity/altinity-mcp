@@ -774,6 +774,15 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// If JWT auth is enabled, validate token before serving schema
+	if chJwtServer.JwtConfig.Enabled && token != "" {
+		_, err := chJwtServer.parseAndValidateJWT(token)
+		if err != nil {
+			http.Error(w, "Invalid JWT token", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Get host URL from request
 	hostURL := fmt.Sprintf("%s://%s", "https", r.Host)
 	if r.TLS == nil {
