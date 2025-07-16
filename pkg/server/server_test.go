@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -404,7 +408,6 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 
 // TestOpenAPIHandlers tests the OpenAPI handler functions
 func TestOpenAPIHandlers(t *testing.T) {
-	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
 	jwtSecret := "test-secret-key"
 
@@ -458,7 +461,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				}
 				ctx = context.WithValue(ctx, "clickhouse_jwt_server", chJwtServer)
 				r = r.WithContext(ctx)
-				
+
 				chJwtServer.OpenAPIHandler(w, r)
 			}))
 			defer testServer.Close()
@@ -489,7 +492,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-					
+
 					var schema map[string]interface{}
 					err := json.NewDecoder(resp.Body).Decode(&schema)
 					require.NoError(t, err)
@@ -509,7 +512,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-					
+
 					var result struct {
 						Tables []string `json:"tables"`
 						Count  int      `json:"count"`
@@ -533,7 +536,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-					
+
 					var columns []clickhouse.ColumnInfo
 					err := json.NewDecoder(resp.Body).Decode(&columns)
 					require.NoError(t, err)
@@ -554,7 +557,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-					
+
 					var result clickhouse.QueryResult
 					err := json.NewDecoder(resp.Body).Decode(&result)
 					require.NoError(t, err)
@@ -691,7 +694,7 @@ func TestMCPTestingWrapper(t *testing.T) {
 	t.Run("CallTool_DescribeTable_InvalidDatabase", func(t *testing.T) {
 		// Test describe_table with invalid database
 		result, err := testServer.CallTool(ctx, "describe_table", map[string]interface{}{
-			"database": "invalid_db",
+			"database":   "invalid_db",
 			"table_name": "test",
 		})
 		require.NoError(t, err)
