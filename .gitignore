@@ -7,3 +7,4 @@
 .kilocode/
 build/
 coverage.out
+go-carpet*

@@ -65,9 +65,8 @@ type ServerTLSConfig struct {
 
 // JWTConfig defines configuration for JWT authentication
 type JWTConfig struct {
-	Enabled    bool   `json:"enabled" yaml:"enabled" flag:"allow-jwt-auth" desc:"Enable JWT authentication for ClickHouse connection"`
-	SecretKey  string `json:"secret_key" yaml:"secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT token verification"`
-	TokenParam string `json:"token_param" yaml:"token_param" flag:"jwt-token-param" desc:"URL parameter name for JWT token" default:"token"`
+	Enabled   bool   `json:"enabled" yaml:"enabled" flag:"allow-jwt-auth" desc:"Enable JWT authentication for ClickHouse connection"`
+	SecretKey string `json:"secret_key" yaml:"secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT token verification"`
 }
 
 // ServerConfig defines configuration for the MCP server
