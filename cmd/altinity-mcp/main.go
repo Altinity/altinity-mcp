@@ -325,9 +325,8 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		Msg("Starting MCP server with HTTP transport")
 
 	// Create a middleware to inject the ClickHouseJWTServer into context
-	serverInjector := func(next http.Handler) http.Handler {
+	serverInjectorFunc := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Inject the ClickHouseJWTServer into the context
 			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -344,22 +343,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/{token}/openapi", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/{token}/openapi/list_tables", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/{token}/openapi/describe_table", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/{token}/openapi/query", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
+			mux.HandleFunc("/{token}/openapi", serverInjectorFunc)
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorFunc)
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorFunc)
+			mux.HandleFunc("/{token}/openapi/query", serverInjectorFunc)
 			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
