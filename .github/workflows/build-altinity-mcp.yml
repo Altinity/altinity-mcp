@@ -41,6 +41,7 @@ jobs:
 
   build-and-push-platforms:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -90,6 +91,7 @@ jobs:
 
   create-multiplatform-manifest:
     needs: build-and-push-platforms
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     permissions:
@@ -144,7 +146,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
     
     permissions:
       contents: write
