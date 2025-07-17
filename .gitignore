@@ -6,5 +6,6 @@
 .idea/
 .kilocode/
 build/
+dist/
 coverage.out
 go-carpet*
