@@ -146,7 +146,6 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '.') && !contains(github.ref, '-')
     
     permissions:
       contents: write
@@ -157,6 +156,19 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+
+    - name: Check Tag Format
+      id: check_tag
+      run: |
+        if [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "matched=true" >> $GITHUB_OUTPUT
+        else
+          echo "matched=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run Job if Tag Matches
+      if: steps.check_tag.outputs.matched == 'true'
+      run: echo "Tag is a match!"
 
     - name: Set up Go
       uses: actions/setup-go@v4
