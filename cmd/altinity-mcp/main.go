@@ -325,13 +325,16 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		Msg("Starting MCP server with HTTP transport")
 
 	// Create a middleware to inject the ClickHouseJWTServer into context
-	serverInjectorFunc := func(next http.Handler) http.Handler {
+	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-
+	serverInjectorFunc := func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
+	}
 	var httpHandler http.Handler
 	if cfg.Server.JWT.Enabled {
 		log.Info().Msg("Using dynamic base path for JWT authentication")
