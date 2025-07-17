@@ -47,6 +47,7 @@ logging:
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, DebugLevel, cfg.Logging.Level)
 		require.Equal(t, true, cfg.Server.OpenAPI)
+		require.Equal(t, true, cfg.Server.OpenAPI)
 	})
 
 	t.Run("json_config", func(t *testing.T) {
@@ -88,6 +89,7 @@ logging:
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, InfoLevel, cfg.Logging.Level)
+		require.Equal(t, false, cfg.Server.OpenAPI)
 		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
