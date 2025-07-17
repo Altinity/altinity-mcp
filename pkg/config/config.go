@@ -71,11 +71,12 @@ type JWTConfig struct {
 
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address   string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port      int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS       ServerTLSConfig `json:"tls" yaml:"tls"`
-	JWT       JWTConfig       `json:"jwt" yaml:"jwt"`
+	Transport    MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address      string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port         int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS          ServerTLSConfig `json:"tls" yaml:"tls"`
+	JWT          JWTConfig       `json:"jwt" yaml:"jwt"`
+	OpenAPI      bool            `json:"openapi" yaml:"openapi" flag:"openapi" desc:"Enable OpenAPI endpoints"`
 }
 
 // LogLevel defines the logging level

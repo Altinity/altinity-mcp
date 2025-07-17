@@ -205,12 +205,6 @@ func run(args []string) error {
 				Value:   1000,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
-			&cli.BoolFlag{
-				Name:    "openapi",
-				Usage:   "Enable OpenAPI endpoints",
-				Value:   false,
-				Sources: cli.EnvVars("MCP_OPENAPI"),
-			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -343,7 +337,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
-		if a.openAPIEnabled {
+		if cfg.Server.OpenAPI {
 			mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
@@ -357,7 +351,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(httpServer))
-		if a.openAPIEnabled {
+		if cfg.Server.OpenAPI {
 			mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
@@ -416,22 +410,26 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
 		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
-		mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+		if cfg.Server.OpenAPI {
+			mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
-		log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/sse", serverInjector(sseServer))
-		mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-		mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+		if cfg.Server.OpenAPI {
+			mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
 	}
@@ -655,6 +653,10 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.Port = 8080
 	}
 
+	if cmd.IsSet("openapi") {
+		cfg.Server.OpenAPI = cmd.Bool("openapi")
+	}
+
 	// Override Server TLS config with CLI flags
 	if cmd.IsSet("server-tls") {
 		cfg.Server.TLS.Enabled = cmd.Bool("server-tls")
@@ -797,7 +799,6 @@ type application struct {
 	configReloadTime int
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
-	openAPIEnabled   bool
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
@@ -847,7 +848,6 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		configFile:       cmd.String("config"),
 		configReloadTime: cmd.Int("config-reload-time"),
 		stopConfigReload: make(chan struct{}),
-		openAPIEnabled:   cmd.Bool("openapi"),
 	}
 
 	// Start config reload goroutine if enabled

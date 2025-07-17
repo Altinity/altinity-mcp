@@ -26,6 +26,7 @@ server:
   port: 8080
 logging:
   level: "debug"
+  openapi: true
 `
 		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
 		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
@@ -45,6 +46,7 @@ logging:
 		require.Equal(t, "127.0.0.1", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, DebugLevel, cfg.Logging.Level)
+		require.Equal(t, true, cfg.Server.OpenAPI)
 	})
 
 	t.Run("json_config", func(t *testing.T) {
@@ -64,6 +66,9 @@ logging:
   },
   "logging": {
     "level": "info"
+  },
+  "server": {
+    "openapi": false
   }
 }`
 		tmpFile := filepath.Join(t.TempDir(), "config.json")
@@ -83,6 +88,7 @@ logging:
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, InfoLevel, cfg.Logging.Level)
+		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
 	t.Run("nonexistent_file", func(t *testing.T) {
