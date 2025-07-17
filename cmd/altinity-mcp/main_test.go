@@ -71,6 +71,7 @@ func TestBuildConfig(t *testing.T) {
 			&cli.IntFlag{Name: "port", Value: 8080},
 			&cli.StringFlag{Name: "log-level", Value: "info"},
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
+			&cli.BoolFlag{Name: "openapi", Value: false},
 		}
 
 		cfg, err := buildConfig(cmd)
@@ -88,6 +89,7 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, "info", string(cfg.Logging.Level))
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
 	t.Run("nonexistent_config_file", func(t *testing.T) {
@@ -925,6 +927,7 @@ server:
   port: 9090
 logging:
   level: "debug"
+  openapi: true
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
@@ -946,6 +949,7 @@ logging:
 				"address":                       "0.0.0.0",
 				"port":                          8080,
 				"log-level":                     "info",
+				"openapi":                       false,
 			},
 			setFlags: map[string]bool{
 				"config":           true,
@@ -966,6 +970,7 @@ logging:
 		require.Equal(t, config.HTTPTransport, cfg.Server.Transport)
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
+		require.Equal(t, false, cfg.Server.OpenAPI)
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
 	})
@@ -990,6 +995,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"clickhouse-tls-client-key":           "/path/to/client.key",
 				"clickhouse-tls-insecure-skip-verify": true,
 				"clickhouse-limit":                    5000,
+				"openapi":                             true,
 			},
 			setFlags: map[string]bool{
 				"clickhouse-host":                     true,
@@ -1040,6 +1046,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-ca-cert":   "/path/to/server-ca.crt",
 				"allow-jwt-auth":       true,
 				"jwt-secret-key":       "secret123",
+				"openapi":              true,
 			},
 			setFlags: map[string]bool{
 				"transport":            true,
@@ -1089,6 +1096,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
 	t.Run("invalid_protocol_defaults_to_http", func(t *testing.T) {
@@ -1419,6 +1427,7 @@ server:
   port: 9091
 logging:
   level: "warn"
+  openapi: false
 `
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
@@ -1458,6 +1467,7 @@ logging:
 	require.Equal(t, config.HTTPTransport, newConfig.Server.Transport)
 	require.Equal(t, 9091, newConfig.Server.Port)
 	require.Equal(t, config.WarnLevel, newConfig.Logging.Level)
+	require.Equal(t, false, newConfig.Server.OpenAPI)
 }
 
 // TestNewApplicationWithTestContainer tests newApplication with a real ClickHouse instance
