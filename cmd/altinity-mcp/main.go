@@ -331,7 +331,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-	serverInjectorFunc := func(w http.ResponseWriter, r *http.Request) {
+	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
@@ -346,11 +346,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/{token}/openapi", serverInjectorFunc)
-			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorFunc)
-			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorFunc)
-			mux.HandleFunc("/{token}/openapi/query", serverInjectorFunc)
-			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/query", serverInjectorOpenAPI)
+			protocol := "http"
+			if cfg.Server.TLS.Enabled {
+				protocol = "https"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -360,23 +364,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(httpServer))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/openapi", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/openapi/list_tables", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/openapi/describe_table", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			mux.HandleFunc("/openapi/query", func(w http.ResponseWriter, r *http.Request) {
-				ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
-				a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-			})
-			log.Info().Str("url", fmt.Sprintf("http://%s:%d/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
+			protocol := "http"
+			if cfg.Server.TLS.Enabled {
+				protocol = "https"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
