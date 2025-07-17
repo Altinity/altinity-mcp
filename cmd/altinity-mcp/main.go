@@ -344,10 +344,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/query", serverInjector(a.mcpServer.OpenAPIHandler))
 			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -358,10 +358,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(httpServer))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/list_tables", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/describe_table", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/query", serverInjector(a.mcpServer.OpenAPIHandler))
 			log.Info().Str("url", fmt.Sprintf("http://%s:%d/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -417,10 +417,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
 		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/{token}/openapi", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/{token}/openapi", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/{token}/openapi/query", serverInjector(a.mcpServer.OpenAPIHandler))
 			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -431,10 +431,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux := http.NewServeMux()
 		mux.Handle("/sse", serverInjector(sseServer))
 		if cfg.Server.OpenAPI {
-			mux.HandleFunc("/openapi", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
-			mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+			mux.HandleFunc("/openapi", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/list_tables", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/describe_table", serverInjector(a.mcpServer.OpenAPIHandler))
+			mux.HandleFunc("/openapi/query", serverInjector(a.mcpServer.OpenAPIHandler))
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
