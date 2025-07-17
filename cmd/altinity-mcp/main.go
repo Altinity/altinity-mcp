@@ -474,7 +474,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 			status["error"] = "ClickHouse connection failed"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(status)
+			_ = json.NewEncoder(w).Encode(status)
 			return
 		}
 		defer func() {
@@ -489,7 +489,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 			status["error"] = "ClickHouse connection failed"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(status)
+			_ = json.NewEncoder(w).Encode(status)
 			return
 		}
 
@@ -500,7 +500,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // buildConfig builds the application configuration from CLI flags and config file
