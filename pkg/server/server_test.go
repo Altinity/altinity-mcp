@@ -637,15 +637,15 @@ func TestOpenAPIHandlers(t *testing.T) {
 		})
 
 		t.Run("ExecuteQuery_InsertQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INSERT INTO test VALUES (3, 'three')", testServer.URL))
+			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INSERT+INTO+test+VALUES+(3,+'three')", testServer.URL))
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 
 		t.Run("ExecuteQuery_ContextTimeout", func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 			defer cancel()
-			
-			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT sleepEachRow(1) FROM system.numbers LIMIT 10", testServer.URL), nil)
+
+			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT+sleepEachRow(1)+FROM+system.numbers+LIMIT+10+SETTINGS+function_sleep_max_microseconds_per_block=0", testServer.URL), nil)
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
 			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
