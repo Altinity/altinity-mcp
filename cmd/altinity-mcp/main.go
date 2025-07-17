@@ -348,6 +348,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/{token}/openapi/list_tables", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/{token}/openapi/describe_table", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
+			log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -361,6 +362,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/openapi/list_tables", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/openapi/describe_table", a.mcpServer.OpenAPIHandler)
 			mux.HandleFunc("/openapi/query", a.mcpServer.OpenAPIHandler)
+			log.Info().Str("url", fmt.Sprintf("http://%s:%d/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -420,6 +422,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux.HandleFunc("/{token}/openapi/query", a.mcpServer.OpenAPIHandler)
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
+		log.Info().Str("url", fmt.Sprintf("http://%s:%d/{token}/openapi", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
