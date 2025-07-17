@@ -139,3 +139,145 @@ jobs:
               "${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:arm64-${SHORT_SHA}"
           fi
         done
+
+  release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Install nfpm
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y rpm
+        curl -sSLO https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_amd64.deb
+        sudo dpkg -i nfpm_amd64.deb
+
+    - name: Build binaries
+      run: |
+        mkdir -p dist
+        # Linux builds
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-linux-amd64 ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-linux-arm64 ./cmd/altinity-mcp
+        # Darwin builds
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-darwin-amd64 ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-darwin-arm64 ./cmd/altinity-mcp
+        # Windows builds
+        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-windows-amd64.exe ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-windows-arm64.exe ./cmd/altinity-mcp
+
+    - name: Create nfpm configs
+      run: |
+        # Create nfpm configuration for deb/rpm packages
+        cat > nfpm.yaml << EOF
+        name: altinity-mcp
+        version: ${GITHUB_REF#refs/tags/v}
+        maintainer: Altinity <support@altinity.com>
+        description: Altinity MCP Server for ClickHouse
+        vendor: Altinity Inc.
+        homepage: https://altinity.com
+        license: Apache 2.0
+        bindir: /usr/bin
+        contents:
+          - src: dist/altinity-mcp-linux-amd64
+            dst: /usr/bin/altinity-mcp
+            file_info:
+              mode: 0755
+          - src: dist/altinity-mcp-linux-arm64
+            dst: /usr/bin/altinity-mcp
+            file_info:
+              mode: 0755
+        EOF
+
+    - name: Create deb and rpm packages
+      run: |
+        # Linux AMD64 packages
+        sed 's|dist/altinity-mcp-linux-amd64|/usr/bin/altinity-mcp|' nfpm.yaml > nfpm-amd64.yaml
+        nfpm pkg --config nfpm-amd64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.deb
+        nfpm pkg --config nfpm-amd64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.rpm
+        
+        # Linux ARM64 packages
+        sed 's|dist/altinity-mcp-linux-amd64|/usr/bin/altinity-mcp|' nfpm.yaml | sed 's|amd64|arm64|' > nfpm-arm64.yaml
+        nfpm pkg --config nfpm-arm64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.deb
+        nfpm pkg --config nfpm-arm64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.rpm
+
+    - name: Create tar.gz archives
+      run: |
+        # Linux archives
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.tar.gz -C dist altinity-mcp-linux-amd64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.tar.gz -C dist altinity-mcp-linux-arm64
+        
+        # Darwin archives
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_darwin_amd64.tar.gz -C dist altinity-mcp-darwin-amd64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_darwin_arm64.tar.gz -C dist altinity-mcp-darwin-arm64
+
+    - name: Create zip archives
+      run: |
+        # Windows archives
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_amd64.zip altinity-mcp-windows-amd64.exe
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_arm64.zip altinity-mcp-windows-arm64.exe
+
+    - name: Extract changelog for latest version
+      id: changelog
+      run: |
+        # Extract changelog for the current version
+        VERSION=${GITHUB_REF#refs/tags/v}
+        awk -v ver="v${VERSION}" '
+          $0 ~ "^# " ver "$" {flag=1; next}
+          /^# v[0-9]/ && flag {exit}
+          flag && !/^#/ {print}
+        ' CHANGELOG.md > latest_changelog.md
+        
+        # Create release notes
+        cat > release_notes.md << EOF
+        ## Altinity MCP Server v${VERSION}
+        
+        ### Release Notes
+        $(cat latest_changelog.md)
+        
+        ### Downloads
+        - **Linux AMD64**: .deb, .rpm, .tar.gz
+        - **Linux ARM64**: .deb, .rpm, .tar.gz
+        - **macOS AMD64**: .tar.gz
+        - **macOS ARM64**: .tar.gz
+        - **Windows AMD64**: .zip
+        - **Windows ARM64**: .zip
+        
+        ### Docker
+        \`\`\`bash
+        docker pull ghcr.io/altinity/altinity-mcp:${VERSION}
+        \`\`\`
+        EOF
+
+    - name: Create draft release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: Release ${{ github.ref_name }}
+        tag_name: ${{ github.ref_name }}
+        body_path: release_notes.md
+        draft: true
+        files: |
+          dist/altinity-mcp_${{ github.ref_name }}_linux_amd64.deb
+          dist/altinity-mcp_${{ github.ref_name }}_linux_amd64.rpm
+          dist/altinity-mcp_${{ github.ref_name }}_linux_amd64.tar.gz
+          dist/altinity-mcp_${{ github.ref_name }}_linux_arm64.deb
+          dist/altinity-mcp_${{ github.ref_name }}_linux_arm64.rpm
+          dist/altinity-mcp_${{ github.ref_name }}_linux_arm64.tar.gz
+          dist/altinity-mcp_${{ github.ref_name }}_darwin_amd64.tar.gz
+          dist/altinity-mcp_${{ github.ref_name }}_darwin_arm64.tar.gz
+          dist/altinity-mcp_${{ github.ref_name }}_windows_amd64.zip
+          dist/altinity-mcp_${{ github.ref_name }}_windows_arm64.zip
+        token: ${{ secrets.GITHUB_TOKEN }}
