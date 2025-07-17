@@ -642,18 +642,16 @@ func TestOpenAPIHandlers(t *testing.T) {
 		})
 
 		t.Run("ExecuteQuery_ContextTimeout", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT+sleepEachRow(1)+FROM+system.numbers+LIMIT+10+SETTINGS+function_sleep_max_microseconds_per_block=0", testServer.URL), nil)
+			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT+sleepEachRow(1)+FROM+system.numbers+LIMIT+10+SETTINGS+function_sleep_max_microseconds_per_block=0,max_execution_time=1", testServer.URL), nil)
 			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				// Context timeout is expected - this is the behavior we want to test
-				require.Contains(t, err.Error(), "context deadline exceeded")
-				return
-			}
-			// If no error, we should get internal server error
+			require.NoError(t, err)
 			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			respBytes, readErr := io.ReadAll(resp.Body)
+			require.NoError(t, readErr)
+			require.Contains(t, string(respBytes), "Timeout exceeded")
 		})
 	})
 }

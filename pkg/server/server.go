@@ -318,12 +318,7 @@ func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
 	if chJwtServer == nil {
-		// Fallback to direct server access for production
-		if srv, ok := ctx.Value("clickhouse_jwt_server").(*ClickHouseJWTServer); ok {
-			chJwtServer = srv
-		} else {
-			return nil, fmt.Errorf("server does not support JWT authentication")
-		}
+		return nil, fmt.Errorf("can't get JWTServer from context")
 	}
 
 	// Extract token from context
@@ -394,12 +389,7 @@ func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mc
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
 	if chJwtServer == nil {
-		// Fallback to direct server access for production
-		if srv, ok := ctx.Value("clickhouse_jwt_server").(*ClickHouseJWTServer); ok {
-			chJwtServer = srv
-		} else {
-			return nil, fmt.Errorf("server does not support JWT authentication")
-		}
+		return nil, fmt.Errorf("can't get JWTServer from context")
 	}
 
 	// Extract token from context
@@ -558,12 +548,7 @@ func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
 	if chJwtServer == nil {
-		// Fallback to direct server access for production
-		if srv, ok := ctx.Value("clickhouse_jwt_server").(*ClickHouseJWTServer); ok {
-			chJwtServer = srv
-		} else {
-			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-		}
+		return nil, fmt.Errorf("can't get JWTServer from context")
 	}
 
 	// Extract token from context
@@ -616,12 +601,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
 	if chJwtServer == nil {
-		// Fallback to direct server access for production
-		if srv, ok := ctx.Value("clickhouse_jwt_server").(*ClickHouseJWTServer); ok {
-			chJwtServer = srv
-		} else {
-			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-		}
+		return nil, fmt.Errorf("can't get JWTServer from context")
 	}
 
 	// Get default limit based on server type
@@ -702,12 +682,7 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	// Get the ClickHouse JWT server from context
 	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
 	if chJwtServer == nil {
-		// Fallback to direct server access for production
-		if srv, ok := ctx.Value("clickhouse_jwt_server").(*ClickHouseJWTServer); ok {
-			chJwtServer = srv
-		} else {
-			return mcp.NewToolResultError("Server does not support JWT authentication"), nil
-		}
+		return nil, fmt.Errorf("can't get JWTServer from context")
 	}
 
 	// Extract token from context
@@ -761,7 +736,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	// Get server instance from context
 	chJwtServer := GetClickHouseJWTServerFromContext(r.Context())
 	if chJwtServer == nil {
-		http.Error(w, "Server configuration error", http.StatusInternalServerError)
+		http.Error(w, "can't get JWTServer from context", http.StatusInternalServerError)
 		return
 	}
 	// Extract token from URL path
@@ -787,14 +762,6 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	hostURL := fmt.Sprintf("%s://%s", "https", r.Host)
 	if r.TLS == nil {
 		hostURL = fmt.Sprintf("%s://%s", "http", r.Host)
-	}
-
-	switch r.URL.Path {
-	case fmt.Sprintf("/%s/openapi", token), "/openapi":
-		if r.Method == http.MethodGet && r.URL.Query().Get("schema") != "" {
-			s.serveOpenAPISchema(w, r, hostURL, token)
-			return
-		}
 	}
 
 	// Route to appropriate handler based on path suffix
@@ -826,6 +793,9 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 					"host_url": map[string]interface{}{
 						"default":     hostURL,
 						"description": "Base URL",
+						"x-oai-meta": map[string]interface{}{
+							"securityType": "user_api_key",
+						},
 					},
 					"jwt_token": map[string]interface{}{
 						"default":     token,

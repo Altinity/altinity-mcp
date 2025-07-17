@@ -199,12 +199,6 @@ func run(args []string) error {
 				Value:   "",
 				Sources: cli.EnvVars("MCP_JWT_SECRET_KEY"),
 			},
-			&cli.StringFlag{
-				Name:    "jwt-token-param",
-				Usage:   "URL parameter name for JWT token",
-				Value:   "token",
-				Sources: cli.EnvVars("MCP_JWT_TOKEN_PARAM"),
-			},
 			&cli.IntFlag{
 				Name:    "clickhouse-limit",
 				Usage:   "Default limit for query results",
@@ -406,11 +400,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mcpServer,
 			server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
 				// Extract token from URL and use it as path component
-				token := r.URL.Query().Get(cfg.Server.JWT.TokenParam)
-				if token != "" {
-					return "/" + token
-				}
-				token = r.PathValue("token")
+				token := r.PathValue("token")
 				if token != "" {
 					return "/" + token
 				}
@@ -682,11 +672,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	}
 	if cmd.IsSet("jwt-secret-key") {
 		cfg.Server.JWT.SecretKey = cmd.String("jwt-secret-key")
-	}
-	if cmd.IsSet("jwt-token-param") {
-		cfg.Server.JWT.TokenParam = cmd.String("jwt-token-param")
-	} else if cfg.Server.JWT.TokenParam == "" {
-		cfg.Server.JWT.TokenParam = "token"
 	}
 
 	// Override Logging config with CLI flags

@@ -637,7 +637,6 @@ func TestRunServer(t *testing.T) {
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
 			&cli.BoolFlag{Name: "allow-jwt-auth", Value: false},
 			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
-			&cli.StringFlag{Name: "jwt-token-param", Value: "token"},
 			&cli.IntFlag{Name: "config-reload-time", Value: 0},
 		}
 
@@ -1041,7 +1040,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-ca-cert":   "/path/to/server-ca.crt",
 				"allow-jwt-auth":       true,
 				"jwt-secret-key":       "secret123",
-				"jwt-token-param":      "auth_token",
 			},
 			setFlags: map[string]bool{
 				"transport":            true,
@@ -1053,7 +1051,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-ca-cert":   true,
 				"allow-jwt-auth":       true,
 				"jwt-secret-key":       true,
-				"jwt-token-param":      true,
 			},
 		}
 
@@ -1069,7 +1066,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, "/path/to/server-ca.crt", cfg.Server.TLS.CaCert)
 		require.True(t, cfg.Server.JWT.Enabled)
 		require.Equal(t, "secret123", cfg.Server.JWT.SecretKey)
-		require.Equal(t, "auth_token", cfg.Server.JWT.TokenParam)
 	})
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
@@ -1091,7 +1087,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, config.StdioTransport, cfg.Server.Transport)
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
-		require.Equal(t, "token", cfg.Server.JWT.TokenParam)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
 	})
@@ -1286,8 +1281,7 @@ func TestApplicationStart(t *testing.T) {
 					Address:   "localhost",
 					Port:      0, // Use random port
 					JWT: config.JWTConfig{
-						Enabled:    true,
-						TokenParam: "token",
+						Enabled: true,
 					},
 					TLS: config.ServerTLSConfig{
 						Enabled: false,
@@ -1295,8 +1289,7 @@ func TestApplicationStart(t *testing.T) {
 				},
 			},
 			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{
-				Enabled:    true,
-				TokenParam: "token",
+				Enabled: true,
 			}),
 		}
 
@@ -1574,7 +1567,6 @@ logging:
 		&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
 		&cli.BoolFlag{Name: "allow-jwt-auth", Value: true},
 		&cli.StringFlag{Name: "jwt-secret-key", Value: "test-secret"},
-		&cli.StringFlag{Name: "jwt-token-param", Value: "token"},
 		&cli.IntFlag{Name: "config-reload-time", Value: 0},
 	}
 
@@ -1660,7 +1652,7 @@ func TestRun(t *testing.T) {
 	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
 		// This test will start the server but we need to stop it quickly
 		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", "test-secret", "--transport", "stdio"}
-		
+
 		// Run in a goroutine with timeout since stdio transport will block
 		done := make(chan error, 1)
 		go func() {
@@ -1708,7 +1700,7 @@ logging:
 		tmpFile.Close()
 
 		args := []string{"altinity-mcp", "--config", tmpFile.Name()}
-		
+
 		// Run in a goroutine with timeout since stdio transport will block
 		done := make(chan error, 1)
 		go func() {
@@ -1756,7 +1748,6 @@ func TestMainFunctionality(t *testing.T) {
 				"port":                          0,
 				"log-level":                     "",
 				"clickhouse-limit":              0,
-				"jwt-token-param":               "",
 			},
 			setFlags: map[string]bool{},
 		}
@@ -1776,7 +1767,6 @@ func TestMainFunctionality(t *testing.T) {
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
-		require.Equal(t, "token", cfg.Server.JWT.TokenParam)
 	})
 
 	t.Run("config_reload_with_logging_level_change", func(t *testing.T) {
