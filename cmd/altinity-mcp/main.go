@@ -205,6 +205,12 @@ func run(args []string) error {
 				Value:   1000,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
+			&cli.BoolFlag{
+				Name:    "openapi",
+				Usage:   "Enable OpenAPI endpoints",
+				Value:   false,
+				Sources: cli.EnvVars("MCP_OPENAPI"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging

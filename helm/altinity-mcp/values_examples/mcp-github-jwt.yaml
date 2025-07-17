@@ -16,6 +16,7 @@ config:
     read_only: true
   
   server:
+    openapi: true
     transport: "sse"
     jwt:
       enabled: true
