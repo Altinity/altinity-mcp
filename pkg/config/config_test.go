@@ -21,6 +21,7 @@ clickhouse:
   protocol: "tcp"
   limit: 500
 server:
+  openapi: true
   transport: "http"
   address: "127.0.0.1"
   port: 8080
@@ -46,7 +47,6 @@ logging:
 		require.Equal(t, "127.0.0.1", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, DebugLevel, cfg.Logging.Level)
-		require.Equal(t, true, cfg.Server.OpenAPI)
 		require.Equal(t, true, cfg.Server.OpenAPI)
 	})
 
