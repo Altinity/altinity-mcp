@@ -211,14 +211,12 @@ func TestConfigStructs(t *testing.T) {
 
 	t.Run("jwt_config", func(t *testing.T) {
 		cfg := JWTConfig{
-			Enabled:    true,
-			SecretKey:  "secret",
-			TokenParam: "token",
+			Enabled:   true,
+			SecretKey: "secret",
 		}
 
 		require.True(t, cfg.Enabled)
 		require.Equal(t, "secret", cfg.SecretKey)
-		require.Equal(t, "token", cfg.TokenParam)
 	})
 
 	t.Run("logging_config", func(t *testing.T) {

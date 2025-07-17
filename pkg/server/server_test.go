@@ -440,9 +440,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			jwtConfig := config.JWTConfig{
-				Enabled:    tc.jwtEnabled,
-				SecretKey:  jwtSecret,
-				TokenParam: "token",
+				Enabled:   tc.jwtEnabled,
+				SecretKey: jwtSecret,
 			}
 
 			// Set up chJwtServer with ClickHouse config and JWT
