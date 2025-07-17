@@ -145,6 +145,7 @@ jobs:
         done
 
   release:
+    needs: create-multiplatform-manifest
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
 
