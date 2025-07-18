@@ -12,6 +12,7 @@ service:
     edge-proxy.altinity.com/tls-server-name: mcp-github-jwt.altinity-skaeser-playground.dev.altinity.cloud
 
 config:
+  reload_time: 120
   clickhouse:
     read_only: true
   
