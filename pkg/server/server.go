@@ -799,11 +799,11 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
-		s.serveOpenAPISchema(w, r, hostURL, token)
+		s.serveOpenAPISchema(w, r, hostURL)
 	}
 }
 
-func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
+func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL string) {
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -813,7 +813,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 		},
 		"servers": []map[string]interface{}{
 			{
-				"url":         "https://mcp-github-jwt.altinity-skaeser-playground.dev.altinity.cloud",
+				"url":         hostURL,
 				"description": "Base OpenAPI host.",
 			},
 		},
