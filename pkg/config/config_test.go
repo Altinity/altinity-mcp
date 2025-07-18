@@ -89,7 +89,7 @@ logging:
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, InfoLevel, cfg.Logging.Level)
-		require.Equal(t, false, cfg.Server.OpenAPI)
+		require.False(t, cfg.Server.OpenAPI.Enabled)
 		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
