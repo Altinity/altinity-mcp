@@ -42,7 +42,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --address 0.0.0.0 \
   --port 8080 \
   --clickhouse-host localhost \
-  --openapi
+  --openapi http
 ```
 
 ### Using SSE Transport with JWT Authentication and OpenAPI
@@ -54,7 +54,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --allow-jwt-auth \
   --jwt-secret-key "your-secret-key" \
   --clickhouse-host localhost \
-  --openapi
+  --openapi http
 ```
 
 ## Installation
@@ -121,7 +121,9 @@ server:
   jwt:
     enabled: false
     secret_key: ""
-    token_param: "token"
+  openapi:
+    enabled: false
+    tls: false
 
 logging:
   level: "info"
@@ -327,7 +329,7 @@ services:
 - `--config`: Path to configuration file (YAML or JSON)
 - `--log-level`: Logging level (debug/info/warn/error)
 - `--clickhouse-limit`: Default limit for query results (default: 1000)
-- `--openapi`: Enable OpenAPI endpoints for GPTs integration (default: false)
+- `--openapi`: Enable OpenAPI endpoints (disable/http/https) (default: disable)
 
 ### ClickHouse Flags
 
