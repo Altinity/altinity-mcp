@@ -89,7 +89,7 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, "info", string(cfg.Logging.Level))
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
-		require.Equal(t, false, cfg.Server.OpenAPI)
+		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 	})
 
 	t.Run("nonexistent_config_file", func(t *testing.T) {
@@ -970,7 +970,7 @@ logging:
 		require.Equal(t, config.HTTPTransport, cfg.Server.Transport)
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
-		require.Equal(t, false, cfg.Server.OpenAPI)
+		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
 	})
@@ -1096,7 +1096,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
-		require.Equal(t, false, cfg.Server.OpenAPI)
+		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 	})
 
 	t.Run("invalid_protocol_defaults_to_http", func(t *testing.T) {
@@ -1467,7 +1467,7 @@ logging:
 	require.Equal(t, config.HTTPTransport, newConfig.Server.Transport)
 	require.Equal(t, 9091, newConfig.Server.Port)
 	require.Equal(t, config.WarnLevel, newConfig.Logging.Level)
-	require.Equal(t, false, newConfig.Server.OpenAPI)
+	require.Equal(t, false, newConfig.Server.OpenAPI.Enabled)
 }
 
 // TestNewApplicationWithTestContainer tests newApplication with a real ClickHouse instance

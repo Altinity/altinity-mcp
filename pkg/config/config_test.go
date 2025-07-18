@@ -21,13 +21,13 @@ clickhouse:
   protocol: "tcp"
   limit: 500
 server:
-  openapi: true
+  openapi:
+    enabled: true
   transport: "http"
   address: "127.0.0.1"
   port: 8080
 logging:
   level: "debug"
-  openapi: true
 `
 		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
 		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
@@ -69,7 +69,7 @@ logging:
     "level": "info"
   },
   "server": {
-    "openapi": false
+    "openapi": { "enabled": false }
   }
 }`
 		tmpFile := filepath.Join(t.TempDir(), "config.json")
@@ -90,7 +90,6 @@ logging:
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, InfoLevel, cfg.Logging.Level)
 		require.False(t, cfg.Server.OpenAPI.Enabled)
-		require.Equal(t, false, cfg.Server.OpenAPI)
 	})
 
 	t.Run("nonexistent_file", func(t *testing.T) {
