@@ -943,10 +943,8 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
 
-	// Preserve reload time if not configured
-	if newCfg.ReloadTime == 0 {
-		newCfg.ReloadTime = a.config.ReloadTime
-	}
+	// Get reload time from CLI flag (which takes precedence)
+	newCfg.ReloadTime = cmd.Int("config-reload-time")
 
 	// Update logging level if changed
 	a.configMutex.Lock()
