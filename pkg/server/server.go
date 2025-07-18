@@ -751,21 +751,19 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// If no token from path, try other sources
-	if token == "" {
-		// Try Authorization: Bearer header
+	// If no token  from path or token from OpenAI GPT tester, try other sources
+	if token == "" || token == "default" {
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if authHeader != "" {
-			// Try Basic Auth
-			if strings.HasPrefix(authHeader, "Basic ") {
-				decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
-				if err == nil {
-					parts := strings.SplitN(string(decoded), ":", 2)
-					if len(parts) == 2 {
-						token = parts[1] // Use password as token
-					}
+		} else if strings.HasPrefix(authHeader, "Basic ") {
+			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+			if err == nil {
+				parts := strings.SplitN(string(decoded), ":", 2)
+				if len(parts) == 2 {
+					token = parts[1] // Use password as token
+				} else {
+					token = parts[0]
 				}
 			}
 		}
