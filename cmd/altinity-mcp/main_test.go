@@ -918,6 +918,7 @@ func TestBuildConfigWithFile(t *testing.T) {
 		defer os.Remove(tmpFile.Name())
 
 		configContent := `
+reload_time: 10
 clickhouse:
   host: "config-host"
   port: 9000
@@ -953,9 +954,8 @@ logging:
 			},
 			setFlags: map[string]bool{
 				"config":           true,
-				"clickhouse-host":  true, // Mark this as explicitly set to override config file
+				"clickhouse-host":  true,
 				"clickhouse-limit": true,
-				// Don't mark other flags as set so they use config file values
 			},
 		}
 
@@ -1456,13 +1456,13 @@ logging:
 	t.Run("reload_time_preserved_when_not_in_config", func(t *testing.T) {
 		prevReloadTime := 15
 		app := &application{
-			config: config.Config{ReloadTime: prevReloadTime},
+			config:     config.Config{ReloadTime: prevReloadTime},
 			configFile: "test.yaml",
 		}
 
 		// Mock command interface
 		cmd := &mockCommand{
-			flags: map[string]interface{}{},
+			flags:    map[string]interface{}{},
 			setFlags: map[string]bool{},
 		}
 
