@@ -1151,13 +1151,14 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 // TestApplicationStart tests the application Start method
 func TestApplicationStart(t *testing.T) {
 	t.Run("unsupported_transport", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: "unsupported",
-				},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: "unsupported",
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		err := app.Start()
@@ -1166,13 +1167,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("stdio_transport", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.StdioTransport,
-				},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.StdioTransport,
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		// Start in a goroutine since STDIO transport will block
@@ -1199,18 +1201,19 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_invalid_port", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.HTTPTransport,
-					Address:   "localhost",
-					Port:      -1, // Invalid port
-					TLS: config.ServerTLSConfig{
-						Enabled: false,
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.HTTPTransport,
+				Address:   "localhost",
+				Port:      -1, // Invalid port
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		err := app.Start()
@@ -1219,20 +1222,21 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_with_tls_missing_files", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.HTTPTransport,
-					Address:   "localhost",
-					Port:      0, // Use random port
-					TLS: config.ServerTLSConfig{
-						Enabled:  true,
-						CertFile: "/nonexistent/cert.pem",
-						KeyFile:  "/nonexistent/key.pem",
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.HTTPTransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				TLS: config.ServerTLSConfig{
+					Enabled:  true,
+					CertFile: "/nonexistent/cert.pem",
+					KeyFile:  "/nonexistent/key.pem",
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		err := app.Start()
@@ -1241,21 +1245,22 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_without_jwt", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.SSETransport,
-					Address:   "localhost",
-					Port:      0, // Use random port
-					JWT: config.JWTConfig{
-						Enabled: false,
-					},
-					TLS: config.ServerTLSConfig{
-						Enabled: false,
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.SSETransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				JWT: config.JWTConfig{
+					Enabled: false,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		// Start in a goroutine since it will block
@@ -1282,23 +1287,22 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_jwt", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.SSETransport,
-					Address:   "localhost",
-					Port:      0, // Use random port
-					JWT: config.JWTConfig{
-						Enabled: true,
-					},
-					TLS: config.ServerTLSConfig{
-						Enabled: false,
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.SSETransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				JWT: config.JWTConfig{
+					Enabled: true,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{
-				Enabled: true,
-			}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		// Start in a goroutine since it will block
@@ -1325,24 +1329,25 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_tls_invalid_config", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.SSETransport,
-					Address:   "localhost",
-					Port:      0,
-					JWT: config.JWTConfig{
-						Enabled: false,
-					},
-					TLS: config.ServerTLSConfig{
-						Enabled:  true,
-						CertFile: "/nonexistent/cert.pem",
-						KeyFile:  "/nonexistent/key.pem",
-						CaCert:   "/nonexistent/ca.pem",
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.SSETransport,
+				Address:   "localhost",
+				Port:      0,
+				JWT: config.JWTConfig{
+					Enabled: false,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled:  true,
+					CertFile: "/nonexistent/cert.pem",
+					KeyFile:  "/nonexistent/key.pem",
+					CaCert:   "/nonexistent/ca.pem",
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		err := app.Start()
@@ -1351,19 +1356,20 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("build_server_tls_config_error", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.HTTPTransport,
-					Address:   "localhost",
-					Port:      0,
-					TLS: config.ServerTLSConfig{
-						Enabled: true,
-						CaCert:  "/nonexistent/ca.pem", // This will cause buildServerTLSConfig to fail
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.HTTPTransport,
+				Address:   "localhost",
+				Port:      0,
+				TLS: config.ServerTLSConfig{
+					Enabled: true,
+					CaCert:  "/nonexistent/ca.pem", // This will cause buildServerTLSConfig to fail
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		err := app.Start()
@@ -1372,18 +1378,19 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_successful_start", func(t *testing.T) {
-		app := &application{
-			config: config.Config{
-				Server: config.ServerConfig{
-					Transport: config.HTTPTransport,
-					Address:   "localhost",
-					Port:      0, // Use random port
-					TLS: config.ServerTLSConfig{
-						Enabled: false,
-					},
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.HTTPTransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
 				},
 			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		// Start in a goroutine since it will block
@@ -1432,19 +1439,19 @@ logging:
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
 	tmpFile.Close()
-
+	cfg := config.Config{
+		ClickHouse: config.ClickHouseConfig{
+			Host: "old-host",
+			Port: 8123,
+		},
+		Logging: config.LoggingConfig{
+			Level: config.InfoLevel,
+		},
+	}
 	app := &application{
 		configFile: tmpFile.Name(),
-		config: config.Config{
-			ClickHouse: config.ClickHouseConfig{
-				Host: "old-host",
-				Port: 8123,
-			},
-			Logging: config.LoggingConfig{
-				Level: config.InfoLevel,
-			},
-		},
-		mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+		config:     cfg,
+		mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg),
 	}
 
 	cmd := &mockCommand{
@@ -1798,16 +1805,16 @@ logging:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
-
+		_ = tmpFile.Close()
+		cfg := config.Config{
+			Logging: config.LoggingConfig{
+				Level: config.InfoLevel, // Different from file
+			},
+		}
 		app := &application{
 			configFile: tmpFile.Name(),
-			config: config.Config{
-				Logging: config.LoggingConfig{
-					Level: config.InfoLevel, // Different from file
-				},
-			},
-			mcpServer: altinitymcp.NewClickHouseMCPServer(config.ClickHouseConfig{}, config.JWTConfig{}),
+			config:     cfg,
+			mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
 		cmd := &mockCommand{

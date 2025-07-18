@@ -960,7 +960,7 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	}
 
 	// Create new MCP server with updated config
-	newMCPServer := altinitymcp.NewClickHouseMCPServer(newCfg.ClickHouse, newCfg.Server.JWT)
+	newMCPServer := altinitymcp.NewClickHouseMCPServer(*newCfg)
 
 	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
 	a.configMutex.Lock()
