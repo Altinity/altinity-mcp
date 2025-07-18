@@ -949,7 +949,7 @@ logging:
 				"address":                       "0.0.0.0",
 				"port":                          8080,
 				"log-level":                     "info",
-				"openapi":                       false,
+				"openapi":                       "disable",
 			},
 			setFlags: map[string]bool{
 				"config":           true,

@@ -76,7 +76,13 @@ type ServerConfig struct {
 	Port         int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
 	TLS          ServerTLSConfig `json:"tls" yaml:"tls"`
 	JWT          JWTConfig       `json:"jwt" yaml:"jwt"`
-	OpenAPI      bool            `json:"openapi" yaml:"openapi" flag:"openapi" desc:"Enable OpenAPI endpoints"`
+	OpenAPI      OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+}
+
+// OpenAPIConfig defines OpenAPI endpoints configuration
+type OpenAPIConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled" desc:"Enable OpenAPI endpoints"`
+	TLS     bool `json:"tls" yaml:"tls" desc:"Use TLS (https) for OpenAPI endpoints"`
 }
 
 // LogLevel defines the logging level
