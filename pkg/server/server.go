@@ -864,7 +864,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 							"name":        "jwt_token",
 							"in":          "path",
 							"required":    true,
-							"description": "JWT token for authentication (default — только для тестов в редакторе).",
+							"description": "JWT token for authentication.",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
@@ -906,7 +906,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 							"name":        "jwt_token",
 							"in":          "path",
 							"required":    true,
-							"description": "JWT token for authentication (default — только для тестов в редакторе).",
+							"description": "JWT token for authentication",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
