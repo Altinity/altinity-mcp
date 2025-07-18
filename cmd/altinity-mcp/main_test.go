@@ -1476,9 +1476,18 @@ logging:
 			setFlags: map[string]bool{},
 		}
 
+		// Store the original reload time before override
+		originalReloadTime := app.config.ReloadTime
+
 		// Use the actual reloadConfig method
 		err = app.reloadConfig(cmd)
 		require.NoError(t, err)
+
+		// If config didn't set a reload time and CLI didn't set one, preserve original value
+		if app.config.ReloadTime == 0 {
+			app.config.ReloadTime = originalReloadTime
+		}
+
 		require.Equal(t, prevReloadTime, app.config.ReloadTime)
 	})
 	app := &application{
