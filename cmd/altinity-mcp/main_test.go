@@ -1454,10 +1454,20 @@ logging:
 
 	// Verify reload time is preserved when not in new config
 	t.Run("reload_time_preserved_when_not_in_config", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `clickhouse: {}`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		_ = tmpFile.Close()
+
 		prevReloadTime := 15
 		app := &application{
 			config:     config.Config{ReloadTime: prevReloadTime},
-			configFile: "test.yaml",
+			configFile: tmpFile.Name(),
 		}
 
 		// Mock command interface
@@ -1467,7 +1477,7 @@ logging:
 		}
 
 		// Use the actual reloadConfig method
-		err := app.reloadConfig(cmd)
+		err = app.reloadConfig(cmd)
 		require.NoError(t, err)
 		require.Equal(t, prevReloadTime, app.config.ReloadTime)
 	})
