@@ -416,7 +416,7 @@ func TestApplication(t *testing.T) {
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
-			configReloadTime: 10,
+			config:           config.Config{ReloadTime: 10},
 		}
 
 		// This should not panic
@@ -437,7 +437,7 @@ func TestConfigReloadLoop(t *testing.T) {
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
-			configReloadTime: 1, // 1 second for faster test
+			config:           config.Config{ReloadTime: 1}, // 1 second for faster test
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -472,7 +472,7 @@ func TestConfigReloadLoop(t *testing.T) {
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
-			configReloadTime: 1, // 1 second for faster test
+			config:           config.Config{ReloadTime: 1}, // 1 second for faster test
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -832,7 +832,7 @@ server:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
@@ -868,7 +868,7 @@ server:
 		require.NotNil(t, app)
 		require.NotNil(t, app.mcpServer)
 		require.Equal(t, tmpFile.Name(), app.configFile)
-		require.Equal(t, 1, app.configReloadTime)
+		require.Equal(t, 1, app.config.ReloadTime)
 
 		// Give a moment for the config reload goroutine to start
 		time.Sleep(100 * time.Millisecond)
@@ -931,7 +931,7 @@ logging:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
@@ -973,7 +973,7 @@ logging:
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
-		
+
 		// Verify reload time was set from CLI flag
 		require.Equal(t, 10, cfg.ReloadTime)
 	})
@@ -1283,7 +1283,7 @@ func TestApplicationStart(t *testing.T) {
 		default:
 			// If it's still running, that's expected - stop it
 			if app.httpSrv != nil {
-				app.httpSrv.Close()
+				_ = app.httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -1325,7 +1325,7 @@ func TestApplicationStart(t *testing.T) {
 		default:
 			// If it's still running, that's expected - stop it
 			if app.httpSrv != nil {
-				app.httpSrv.Close()
+				_ = app.httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -1413,7 +1413,7 @@ func TestApplicationStart(t *testing.T) {
 		default:
 			// If it's still running, that's expected - stop it
 			if app.httpSrv != nil {
-				app.httpSrv.Close()
+				_ = app.httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -1441,7 +1441,7 @@ logging:
 `
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 	cfg := config.Config{
 		ClickHouse: config.ClickHouseConfig{
 			Host: "old-host",
@@ -1578,7 +1578,7 @@ logging:
 `
 	_, err = tmpFile.WriteString(configContent)
 	require.NoError(t, err)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	cmd := &cli.Command{}
 	cmd.Flags = []cli.Flag{
@@ -1611,7 +1611,7 @@ logging:
 	select {
 	case err := <-done:
 		// If it completes, it could be with an error (stdio serving failure) or nil (successful start)
-		// Both are acceptable since JWT auth is enabled and we're not testing ClickHouse connection
+		// Both are acceptable since JWT auth is enabled, and we're not testing ClickHouse connection
 		if err != nil {
 			t.Logf("runServer completed with error (expected for stdio): %v", err)
 		} else {
@@ -1681,7 +1681,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
-		// This test will start the server but we need to stop it quickly
+		// This test will start the server, but we need to stop it quickly
 		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", "test-secret", "--transport", "stdio"}
 
 		// Run in a goroutine with timeout since stdio transport will block
