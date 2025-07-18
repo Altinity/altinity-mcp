@@ -1457,9 +1457,18 @@ logging:
 		prevReloadTime := 15
 		app := &application{
 			config: config.Config{ReloadTime: prevReloadTime},
+			configFile: "test.yaml",
 		}
-		newCfg := config.Config{ReloadTime: 0} // New config with no reload time
-		app.overrideConfig(newCfg)
+
+		// Mock command interface
+		cmd := &mockCommand{
+			flags: map[string]interface{}{},
+			setFlags: map[string]bool{},
+		}
+
+		// Use the actual reloadConfig method
+		err := app.reloadConfig(cmd)
+		require.NoError(t, err)
 		require.Equal(t, prevReloadTime, app.config.ReloadTime)
 	})
 	app := &application{
