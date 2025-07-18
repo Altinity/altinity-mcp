@@ -755,15 +755,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
 		} else if strings.HasPrefix(authHeader, "Basic ") {
-			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
-			if err == nil {
-				parts := strings.SplitN(string(decoded), ":", 2)
-				if len(parts) == 2 {
-					token = parts[1] // Use password as token
-				} else {
-					token = parts[0]
-				}
-			}
+			token = strings.TrimPrefix(authHeader, "Basic ")
 		}
 
 		// Try x-altinity-mcp-key header
