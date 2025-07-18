@@ -29,8 +29,7 @@ var (
 // ClickHouseJWTServer extends MCPServer with JWT auth capabilities
 type ClickHouseJWTServer struct {
 	*server.MCPServer
-	JwtConfig        config.JWTConfig
-	ClickhouseConfig config.ClickHouseConfig
+	Config           config.Config
 }
 
 type AltinityMCPServer interface {
@@ -44,7 +43,7 @@ type AltinityMCPServer interface {
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
-func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.JWTConfig) *ClickHouseJWTServer {
+func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWTServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -56,9 +55,8 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 	)
 
 	chJwtServer := &ClickHouseJWTServer{
-		MCPServer:        srv,
-		JwtConfig:        jwtConfig,
-		ClickhouseConfig: chConfig,
+		MCPServer: srv,
+		Config:    cfg,
 	}
 
 	// Register tools, resources, and prompts
@@ -67,8 +65,8 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 	RegisterPrompts(chJwtServer)
 
 	log.Info().
-		Bool("jwt_enabled", jwtConfig.Enabled).
-		Int("default_limit", chConfig.Limit).
+		Bool("jwt_enabled", cfg.Server.JWT.Enabled).
+		Int("default_limit", cfg.ClickHouse.Limit).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
 	return chJwtServer
@@ -76,9 +74,9 @@ func NewClickHouseMCPServer(chConfig config.ClickHouseConfig, jwtConfig config.J
 
 // GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
 func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	if !s.JwtConfig.Enabled {
+	if !s.Config.Server.JWT.Enabled {
 		// If JWT auth is disabled, use the default config
-		client, err := clickhouse.NewClient(ctx, s.ClickhouseConfig)
+		client, err := clickhouse.NewClient(ctx, s.Config.ClickHouse)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 		}
@@ -118,7 +116,7 @@ func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapCla
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(s.JwtConfig.SecretKey), nil
+		return []byte(s.Config.Server.JWT.SecretKey), nil
 	})
 
 	if err != nil || !token.Valid {

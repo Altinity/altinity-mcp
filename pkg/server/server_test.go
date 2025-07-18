@@ -914,7 +914,13 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Enabled: false,
 	}
 
-	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+	cfg := config.Config{
+		ClickHouse: chConfig,
+		Server: config.ServerConfig{
+			JWT: jwtConfig,
+		},
+	}
+	srv := NewClickHouseMCPServer(cfg)
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer)
 	require.Equal(t, jwtConfig, srv.JwtConfig)
