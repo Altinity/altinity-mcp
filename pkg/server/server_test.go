@@ -510,15 +510,17 @@ func TestOpenAPIHandlers(t *testing.T) {
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"), "unexpected Content-Type: %s, response body %s", resp.Header.Get("Content-Type"), bodyBytes)
 
 					var result struct {
-						Tables []clickhouse.TableInfo `json:"tables"`
-						Count  int                    `json:"count"`
+						ResponseData struct {
+							Tables []clickhouse.TableInfo `json:"tables"`
+							Count  int                    `json:"count"`
+						} `json:"response_data"`
 					}
 					err = json.NewDecoder(resp.Body).Decode(&result)
 					require.NoError(t, err)
-					require.Greater(t, result.Count, 0)
+					require.Greater(t, result.ResponseData.Count, 0)
 					// Verify test table exists in results
 					found := false
-					for _, table := range result.Tables {
+					for _, table := range result.ResponseData.Tables {
 						if table.Name == "test" {
 							found = true
 							break
