@@ -923,8 +923,8 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 	srv := NewClickHouseMCPServer(cfg)
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer)
-	require.Equal(t, jwtConfig, srv.JwtConfig)
-	require.Equal(t, chConfig, srv.ClickhouseConfig)
+	require.Equal(t, jwtConfig, srv.Config.Server.JWT)
+	require.Equal(t, chConfig, srv.Config.ClickHouse)
 }
 
 // TestGetClickHouseClient tests the JWT client creation
