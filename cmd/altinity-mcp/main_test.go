@@ -973,6 +973,9 @@ logging:
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
+		
+		// Verify reload time was set from CLI flag
+		require.Equal(t, 10, cfg.ReloadTime)
 	})
 }
 
