@@ -893,7 +893,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 
 func (a *application) Close() {
 	// Stop config reload goroutine
-	if a.configFile != "" && a.configReloadTime > 0 {
+	if a.configFile != "" {
 		close(a.stopConfigReload)
 	}
 
