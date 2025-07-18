@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -739,7 +740,8 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "can't get JWTServer from context", http.StatusInternalServerError)
 		return
 	}
-	// Extract token from URL path
+
+	// Try to extract token from URL path first
 	pathParts := strings.Split(r.URL.Path, "/")
 	var token string
 	for i, part := range pathParts {
@@ -749,7 +751,32 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// If JWT auth is enabled, validate token before serving schema
+	// If no token from path, try other sources
+	if token == "" {
+		// Try Authorization: Bearer header
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if authHeader != "" {
+			// Try Basic Auth
+			if strings.HasPrefix(authHeader, "Basic ") {
+				decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+				if err == nil {
+					parts := strings.SplitN(string(decoded), ":", 2)
+					if len(parts) == 2 {
+						token = parts[1] // Use password as token
+					}
+				}
+			}
+		}
+
+		// Try x-altinity-mcp-key header
+		if token == "" {
+			token = r.Header.Get("x-altinity-mcp-key")
+		}
+	}
+
+	// If JWT auth is enabled, validate token if provided
 	if chJwtServer.JwtConfig.Enabled && token != "" {
 		_, err := chJwtServer.parseAndValidateJWT(token)
 		if err != nil {
