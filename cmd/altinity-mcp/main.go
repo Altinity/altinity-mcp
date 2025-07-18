@@ -354,7 +354,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			if cfg.Server.TLS.Enabled {
 				protocol = "https"
 			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", "http", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -372,7 +372,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			if cfg.Server.TLS.Enabled {
 				protocol = "https"
 			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", "http", cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
