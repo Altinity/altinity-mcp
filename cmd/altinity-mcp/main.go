@@ -872,7 +872,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 
 	// Create MCP server
 	log.Debug().Msg("Creating MCP server...")
-	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg.ClickHouse, cfg.Server.JWT)
+	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg)
 
 	app := &application{
 		config:           cfg,
