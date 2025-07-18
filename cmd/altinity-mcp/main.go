@@ -322,7 +322,11 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
 	log.Info().
 		Str("address", addr).
-		Msg("Starting MCP server with HTTP transport")
+		Msg("Starting MCP server with Streaming HTTP transport")
+	openAPIProtocol := "http"
+	if cfg.Server.OpenAPI.TLS {
+		openAPIProtocol = "https"
+	}
 
 	// Create a middleware to inject the ClickHouseJWTServer into context
 	serverInjector := func(next http.Handler) http.Handler {
@@ -350,11 +354,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/query", serverInjectorOpenAPI)
-			protocol := "http"
-			if cfg.Server.OpenAPI.TLS {
-				protocol = "https"
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -368,11 +368,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
-			protocol := "http"
-			if cfg.Server.OpenAPI.TLS {
-				protocol = "https"
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		httpHandler = mux
@@ -410,6 +406,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 	if cfg.Server.TLS.Enabled {
 		protocol = "https"
 	}
+	openAPIProtocol := "http"
+	if cfg.Server.OpenAPI.TLS {
+		openAPIProtocol = "https"
+	}
 	var sseHandler http.Handler
 	if cfg.Server.JWT.Enabled {
 		log.Info().Msg("Using dynamic base path for JWT authentication")
@@ -439,7 +439,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
@@ -453,7 +453,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", protocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
