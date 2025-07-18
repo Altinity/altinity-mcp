@@ -783,11 +783,12 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Get host URL from request
-	hostURL := fmt.Sprintf("%s://%s", "https", r.Host)
-	if r.TLS == nil {
-		hostURL = fmt.Sprintf("%s://%s", "http", r.Host)
+	// Get host URL based on OpenAPI TLS configuration
+	protocol := "http"
+	if s.ClickhouseConfig.TLS.Enabled || s.ClickhouseConfig.TLS.CaCert != "" || s.ClickhouseConfig.TLS.ClientCert != "" {
+		protocol = "https"
 	}
+	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
 
 	// Route to appropriate handler based on path suffix
 	switch {
