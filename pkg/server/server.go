@@ -29,7 +29,7 @@ var (
 // ClickHouseJWTServer extends MCPServer with JWT auth capabilities
 type ClickHouseJWTServer struct {
 	*server.MCPServer
-	Config           config.Config
+	Config config.Config
 }
 
 type AltinityMCPServer interface {
@@ -183,7 +183,7 @@ func (s *ClickHouseJWTServer) validateClaimsWhitelist(claims jwt.MapClaims) erro
 // buildConfigFromClaims builds a ClickHouse config from JWT claims
 func (s *ClickHouseJWTServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
 	// Create a new ClickHouse config from the claims
-	chConfig := s.ClickhouseConfig // Use default as base
+	chConfig := s.Config.ClickHouse // Use default as base
 
 	if host, ok := claims["host"].(string); ok && host != "" {
 		chConfig.Host = host
@@ -604,7 +604,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	// Get default limit based on server type
-	defaultLimit := float64(chJwtServer.ClickhouseConfig.Limit)
+	defaultLimit := float64(chJwtServer.Config.ClickHouse.Limit)
 
 	// Get optional limit parameter, use server default if not provided
 	limit := defaultLimit
@@ -773,7 +773,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	// If JWT auth is enabled, validate token if provided
-	if chJwtServer.JwtConfig.Enabled && token != "" {
+	if chJwtServer.Config.Server.JWT.Enabled && token != "" {
 		_, err := chJwtServer.parseAndValidateJWT(token)
 		if err != nil {
 			http.Error(w, "Invalid JWT token", http.StatusInternalServerError)
@@ -783,7 +783,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 
 	// Get host URL based on OpenAPI TLS configuration
 	protocol := "http"
-	if s.ClickhouseConfig.TLS.Enabled || s.ClickhouseConfig.TLS.CaCert != "" || s.ClickhouseConfig.TLS.ClientCert != "" {
+	if s.Config.Server.OpenAPI.TLS {
 		protocol = "https"
 	}
 	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
@@ -1040,7 +1040,7 @@ func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	limitStr := r.URL.Query().Get("limit")
-	limit := s.ClickhouseConfig.Limit
+	limit := s.Config.ClickHouse.Limit
 	if limitStr != "" {
 		var err error
 		limit, err = strconv.Atoi(limitStr)

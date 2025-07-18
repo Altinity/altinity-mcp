@@ -59,9 +59,8 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	)
 
 	chJwtServer := &ClickHouseJWTServer{
-		MCPServer:        srv,
-		JwtConfig:        jwtConfig,
-		ClickhouseConfig: *chConfig,
+		MCPServer: srv,
+		Config:    config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
 	}
 
 	// Create wrapper that will register tools/resources/prompts with the test server
@@ -271,7 +270,7 @@ func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfi
 // WithJWTAuth configures the server to use JWT authentication
 func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTestServer {
 	// Update the JWT config in the existing server to avoid re-registration
-	s.chJwtServer.JwtConfig = jwtConfig
+	s.chJwtServer.Config.Server.JWT = jwtConfig
 	return s
 }
 
@@ -447,8 +446,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 			// Set up chJwtServer with ClickHouse config and JWT
 			chJwtServer := &ClickHouseJWTServer{
-				ClickhouseConfig: *chConfig,
-				JwtConfig:        jwtConfig,
+				Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
 			}
 
 			// Create test server
@@ -579,8 +577,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 	t.Run("ErrorConditions", func(t *testing.T) {
 		jwtConfig := config.JWTConfig{Enabled: false}
 		chJwtServer := &ClickHouseJWTServer{
-			ClickhouseConfig: *chConfig,
-			JwtConfig:        jwtConfig,
+			Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -659,8 +656,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 	t.Run("TokenExtraction", func(t *testing.T) {
 		jwtConfig := config.JWTConfig{Enabled: true, SecretKey: jwtSecret}
 		chJwtServer := &ClickHouseJWTServer{
-			ClickhouseConfig: *chConfig,
-			JwtConfig:        jwtConfig,
+			Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -914,13 +910,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Enabled: false,
 	}
 
-	cfg := config.Config{
-		ClickHouse: chConfig,
-		Server: config.ServerConfig{
-			JWT: jwtConfig,
-		},
-	}
-	srv := NewClickHouseMCPServer(cfg)
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer)
 	require.Equal(t, jwtConfig, srv.Config.Server.JWT)
@@ -945,7 +935,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			Enabled: false,
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		// This will fail to connect, but we're testing the logic, not the connection
 		_, err := srv.GetClickHouseClient(ctx, "")
@@ -968,7 +958,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		_, err := srv.GetClickHouseClient(ctx, "")
 		require.Equal(t, ErrMissingToken, err)
@@ -989,7 +979,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
 		require.Equal(t, ErrInvalidToken, err)
@@ -1010,7 +1000,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		// Create a valid JWT token
 		claims := map[string]interface{}{
@@ -1051,7 +1041,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		// Create a valid JWT token with TLS configuration
 		claims := map[string]interface{}{
@@ -1097,7 +1087,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: "test-secret",
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		// Create a token with wrong signing method (use none algorithm which doesn't require special keys)
 		claims := map[string]interface{}{
@@ -1130,7 +1120,7 @@ func TestGetClickHouseClient(t *testing.T) {
 			SecretKey: jwtSecret,
 		}
 
-		srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 		// Create a token with a disallowed claim key
 		claims := map[string]interface{}{
@@ -1297,7 +1287,7 @@ func TestParseAndValidateJWT(t *testing.T) {
 		SecretKey: "test-secret",
 	}
 
-	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 	t.Run("valid_token", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -1354,7 +1344,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		SecretKey: "test-secret",
 	}
 
-	srv := NewClickHouseMCPServer(chConfig, jwtConfig)
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: chConfig})
 
 	t.Run("basic_claims", func(t *testing.T) {
 		claims := jwt.MapClaims{
