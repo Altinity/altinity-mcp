@@ -807,129 +807,133 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
-			"title":   "ClickHouse SQL Interface",
-			"version": "1.0.0",
+			"title":       "ClickHouse SQL Interface",
+			"version":     "1.0.0",
+			"description": "Run SQL queries against a ClickHouse instance via GPT-actions.",
 		},
 		"servers": []map[string]interface{}{
 			{
-				"url":         "{host_url}/{jwt_token}/openapi",
-				"description": "ClickHouse server URL",
-				"variables": map[string]interface{}{
-					"host_url": map[string]interface{}{
-						"default":     hostURL,
-						"description": "Base URL",
-						"x-oai-meta": map[string]interface{}{
-							"securityType": "user_api_key",
-						},
-					},
-					"jwt_token": map[string]interface{}{
-						"default":     token,
-						"description": "Paste your JWT token here",
-						"x-oai-meta": map[string]interface{}{
-							"securityType": "user_api_key",
-						},
-					},
-				},
+				"url":         "https://mcp-github-jwt.altinity-skaeser-playground.dev.altinity.cloud",
+				"description": "Base OpenAPI host.",
 			},
 		},
+		"components": map[string]interface{}{
+			"schemas": map[string]interface{}{},
+		},
 		"paths": map[string]interface{}{
-			"/list_tables": map[string]interface{}{
+			"/{jwt_token}/openapi/list_tables": map[string]interface{}{
 				"get": map[string]interface{}{
-					"summary":     "Lists all tables in a ClickHouse database with detailed information. Can be filtered by database.",
 					"operationId": "list_tables",
+					"summary":     "List tables in a ClickHouse database",
 					"parameters": []map[string]interface{}{
+						{
+							"name":        "jwt_token",
+							"in":          "path",
+							"required":    true,
+							"description": "JWT token for authentication",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+						},
 						{
 							"name":        "database",
 							"in":          "query",
 							"required":    false,
-							"description": "Optional: The database to list tables from. If not provided, lists tables from all databases.",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
+							"description": "Database to list tables from (omit for all DBs).",
+							"schema":      map[string]interface{}{"type": "string"},
 						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "JSON list available tables from ClickHouse",
+							"description": "JSON list of tables",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{},
+									"schema": map[string]interface{}{"type": "string"},
 								},
 							},
 						},
 					},
 				},
 			},
-			"/describe_table": map[string]interface{}{
+			"/{jwt_token}/openapi/execute_query": map[string]interface{}{
 				"get": map[string]interface{}{
-					"summary":     "Describes the structure of a ClickHouse table including columns, types, and constraints",
-					"operationId": "describe_table",
-					"parameters": []map[string]interface{}{
-						{
-							"name":        "database",
-							"in":          "query",
-							"required":    true,
-							"description": "Name of the database the table belongs to",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-						},
-						{
-							"name":        "table_name",
-							"in":          "query",
-							"required":    true,
-							"description": "Name of the table to describe",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{
-							"description": "JSON result from ClickHouse",
-							"content": map[string]interface{}{
-								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{
-										"type": "string",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/execute_query": map[string]interface{}{
-				"get": map[string]interface{}{
-					"summary":     "Executes a SQL query against ClickHouse and returns the results",
 					"operationId": "execute_query",
+					"summary":     "Execute a SQL query",
 					"parameters": []map[string]interface{}{
+						{
+							"name":        "jwt_token",
+							"in":          "path",
+							"required":    true,
+							"description": "JWT token for authentication (default — только для тестов в редакторе).",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+						},
 						{
 							"name":        "query",
 							"in":          "query",
 							"required":    true,
-							"description": "SQL query to execute (SELECT, INSERT, CREATE, etc.)",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
+							"description": "SQL to execute (SELECT, INSERT, etc.).",
+							"schema":      map[string]interface{}{"type": "string"},
 						},
 						{
 							"name":        "limit",
 							"in":          "query",
 							"required":    false,
-							"description": "Optional: Maximum number of rows to return (default: 1000, max: 10000)",
-							"schema": map[string]interface{}{
-								"type": "integer",
-							},
+							"description": "Max rows to return (default 1000, max 10000).",
+							"schema":      map[string]interface{}{"type": "integer"},
 						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "JSON result from ClickHouse",
+							"description": "Query result as JSON",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{
-										"type": "string",
-									},
+									"schema": map[string]interface{}{"type": "string"},
+								},
+							},
+						},
+					},
+				},
+			},
+			"/{jwt_token}/openapi/describe_table": map[string]interface{}{
+				"get": map[string]interface{}{
+					"operationId": "describe_table",
+					"summary":     "Describe a ClickHouse table",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "jwt_token",
+							"in":          "path",
+							"required":    true,
+							"description": "JWT token for authentication (default — только для тестов в редакторе).",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+						},
+						{
+							"name":        "database",
+							"in":          "query",
+							"required":    true,
+							"description": "Database containing the table.",
+							"schema":      map[string]interface{}{"type": "string"},
+						},
+						{
+							"name":        "table_name",
+							"in":          "query",
+							"required":    true,
+							"description": "Table to describe.",
+							"schema":      map[string]interface{}{"type": "string"},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Table structure as JSON",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{"type": "string"},
 								},
 							},
 						},
