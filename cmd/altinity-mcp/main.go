@@ -205,10 +205,10 @@ func run(args []string) error {
 				Value:   1000,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
-			&cli.BoolFlag{
+			&cli.StringFlag{
 				Name:    "openapi",
-				Usage:   "Enable OpenAPI endpoints",
-				Value:   false,
+				Usage:   "Enable OpenAPI endpoints (disable|http|https)",
+				Value:   "disable",
 				Sources: cli.EnvVars("MCP_OPENAPI"),
 			},
 		},
@@ -345,7 +345,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
-		if cfg.Server.OpenAPI {
+		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
@@ -694,7 +694,17 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	}
 
 	if cmd.IsSet("openapi") {
-		cfg.Server.OpenAPI = cmd.Bool("openapi")
+		value := cmd.String("openapi")
+		if value == "http" {
+			cfg.Server.OpenAPI.Enabled = true
+			cfg.Server.OpenAPI.TLS = false
+		} else if value == "https" {
+			cfg.Server.OpenAPI.Enabled = true
+			cfg.Server.OpenAPI.TLS = true
+		} else {
+			cfg.Server.OpenAPI.Enabled = false
+			cfg.Server.OpenAPI.TLS = false
+		}
 	}
 
 	// Override Server TLS config with CLI flags
