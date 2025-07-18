@@ -684,7 +684,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 		t.Run("BasicAuth", func(t *testing.T) {
 			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
-			req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("username:"+validTokenString)))
+			req.Header.Set("Authorization", "Basic "+validTokenString)
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
 			require.Equal(t, http.StatusOK, resp.StatusCode)
