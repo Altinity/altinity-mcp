@@ -974,7 +974,7 @@ logging:
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
 
-		// Verify reload time was set from CLI flag
+		// Verify reload time was preserved from CLI flag (not overwritten by config file)
 		require.Equal(t, 10, cfg.ReloadTime)
 	})
 }
