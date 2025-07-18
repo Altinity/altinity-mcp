@@ -653,6 +653,61 @@ func TestOpenAPIHandlers(t *testing.T) {
 			require.Contains(t, string(respBytes), "Timeout exceeded")
 		})
 	})
+
+	// Test token extraction from multiple sources
+	t.Run("TokenExtraction", func(t *testing.T) {
+		jwtConfig := config.JWTConfig{Enabled: true, SecretKey: jwtSecret}
+		chJwtServer := &ClickHouseJWTServer{
+			ClickhouseConfig: *chConfig,
+			JwtConfig:        jwtConfig,
+		}
+
+		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", chJwtServer)
+			r = r.WithContext(ctx)
+			chJwtServer.OpenAPIHandler(w, r)
+		}))
+		defer testServer.Close()
+
+		t.Run("BearerHeader", func(t *testing.T) {
+			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
+			req.Header.Set("Authorization", "Bearer "+validTokenString)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("AltinityHeader", func(t *testing.T) {
+			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
+			req.Header.Set("x-altinity-mcp-key", validTokenString)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("BasicAuth", func(t *testing.T) {
+			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
+			req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("username:"+validTokenString)))
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("PathToken", func(t *testing.T) {
+			req, _ := http.NewRequest("GET", testServer.URL+"/"+validTokenString+"/openapi", nil)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+		})
+
+		t.Run("InvalidToken", func(t *testing.T) {
+			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
+			req.Header.Set("Authorization", "Bearer invalid-token")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		})
+	})
 }
 
 // TestMCPTestingWrapper tests the AltinityTestServer wrapper functionality.
