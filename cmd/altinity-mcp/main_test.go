@@ -1448,6 +1448,17 @@ logging:
 			Level: config.InfoLevel,
 		},
 	}
+
+	// Verify reload time is preserved when not in new config
+	t.Run("reload_time_preserved_when_not_in_config", func(t *testing.T) {
+		prevReloadTime := 15
+		app := &application{
+			config: config.Config{ReloadTime: prevReloadTime},
+		}
+		newCfg := config.Config{ReloadTime: 0} // New config with no reload time
+		app.overrideConfig(newCfg)
+		require.Equal(t, prevReloadTime, app.config.ReloadTime)
+	})
 	app := &application{
 		configFile: tmpFile.Name(),
 		config:     cfg,
