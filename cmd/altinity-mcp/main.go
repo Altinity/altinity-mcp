@@ -724,6 +724,10 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	} else if cfg.ClickHouse.Limit == 0 {
 		cfg.ClickHouse.Limit = 1000
 	}
+
+	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {
+		cfg.ReloadTime = cmd.Int("config-reload-time")
+	}
 }
 
 // buildServerTLSConfig creates a tls.Config from the server TLS configuration
@@ -942,9 +946,6 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
-
-	// Get reload time from CLI flag (which takes precedence)
-	newCfg.ReloadTime = cmd.Int("config-reload-time")
 
 	// Update logging level if changed
 	a.configMutex.Lock()
