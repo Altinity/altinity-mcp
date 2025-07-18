@@ -839,7 +839,28 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 							"description": "JSON list of tables",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{"type": "string"},
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"response_data": map[string]interface{}{
+												"type": "object",
+												"properties": map[string]interface{}{
+													"count": map[string]interface{}{"type": "integer"},
+													"tables": map[string]interface{}{
+														"type": "array",
+														"items": map[string]interface{}{
+															"type": "object",
+															"properties": map[string]interface{}{
+																"name":     map[string]interface{}{"type": "string"},
+																"database": map[string]interface{}{"type": "string"},
+																"engine":   map[string]interface{}{"type": "string"},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
 								},
 							},
 						},
