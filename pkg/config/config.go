@@ -109,6 +109,7 @@ type Config struct {
 	ClickHouse ClickHouseConfig `json:"clickhouse" yaml:"clickhouse"`
 	Server     ServerConfig     `json:"server" yaml:"server"`
 	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
+	ReloadTime int              `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
 }
 
 // LoadConfigFromFile loads configuration from a YAML or JSON file

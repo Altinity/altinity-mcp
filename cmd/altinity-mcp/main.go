@@ -828,7 +828,6 @@ type application struct {
 	mcpServer        *altinitymcp.ClickHouseJWTServer
 	httpSrv          *http.Server
 	configFile       string
-	configReloadTime int
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
 }
@@ -874,16 +873,18 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	log.Debug().Msg("Creating MCP server...")
 	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg)
 
+	// Move reload time from CLI flag to config
+	cfg.ReloadTime = cmd.Int("config-reload-time")
+
 	app := &application{
 		config:           cfg,
 		mcpServer:        mcpServer,
 		configFile:       cmd.String("config"),
-		configReloadTime: cmd.Int("config-reload-time"),
 		stopConfigReload: make(chan struct{}),
 	}
 
 	// Start config reload goroutine if enabled
-	if app.configFile != "" && app.configReloadTime > 0 {
+	if app.configFile != "" && cfg.ReloadTime > 0 {
 		go app.configReloadLoop(ctx, cmd)
 	}
 
@@ -902,12 +903,12 @@ func (a *application) Close() {
 
 // configReloadLoop periodically reloads configuration from file
 func (a *application) configReloadLoop(ctx context.Context, cmd CommandInterface) {
-	ticker := time.NewTicker(time.Duration(a.configReloadTime) * time.Second)
+	ticker := time.NewTicker(time.Duration(a.config.ReloadTime) * time.Second)
 	defer ticker.Stop()
 
 	log.Info().
 		Str("config_file", a.configFile).
-		Int("reload_interval", a.configReloadTime).
+		Int("reload_interval", a.config.ReloadTime).
 		Msg("Starting configuration reload loop")
 
 	for {
@@ -941,6 +942,11 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
+
+	// Preserve reload time if not configured
+	if newCfg.ReloadTime == 0 {
+		newCfg.ReloadTime = a.config.ReloadTime
+	}
 
 	// Update logging level if changed
 	a.configMutex.Lock()
