@@ -68,7 +68,7 @@ jobs:
       run: |
         mkdir -p build/linux/${{ matrix.platform }}
         CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build \
-          -ldflags "-X main.version=main -X main.commit=${{ github.sha }} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          -ldflags "-X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
           -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
 
     - name: Set up QEMU
