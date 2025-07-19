@@ -789,11 +789,11 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
-		s.serveOpenAPISchema(w, r, hostURL)
+		s.serveOpenAPISchema(w, r, hostURL, token)
 	}
 }
 
-func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL string) {
+func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -825,6 +825,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+							"default":    token,
 						},
 						{
 							"name":        "database",
@@ -881,6 +882,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+							"default":    token,
 						},
 						{
 							"name":        "query",
@@ -923,6 +925,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+							"default":    token,
 						},
 						{
 							"name":        "database",
