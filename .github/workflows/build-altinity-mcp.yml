@@ -67,7 +67,9 @@ jobs:
     - name: Build binary for ${{ matrix.platform }}
       run: |
         mkdir -p build/linux/${{ matrix.platform }}
-        CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build \
+          -ldflags "-X main.version=main -X main.commit=${{ github.sha }} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
@@ -188,14 +190,19 @@ jobs:
       run: |
         mkdir -p dist
         # Linux builds
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-linux-amd64 ./cmd/altinity-mcp
-        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-linux-arm64 ./cmd/altinity-mcp
+        # Tag versions
+        VERSION=${GITHUB_REF#refs/tags/v}
+        DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+        
+        # Linux builds
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-linux-amd64 ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-linux-arm64 ./cmd/altinity-mcp
         # Darwin builds
-        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-darwin-amd64 ./cmd/altinity-mcp
-        CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-darwin-arm64 ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-darwin-amd64 ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-darwin-arm64 ./cmd/altinity-mcp
         # Windows builds
-        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/altinity-mcp-windows-amd64.exe ./cmd/altinity-mcp
-        CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o dist/altinity-mcp-windows-arm64.exe ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-windows-amd64.exe ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-windows-arm64.exe ./cmd/altinity-mcp
 
     - name: Create nfpm configs
       if: steps.check_tag.outputs.matched == 'true'
