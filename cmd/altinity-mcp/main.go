@@ -815,7 +815,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("version", version).
 		Str("commit", commit).
 		Str("build_date", date).
-		Msgf("Starting Altinity MCP Server (v%s)", version)
+		Msg("Starting Altinity MCP Server")
 
 	app, err := newApplication(ctx, cfg, cmd)
 	if err != nil {
