@@ -990,7 +990,7 @@ func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *
 
 	response := map[string]interface{}{
 		"response_data": map[string]interface{}{
-			"count": len(tables),
+			"count":  len(tables),
 			"tables": tables,
 		},
 	}
