@@ -465,7 +465,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				// Always inject the server into context
 				ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
 				r = r.WithContext(ctx)
-				chJwtServer.OpenAPIHandler(w, r)
+				chJweServer.OpenAPIHandler(w, r)
 			}))
 			defer testServer.Close()
 
