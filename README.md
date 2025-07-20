@@ -51,8 +51,8 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 ./altinity-mcp \
   --transport sse \
   --port 8080 \
-  --allow-jwt-auth \
-  --jwt-secret-key "your-secret-key" \
+  --allow-jwe-auth \
+  --jwe-encryption-key "your-encryption-key" \
   --clickhouse-host localhost \
   --openapi http
 ```
