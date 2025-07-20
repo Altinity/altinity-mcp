@@ -474,8 +474,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 				req := httptest.NewRequest("GET", path, nil)
 				// Inject the appropriate token into context
 				if token != "" {
-					t.Logf("SUKA!!! %s GET %s jwt_token!!!=%s", t.Name(), path, token)
-					req = req.WithContext(context.WithValue(req.Context(), "jwt_token", token))
+					t.Logf("SUKA!!! %s GET %s jwe_token!!!=%s", t.Name(), path, token)
+					req = req.WithContext(context.WithValue(req.Context(), "jwe_token", token))
 				}
 				w := httptest.NewRecorder()
 				testServer.Config.Handler.ServeHTTP(w, req)
@@ -588,15 +588,15 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 	// Additional error case tests
 	t.Run("ErrorConditions", func(t *testing.T) {
-		jwtConfig := config.JWTConfig{Enabled: false}
-		chJwtServer := &ClickHouseJWTServer{
-			Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
+		jweConfig := config.JWEConfig{Enabled: false}
+		chJweServer := &ClickHouseJWEServer{
+			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", chJwtServer)
+			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
 			r = r.WithContext(ctx)
-			chJwtServer.OpenAPIHandler(w, r)
+			chJweServer.OpenAPIHandler(w, r)
 		}))
 		defer testServer.Close()
 
@@ -667,15 +667,15 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 	// Test token extraction from multiple sources
 	t.Run("TokenExtraction", func(t *testing.T) {
-		jwtConfig := config.JWTConfig{Enabled: true, SecretKey: jwtSecret}
-		chJwtServer := &ClickHouseJWTServer{
-			Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
+		jweConfig := config.JWEConfig{Enabled: true, EncryptionKey: jweEncryptionKey}
+		chJweServer := &ClickHouseJWEServer{
+			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", chJwtServer)
+			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
 			r = r.WithContext(ctx)
-			chJwtServer.OpenAPIHandler(w, r)
+			chJweServer.OpenAPIHandler(w, r)
 		}))
 		defer testServer.Close()
 
