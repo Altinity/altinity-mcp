@@ -718,7 +718,7 @@ func TestMainCLIApp(t *testing.T) {
 
 // TestNewApplication tests the newApplication function
 func TestNewApplication(t *testing.T) {
-	t.Run("jwe_enabled_without_encryption_key", func(t *testing.T) {
+	t.Run("jwe_enabled_without_jwe_secret_key", func(t *testing.T) {
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -730,8 +730,9 @@ func TestNewApplication(t *testing.T) {
 			},
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:       true,
-					EncryptionKey: "", // Empty encryption key should cause error
+					Enabled:      true,
+					JWESecretKey: "", // Empty encryption key should cause error
+					JWTSecretKey: "jwt-secret",
 				},
 			},
 		}
@@ -748,7 +749,41 @@ func TestNewApplication(t *testing.T) {
 		app, err := newApplication(ctx, cfg, cmd)
 		require.Error(t, err)
 		require.Nil(t, app)
-		require.Contains(t, err.Error(), "JWE encryption is enabled but no encryption key is provided")
+		require.Contains(t, err.Error(), "JWE encryption is enabled but no JWE secret key is provided")
+	})
+
+	t.Run("jwe_enabled_without_jwt_secret_key", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Password: "",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "jwe-secret",
+					JWTSecretKey: "", // Empty encryption key should cause error
+				},
+			},
+		}
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":             "",
+				"config-reload-time": 0,
+			},
+			setFlags: map[string]bool{},
+		}
+
+		ctx := context.Background()
+		app, err := newApplication(ctx, cfg, cmd)
+		require.Error(t, err)
+		require.Nil(t, app)
+		require.Contains(t, err.Error(), "JWE encryption is enabled but no JWT secret key is provided")
 	})
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
@@ -763,8 +798,9 @@ func TestNewApplication(t *testing.T) {
 			},
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:       true,
-					EncryptionKey: "test-secret-key",
+					Enabled:      true,
+					JWESecretKey: "test-secret-key",
+					JWTSecretKey: "test-jwt-secret-key",
 				},
 			},
 		}
