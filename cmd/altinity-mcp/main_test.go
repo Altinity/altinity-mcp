@@ -71,7 +71,9 @@ func TestBuildConfig(t *testing.T) {
 			&cli.IntFlag{Name: "port", Value: 8080},
 			&cli.StringFlag{Name: "log-level", Value: "info"},
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
-			&cli.BoolFlag{Name: "openapi", Value: false},
+			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
+			&cli.StringFlag{Name: "jwe-encryption-key", Value: ""},
+			&cli.StringFlag{Name: "openapi", Value: "disable"},
 		}
 
 		cfg, err := buildConfig(cmd)
@@ -637,8 +639,8 @@ func TestRunServer(t *testing.T) {
 			&cli.IntFlag{Name: "port", Value: 8080},
 			&cli.StringFlag{Name: "log-level", Value: "info"},
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
-			&cli.BoolFlag{Name: "allow-jwt-auth", Value: false},
-			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
+			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
+			&cli.StringFlag{Name: "jwe-encryption-key", Value: ""},
 			&cli.IntFlag{Name: "config-reload-time", Value: 0},
 		}
 

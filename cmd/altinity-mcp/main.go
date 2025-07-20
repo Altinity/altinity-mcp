@@ -488,8 +488,8 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 	}
 
-	// If JWT auth is disabled, test ClickHouse connection for readiness
-	if !cfg.Server.JWT.Enabled {
+	// If JWE auth is disabled, test ClickHouse connection for readiness
+	if !cfg.Server.JWE.Enabled {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
 			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
