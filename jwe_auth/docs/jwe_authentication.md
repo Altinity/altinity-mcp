@@ -1,6 +1,6 @@
 # JWE Authentication for Altinity MCP Server
 
-This document explains how to use JWT authentication with the Altinity MCP Server to securely connect to ClickHouse instances.
+This document explains how to use JWE authentication with the Altinity MCP Server to securely connect to ClickHouse instances.
 
 ## Overview
 

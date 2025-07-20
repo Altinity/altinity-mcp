@@ -39,7 +39,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	t.Helper()
 
 	// Create JWT config for testing (disabled by default)
-	jwtConfig := config.JWTConfig{
+	jweConfig := config.JWEConfig{
 		Enabled: false,
 	}
 
@@ -273,8 +273,8 @@ func (s *AltinityTestServer) WithJWTAuth(jwtConfig config.JWTConfig) *AltinityTe
 	return s
 }
 
-// TestJWTTokenGeneration tests JWT token generation with TLS configuration
-func TestJWTTokenGeneration(t *testing.T) {
+// TestJWETokenGeneration tests JWE token generation with TLS configuration
+func TestJWETokenGeneration(t *testing.T) {
 	t.Parallel()
 
 	// Test basic JWT token generation

@@ -112,9 +112,9 @@ config:
       cert_file: ""
       key_file: ""
       ca_cert: ""
-    jwt:
+    jwe:
       enabled: false
-      secret_key: ""
+      encryption_key: ""
       token_param: "token"
   
   # Logging configuration
