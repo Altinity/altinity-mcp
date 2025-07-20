@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"crypto/x509"
 	"encoding/pem"
@@ -128,7 +127,7 @@ func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClai
 	}
 
 	// 2. Decrypt JWE to get signed JWT payload
-	jweToken, err := jwe.Parse(tokenParam)
+	jweToken, err := jwe.ParseEncrypted(tokenParam)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to parse JWE token")
 		return nil, ErrInvalidToken
