@@ -291,7 +291,7 @@ When JWE authentication is enabled, the server expects encrypted tokens containi
   "database": "analytics",
   "username": "user123",
   "password": "secret",
-  "protocol": "http"
+  "protocol": "http",
   "secure": "false"
 }
 ```
