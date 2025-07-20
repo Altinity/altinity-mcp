@@ -292,19 +292,21 @@ When JWE authentication is enabled, the server expects encrypted tokens containi
   "username": "user123",
   "password": "secret",
   "protocol": "http"
+  "secure": "false"
 }
 ```
 
 Generate tokens using the provided utility:
 
 ```bash
-go run ./jwe_auth/examples/jwt_token_generator.go \
-  --secret "your-secret-key" \
+go run ./cmd/jwe_auth/jwe_token_generator.go \
+  --jwt-secret-key "your-jwt-secret" \
+  --jwe-secret-key "$(cat openssl genrsa 4096)" \
   --host "clickhouse.example.com" \
   --database "analytics" \
   --username "user123"
 ```
-More details in [jwe_authentication.md](./jwe_auth/docs/jwe_authentication.md)
+More details in [jwe_authentication.md](docs/jwe_authentication.md)
 
 ## TLS Configuration
 
