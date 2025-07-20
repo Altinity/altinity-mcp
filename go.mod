@@ -1,5 +1,7 @@
 module github.com/altinity/altinity-mcp
 
+replace github.com/altinity/altinity-mcp/jwt_auth => ./jwe_auth
+
 go 1.24
 
 require (

@@ -298,7 +298,7 @@ When JWT authentication is enabled, the server expects JWT tokens containing Cli
 Generate tokens using the provided utility:
 
 ```bash
-go run ./jwt_auth/examples/jwt_token_generator.go \
+go run ./jwe_auth/examples/jwt_token_generator.go \
   --secret "your-secret-key" \
   --host "clickhouse.example.com" \
   --database "analytics" \
