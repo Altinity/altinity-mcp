@@ -64,7 +64,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWTServer {
 	RegisterPrompts(chJwtServer)
 
 	log.Info().
-		Bool("jwt_enabled", cfg.Server.JWT.Enabled).
+		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
 		Int("default_limit", cfg.ClickHouse.Limit).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
