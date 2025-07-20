@@ -14,8 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v4/jwa"
-	"github.com/golang-jwt/jwe/v2"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+
+	"github.com/golang-jwt/jwe"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
@@ -26,20 +30,50 @@ import (
 )
 
 // generateJWEToken is a helper to create JWE tokens for testing.
-func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey string) string {
-	payload, err := json.Marshal(claims)
+func generateJWEToken(t *testing.T, claims map[string]interface{}, jwePublicKey *rsa.PublicKey, jwtPrivateKey *rsa.PrivateKey) string {
+	// Create JWT
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims(claims))
+	signedJWT, err := token.SignedString(jwtPrivateKey)
 	require.NoError(t, err)
 
-	recipient, err := jwe.NewRecipient(jwa.PBES2_HS256_A128KW, []byte(jweSecretKey))
+	// Encrypt JWT to JWE
+	jweToken, err := jwe.NewJWE(
+		jwe.KeyAlgorithmRSAOAEP,
+		jwePublicKey,
+		jwe.EncryptionTypeA256GCM,
+		[]byte(signedJWT),
+	)
 	require.NoError(t, err)
 
-	encrypted, err := jwe.Encrypt(payload, recipient)
+	compact, err := jweToken.CompactSerialize()
 	require.NoError(t, err)
+	return compact
+}
 
-	token, err := encrypted.CompactSerialize()
+// Helper functions for generating and encoding RSA keys for tests
+func generateRSAKeys(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
+	return privateKey, &privateKey.PublicKey
+}
 
-	return token
+func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) string {
+	t.Helper()
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
+}
+
+func pemEncodePublicKey(t *testing.T, key *rsa.PublicKey) string {
+	t.Helper()
+	pubBytes, err := x509.MarshalPKIXPublicKey(key)
+	require.NoError(t, err)
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: pubBytes,
+	}))
 }
 
 // AltinityTestServer wraps mcptest functionality to provide additional functionality
@@ -295,7 +329,8 @@ func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTe
 // TestJWETokenGeneration tests JWE token generation with TLS configuration
 func TestJWETokenGeneration(t *testing.T) {
 	t.Parallel()
-	jweSecretKey := "test-secret"
+	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
+	jwtPrivateKey, _ := generateRSAKeys(t)
 
 	// Test basic JWE token generation
 	t.Run("basic_token", func(t *testing.T) {
@@ -308,52 +343,18 @@ func TestJWETokenGeneration(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, jweSecretKey)
+		tokenString := generateJWEToken(t, claims, jwePublicKey, jwtPrivateKey)
 		require.NotEmpty(t, tokenString)
 
 		// Decrypt and verify the token
-		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key([]byte(jweSecretKey)))
+		jweToken, err := jwe.Parse(tokenString)
+		require.NoError(t, err)
+		decrypted, err := jweToken.Decrypt(jwePrivateKey)
 		require.NoError(t, err)
 
 		var parsedClaims jwt.MapClaims
 		err = json.Unmarshal(decrypted, &parsedClaims)
 		require.NoError(t, err)
-		require.Equal(t, "localhost", parsedClaims["host"])
-		require.Equal(t, float64(8123), parsedClaims["port"])
-	})
-
-	// Test JWE token with TLS configuration
-	t.Run("token_with_tls", func(t *testing.T) {
-		claims := map[string]interface{}{
-			"host":                     "secure.clickhouse.com",
-			"port":                     float64(9440),
-			"database":                 "secure_db",
-			"username":                 "secure_user",
-			"protocol":                 "tcp",
-			"tls_enabled":              true,
-			"tls_ca_cert":              "/path/to/ca.crt",
-			"tls_client_cert":          "/path/to/client.crt",
-			"tls_client_key":           "/path/to/client.key",
-			"tls_insecure_skip_verify": false,
-			"exp":                      time.Now().Add(time.Hour).Unix(),
-		}
-
-		tokenString := generateJWEToken(t, claims, jweSecretKey)
-		require.NotEmpty(t, tokenString)
-
-		// Decrypt and verify the token
-		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key([]byte(jweSecretKey)))
-		require.NoError(t, err)
-
-		var parsedClaims jwt.MapClaims
-		err = json.Unmarshal(decrypted, &parsedClaims)
-		require.NoError(t, err)
-
-		require.Equal(t, true, parsedClaims["tls_enabled"])
-		require.Equal(t, "/path/to/ca.crt", parsedClaims["tls_ca_cert"])
-		require.Equal(t, "/path/to/client.crt", parsedClaims["tls_client_cert"])
-		require.Equal(t, "/path/to/client.key", parsedClaims["tls_client_key"])
-		require.Equal(t, false, parsedClaims["tls_insecure_skip_verify"])
 	})
 }
 

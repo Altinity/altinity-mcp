@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"crypto/x509"
+	"encoding/pem"
+
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/golang-jwt/jwe/v2"
+	"github.com/golang-jwt/jwe"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -112,26 +115,54 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 // parseAndDecryptJWE parses and validates a JWE token
 func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClaims, error) {
-	decrypted, err := jwe.Decrypt(tokenParam, jwe.WithPBES2Key([]byte(s.Config.Server.JWE.JWESecretKey)))
+	// 1. Parse JWE RSA private key from PEM
+	block, _ := pem.Decode([]byte(s.Config.Server.JWE.JWESecretKey))
+	if block == nil {
+		log.Error().Msg("failed to decode PEM block containing JWE private key")
+		return nil, ErrInvalidToken
+	}
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		log.Error().Err(err).Msg("Invalid JWE token")
+		log.Error().Err(err).Msg("failed to parse JWE RSA private key")
 		return nil, ErrInvalidToken
 	}
 
-	var claims jwt.MapClaims
-	if err := json.Unmarshal(decrypted, &claims); err != nil {
-		log.Error().Err(err).Msg("Failed to unmarshal JWE claims")
+	// 2. Decrypt JWE to get signed JWT payload
+	jweToken, err := jwe.Parse(tokenParam)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to parse JWE token")
+		return nil, ErrInvalidToken
+	}
+	signedJWT, err := jweToken.Decrypt(privateKey)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to decrypt JWE token")
 		return nil, ErrInvalidToken
 	}
 
-	// Validate expiration claim
-	if exp, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(exp) {
-			log.Error().Msg("JWE token has expired")
-			return nil, ErrInvalidToken
+	// 3. Parse and validate inner JWT
+	// The generator uses RS256, so we need a public key for verification.
+	// We assume JWTSecretKey holds the PEM-encoded public key.
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(s.Config.Server.JWE.JWTSecretKey))
+	if err != nil {
+		log.Error().Err(err).Msg("failed to parse JWT RSA public key")
+		return nil, ErrInvalidToken
+	}
+
+	token, err := jwt.Parse(string(signedJWT), func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-	} else {
-		log.Error().Msg("JWE token is missing 'exp' claim")
+		return publicKey, nil
+	}, jwt.WithValidMethods([]string{"RS256"}))
+
+	if err != nil {
+		log.Error().Err(err).Msg("failed to parse/validate inner JWT")
+		return nil, ErrInvalidToken
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		log.Error().Msg("inner JWT is invalid or claims are not MapClaims")
 		return nil, ErrInvalidToken
 	}
 
