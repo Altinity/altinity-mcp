@@ -216,14 +216,14 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, 8080, cfg.Port)
 	})
 
-	t.Run("jwt_config", func(t *testing.T) {
-		cfg := JWTConfig{
-			Enabled:   true,
-			SecretKey: "secret",
+	t.Run("jwe_config", func(t *testing.T) {
+		cfg := JWEConfig{
+			Enabled:       true,
+			EncryptionKey: "secret",
 		}
 
 		require.True(t, cfg.Enabled)
-		require.Equal(t, "secret", cfg.SecretKey)
+		require.Equal(t, "secret", cfg.EncryptionKey)
 	})
 
 	t.Run("logging_config", func(t *testing.T) {

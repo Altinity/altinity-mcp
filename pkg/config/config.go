@@ -63,10 +63,10 @@ type ServerTLSConfig struct {
 	CaCert   string `json:"ca_cert" yaml:"ca_cert" flag:"server-tls-ca-cert" desc:"Path to CA certificate for client certificate validation"`
 }
 
-// JWTConfig defines configuration for JWT authentication
-type JWTConfig struct {
-	Enabled   bool   `json:"enabled" yaml:"enabled" flag:"allow-jwt-auth" desc:"Enable JWT authentication for ClickHouse connection"`
-	SecretKey string `json:"secret_key" yaml:"secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT token verification"`
+// JWEConfig defines configuration for JWE authentication
+type JWEConfig struct {
+	Enabled       bool   `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" desc:"Enable JWE encryption for ClickHouse connection"`
+	EncryptionKey string `json:"encryption_key" yaml:"encryption_key" flag:"jwe-encryption-key" desc:"Encryption key for JWE token processing"`
 }
 
 // ServerConfig defines configuration for the MCP server
@@ -75,7 +75,7 @@ type ServerConfig struct {
 	Address      string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
 	Port         int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
 	TLS          ServerTLSConfig `json:"tls" yaml:"tls"`
-	JWT          JWTConfig       `json:"jwt" yaml:"jwt"`
+	JWE          JWEConfig       `json:"jwe" yaml:"jwe"`
 	OpenAPI      OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
 }
 
