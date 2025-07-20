@@ -19,14 +19,14 @@ import (
 )
 
 var (
-	// ErrMissingToken is returned when JWT token is missing
-	ErrMissingToken = errors.New("missing JWT token")
-	// ErrInvalidToken is returned when JWT token is invalid
-	ErrInvalidToken = errors.New("invalid JWT token")
+	// ErrMissingToken is returned when JWE token is missing
+	ErrMissingToken = errors.New("missing JWE token")
+	// ErrInvalidToken is returned when JWE token is invalid
+	ErrInvalidToken = errors.New("invalid JWE token")
 )
 
-// ClickHouseJWTServer extends MCPServer with JWT auth capabilities
-type ClickHouseJWTServer struct {
+// ClickHouseJWEServer extends MCPServer with JWE auth capabilities
+type ClickHouseJWEServer struct {
 	*server.MCPServer
 	Config config.Config
 }
@@ -42,7 +42,7 @@ type AltinityMCPServer interface {
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
-func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWTServer {
+func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -53,27 +53,27 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWTServer {
 		server.WithRecovery(),
 	)
 
-	chJwtServer := &ClickHouseJWTServer{
+	chJweServer := &ClickHouseJWEServer{
 		MCPServer: srv,
 		Config:    cfg,
 	}
 
 	// Register tools, resources, and prompts
-	RegisterTools(chJwtServer)
-	RegisterResources(chJwtServer)
-	RegisterPrompts(chJwtServer)
+	RegisterTools(chJweServer)
+	RegisterResources(chJweServer)
+	RegisterPrompts(chJweServer)
 
 	log.Info().
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
 		Int("default_limit", cfg.ClickHouse.Limit).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
-	return chJwtServer
+	return chJweServer
 }
 
-// GetClickHouseClient creates a ClickHouse client from JWT token or falls back to default config
-func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	if !s.Config.Server.JWT.Enabled {
+// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config
+func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
+	if !s.Config.Server.JWE.Enabled {
 		// If JWT auth is disabled, use the default config
 		client, err := clickhouse.NewClient(ctx, s.Config.ClickHouse)
 		if err != nil {
@@ -108,28 +108,31 @@ func (s *ClickHouseJWTServer) GetClickHouseClient(ctx context.Context, tokenPara
 	return client, nil
 }
 
-// parseAndValidateJWT parses and validates a JWT token
-func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapClaims, error) {
-	token, err := jwt.Parse(tokenParam, func(token *jwt.Token) (interface{}, error) {
-		// Validate signing method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.Config.Server.JWT.SecretKey), nil
-	})
-
-	if err != nil || !token.Valid {
-		log.Error().Err(err).Msg("Invalid JWT token")
+// parseAndDecryptJWE parses and validates a JWE token
+func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClaims, error) {
+	decrypted, err := jwe.Decrypt(tokenParam, jwe.WithPBES2Key(s.Config.Server.JWE.EncryptionKey))
+	if err != nil {
+		log.Error().Err(err).Msg("Invalid JWE token")
 		return nil, ErrInvalidToken
 	}
 
-	// Extract ClickHouse config from token claims
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid token claims format")
+	var claims jwt.MapClaims
+	if err := json.Unmarshal(decrypted, &claims); err != nil {
+		log.Error().Err(err).Msg("Failed to unmarshal JWE claims")
+		return nil, ErrInvalidToken
 	}
 
-	// Validate claims against whitelist
+	// Validate expiration claim
+	if exp, ok := claims["exp"].(float64); ok {
+		if time.Now().Unix() > int64(exp) {
+			log.Error().Msg("JWE token has expired")
+			return nil, ErrInvalidToken
+		}
+	} else {
+		log.Error().Msg("JWE token is missing 'exp' claim")
+		return nil, ErrInvalidToken
+	}
+
 	if err := s.validateClaimsWhitelist(claims); err != nil {
 		return nil, err
 	}
@@ -137,8 +140,8 @@ func (s *ClickHouseJWTServer) parseAndValidateJWT(tokenParam string) (jwt.MapCla
 	return claims, nil
 }
 
-// validateClaimsWhitelist validates that JWT claims only contain allowed keys
-func (s *ClickHouseJWTServer) validateClaimsWhitelist(claims jwt.MapClaims) error {
+// validateClaimsWhitelist validates that JWE claims only contain allowed keys
+func (s *ClickHouseJWEServer) validateClaimsWhitelist(claims jwt.MapClaims) error {
 	// Define whitelist of allowed claim keys
 	allowedKeys := map[string]bool{
 		// Standard JWT claims
@@ -227,9 +230,9 @@ func (s *ClickHouseJWTServer) buildConfigFromClaims(claims jwt.MapClaims) (confi
 	return chConfig, nil
 }
 
-// ExtractTokenFromCtx extracts JWT token from context
-func (s *ClickHouseJWTServer) ExtractTokenFromCtx(ctx context.Context) string {
-	if tokenFromCtx := ctx.Value("jwt_token"); tokenFromCtx != nil {
+// ExtractTokenFromCtx extracts a token from context
+func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
+	if tokenFromCtx := ctx.Value("jwe_token"); tokenFromCtx != nil {
 		if tokenStr, ok := tokenFromCtx.(string); ok {
 			return tokenStr
 		}
@@ -719,11 +722,11 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	return mcp.NewToolResultText(string(jsonData)), nil
 }
 
-// GetClickHouseJWTServerFromContext extracts the ClickHouseJWTServer from context
-func GetClickHouseJWTServerFromContext(ctx context.Context) *ClickHouseJWTServer {
-	if srv := ctx.Value("clickhouse_jwt_server"); srv != nil {
-		if chJwtServer, ok := srv.(*ClickHouseJWTServer); ok {
-			return chJwtServer
+// GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context
+func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer {
+	if srv := ctx.Value("clickhouse_jwe_server"); srv != nil {
+		if chJweServer, ok := srv.(*ClickHouseJWEServer); ok {
+			return chJweServer
 		}
 	}
 	return nil
