@@ -5,8 +5,10 @@ CUR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 # First, generate a JWT token
 echo "Generating JWE token..."
+# Note: Now using separate keys for JWE encryption and JWT signing
 TOKEN=$(go run "${CUR_DIR}/jwe_token_generator.go" \
-  --encryption-key="test-encryption-key" \
+  --jwe-secret-key="test-jwe-secret-key" \
+  --jwt-secret-key="$(openssl genrsa 4096)" \
   --host="${CLICKHOUSE_HOST:-localhost}" \
   --port="${CLICKHOUSE_PORT:-8123}" \
   --database="${CLICKHOUSE_DB:-default}" \
@@ -20,7 +22,7 @@ echo "Generated token: $TOKEN"
 
 # Start the MCP server with JWT authentication in the background
 echo "Starting MCP server with JWE authentication..."
-go run "${CUR_DIR}/../../cmd/altinity-mcp/main.go" --allow-jwe-auth --jwe-encryption-key="test-encryption-key" --transport=sse --address=127.0.0.1 --port=8080 &
+go run "${CUR_DIR}/../../cmd/altinity-mcp/main.go" --allow-jwe-auth --jwe-encryption-key="test-jwe-secret-key" --transport=sse --address=127.0.0.1 --port=8080 &
 SERVER_PID=$!
 
 # Wait for server to start
