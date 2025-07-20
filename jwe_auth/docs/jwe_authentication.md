@@ -29,23 +29,23 @@ MCP_JWT_SECRET_KEY=your-secret-key
 MCP_JWT_TOKEN_PARAM=token
 ```
 
-## Starting the Server with JWT Authentication
+## Starting the Server with JWE Authentication
 
-To start the server with JWT authentication enabled:
+To start the server with JWE authentication enabled:
 
 ```bash
-./altinity-mcp --allow-jwt-auth --jwt-secret-key="your-secure-secret-key" --transport=sse
+./altinity-mcp --allow-jwe-auth --jwe-encryption-key="your-secure-secret-key" --transport=sse
 ```
 
-This will start the server with JWT authentication enabled, using "your-secure-secret-key" as the signing key for tokens.
+This will start the server with JWE authentication enabled, using "your-secure-secret-key" as the encryption key for tokens.
 
-## Generating JWT Tokens
+## Generating JWE Tokens
 
-You can use the provided example tool to generate JWT tokens:
+You can use the provided example tool to generate JWE tokens:
 
 ```bash
-go run examples/jwt_token_generator.go \
-  --secret="your-secure-secret-key" \
+go run examples/jwe_token_generator.go \
+  --encryption-key="your-secure-secret-key" \
   --host=clickhouse.example.com \
   --port=8123 \
   --database=my_database \

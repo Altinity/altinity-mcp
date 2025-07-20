@@ -1049,8 +1049,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-cert-file": "/path/to/server.crt",
 				"server-tls-key-file":  "/path/to/server.key",
 				"server-tls-ca-cert":   "/path/to/server-ca.crt",
-				"allow-jwt-auth":       true,
-				"jwt-secret-key":       "secret123",
+				"allow-jwe-auth":       true,
+				"jwe-encryption-key":   "secret123",
 				"openapi":              true,
 			},
 			setFlags: map[string]bool{

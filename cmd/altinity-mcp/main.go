@@ -340,8 +340,8 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 	var httpHandler http.Handler
-	if cfg.Server.JWT.Enabled {
-		log.Info().Msg("Using dynamic base path for JWT authentication")
+	if cfg.Server.JWE.Enabled {
+		log.Info().Msg("Using dynamic base path for JWE authentication")
 
 		tokenInjector := a.createTokenInjector()
 		httpServer := server.NewStreamableHTTPServer(mcpServer)

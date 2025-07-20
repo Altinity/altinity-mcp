@@ -444,7 +444,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 			}
 
 			// Set up chJwtServer with ClickHouse config and JWT
-			chJwtServer := &ClickHouseJWTServer{
+			chJweServer := &ClickHouseJWEServer{
 				Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
 			}
 
