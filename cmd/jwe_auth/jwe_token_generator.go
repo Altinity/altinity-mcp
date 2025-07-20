@@ -15,6 +15,7 @@ import (
 func main() {
 	var (
 		encryptionKey         = flag.String("encryption-key", "your-encryption-key", "Encryption key for JWE token")
+		secret                = flag.String("secret", "", "PEM-encoded RSA private key for signing (required)")
 		host                  = flag.String("host", "localhost", "ClickHouse host")
 		port                  = flag.Int("port", 8123, "ClickHouse port")
 		database              = flag.String("database", "default", "ClickHouse database")
@@ -68,10 +69,22 @@ func main() {
 		}
 	}
 
-	// 1. Generate an RSA key if none provided
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if *secret == "" {
+		fmt.Println("Error: --secret flag is required")
+		flag.Usage()
+		return
+	}
+
+	// Parse the provided RSA private key
+	block, _ := pem.Decode([]byte(*secret))
+	if block == nil || block.Type != "RSA PRIVATE KEY" {
+		fmt.Println("Failed to decode PEM block containing private key")
+		return
+	}
+
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		fmt.Printf("Failed to generate RSA key: %v\n", err)
+		fmt.Printf("Failed to parse RSA private key: %v\n", err)
 		return
 	}
 	publicKey := &privateKey.PublicKey
