@@ -52,7 +52,8 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --transport sse \
   --port 8080 \
   --allow-jwe-auth \
-  --jwe-encryption-key "your-encryption-key" \
+  --jwe-secret-key "$(openssl genrsa 4096)" \
+  --jwt-secret-key "your-jwt-signing-secret" \
   --clickhouse-host localhost \
   --openapi http
 ```
@@ -300,11 +301,14 @@ Generate tokens using the provided utility:
 
 ```bash
 go run ./cmd/jwe_auth/jwe_token_generator.go \
-  --jwt-secret-key "your-jwt-secret" \
-  --jwe-secret-key "$(cat openssl genrsa 4096)" \
+  --jwe-secret-key "$(openssl genrsa 4096)" \
+  --jwt-secret-key "your-jwt-signing-secret" \
   --host "clickhouse.example.com" \
+  --port 8123 \
   --database "analytics" \
-  --username "user123"
+  --username "user123" \
+  --password "password123" \
+  --expiry 86400
 ```
 More details in [jwe_authentication.md](docs/jwe_authentication.md)
 
