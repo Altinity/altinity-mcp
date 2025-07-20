@@ -27,7 +27,7 @@ import (
 // specific to Altinity MCP server testing.
 type AltinityTestServer struct {
 	testServer       *mcptest.Server
-	chJwtServer      *ClickHouseJWTServer
+	chJweServer      *ClickHouseJWEServer
 	t                *testing.T
 	clickhouseClient *clickhouse.Client
 	chConfig         *config.ClickHouseConfig
