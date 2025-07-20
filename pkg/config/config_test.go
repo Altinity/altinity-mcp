@@ -219,13 +219,13 @@ func TestConfigStructs(t *testing.T) {
 	t.Run("jwe_config", func(t *testing.T) {
 		cfg := JWEConfig{
 			Enabled:      true,
-			JWESecretKey: "jwe-secret",
-			JWTSecretKey: "jwt-secret",
+			JWESecretKey: "pem-encoded-jwe-private-key",
+			JWTSecretKey: "pem-encoded-jwt-public-key",
 		}
 
 		require.True(t, cfg.Enabled)
-		require.Equal(t, "jwe-secret", cfg.JWESecretKey)
-		require.Equal(t, "jwt-secret", cfg.JWTSecretKey)
+		require.Equal(t, "pem-encoded-jwe-private-key", cfg.JWESecretKey)
+		require.Equal(t, "pem-encoded-jwt-public-key", cfg.JWTSecretKey)
 	})
 
 	t.Run("logging_config", func(t *testing.T) {
