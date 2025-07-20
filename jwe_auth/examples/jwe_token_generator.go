@@ -1,10 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"flag"
 	"fmt"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang-jwt/jwe/v2"
 )
 
@@ -65,21 +68,50 @@ func main() {
 		}
 	}
 
-	// Encrypt the claims using JWE
-	tokenString, err := jwe.Encrypt(claims, jwe.WithPBES2Key(*encryptionKey))
+	// 1. Generate an RSA key if none provided
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		fmt.Printf("Error signing token: %v\n", err)
+		fmt.Printf("Failed to generate RSA key: %v\n", err)
+		return
+	}
+	publicKey := &privateKey.PublicKey
+
+	// 2. Create and sign a JWT with our claims
+	token := jwt.NewWithClaims(
+		jwt.SigningMethodRS256,
+		jwt.MapClaims(claims),
+	)
+	signedJWT, err := token.SignedString(privateKey)
+	if err != nil {
+		fmt.Printf("Failed to sign JWT: %v\n", err)
 		return
 	}
 
-	// print example command line usage
+	// 3. Encrypt the signed JWT into JWE format
+	jweToken, err := jwe.NewJWE(
+		jwe.KeyAlgorithmRSAOAEP,
+		publicKey,
+		jwe.EncryptionTypeA256GCM,
+		[]byte(signedJWT),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create JWE: %v\n", err)
+		return
+	}
+	encryptedToken, err := jweToken.CompactSerialize()
+	if err != nil {
+		fmt.Printf("Failed to serialize JWE: %v\n", err)
+		return
+	}
+
+	// 4. Print example usage with new encrypted token
 	fmt.Println("\nExample usage with SSE transport:")
-	fmt.Printf("curl \"http://localhost:8080/sse?token=%s\"\n", tokenString)
+	fmt.Printf("curl \"http://localhost:8080/sse?token=%s\"\n", encryptedToken)
 
 	fmt.Println("\nExample usage with dynamic path (Go 1.22+):")
-	fmt.Printf("curl \"http://localhost:8080/%s/sse\"\n", tokenString)
+	fmt.Printf("curl \"http://localhost:8080/%s/sse\"\n", encryptedToken)
 
-	fmt.Println("JWT Token:")
-	fmt.Println(tokenString)
+	fmt.Println("JWE Token:")
+	fmt.Println(encryptedToken)
 
 }
