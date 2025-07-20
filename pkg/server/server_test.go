@@ -26,11 +26,11 @@ import (
 )
 
 // generateJWEToken is a helper to create JWE tokens for testing.
-func generateJWEToken(t *testing.T, claims map[string]interface{}, encryptionKey string) string {
+func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey string) string {
 	payload, err := json.Marshal(claims)
 	require.NoError(t, err)
 
-	recipient, err := jwe.NewRecipient(jwa.PBES2_HS256_A128KW, []byte(encryptionKey))
+	recipient, err := jwe.NewRecipient(jwa.PBES2_HS256_A128KW, []byte(jweSecretKey))
 	require.NoError(t, err)
 
 	encrypted, err := jwe.Encrypt(payload, recipient)
@@ -295,7 +295,7 @@ func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTe
 // TestJWETokenGeneration tests JWE token generation with TLS configuration
 func TestJWETokenGeneration(t *testing.T) {
 	t.Parallel()
-	encryptionKey := "test-secret"
+	jweSecretKey := "test-secret"
 
 	// Test basic JWE token generation
 	t.Run("basic_token", func(t *testing.T) {
@@ -308,11 +308,11 @@ func TestJWETokenGeneration(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, encryptionKey)
+		tokenString := generateJWEToken(t, claims, jweSecretKey)
 		require.NotEmpty(t, tokenString)
 
 		// Decrypt and verify the token
-		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key(encryptionKey))
+		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key([]byte(jweSecretKey)))
 		require.NoError(t, err)
 
 		var parsedClaims jwt.MapClaims
@@ -338,11 +338,11 @@ func TestJWETokenGeneration(t *testing.T) {
 			"exp":                      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, encryptionKey)
+		tokenString := generateJWEToken(t, claims, jweSecretKey)
 		require.NotEmpty(t, tokenString)
 
 		// Decrypt and verify the token
-		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key(encryptionKey))
+		decrypted, err := jwe.Decrypt(tokenString, jwe.WithPBES2Key([]byte(jweSecretKey)))
 		require.NoError(t, err)
 
 		var parsedClaims jwt.MapClaims
@@ -423,7 +423,7 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 // TestOpenAPIHandlers tests the OpenAPI handler functions
 func TestOpenAPIHandlers(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
-	jweEncryptionKey := "test-secret-key"
+	jweSecretKey := "test-secret-key"
 	// Create valid JWE token
 	validClaims := map[string]interface{}{
 		"host":     chConfig.Host,
@@ -434,7 +434,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		"protocol": string(chConfig.Protocol),
 		"exp":      time.Now().Add(time.Hour).Unix(),
 	}
-	validTokenString := generateJWEToken(t, validClaims, jweEncryptionKey)
+	validTokenString := generateJWEToken(t, validClaims, jweSecretKey)
 
 	// Test cases with different configurations
 	testCases := []struct {
@@ -451,8 +451,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			jweConfig := config.JWEConfig{
-				Enabled:       tc.jweEnabled,
-				EncryptionKey: jweEncryptionKey,
+				Enabled:      tc.jweEnabled,
+				JWESecretKey: jweSecretKey,
+				JWTSecretKey: "test-jwt-secret",
 			}
 
 			// Set up chJweServer with ClickHouse config and JWE
@@ -668,9 +669,9 @@ func TestOpenAPIHandlers(t *testing.T) {
 	// Test token extraction from multiple sources
 	t.Run("TokenExtraction", func(t *testing.T) {
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: jweEncryptionKey,
-			JWTSecretKey:  "test-jwt-secret",
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "test-jwt-secret",
 		}
 		chJweServer := &ClickHouseJWEServer{
 			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
@@ -937,7 +938,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 // TestGetClickHouseClientWithJWE tests the JWE client creation
 func TestGetClickHouseClientWithJWE(t *testing.T) {
 	ctx := context.Background()
-	encryptionKey := "test-secret"
+	jweSecretKey := "test-secret"
 
 	t.Run("without_jwe", func(t *testing.T) {
 		chConfig := config.ClickHouseConfig{
@@ -972,8 +973,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: encryptionKey,
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -993,8 +995,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: encryptionKey,
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -1014,8 +1017,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: encryptionKey,
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -1031,7 +1035,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"limit":    float64(500),
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, encryptionKey)
+		tokenString := generateJWEToken(t, claims, jweSecretKey)
 
 		// This will fail to connect, but we're testing the JWE parsing logic
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
@@ -1052,8 +1056,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: encryptionKey,
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -1074,7 +1079,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"tls_insecure_skip_verify": true,
 			"exp":                      time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, encryptionKey)
+		tokenString := generateJWEToken(t, claims, jweSecretKey)
 
 		// This will fail to connect, but we're testing the JWE parsing logic
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
@@ -1095,8 +1100,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: "correct-key",
+			Enabled:      true,
+			JWESecretKey: "correct-key",
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -1123,8 +1129,9 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		}
 
 		jweConfig := config.JWEConfig{
-			Enabled:       true,
-			EncryptionKey: encryptionKey,
+			Enabled:      true,
+			JWESecretKey: jweSecretKey,
+			JWTSecretKey: "jwt-secret",
 		}
 
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
@@ -1137,7 +1144,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"invalid_claim": "this should not be allowed", // This key is not in whitelist
 			"exp":           time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, encryptionKey)
+		tokenString := generateJWEToken(t, claims, jweSecretKey)
 
 		// This should fail because the token contains a disallowed claim key
 		_, err := srv.parseAndDecryptJWE(tokenString)
@@ -1178,8 +1185,9 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 
 	// Create JWE config
 	jweConfig := config.JWEConfig{
-		Enabled:       true,
-		EncryptionKey: "test-secret-key",
+		Enabled:      true,
+		JWESecretKey: "test-secret-key",
+		JWTSecretKey: "test-jwt-secret-key",
 	}
 
 	t.Run("jwe_enabled_with_valid_token", func(t *testing.T) {
@@ -1195,7 +1203,7 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, jweConfig.EncryptionKey)
+		tokenString := generateJWEToken(t, claims, jweConfig.JWESecretKey)
 
 		// Inject token into context
 		contextWithToken := context.WithValue(ctx, "jwe_token", tokenString)
@@ -1286,8 +1294,9 @@ func TestParseAndDecryptJWE(t *testing.T) {
 	encryptionKey := "test-secret"
 
 	jweConfig := config.JWEConfig{
-		Enabled:       true,
-		EncryptionKey: encryptionKey,
+		Enabled:      true,
+		JWESecretKey: encryptionKey,
+		JWTSecretKey: "jwt-secret",
 	}
 
 	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})

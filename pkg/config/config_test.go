@@ -218,12 +218,14 @@ func TestConfigStructs(t *testing.T) {
 
 	t.Run("jwe_config", func(t *testing.T) {
 		cfg := JWEConfig{
-			Enabled:       true,
-			EncryptionKey: "secret",
+			Enabled:      true,
+			JWESecretKey: "jwe-secret",
+			JWTSecretKey: "jwt-secret",
 		}
 
 		require.True(t, cfg.Enabled)
-		require.Equal(t, "secret", cfg.EncryptionKey)
+		require.Equal(t, "jwe-secret", cfg.JWESecretKey)
+		require.Equal(t, "jwt-secret", cfg.JWTSecretKey)
 	})
 
 	t.Run("logging_config", func(t *testing.T) {

@@ -36,10 +36,10 @@ MCP_JWE_TOKEN_PARAM=token
 To start the server with JWE authentication enabled:
 
 ```bash
-./altinity-mcp --allow-jwe-auth --jwe-encryption-key="your-secure-secret-key" --transport=sse
+./altinity-mcp --allow-jwe-auth --jwe-secret-key="your-jwe-secret" --jwt-secret-key="your-jwt-secret" --transport=sse
 ```
 
-This will start the server with JWE authentication enabled, using "your-secure-secret-key" as the encryption key for tokens.
+This will start the server with JWE authentication enabled, using the provided keys for token processing.
 
 ## Generating JWE Tokens
 

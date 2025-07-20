@@ -112,7 +112,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 // parseAndDecryptJWE parses and validates a JWE token
 func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClaims, error) {
-	decrypted, err := jwe.Decrypt(tokenParam, jwe.WithPBES2Key(s.Config.Server.JWE.EncryptionKey))
+	decrypted, err := jwe.Decrypt(tokenParam, jwe.WithPBES2Key([]byte(s.Config.Server.JWE.JWESecretKey)))
 	if err != nil {
 		log.Error().Err(err).Msg("Invalid JWE token")
 		return nil, ErrInvalidToken
