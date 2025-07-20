@@ -282,7 +282,7 @@ func TestHealthHandler(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, w.Code)
 		require.Contains(t, w.Body.String(), "healthy")
-		require.Contains(t, w.Body.String(), "jwt_enabled")
+		require.Contains(t, w.Body.String(), "jwe_enabled")
 	})
 
 	t.Run("clickhouse_connection_failure", func(t *testing.T) {
@@ -1565,7 +1565,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 			Protocol: config.HTTPProtocol,
 		},
 		Server: config.ServerConfig{
-			JWT: config.JWTConfig{
+			JWE: config.JWEConfig{
 				Enabled: false,
 			},
 		},
@@ -1641,7 +1641,7 @@ logging:
 	select {
 	case err := <-done:
 		// If it completes, it could be with an error (stdio serving failure) or nil (successful start)
-		// Both are acceptable since JWT auth is enabled, and we're not testing ClickHouse connection
+		// Both are acceptable since JWE auth is enabled, and we're not testing ClickHouse connection
 		if err != nil {
 			t.Logf("runServer completed with error (expected for stdio): %v", err)
 		} else {
@@ -1689,11 +1689,11 @@ func TestRun(t *testing.T) {
 		// Should fail due to invalid log level in Before hook
 	})
 
-	t.Run("jwt_enabled_without_secret", func(t *testing.T) {
+	t.Run("jwe_enabled_without_secret", func(t *testing.T) {
 		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", ""}
 		err := run(args)
 		require.Error(t, err)
-		// Should fail due to missing JWT secret key
+		// Should fail due to missing JWE encryption key
 	})
 
 	t.Run("invalid_config_file", func(t *testing.T) {
@@ -1707,10 +1707,10 @@ func TestRun(t *testing.T) {
 		args := []string{"altinity-mcp", "--clickhouse-host", "nonexistent-host", "--clickhouse-port", "9999"}
 		err := run(args)
 		require.Error(t, err)
-		// Should fail due to invalid ClickHouse connection when JWT is disabled
+		// Should fail due to invalid ClickHouse connection when JWE is disabled
 	})
 
-	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
+	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
 		// This test will start the server, but we need to stop it quickly
 		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", "test-secret", "--transport", "stdio"}
 
