@@ -8,6 +8,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// Generate JWE token using CLI flags
 func main() {
 	var (
 		secretKey             = flag.String("secret", "your-secret-key", "Secret key for signing JWT token")
