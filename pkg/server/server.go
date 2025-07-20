@@ -9,9 +9,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/golang-jwt/jwe/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -74,7 +76,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 // GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
 	if !s.Config.Server.JWE.Enabled {
-		// If JWT auth is disabled, use the default config
+		// If JWE auth is disabled, use the default config
 		client, err := clickhouse.NewClient(ctx, s.Config.ClickHouse)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
@@ -83,17 +85,17 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	}
 
 	if tokenParam == "" {
-		// JWT auth is enabled but no token provided
+		// JWE auth is enabled but no token provided
 		return nil, ErrMissingToken
 	}
 
-	// Parse and validate JWT token
-	claims, err := s.parseAndValidateJWT(tokenParam)
+	// Parse and validate JWE token
+	claims, err := s.parseAndDecryptJWE(tokenParam)
 	if err != nil {
 		return nil, err
 	}
 
-	// Create ClickHouse config from JWT claims
+	// Create ClickHouse config from JWE claims
 	chConfig, err := s.buildConfigFromClaims(claims)
 	if err != nil {
 		return nil, err
@@ -102,7 +104,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	// Create client with the configured parameters
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ClickHouse client from JWT: %w", err)
+		return nil, fmt.Errorf("failed to create ClickHouse client from JWE: %w", err)
 	}
 
 	return client, nil
@@ -182,8 +184,8 @@ func (s *ClickHouseJWEServer) validateClaimsWhitelist(claims jwt.MapClaims) erro
 	return nil
 }
 
-// buildConfigFromClaims builds a ClickHouse config from JWT claims
-func (s *ClickHouseJWTServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
+// buildConfigFromClaims builds a ClickHouse config from JWE claims
+func (s *ClickHouseJWEServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
 	// Create a new ClickHouse config from the claims
 	chConfig := s.Config.ClickHouse // Use default as base
 
@@ -209,7 +211,7 @@ func (s *ClickHouseJWTServer) buildConfigFromClaims(claims jwt.MapClaims) (confi
 		chConfig.Limit = int(limit)
 	}
 
-	// Handle TLS configuration from JWT claims
+	// Handle TLS configuration from JWE claims
 	if tlsEnabled, ok := claims["tls_enabled"].(bool); ok && tlsEnabled {
 		chConfig.TLS.Enabled = true
 
@@ -316,17 +318,17 @@ func RegisterResources(srv AltinityMCPServer) {
 func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	log.Debug().Msg("Reading database schema resource")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return nil, fmt.Errorf("can't get JWTServer from context")
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := chJweServer.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -387,17 +389,17 @@ func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mc
 
 	log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return nil, fmt.Errorf("can't get JWTServer from context")
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := chJweServer.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -546,17 +548,17 @@ func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	database := req.GetString("database", "")
 	log.Debug().Str("database", database).Msg("Executing list_tables tool")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return nil, fmt.Errorf("can't get JWTServer from context")
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := chJweServer.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -599,14 +601,14 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return nil, fmt.Errorf("can't get JWTServer from context")
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
 	// Get default limit based on server type
-	defaultLimit := float64(chJwtServer.Config.ClickHouse.Limit)
+	defaultLimit := float64(chJweServer.Config.ClickHouse.Limit)
 
 	// Get optional limit parameter, use server default if not provided
 	limit := defaultLimit
@@ -632,10 +634,10 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := chJweServer.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -680,17 +682,17 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 
 	log.Debug().Str("database", database).Str("table", tableName).Msg("Describing table structure")
 
-	// Get the ClickHouse JWT server from context
-	chJwtServer := GetClickHouseJWTServerFromContext(ctx)
-	if chJwtServer == nil {
-		return nil, fmt.Errorf("can't get JWTServer from context")
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
 	// Extract token from context
-	token := chJwtServer.ExtractTokenFromCtx(ctx)
+	token := chJweServer.ExtractTokenFromCtx(ctx)
 
 	// Get ClickHouse client
-	chClient, err := chJwtServer.GetClickHouseClient(ctx, token)
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -733,11 +735,11 @@ func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer
 }
 
 // OpenAPIHandler handles OpenAPI schema and REST API endpoints
-func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Request) {
+func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Request) {
 	// Get server instance from context
-	chJwtServer := GetClickHouseJWTServerFromContext(r.Context())
-	if chJwtServer == nil {
-		http.Error(w, "can't get JWTServer from context", http.StatusInternalServerError)
+	chJweServer := GetClickHouseJWEServerFromContext(r.Context())
+	if chJweServer == nil {
+		http.Error(w, "can't get JWEServer from context", http.StatusInternalServerError)
 		return
 	}
 
@@ -766,11 +768,11 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// If JWT auth is enabled, validate token if provided
-	if chJwtServer.Config.Server.JWT.Enabled && token != "" {
-		_, err := chJwtServer.parseAndValidateJWT(token)
+	// If JWE auth is enabled, validate token if provided
+	if chJweServer.Config.Server.JWE.Enabled && token != "" {
+		_, err := chJweServer.parseAndDecryptJWE(token)
 		if err != nil {
-			http.Error(w, "Invalid JWT token", http.StatusInternalServerError)
+			http.Error(w, "Invalid JWE token", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -796,7 +798,7 @@ func (s *ClickHouseJWTServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
+func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -814,16 +816,16 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 			"schemas": map[string]interface{}{},
 		},
 		"paths": map[string]interface{}{
-			"/{jwt_token}/openapi/list_tables": map[string]interface{}{
+			"/{jwe_token}/openapi/list_tables": map[string]interface{}{
 				"get": map[string]interface{}{
 					"operationId": "list_tables",
 					"summary":     "List tables in a ClickHouse database",
 					"parameters": []map[string]interface{}{
 						{
-							"name":        "jwt_token",
+							"name":        "jwe_token",
 							"in":          "path",
 							"required":    true,
-							"description": "JWT token for authentication",
+							"description": "JWE token for authentication",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
@@ -871,16 +873,16 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 					},
 				},
 			},
-			"/{jwt_token}/openapi/execute_query": map[string]interface{}{
+			"/{jwe_token}/openapi/execute_query": map[string]interface{}{
 				"get": map[string]interface{}{
 					"operationId": "execute_query",
 					"summary":     "Execute a SQL query",
 					"parameters": []map[string]interface{}{
 						{
-							"name":        "jwt_token",
+							"name":        "jwe_token",
 							"in":          "path",
 							"required":    true,
-							"description": "JWT token for authentication.",
+							"description": "JWE token for authentication.",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
@@ -914,16 +916,16 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 					},
 				},
 			},
-			"/{jwt_token}/openapi/describe_table": map[string]interface{}{
+			"/{jwe_token}/openapi/describe_table": map[string]interface{}{
 				"get": map[string]interface{}{
 					"operationId": "describe_table",
 					"summary":     "Describe a ClickHouse table",
 					"parameters": []map[string]interface{}{
 						{
-							"name":        "jwt_token",
+							"name":        "jwe_token",
 							"in":          "path",
 							"required":    true,
-							"description": "JWT token for authentication",
+							"description": "JWE token for authentication",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
@@ -966,7 +968,7 @@ func (s *ClickHouseJWTServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 	}
 }
 
-func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+func (s *ClickHouseJWEServer) handleListTablesOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -974,7 +976,7 @@ func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *
 
 	database := r.URL.Query().Get("database")
 
-	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	ctx := context.WithValue(r.Context(), "jwe_token", token)
 
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
@@ -1007,7 +1009,7 @@ func (s *ClickHouseJWTServer) handleListTablesOpenAPI(w http.ResponseWriter, r *
 	}
 }
 
-func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+func (s *ClickHouseJWEServer) handleDescribeTableOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1021,7 +1023,7 @@ func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, 
 		return
 	}
 
-	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	ctx := context.WithValue(r.Context(), "jwe_token", token)
 
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
@@ -1047,7 +1049,7 @@ func (s *ClickHouseJWTServer) handleDescribeTableOpenAPI(w http.ResponseWriter, 
 	}
 }
 
-func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1079,7 +1081,7 @@ func (s *ClickHouseJWTServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
-	ctx := context.WithValue(r.Context(), "jwt_token", token)
+	ctx := context.WithValue(r.Context(), "jwe_token", token)
 
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
