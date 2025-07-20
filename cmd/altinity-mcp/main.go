@@ -194,10 +194,18 @@ func run(args []string) error {
 				Sources: cli.EnvVars("MCP_ALLOW_JWE_AUTH"),
 			},
 			&cli.StringFlag{
-				Name:    "jwe-encryption-key",
-				Usage:   "Encryption key for JWE token processing",
-				Value:   "",
-				Sources: cli.EnvVars("MCP_JWE_ENCRYPTION_KEY"),
+				Name:     "jwe-secret-key",
+				Usage:    "RSA private key for JWE token decryption",
+				Value:    "",
+				Sources:  cli.EnvVars("MCP_JWE_SECRET_KEY"),
+				Required: false,
+			},
+			&cli.StringFlag{
+				Name:     "jwt-secret-key",
+				Usage:    "Secret key for JWT signature verification",
+				Value:    "",
+				Sources:  cli.EnvVars("MCP_JWT_SECRET_KEY"),
+				Required: false,
 			},
 			&cli.IntFlag{
 				Name:    "clickhouse-limit",
@@ -707,8 +715,11 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	if cmd.IsSet("allow-jwe-auth") {
 		cfg.Server.JWE.Enabled = cmd.Bool("allow-jwe-auth")
 	}
-	if cmd.IsSet("jwe-encryption-key") {
-		cfg.Server.JWE.EncryptionKey = cmd.String("jwe-encryption-key")
+	if cmd.IsSet("jwe-secret-key") {
+		cfg.Server.JWE.EncryptionKey = cmd.String("jwe-secret-key")
+	}
+	if cmd.IsSet("jwt-secret-key") {
+		cfg.Server.JWE.JWTSecretKey = cmd.String("jwt-secret-key")
 	}
 
 	// Override Logging config with CLI flags
@@ -867,9 +878,12 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	} else {
 		log.Debug().Msg("JWE encryption enabled, skipping default ClickHouse connection test")
 
-		// Validate JWE encryption key is set when JWE auth is enabled
+		// Validate both secrets are set when JWE auth is enabled
 		if cfg.Server.JWE.EncryptionKey == "" {
-			return nil, fmt.Errorf("JWE encryption is enabled but no encryption key is provided")
+			return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
+		}
+		if cfg.Server.JWE.JWTSecretKey == "" {
+			return nil, fmt.Errorf("JWE encryption is enabled but no JWT secret key is provided")
 		}
 	}
 
