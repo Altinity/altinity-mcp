@@ -667,7 +667,11 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 	// Test token extraction from multiple sources
 	t.Run("TokenExtraction", func(t *testing.T) {
-		jweConfig := config.JWEConfig{Enabled: true, EncryptionKey: jweEncryptionKey}
+		jweConfig := config.JWEConfig{
+			Enabled:       true,
+			EncryptionKey: jweEncryptionKey,
+			JWTSecretKey:  "test-jwt-secret",
+		}
 		chJweServer := &ClickHouseJWEServer{
 			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
 		}
