@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/golang-jwt/jwe/v2"
 )
 
 // Generate JWE token using CLI flags
 func main() {
 	var (
-		secretKey             = flag.String("secret", "your-secret-key", "Secret key for signing JWT token")
+		encryptionKey         = flag.String("encryption-key", "your-encryption-key", "Encryption key for JWE token")
 		host                  = flag.String("host", "localhost", "ClickHouse host")
 		port                  = flag.Int("port", 8123, "ClickHouse port")
 		database              = flag.String("database", "default", "ClickHouse database")
