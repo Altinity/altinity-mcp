@@ -1,10 +1,10 @@
-# JWE Authentication for Altinity MCP Server
+# JWE (JSON Web Encryption) for Altinity MCP Server
 
-This document explains how to use JWE authentication with the Altinity MCP Server to securely connect to ClickHouse instances.
+This document explains how to use JWE (JSON Web Encryption) authentication with the Altinity MCP Server to securely connect to ClickHouse instances.
 
 ## Overview
 
-JWT (JSON Web Token) authentication allows you to:
+JWE authentication allows you to:
 
 - Securely pass ClickHouse connection parameters without exposing them in plain text
 - Create per-request ClickHouse connections with different parameters
@@ -13,12 +13,12 @@ JWT (JSON Web Token) authentication allows you to:
 
 ## Command Line Options
 
-The following CLI options are available for JWT authentication:
+The following CLI options are available for JWE authentication:
 
 ```
---allow-jwt-auth                  Enable JWT authentication for ClickHouse connection
---jwt-secret-key string           Secret key for JWT token verification
---jwt-token-param string          URL parameter name for JWT token (default "token")
+--allow-jwe-auth                  Enable JWE encryption for ClickHouse connection
+--jwe-encryption-key string       Encryption key for JWE token processing
+--jwe-token-param string          URL parameter name for JWE token (default "token")
 ```
 
 You can also set these options using environment variables:

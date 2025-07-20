@@ -323,7 +323,7 @@ func TestHealthHandler(t *testing.T) {
 					Protocol: config.HTTPProtocol,
 				},
 				Server: config.ServerConfig{
-					JWT: config.JWTConfig{Enabled: false},
+					JWE: config.JWEConfig{Enabled: false},
 				},
 			},
 		}

@@ -57,9 +57,9 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 		server.WithRecovery(),
 	)
 
-	chJwtServer := &ClickHouseJWTServer{
+	chJweServer := &ClickHouseJWEServer{
 		MCPServer: srv,
-		Config:    config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
+		Config:    config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
 	}
 
 	// Create wrapper that will register tools/resources/prompts with the test server
@@ -72,7 +72,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 
 	return &AltinityTestServer{
 		testServer:  testServer,
-		chJwtServer: chJwtServer,
+		chJweServer: chJweServer,
 		t:           t,
 		chConfig:    chConfig,
 	}

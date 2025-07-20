@@ -1,12 +1,12 @@
 module github.com/altinity/altinity-mcp
 
-replace github.com/altinity/altinity-mcp/jwt_auth => ./jwe_auth
+replace github.com/altinity/altinity-mcp/jwe_auth => ./jwe_auth
 
 go 1.24
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.37.2
-	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/lestrrat-go/jwx/v2 v2.0.19
 	github.com/mark3labs/mcp-go v0.33.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.10.0
