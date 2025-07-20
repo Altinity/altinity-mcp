@@ -186,7 +186,7 @@ func run(args []string) error {
 				Value:   "info",
 				Sources: cli.EnvVars("LOG_LEVEL"),
 			},
-			// JWT authentication flags
+			// JWE authentication flags
 			&cli.BoolFlag{
 				Name:    "allow-jwe-auth",
 				Usage:   "Enable JWE encryption for ClickHouse connection",
@@ -328,15 +328,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		openAPIProtocol = "https"
 	}
 
-	// Create a middleware to inject the ClickHouseJWTServer into context
+	// Create a middleware to inject the ClickHouseJWEServer into context
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 	var httpHandler http.Handler
@@ -389,16 +389,16 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		Str("address", addr).
 		Msg("Starting MCP server with SSE transport")
 
-	// Create a middleware to inject the ClickHouseJWTServer into context
+	// Create a middleware to inject the ClickHouseJWEServer into context
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Inject the ClickHouseJWTServer into the context
-			ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+			// Inject the ClickHouseJWEServer into the context
+			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwt_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 
@@ -411,8 +411,8 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		openAPIProtocol = "https"
 	}
 	var sseHandler http.Handler
-	if cfg.Server.JWT.Enabled {
-		log.Info().Msg("Using dynamic base path for JWT authentication")
+	if cfg.Server.JWE.Enabled {
+		log.Info().Msg("Using dynamic base path for JWE authentication")
 
 		tokenInjector := a.createTokenInjector()
 
