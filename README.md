@@ -191,6 +191,95 @@ Helps build efficient ClickHouse SQL queries with context about available tables
 - `table_name` (optional): Specific table to focus on
 - `query_type` (optional): Type of query (SELECT, INSERT, etc.)
 
+## OpenAI GPTs Integration
+
+The Altinity MCP Server supports seamless integration with OpenAI GPTs through its OpenAPI-compatible endpoints. These endpoints enable GPT assistants to perform ClickHouse database operations directly.
+
+### Authentication
+- **With JWT**: Add the JWT token to either:
+  1. Path parameter: ``/{token}/openapi/...``
+  2. Authorization header: ``Bearer {token}``
+  3. ``x-altinity-mcp-key`` header
+- **Without JWT**: Use server-configured credentials (no auth needed in requests)
+
+### Available Actions
+
+#### 1. List Tables in Database
+**Path**: `/{token}/openapi/list_tables`  
+**Parameters**:
+- `database`: Name of database (optional, returns all databases if omitted)
+
+**Example OpenAPI Path**:
+```
+GET /{token}/openapi/list_tables?database={db_name}
+```
+
+#### 2. Describe Table Structure
+**Path**: `/{token}/openapi/describe_table`  
+**Parameters**:
+- `database`: Name of database (required)
+- `table_name`: Name of table to describe (required)
+
+**Example OpenAPI Path**:
+```
+GET /{token}/openapi/describe_table?database={db_name}&table_name={table_name}
+```
+
+#### 3. Execute SQL Query
+**Path**: `/{token}/openapi/execute_query`  
+**Parameters**:
+- `query`: SQL query to execute (required)
+- `limit`: Maximum rows to return (optional, default 1000, max 10000)
+
+**Example OpenAPI Path**:
+```
+GET /{token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
+```
+
+### Configuration Example for GPTs
+```json
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ClickHouse SQL Interface",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {"url": "https://your-server:8080/{token}"}
+  ],
+  "paths": {
+    "/openapi/list_tables": {
+      "get": {
+        "operationId": "list_tables",
+        "parameters": [
+          {"name": "database", "in": "query", "schema": {"type": "string"}}
+        ]
+      }
+    },
+    "/openapi/describe_table": {
+      "get": {
+        "operationId": "describe_table",
+        "parameters": [
+          {"name": "database", "in": "query", "required": true},
+          {"name": "table_name", "in": "query", "required": true}
+        ]
+      }
+    },
+    "/openapi/execute_query": {
+      "get": {
+        "operationId": "execute_query",
+        "parameters": [
+          {"name": "query", "in": "query", "required": true},
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+        ]
+      }
+    }
+  }
+}
+```
+
+> **Note**: For Altinity Cloud deployments, use the provided endpoint URL with your organization-specific token.
+
 ## JWT Authentication
 
 When JWT authentication is enabled, the server expects JWT tokens containing ClickHouse connection parameters:
