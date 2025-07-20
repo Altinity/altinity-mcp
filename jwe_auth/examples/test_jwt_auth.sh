@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
-# This script demonstrates how to use JWT authentication with the Altinity MCP Server
+# This script demonstrates how to use JWE authentication with the Altinity MCP Server
 CUR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 # First, generate a JWT token
-echo "Generating JWT token..."
-TOKEN=$(go run "${CUR_DIR}/jwt_token_generator.go" \
-  --secret="test-secret-key" \
+echo "Generating JWE token..."
+TOKEN=$(go run "${CUR_DIR}/jwe_token_generator.go" \
+  --encryption-key="test-encryption-key" \
   --host="${CLICKHOUSE_HOST:-localhost}" \
   --port="${CLICKHOUSE_PORT:-8123}" \
   --database="${CLICKHOUSE_DB:-default}" \
@@ -19,15 +19,15 @@ TOKEN=$(go run "${CUR_DIR}/jwt_token_generator.go" \
 echo "Generated token: $TOKEN"
 
 # Start the MCP server with JWT authentication in the background
-echo "Starting MCP server with JWT authentication..."
-go run "${CUR_DIR}/../../cmd/altinity-mcp/main.go" --allow-jwt-auth --jwt-secret-key="test-secret-key" --transport=sse --address=127.0.0.1 --port=8080 &
+echo "Starting MCP server with JWE authentication..."
+go run "${CUR_DIR}/../../cmd/altinity-mcp/main.go" --allow-jwe-auth --jwe-encryption-key="test-encryption-key" --transport=sse --address=127.0.0.1 --port=8080 &
 SERVER_PID=$!
 
 # Wait for server to start
 sleep 5
 
 # Now query the server with the JWT token
-echo -e "\nQuerying server with JWT token in path..."
+echo -e "\nQuerying server with JWE token in path..."
 curl -vvv "http://127.0.0.1:8080/$TOKEN/sse" -H "Accept: text/event-stream" &
 CURL_PATH_PID=$!
 

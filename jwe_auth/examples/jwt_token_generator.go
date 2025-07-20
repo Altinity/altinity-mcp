@@ -29,7 +29,7 @@ func main() {
 	flag.Parse()
 
 	// Create claims for the token
-	claims := jwt.MapClaims{
+	claims := map[string]interface{}{
 		"host":     *host,
 		"port":     *port,
 		"database": *database,
@@ -65,11 +65,8 @@ func main() {
 		}
 	}
 
-	// Create the token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	// Sign the token with the secret key
-	tokenString, err := token.SignedString([]byte(*secretKey))
+	// Encrypt the claims using JWE
+	tokenString, err := jwe.Encrypt(claims, jwe.WithPBES2Key(*encryptionKey))
 	if err != nil {
 		fmt.Printf("Error signing token: %v\n", err)
 		return
