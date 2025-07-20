@@ -14,8 +14,8 @@ import (
 // Generate JWE token using CLI flags
 func main() {
 	var (
-		encryptionKey         = flag.String("encryption-key", "your-encryption-key", "Encryption key for JWE token")
-		secret                = flag.String("secret", "", "PEM-encoded RSA private key for signing (required)")
+		jweSecretKey          = flag.String("jwe-secret-key", "your-jwe-secret-key", "Secret key for JWE encryption")
+		jwtSecretKey          = flag.String("jwt-secret-key", "", "PEM-encoded RSA private key for JWT signing (required)")
 		host                  = flag.String("host", "localhost", "ClickHouse host")
 		port                  = flag.Int("port", 8123, "ClickHouse port")
 		database              = flag.String("database", "default", "ClickHouse database")
@@ -69,14 +69,14 @@ func main() {
 		}
 	}
 
-	if *secret == "" {
-		fmt.Println("Error: --secret flag is required")
+	if *jwtSecretKey == "" {
+		fmt.Println("Error: --jwt-secret-key flag is required")
 		flag.Usage()
 		return
 	}
 
 	// Parse the provided RSA private key
-	block, _ := pem.Decode([]byte(*secret))
+	block, _ := pem.Decode([]byte(*jwtSecretKey))
 	if block == nil || block.Type != "RSA PRIVATE KEY" {
 		fmt.Println("Failed to decode PEM block containing private key")
 		return
@@ -102,8 +102,8 @@ func main() {
 
 	// 3. Encrypt the signed JWT into JWE format
 	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmRSAOAEP,
-		publicKey,
+		jwe.KeyAlgorithmDir,
+		[]byte(*jweSecretKey),
 		jwe.EncryptionTypeA256GCM,
 		[]byte(signedJWT),
 	)
