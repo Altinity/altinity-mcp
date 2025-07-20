@@ -17,16 +17,18 @@ The following CLI options are available for JWE authentication:
 
 ```
 --allow-jwe-auth                  Enable JWE encryption for ClickHouse connection
---jwe-encryption-key string       Encryption key for JWE token processing
+--jwe-secret-key string           RSA private key for JWE token decryption
+-jwt-secret-key string            Secret key for JWT signature verification
 --jwe-token-param string          URL parameter name for JWE token (default "token")
 ```
 
 You can also set these options using environment variables:
 
 ```
-MCP_ALLOW_JWT_AUTH=true
-MCP_JWT_SECRET_KEY=your-secret-key
-MCP_JWT_TOKEN_PARAM=token
+MCP_ALLOW_JWE_AUTH=true
+MCP_JWE_SECRET_KEY=<RSA_PRIVATE_KEY>
+MCP_JWT_SECRET_KEY=jwt-signing-secret
+MCP_JWE_TOKEN_PARAM=token
 ```
 
 ## Starting the Server with JWE Authentication
@@ -41,11 +43,20 @@ This will start the server with JWE authentication enabled, using "your-secure-s
 
 ## Generating JWE Tokens
 
-You can use the provided example tool to generate JWE tokens:
+First generate an RSA private key for JWE encryption/decryption:
 
 ```bash
-go run examples/jwe_token_generator.go \
-  --encryption-key="your-secure-secret-key" \
+JWE_SECRET_KEY="$(openssl genrsa 4096)"
+echo "Generated RSA private key:"
+echo "${JWE_SECRET_KEY}"
+```
+
+Then use the token generator tool to create JWE tokens:
+
+```bash
+go run cmd/jwe_auth/jwe_token_generator.go \
+  --jwe-secret-key="${JWE_SECRET_KEY}" \
+  --jwt-secret-key="your-jwt-signing-secret" \
   --host=clickhouse.example.com \
   --port=8123 \
   --database=my_database \
@@ -55,11 +66,12 @@ go run examples/jwe_token_generator.go \
   --expiry=3600
 ```
 
-For TLS-enabled connections, you can include TLS configuration:
+For TLS-enabled connections:
 
 ```bash
-go run examples/jwt_token_generator.go \
-  --secret="your-secure-secret-key" \
+go run cmd/jwe_auth/jwe_token_generator.go \
+  --jwe-secret-key="${JWE_SECRET_KEY}" \
+  --jwt-secret-key="your-jwt-signing-secret" \
   --host=clickhouse.example.com \
   --port=9440 \
   --database=my_database \
