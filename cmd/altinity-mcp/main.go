@@ -453,7 +453,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		sseHandler = mux
