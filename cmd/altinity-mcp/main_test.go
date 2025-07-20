@@ -382,7 +382,7 @@ func TestHealthHandler(t *testing.T) {
 					Protocol: config.HTTPProtocol,
 				},
 				Server: config.ServerConfig{
-					JWT: config.JWTConfig{Enabled: false},
+					JWE: config.JWEConfig{Enabled: false},
 				},
 			},
 		}
@@ -747,10 +747,10 @@ func TestNewApplication(t *testing.T) {
 		app, err := newApplication(ctx, cfg, cmd)
 		require.Error(t, err)
 		require.Nil(t, app)
-		require.Contains(t, err.Error(), "JWT authentication is enabled but no secret key is provided")
+		require.Contains(t, err.Error(), "JWE encryption is enabled but no encryption key is provided")
 	})
 
-	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
+	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -795,7 +795,7 @@ func TestNewApplication(t *testing.T) {
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				JWT: config.JWTConfig{
+				JWE: config.JWEConfig{
 					Enabled: false,
 				},
 			},
@@ -828,9 +828,9 @@ clickhouse:
   port: 8123
   database: "default"
 server:
-  jwt:
+  jwe:
     enabled: true
-    secret_key: "test-secret"
+    encryption_key: "test-secret"
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
@@ -846,9 +846,9 @@ server:
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				JWT: config.JWTConfig{
-					Enabled:   true,
-					SecretKey: "test-secret-key",
+				JWE: config.JWEConfig{
+					Enabled:       true,
+					EncryptionKey: "test-secret-key",
 				},
 			},
 		}
@@ -889,7 +889,7 @@ server:
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				JWT: config.JWTConfig{
+				JWE: config.JWEConfig{
 					Enabled: false,
 				},
 			},
@@ -1061,8 +1061,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-cert-file": true,
 				"server-tls-key-file":  true,
 				"server-tls-ca-cert":   true,
-				"allow-jwt-auth":       true,
-				"jwt-secret-key":       true,
+				"allow-jwe-auth":       true,
+				"jwe-encryption-key":   true,
 			},
 		}
 
@@ -1076,8 +1076,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, "/path/to/server.crt", cfg.Server.TLS.CertFile)
 		require.Equal(t, "/path/to/server.key", cfg.Server.TLS.KeyFile)
 		require.Equal(t, "/path/to/server-ca.crt", cfg.Server.TLS.CaCert)
-		require.True(t, cfg.Server.JWT.Enabled)
-		require.Equal(t, "secret123", cfg.Server.JWT.SecretKey)
+		require.True(t, cfg.Server.JWE.Enabled)
+		require.Equal(t, "secret123", cfg.Server.JWE.EncryptionKey)
 	})
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
@@ -1249,13 +1249,13 @@ func TestApplicationStart(t *testing.T) {
 		// Should fail due to missing cert/key files
 	})
 
-	t.Run("sse_transport_without_jwt", func(t *testing.T) {
+	t.Run("sse_transport_without_jwe", func(t *testing.T) {
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
 				Port:      0, // Use random port
-				JWT: config.JWTConfig{
+				JWE: config.JWEConfig{
 					Enabled: false,
 				},
 				TLS: config.ServerTLSConfig{
@@ -1291,13 +1291,13 @@ func TestApplicationStart(t *testing.T) {
 		}
 	})
 
-	t.Run("sse_transport_with_jwt", func(t *testing.T) {
+	t.Run("sse_transport_with_jwe", func(t *testing.T) {
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
 				Port:      0, // Use random port
-				JWT: config.JWTConfig{
+				JWE: config.JWEConfig{
 					Enabled: true,
 				},
 				TLS: config.ServerTLSConfig{
@@ -1339,7 +1339,7 @@ func TestApplicationStart(t *testing.T) {
 				Transport: config.SSETransport,
 				Address:   "localhost",
 				Port:      0,
-				JWT: config.JWTConfig{
+				JWE: config.JWEConfig{
 					Enabled: false,
 				},
 				TLS: config.ServerTLSConfig{
@@ -1599,9 +1599,9 @@ clickhouse:
   port: 8123
   database: "default"
 server:
-  jwt:
+  jwe:
     enabled: true
-    secret_key: "test-secret"
+    encryption_key: "test-secret"
   transport: "stdio"
 logging:
   level: "info"
@@ -1626,8 +1626,8 @@ logging:
 		&cli.IntFlag{Name: "port", Value: 8080},
 		&cli.StringFlag{Name: "log-level", Value: "info"},
 		&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
-		&cli.BoolFlag{Name: "allow-jwt-auth", Value: true},
-		&cli.StringFlag{Name: "jwt-secret-key", Value: "test-secret"},
+		&cli.BoolFlag{Name: "allow-jwe-auth", Value: true},
+		&cli.StringFlag{Name: "jwe-encryption-key", Value: "test-secret"},
 		&cli.IntFlag{Name: "config-reload-time", Value: 0},
 	}
 
@@ -1749,9 +1749,9 @@ clickhouse:
   port: 8123
   database: "default"
 server:
-  jwt:
+  jwe:
     enabled: true
-    secret_key: "test-secret"
+    encryption_key: "test-secret"
   transport: "stdio"
 logging:
   level: "info"
@@ -1841,9 +1841,9 @@ clickhouse:
   host: "localhost"
   port: 8123
 server:
-  jwt:
+  jwe:
     enabled: true
-    secret_key: "test-secret"
+    encryption_key: "test-secret"
 logging:
   level: "debug"
 `
