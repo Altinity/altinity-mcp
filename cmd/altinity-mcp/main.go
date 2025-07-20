@@ -270,7 +270,7 @@ func setupLogging(level string) error {
 	return nil
 }
 
-// createTokenInjector creates a middleware that injects JWT token from path into request context
+// createTokenInjector creates a middleware that injects JWE token from path into request context
 func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +278,7 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 			token := r.PathValue("token")
 			if token != "" {
 				// Inject token into request context
-				ctx := context.WithValue(r.Context(), "jwt_token", token)
+				ctx := context.WithValue(r.Context(), "jwe_token", token)
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -829,7 +829,7 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 
 type application struct {
 	config           config.Config
-	mcpServer        *altinitymcp.ClickHouseJWTServer
+	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
 	configFile       string
 	configMutex      sync.RWMutex
