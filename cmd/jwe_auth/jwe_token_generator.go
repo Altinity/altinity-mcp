@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"time"
@@ -74,11 +74,21 @@ func main() {
 		flag.Usage()
 		return
 	}
+	// 2. Create and sign a JWT with our claims
+	token := jwt.NewWithClaims(
+		jwt.SigningMethodRS256,
+		jwt.MapClaims(claims),
+	)
+	signedJWT, err := token.SignedString(*jwtSecretKey)
+	if err != nil {
+		fmt.Printf("Failed to sign JWT: %v\n", err)
+		return
+	}
 
-	// Parse the provided RSA private key
-	block, _ := pem.Decode([]byte(*jwtSecretKey))
+	// 3. Parse the provided RSA private key for JWE
+	block, _ := pem.Decode([]byte(*jweSecretKey))
 	if block == nil || block.Type != "RSA PRIVATE KEY" {
-		fmt.Println("Failed to decode PEM block containing private key")
+		fmt.Println("Failed to decode PEM containing private key")
 		return
 	}
 
@@ -87,23 +97,11 @@ func main() {
 		fmt.Printf("Failed to parse RSA private key: %v\n", err)
 		return
 	}
-	publicKey := &privateKey.PublicKey
-
-	// 2. Create and sign a JWT with our claims
-	token := jwt.NewWithClaims(
-		jwt.SigningMethodRS256,
-		jwt.MapClaims(claims),
-	)
-	signedJWT, err := token.SignedString(privateKey)
-	if err != nil {
-		fmt.Printf("Failed to sign JWT: %v\n", err)
-		return
-	}
 
 	// 3. Encrypt the signed JWT into JWE format
 	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmDir,
-		[]byte(*jweSecretKey),
+		jwe.KeyAlgorithmRSAOAEP,
+		privateKey,
 		jwe.EncryptionTypeA256GCM,
 		[]byte(signedJWT),
 	)
@@ -119,9 +117,6 @@ func main() {
 
 	// 4. Print example usage with new encrypted token
 	fmt.Println("\nExample usage with SSE transport:")
-	fmt.Printf("curl \"http://localhost:8080/sse?token=%s\"\n", encryptedToken)
-
-	fmt.Println("\nExample usage with dynamic path (Go 1.22+):")
 	fmt.Printf("curl \"http://localhost:8080/%s/sse\"\n", encryptedToken)
 
 	fmt.Println("JWE Token:")
