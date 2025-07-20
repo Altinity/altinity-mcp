@@ -251,7 +251,7 @@ func TestHealthHandler(t *testing.T) {
 		app := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
-					JWT: config.JWTConfig{Enabled: false},
+					JWE: config.JWEConfig{Enabled: false},
 				},
 			},
 		}
@@ -295,7 +295,7 @@ func TestHealthHandler(t *testing.T) {
 					Protocol: config.HTTPProtocol,
 				},
 				Server: config.ServerConfig{
-					JWT: config.JWTConfig{Enabled: false},
+					JWE: config.JWEConfig{Enabled: false},
 				},
 			},
 		}
@@ -759,9 +759,9 @@ func TestNewApplication(t *testing.T) {
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				JWT: config.JWTConfig{
-					Enabled:   true,
-					SecretKey: "test-secret-key",
+				JWE: config.JWEConfig{
+					Enabled:       true,
+					EncryptionKey: "test-secret-key",
 				},
 			},
 		}
@@ -1688,7 +1688,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("jwt_enabled_without_secret", func(t *testing.T) {
-		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", ""}
+		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", ""}
 		err := run(args)
 		require.Error(t, err)
 		// Should fail due to missing JWT secret key
@@ -1710,7 +1710,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("jwt_enabled_with_secret", func(t *testing.T) {
 		// This test will start the server, but we need to stop it quickly
-		args := []string{"altinity-mcp", "--allow-jwt-auth", "--jwt-secret-key", "test-secret", "--transport", "stdio"}
+		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", "test-secret", "--transport", "stdio"}
 
 		// Run in a goroutine with timeout since stdio transport will block
 		done := make(chan error, 1)
