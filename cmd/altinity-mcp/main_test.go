@@ -266,11 +266,11 @@ func TestHealthHandler(t *testing.T) {
 		require.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})
 
-	t.Run("jwt_enabled", func(t *testing.T) {
+	t.Run("jwe_enabled", func(t *testing.T) {
 		app := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
-					JWT: config.JWTConfig{Enabled: true},
+					JWE: config.JWEConfig{Enabled: true},
 				},
 			},
 		}
@@ -717,7 +717,7 @@ func TestMainCLIApp(t *testing.T) {
 
 // TestNewApplication tests the newApplication function
 func TestNewApplication(t *testing.T) {
-	t.Run("jwt_enabled_without_secret", func(t *testing.T) {
+	t.Run("jwe_enabled_without_encryption_key", func(t *testing.T) {
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -728,9 +728,9 @@ func TestNewApplication(t *testing.T) {
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				JWT: config.JWTConfig{
-					Enabled:   true,
-					SecretKey: "", // Empty secret key should cause error
+				JWE: config.JWEConfig{
+					Enabled:       true,
+					EncryptionKey: "", // Empty encryption key should cause error
 				},
 			},
 		}

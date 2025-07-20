@@ -288,7 +288,7 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 
 // startHTTPServerWithTLS starts the HTTP server with or without TLS
 func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport string) error {
-	if cfg.Server.JWT.Enabled {
+	if cfg.Server.JWE.Enabled {
 		addr += "/{token}/" + transport
 	} else {
 		addr += "/" + transport
