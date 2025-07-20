@@ -478,7 +478,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := a.GetCurrentConfig()
 
 	// For basic health check, we'll return 200 OK
-	// For readiness, we should test ClickHouse connection if JWT auth is disabled
+	// For readiness, we should test ClickHouse connection if JWE auth is disabled
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
