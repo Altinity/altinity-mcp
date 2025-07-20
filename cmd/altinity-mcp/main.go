@@ -716,7 +716,7 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.JWE.Enabled = cmd.Bool("allow-jwe-auth")
 	}
 	if cmd.IsSet("jwe-secret-key") {
-		cfg.Server.JWE.EncryptionKey = cmd.String("jwe-secret-key")
+		cfg.Server.JWE.JWESecretKey = cmd.String("jwe-secret-key")
 	}
 	if cmd.IsSet("jwt-secret-key") {
 		cfg.Server.JWE.JWTSecretKey = cmd.String("jwt-secret-key")
@@ -879,7 +879,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		log.Debug().Msg("JWE encryption enabled, skipping default ClickHouse connection test")
 
 		// Validate both secrets are set when JWE auth is enabled
-		if cfg.Server.JWE.EncryptionKey == "" {
+		if cfg.Server.JWE.JWESecretKey == "" {
 			return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
 		}
 		if cfg.Server.JWE.JWTSecretKey == "" {

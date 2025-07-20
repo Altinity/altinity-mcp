@@ -443,7 +443,8 @@ services:
 - `--address`: Server address
 - `--port`: Server port
 - `--allow-jwe-auth`: Enable JWE authentication
-- `--jwe-encryption-key`: JWE encryption key
+- `--jwe-secret-key`: RSA private key for JWE token decryption
+- `--jwt-secret-key`: Secret key for JWT signature verification
 - `--jwe-token-param`: JWE token parameter name
 
 ### Commands

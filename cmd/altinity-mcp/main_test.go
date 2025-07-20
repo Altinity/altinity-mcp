@@ -72,7 +72,8 @@ func TestBuildConfig(t *testing.T) {
 			&cli.StringFlag{Name: "log-level", Value: "info"},
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
 			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
-			&cli.StringFlag{Name: "jwe-encryption-key", Value: ""},
+			&cli.StringFlag{Name: "jwe-secret-key", Value: ""},
+			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
 			&cli.StringFlag{Name: "openapi", Value: "disable"},
 		}
 
@@ -830,7 +831,8 @@ clickhouse:
 server:
   jwe:
     enabled: true
-    encryption_key: "test-secret"
+    jwe_secret_key: "test-secret"
+    jwt_secret_key: "test-jwt-secret"
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
@@ -1050,7 +1052,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-key-file":  "/path/to/server.key",
 				"server-tls-ca-cert":   "/path/to/server-ca.crt",
 				"allow-jwe-auth":       true,
-				"jwe-encryption-key":   "secret123",
+				"jwe-secret-key":   "jwe-secret123",
+				"jwt-secret-key":   "jwt-secret123",
 				"openapi":              true,
 			},
 			setFlags: map[string]bool{
@@ -1062,7 +1065,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-key-file":  true,
 				"server-tls-ca-cert":   true,
 				"allow-jwe-auth":       true,
-				"jwe-encryption-key":   true,
+				"jwe-secret-key":   true,
+				"jwt-secret-key":   true,
 			},
 		}
 
@@ -1077,7 +1081,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, "/path/to/server.key", cfg.Server.TLS.KeyFile)
 		require.Equal(t, "/path/to/server-ca.crt", cfg.Server.TLS.CaCert)
 		require.True(t, cfg.Server.JWE.Enabled)
-		require.Equal(t, "secret123", cfg.Server.JWE.EncryptionKey)
+		require.Equal(t, "jwe-secret123", cfg.Server.JWE.JWESecretKey)
+		require.Equal(t, "jwt-secret123", cfg.Server.JWE.JWTSecretKey)
 	})
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
@@ -1601,7 +1606,8 @@ clickhouse:
 server:
   jwe:
     enabled: true
-    encryption_key: "test-secret"
+    jwe_secret_key: "test-secret"
+    jwt_secret_key: "test-jwt-secret"
   transport: "stdio"
 logging:
   level: "info"
@@ -1627,7 +1633,8 @@ logging:
 		&cli.StringFlag{Name: "log-level", Value: "info"},
 		&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
 		&cli.BoolFlag{Name: "allow-jwe-auth", Value: true},
-		&cli.StringFlag{Name: "jwe-encryption-key", Value: "test-secret"},
+		&cli.StringFlag{Name: "jwe-secret-key", Value: "test-secret"},
+		&cli.StringFlag{Name: "jwt-secret-key", Value: "test-jwt-secret"},
 		&cli.IntFlag{Name: "config-reload-time", Value: 0},
 	}
 
@@ -1690,7 +1697,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled_without_secret", func(t *testing.T) {
-		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", ""}
+		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-secret-key", ""}
 		err := run(args)
 		require.Error(t, err)
 		// Should fail due to missing JWE encryption key
@@ -1712,7 +1719,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
 		// This test will start the server, but we need to stop it quickly
-		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-encryption-key", "test-secret", "--transport", "stdio"}
+		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-secret-key", "test-secret", "--jwt-secret-key", "test-jwt-secret", "--transport", "stdio"}
 
 		// Run in a goroutine with timeout since stdio transport will block
 		done := make(chan error, 1)
