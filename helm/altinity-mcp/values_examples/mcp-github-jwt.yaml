@@ -1,6 +1,6 @@
-# Example values for altinity-mcp with JWT authentication enabled
+# Example values for altinity-mcp with JWE authentication enabled
 # This configuration is equivalent to running with:
-# --allow-jwt-auth --jwt-secret-key=test-secret-key --transport=http --port=8080 --log-level=debug --read-only
+# --allow-jwe-auth --jwe-encryption-key=test-encryption-key --transport=http --port=8080 --log-level=debug --read-only
 
 image:
   tag: "main"
@@ -21,9 +21,9 @@ config:
       enabled: true
       tls: true
     transport: "sse"
-    jwt:
+    jwe:
       enabled: true
-      secret_key: "test-secret-key"
+      encryption_key: "test-encryption-key"
   
   logging:
     level: "debug"

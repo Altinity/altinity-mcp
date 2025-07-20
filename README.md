@@ -45,7 +45,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --openapi http
 ```
 
-### Using SSE Transport with JWT Authentication and OpenAPI
+### Using SSE Transport with JWE Authentication and OpenAPI
 
 ```bash
 ./altinity-mcp \
@@ -196,11 +196,11 @@ Helps build efficient ClickHouse SQL queries with context about available tables
 The Altinity MCP Server supports seamless integration with OpenAI GPTs through its OpenAPI-compatible endpoints. These endpoints enable GPT assistants to perform ClickHouse database operations directly.
 
 ### Authentication
-- **With JWT**: Add the JWT token to either:
+- **With JWE**: Add the JWE token to either:
   1. Path parameter: ``/{token}/openapi/...``
   2. Authorization header: ``Bearer {token}``
   3. ``x-altinity-mcp-key`` header
-- **Without JWT**: Use server-configured credentials (no auth needed in requests)
+- **Without JWE**: Use server-configured credentials (no auth needed in requests)
 
 ### Available Actions
 
@@ -280,9 +280,9 @@ GET /{token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 > **Note**: For Altinity Cloud deployments, use the provided endpoint URL with your organization-specific token.
 
-## JWT Authentication
+## JWE Authentication
 
-When JWT authentication is enabled, the server expects JWT tokens containing ClickHouse connection parameters:
+When JWE authentication is enabled, the server expects encrypted tokens containing ClickHouse connection parameters:
 
 ```json
 {
@@ -436,9 +436,9 @@ services:
 - `--transport`: Transport type (stdio/http/sse)
 - `--address`: Server address
 - `--port`: Server port
-- `--allow-jwt-auth`: Enable JWT authentication
-- `--jwt-secret-key`: JWT secret key
-- `--jwt-token-param`: JWT token parameter name
+- `--allow-jwe-auth`: Enable JWE authentication
+- `--jwe-encryption-key`: JWE encryption key
+- `--jwe-token-param`: JWE token parameter name
 
 ### Commands
 
