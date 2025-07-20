@@ -57,7 +57,7 @@ type AltinityTestServer struct {
 func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *AltinityTestServer {
 	t.Helper()
 
-	// Create JWT config for testing (disabled by default)
+	// Create JWE config for testing (disabled by default)
 	jweConfig := config.JWEConfig{
 		Enabled: false,
 	}
@@ -65,7 +65,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	// Create an mcptest server first
 	testServer := mcptest.NewUnstartedServer(t)
 
-	// Create a ClickHouse JWT server but don't use NewClickHouseMCPServer to avoid double registration
+	// Create a ClickHouse JWE server but don't use NewClickHouseMCPServer to avoid double registration
 	// Instead, create the server manually and register tools only once
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Test Server",
@@ -98,16 +98,16 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 }
 
 // testServerWrapper wraps mcptest.Server to implement the AltinityMCPServer interface
-// while delegating JWT functionality to the ClickHouseJWTServer
+// while delegating JWE functionality to the ClickHouseJWEServer
 type testServerWrapper struct {
 	testServer  *mcptest.Server
-	chJwtServer *ClickHouseJWTServer
+	chJweServer *ClickHouseJWEServer
 }
 
 func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 	for _, tool := range tools {
 		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 			return tool.Handler(ctx, req)
 		})
 	}
@@ -115,14 +115,14 @@ func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
 
 func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
 	w.testServer.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 		return handler(ctx, req)
 	})
 }
 
 func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
 	w.testServer.AddPrompt(prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 		return handler(ctx, req)
 	})
 }
@@ -130,7 +130,7 @@ func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHa
 func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
 	for _, prompt := range prompts {
 		w.testServer.AddPrompt(prompt.Prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 			return prompt.Handler(ctx, req)
 		})
 	}
@@ -138,7 +138,7 @@ func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
 
 func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc) {
 	w.testServer.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 		return handler(ctx, req)
 	})
 }
@@ -146,7 +146,7 @@ func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.Re
 func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
 	for _, resource := range resources {
 		w.testServer.AddResource(resource.Resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 			return resource.Handler(ctx, req)
 		})
 	}
@@ -154,7 +154,7 @@ func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
 
 func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
 	w.testServer.AddResourceTemplate(template, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwt_server", w.chJwtServer)
+		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
 		return handler(ctx, req)
 	})
 }
@@ -423,8 +423,8 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 // TestOpenAPIHandlers tests the OpenAPI handler functions
 func TestOpenAPIHandlers(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
-	jwtSecret := "test-secret-key"
-	// Create valid JWT token
+	jweEncryptionKey := "test-secret-key"
+	// Create valid JWE token
 	validClaims := map[string]interface{}{
 		"host":     chConfig.Host,
 		"port":     float64(chConfig.Port),
@@ -434,31 +434,30 @@ func TestOpenAPIHandlers(t *testing.T) {
 		"protocol": string(chConfig.Protocol),
 		"exp":      time.Now().Add(time.Hour).Unix(),
 	}
-	validToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(validClaims))
-	validTokenString, _ := validToken.SignedString([]byte(jwtSecret))
+	validTokenString := generateJWEToken(t, validClaims, jweEncryptionKey)
 
 	// Test cases with different configurations
 	testCases := []struct {
 		name        string
-		jwtEnabled  bool
+		jweEnabled  bool
 		tokenParam  string
 		expectError bool
 	}{
-		{"without_jwt", false, "", false},
-		{"with_jwt_invalid", true, "invalid-token", true},
-		{"with_jwt_valid", true, validTokenString, false},
+		{"without_jwe", false, "", false},
+		{"with_jwe_invalid", true, "invalid-token", true},
+		{"with_jwe_valid", true, validTokenString, false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			jwtConfig := config.JWTConfig{
-				Enabled:   tc.jwtEnabled,
-				SecretKey: jwtSecret,
+			jweConfig := config.JWEConfig{
+				Enabled:       tc.jweEnabled,
+				EncryptionKey: jweEncryptionKey,
 			}
 
-			// Set up chJwtServer with ClickHouse config and JWT
+			// Set up chJweServer with ClickHouse config and JWE
 			chJweServer := &ClickHouseJWEServer{
-				Config: config.Config{Server: config.ServerConfig{JWT: jwtConfig}, ClickHouse: *chConfig},
+				Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
 			}
 
 			// Create test server
