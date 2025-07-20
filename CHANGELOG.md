@@ -2,7 +2,7 @@
 Initial release of Altinity MCP Server
 
 ## Features
-- JWT Token authorization
+- JWE Token encryption
 - MCP with STDIO, SSE and Streaming HTTP protocol - https://modelcontextprotocol.io
 - OpenAPI for OpenAI GPTs actions - https://help.openai.com/en/articles/8554397-creating-a-gpt
 
