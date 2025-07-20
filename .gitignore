@@ -1,4 +1,6 @@
 .aider*
+CLAUDE.md
+AGENTS.md
 *.pcap
 *.log
 *.exe
