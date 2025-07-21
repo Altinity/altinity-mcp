@@ -885,8 +885,8 @@ server:
 			},
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:       true,
-					EncryptionKey: "test-secret-key",
+					Enabled:      true,
+					JWESecretKey: "test-secret-key",
 				},
 			},
 		}
@@ -1794,7 +1794,8 @@ clickhouse:
 server:
   jwe:
     enabled: true
-    encryption_key: "test-secret"
+    jwe_secret_key: "test-secret"
+    jwt_secret_key: "test-jwt-secret"
   transport: "stdio"
 logging:
   level: "info"

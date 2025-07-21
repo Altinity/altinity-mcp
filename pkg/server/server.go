@@ -139,20 +139,12 @@ func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClai
 	}
 
 	// 3. Parse and validate inner JWT
-	// The generator uses RS256, so we need a public key for verification.
-	// We assume JWTSecretKey holds the PEM-encoded public key.
-	publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(s.Config.Server.JWE.JWTSecretKey))
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse JWT RSA public key")
-		return nil, ErrInvalidToken
-	}
-
 	token, err := jwt.Parse(string(signedJWT), func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return publicKey, nil
-	}, jwt.WithValidMethods([]string{"RS256"}))
+		return []byte(s.Config.Server.JWE.JWTSecretKey), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
 
 	if err != nil {
 		log.Error().Err(err).Msg("failed to parse/validate inner JWT")
