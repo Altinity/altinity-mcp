@@ -52,7 +52,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --transport sse \
   --port 8080 \
   --allow-jwe-auth \
-  --jwe-secret-key "$(openssl genrsa 4096)" \
+  --jwe-secret-key "this-is-a-32-byte-secret-key!!" \
   --jwt-secret-key "your-jwt-signing-secret" \
   --clickhouse-host localhost \
   --openapi http
@@ -283,7 +283,7 @@ GET /{token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 ## JWE Authentication
 
-When JWE authentication is enabled, the server expects encrypted tokens containing ClickHouse connection parameters:
+When JWE authentication is enabled, the server expects tokens encrypted using AES Key Wrap (A256KW) and AES-GCM (A256GCM). These tokens contain ClickHouse connection parameters:
 
 ```json
 {
@@ -297,11 +297,11 @@ When JWE authentication is enabled, the server expects encrypted tokens containi
 }
 ```
 
-Generate tokens using the provided utility:
+Generate tokens using the provided utility. The JWE secret key must be 32 bytes long for A256KW encryption.
 
 ```bash
 go run ./cmd/jwe_auth/jwe_token_generator.go \
-  --jwe-secret-key "$(openssl genrsa 4096)" \
+  --jwe-secret-key "this-is-a-32-byte-secret-key!!" \
   --jwt-secret-key "your-jwt-signing-secret" \
   --host "clickhouse.example.com" \
   --port 8123 \
@@ -443,9 +443,8 @@ services:
 - `--address`: Server address
 - `--port`: Server port
 - `--allow-jwe-auth`: Enable JWE authentication
-- `--jwe-secret-key`: RSA private key for JWE token decryption
+- `--jwe-secret-key`: Secret key for JWE token decryption (must be 32 bytes for A256KW).
 - `--jwt-secret-key`: Secret key for JWT signature verification
-- `--jwe-token-param`: JWE token parameter name
 
 ### Commands
 
