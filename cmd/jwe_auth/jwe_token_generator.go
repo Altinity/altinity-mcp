@@ -14,8 +14,8 @@ import (
 // Generate JWE token using CLI flags
 func main() {
 	var (
-		jweSecretKey          = flag.String("jwe-secret-key", "your-jwe-secret-key", "Secret key for JWE encryption")
-		jwtSecretKey          = flag.String("jwt-secret-key", "", "PEM-encoded RSA private key for JWT signing (required)")
+		jweSecretKey          = flag.String("jwe-secret-key", "your-jwe-secret-key", "PEM-encoded RSA private key for JWE encryption")
+		jwtSecretKey          = flag.String("jwt-secret-key", "", "Symmetric secret key for JWT signing (required)")
 		host                  = flag.String("host", "localhost", "ClickHouse host")
 		port                  = flag.Int("port", 8123, "ClickHouse port")
 		database              = flag.String("database", "default", "ClickHouse database")
@@ -76,10 +76,10 @@ func main() {
 	}
 	// 2. Create and sign a JWT with our claims
 	token := jwt.NewWithClaims(
-		jwt.SigningMethodRS256,
+		jwt.SigningMethodHS256,
 		jwt.MapClaims(claims),
 	)
-	signedJWT, err := token.SignedString(*jwtSecretKey)
+	signedJWT, err := token.SignedString([]byte(*jwtSecretKey))
 	if err != nil {
 		fmt.Printf("Failed to sign JWT: %v\n", err)
 		return
@@ -101,7 +101,7 @@ func main() {
 	// 3. Encrypt the signed JWT into JWE format
 	jweToken, err := jwe.NewJWE(
 		jwe.KeyAlgorithmRSAOAEP,
-		privateKey,
+		&privateKey.PublicKey,
 		jwe.EncryptionTypeA256GCM,
 		[]byte(signedJWT),
 	)
