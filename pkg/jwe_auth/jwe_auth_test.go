@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/golang-jwt/jwe"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +16,7 @@ func TestJWETokenGeneration(t *testing.T) {
 
 	// Test basic JWE token generation
 	t.Run("basic_token", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"host":     "localhost",
 			"port":     float64(8123),
 			"database": "default",
@@ -32,18 +30,8 @@ func TestJWETokenGeneration(t *testing.T) {
 		require.NotEmpty(t, tokenString)
 
 		// Decrypt and verify the token
-		jweToken, err := jwe.ParseEncrypted(tokenString)
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
-		decryptedJWT, err := jweToken.Decrypt(jweSecretKey)
-		require.NoError(t, err)
-
-		var parsedClaims jwt.MapClaims
-		parsedToken, err := jwt.ParseWithClaims(string(decryptedJWT), &parsedClaims, func(token *jwt.Token) (interface{}, error) {
-			require.IsType(t, &jwt.SigningMethodHMAC{}, token.Method)
-			return jwtSecretKey, nil
-		})
-		require.NoError(t, err)
-		require.True(t, parsedToken.Valid)
 
 		require.Equal(t, "localhost", parsedClaims["host"])
 		require.Equal(t, float64(8123), parsedClaims["port"])
@@ -56,17 +44,17 @@ func TestParseAndDecryptJWE(t *testing.T) {
 	jwtSecretKey := []byte("test-jwt-secret")
 
 	t.Run("valid_token", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"host":     "test-host",
 			"port":     float64(9000),
 			"database": "test-db",
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString, err := GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
 
-		parsedClaims, err := ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
 		require.Equal(t, "test-host", parsedClaims["host"])
 		require.Equal(t, float64(9000), parsedClaims["port"])
@@ -74,20 +62,20 @@ func TestParseAndDecryptJWE(t *testing.T) {
 	})
 
 	t.Run("invalid_token", func(t *testing.T) {
-		_, err := ParseAndDecryptJWE("invalid-token", jweSecretKey, jwtSecretKey)
-		require.Equal(t, ErrInvalidToken, err)
+		_, err := jwe_auth.ParseAndDecryptJWE("invalid-token", jweSecretKey, jwtSecretKey)
+		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("expired_token", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
 		}
 
-		tokenString, err := GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
 
-		_, err = ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
-		require.Equal(t, ErrInvalidToken, err)
+		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 }

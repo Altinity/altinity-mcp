@@ -9,6 +9,7 @@ require (
 	github.com/stretchr/testify v1.10.0
 	github.com/testcontainers/testcontainers-go v0.38.0
 	github.com/urfave/cli/v3 v3.3.8
+	gopkg.in/go-jose/go-jose.v4 v4.0.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
