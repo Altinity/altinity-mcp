@@ -3,8 +3,8 @@ package jwe_auth
 import (
 	"errors"
 	"fmt"
-	"gopkg.in/go-jose/go-jose.v4"
-	"gopkg.in/go-jose/go-jose.v4/jwt"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 var (
