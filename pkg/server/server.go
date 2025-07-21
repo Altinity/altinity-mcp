@@ -114,31 +114,19 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 // parseAndDecryptJWE parses and validates a JWE token
 func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClaims, error) {
-	// 1. Parse JWE RSA private key from PEM
-	block, _ := pem.Decode([]byte(s.Config.Server.JWE.JWESecretKey))
-	if block == nil {
-		log.Error().Msg("failed to decode PEM block containing JWE private key")
-		return nil, ErrInvalidToken
-	}
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse JWE RSA private key")
-		return nil, ErrInvalidToken
-	}
-
-	// 2. Decrypt JWE to get signed JWT payload
+	// 1. Decrypt JWE to get signed JWT payload
 	jweToken, err := jwe.ParseEncrypted(tokenParam)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to parse JWE token")
 		return nil, ErrInvalidToken
 	}
-	signedJWT, err := jweToken.Decrypt(privateKey)
+	signedJWT, err := jweToken.Decrypt([]byte(s.Config.Server.JWE.JWESecretKey))
 	if err != nil {
 		log.Error().Err(err).Msg("failed to decrypt JWE token")
 		return nil, ErrInvalidToken
 	}
 
-	// 3. Parse and validate inner JWT
+	// 2. Parse and validate inner JWT
 	token, err := jwt.Parse(string(signedJWT), func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
