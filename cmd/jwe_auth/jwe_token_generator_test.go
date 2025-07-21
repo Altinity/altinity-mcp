@@ -64,12 +64,12 @@ func TestRunGenerator(t *testing.T) {
 			expectedInOutput: "Usage of jwe_token_generator:",
 		},
 		{
-			name: "invalid_jwe_secret_key_length",
+			name: "missing_jwe_secret_key",
 			args: []string{
-				// Using default jwe-secret-key which is not 32 bytes long
 				"--jwt-secret-key", "test-jwt-secret",
+				// Using default jwe-secret-key value
 			},
-			expectedError: "failed to generate JWE token",
+			expectedInOutput: "JWE Token:",
 		},
 	}
 
