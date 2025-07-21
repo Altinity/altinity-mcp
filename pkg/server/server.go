@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -12,19 +11,13 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/golang-jwt/jwe"
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog/log"
 )
 
-var (
-	// ErrMissingToken is returned when JWE token is missing
-	ErrMissingToken = errors.New("missing JWE token")
-	// ErrInvalidToken is returned when JWE token is invalid
-	ErrInvalidToken = errors.New("invalid JWE token")
-)
 
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
 type ClickHouseJWEServer struct {
@@ -85,12 +78,13 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 	if tokenParam == "" {
 		// JWE auth is enabled but no token provided
-		return nil, ErrMissingToken
+		return nil, jwe_auth.ErrMissingToken
 	}
 
 	// Parse and validate JWE token
-	claims, err := s.parseAndDecryptJWE(tokenParam)
+	claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
 	if err != nil {
+		log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
 		return nil, err
 	}
 
@@ -109,87 +103,6 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	return client, nil
 }
 
-// parseAndDecryptJWE parses and validates a JWE token
-func (s *ClickHouseJWEServer) parseAndDecryptJWE(tokenParam string) (jwt.MapClaims, error) {
-	// 1. Decrypt JWE to get signed JWT payload
-	jweToken, err := jwe.ParseEncrypted(tokenParam)
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse JWE token")
-		return nil, ErrInvalidToken
-	}
-	signedJWT, err := jweToken.Decrypt([]byte(s.Config.Server.JWE.JWESecretKey))
-	if err != nil {
-		log.Error().Err(err).Msg("failed to decrypt JWE token")
-		return nil, ErrInvalidToken
-	}
-
-	// 2. Parse and validate inner JWT
-	token, err := jwt.Parse(string(signedJWT), func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(s.Config.Server.JWE.JWTSecretKey), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
-
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse/validate inner JWT")
-		return nil, ErrInvalidToken
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		log.Error().Msg("inner JWT is invalid or claims are not MapClaims")
-		return nil, ErrInvalidToken
-	}
-
-	if err := s.validateClaimsWhitelist(claims); err != nil {
-		return nil, err
-	}
-
-	return claims, nil
-}
-
-// validateClaimsWhitelist validates that JWE claims only contain allowed keys
-func (s *ClickHouseJWEServer) validateClaimsWhitelist(claims jwt.MapClaims) error {
-	// Define whitelist of allowed claim keys
-	allowedKeys := map[string]bool{
-		// Standard JWT claims
-		"iss": true, // issuer
-		"sub": true, // subject
-		"aud": true, // audience
-		"exp": true, // expiration time
-		"nbf": true, // not before
-		"iat": true, // issued at
-		"jti": true, // JWT ID
-
-		// ClickHouse connection claims
-		"host":               true,
-		"port":               true,
-		"database":           true,
-		"username":           true,
-		"password":           true,
-		"protocol":           true,
-		"limit":              true,
-		"read_only":          true,
-		"max_execution_time": true,
-
-		// TLS configuration claims
-		"tls_enabled":              true,
-		"tls_ca_cert":              true,
-		"tls_client_cert":          true,
-		"tls_client_key":           true,
-		"tls_insecure_skip_verify": true,
-	}
-
-	// Check for any disallowed keys
-	for key := range claims {
-		if !allowedKeys[key] {
-			return fmt.Errorf("invalid token claims format: disallowed claim key '%s'", key)
-		}
-	}
-
-	return nil
-}
 
 // buildConfigFromClaims builds a ClickHouse config from JWE claims
 func (s *ClickHouseJWEServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
@@ -777,8 +690,9 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 
 	// If JWE auth is enabled, validate token if provided
 	if chJweServer.Config.Server.JWE.Enabled && token != "" {
-		_, err := chJweServer.parseAndDecryptJWE(token)
+		_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(chJweServer.Config.Server.JWE.JWESecretKey), []byte(chJweServer.Config.Server.JWE.JWTSecretKey))
 		if err != nil {
+			log.Error().Err(err).Str("token", token).Msg("OpenAPI handler: invalid JWE token")
 			http.Error(w, "Invalid JWE token", http.StatusInternalServerError)
 			return
 		}
