@@ -1,10 +1,6 @@
 package jwe_auth_test
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"testing"
 	"time"
 
@@ -14,36 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Helper functions for generating and encoding RSA keys for tests
-func generateRSAKeys(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
-	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	return privateKey, &privateKey.PublicKey
-}
-
-func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) string {
-	t.Helper()
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}))
-}
-
-func pemEncodePublicKey(t *testing.T, key *rsa.PublicKey) string {
-	t.Helper()
-	pubBytes, err := x509.MarshalPKIXPublicKey(key)
-	require.NoError(t, err)
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: pubBytes,
-	}))
-}
-
 // TestJWETokenGeneration tests JWE token generation with TLS configuration
 func TestJWETokenGeneration(t *testing.T) {
 	t.Parallel()
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
+	jweSecretKey := []byte("this-is-a-32-byte-secret-key!!") // 32 bytes for A256KW
 	jwtSecretKey := []byte("test-jwt-secret")
 
 	// Test basic JWE token generation
@@ -57,14 +27,14 @@ func TestJWETokenGeneration(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString, err := jwe_auth.GenerateJWEToken(claims, jwePublicKey, jwtSecretKey)
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
 		require.NotEmpty(t, tokenString)
 
 		// Decrypt and verify the token
 		jweToken, err := jwe.ParseEncrypted(tokenString)
 		require.NoError(t, err)
-		decryptedJWT, err := jweToken.Decrypt(jwePrivateKey)
+		decryptedJWT, err := jweToken.Decrypt(jweSecretKey)
 		require.NoError(t, err)
 
 		var parsedClaims jwt.MapClaims
