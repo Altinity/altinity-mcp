@@ -12,7 +12,7 @@ import (
 func TestJWETokenGeneration(t *testing.T) {
 	t.Parallel()
 	jweSecretKey := []byte("this-is-a-32-byte-secret-key!!") // 32 bytes for A256KW
-	jwtSecretKey := []byte("test-jwt-secret")
+	jwtSecretKey := []byte("this-is-a-32-byte-jwt-secret-key") // 32 bytes for HS256
 
 	// Test basic JWE token generation
 	t.Run("basic_token", func(t *testing.T) {
@@ -41,7 +41,7 @@ func TestJWETokenGeneration(t *testing.T) {
 // TestParseAndDecryptJWE tests JWE parsing and validation
 func TestParseAndDecryptJWE(t *testing.T) {
 	jweSecretKey := []byte("this-is-a-32-byte-secret-key!!")
-	jwtSecretKey := []byte("test-jwt-secret")
+	jwtSecretKey := []byte("this-is-a-32-byte-jwt-secret-key") // 32 bytes for HS256
 
 	t.Run("valid_token", func(t *testing.T) {
 		claims := map[string]interface{}{
