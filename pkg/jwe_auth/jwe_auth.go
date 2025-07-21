@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -95,6 +96,11 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 		return nil, err
 	}
 
+	// 6. Validate expiration
+	if err := validateExpiration(claims); err != nil {
+		return nil, err
+	}
+
 	return claims, nil
 }
 
@@ -137,5 +143,27 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+// validateExpiration checks if the token has expired
+func validateExpiration(claims map[string]interface{}) error {
+	if exp, ok := claims["exp"]; ok {
+		var expTime int64
+		switch v := exp.(type) {
+		case float64:
+			expTime = int64(v)
+		case int64:
+			expTime = v
+		case int:
+			expTime = int64(v)
+		default:
+			return ErrInvalidToken
+		}
+		
+		if time.Now().Unix() > expTime {
+			return ErrInvalidToken
+		}
+	}
 	return nil
 }
