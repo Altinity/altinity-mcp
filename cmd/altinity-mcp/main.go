@@ -195,7 +195,7 @@ func run(args []string) error {
 			},
 			&cli.StringFlag{
 				Name:     "jwe-secret-key",
-				Usage:    "RSA private key for JWE token decryption",
+				Usage:    "Secret key for JWE token decryption",
 				Value:    "",
 				Sources:  cli.EnvVars("MCP_JWE_SECRET_KEY"),
 				Required: false,
