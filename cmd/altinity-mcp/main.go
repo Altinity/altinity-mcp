@@ -1007,7 +1007,7 @@ func (a *application) Start() error {
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
 		Msg("Starting MCP server...")
 
-	// Access the underlying MCPServer from our ClickHouseJWTServer
+	// Access the underlying MCPServer from our ClickHouseJWEServer
 	mcpServer := a.mcpServer.MCPServer
 
 	switch cfg.Server.Transport {

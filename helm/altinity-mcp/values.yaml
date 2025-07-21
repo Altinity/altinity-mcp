@@ -114,7 +114,8 @@ config:
       ca_cert: ""
     jwe:
       enabled: false
-      encryption_key: ""
+      jwt_secret_key: ""
+      jwe_secret_key: ""
       token_param: "token"
   
   # Logging configuration

@@ -52,7 +52,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --transport sse \
   --port 8080 \
   --allow-jwe-auth \
-  --jwe-secret-key "this-is-a-32-byte-secret-key!!" \
+  --jwe-secret-key "your-jwe-encryption-secret" \
   --jwt-secret-key "your-jwt-signing-secret" \
   --clickhouse-host localhost \
   --openapi http
@@ -297,11 +297,11 @@ When JWE authentication is enabled, the server expects tokens encrypted using AE
 }
 ```
 
-Generate tokens using the provided utility. The JWE secret key must be 32 bytes long for A256KW encryption.
+Generate tokens using the provided utility. 
 
 ```bash
 go run ./cmd/jwe_auth/jwe_token_generator.go \
-  --jwe-secret-key "this-is-a-32-byte-secret-key!!" \
+  --jwe-secret-key "your-jwe-encryption-secret" \
   --jwt-secret-key "your-jwt-signing-secret" \
   --host "clickhouse.example.com" \
   --port 8123 \

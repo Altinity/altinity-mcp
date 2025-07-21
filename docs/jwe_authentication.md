@@ -17,18 +17,16 @@ The following CLI options are available for JWE authentication:
 
 ```
 --allow-jwe-auth                  Enable JWE encryption for ClickHouse connection
---jwe-secret-key string           RSA private key for JWE token decryption
--jwt-secret-key string            Secret key for JWT signature verification
---jwe-token-param string          URL parameter name for JWE token (default "token")
+--jwe-secret-key string           Secret key for JWE token decryption
+--jwt-secret-key string           Secret key for nested JWT signature verification
 ```
 
 You can also set these options using environment variables:
 
 ```
 MCP_ALLOW_JWE_AUTH=true
-MCP_JWE_SECRET_KEY=<RSA_PRIVATE_KEY>
+MCP_JWE_SECRET_KEY=jwe-encryption-secret
 MCP_JWT_SECRET_KEY=jwt-signing-secret
-MCP_JWE_TOKEN_PARAM=token
 ```
 
 ## Starting the Server with JWE Authentication
@@ -41,21 +39,11 @@ To start the server with JWE authentication enabled:
 
 This will start the server with JWE authentication enabled, using the provided keys for token processing.
 
-## Generating JWE Tokens
-
-First generate an RSA private key for JWE encryption/decryption:
-
-```bash
-JWE_SECRET_KEY="$(openssl genrsa 4096)"
-echo "Generated RSA private key:"
-echo "${JWE_SECRET_KEY}"
-```
-
 Then use the token generator tool to create JWE tokens:
 
 ```bash
 go run cmd/jwe_auth/jwe_token_generator.go \
-  --jwe-secret-key="${JWE_SECRET_KEY}" \
+  --jwe-secret-key="your-jwe-encryption-secret" \
   --jwt-secret-key="your-jwt-signing-secret" \
   --host=clickhouse.example.com \
   --port=8123 \
@@ -70,7 +58,7 @@ For TLS-enabled connections:
 
 ```bash
 go run cmd/jwe_auth/jwe_token_generator.go \
-  --jwe-secret-key="${JWE_SECRET_KEY}" \
+  --jwe-secret-key="your-jwe-encryption-secret" \
   --jwt-secret-key="your-jwt-signing-secret" \
   --host=clickhouse.example.com \
   --port=9440 \
@@ -85,7 +73,8 @@ go run cmd/jwe_auth/jwe_token_generator.go \
   --expiry=3600
 ```
 
-This will generate a JWT token containing the specified ClickHouse connection parameters, valid for 1 hour (3600 seconds).
+This will generate a signed with --jwt-secret-key JWT token containing the specified ClickHouse connection parameters, valid for 1 hour (3600 seconds).
+And encrypt it with AES using --jwe-secret-key
 
 ## JWT Token Structure
 
@@ -104,28 +93,19 @@ The JWT token contains the following claims:
 - `tls_insecure_skip_verify`: Boolean to skip certificate verification (optional)
 - `exp`: Token expiration timestamp
 
-## Connecting to the Server with a JWT Token
+## Connecting to the Server with a JWE Token
 
 ### Standard URL Parameter Method
-
-When connecting to the MCP server, include the JWT token as a URL parameter:
-
-```
-http://localhost:8080/sse?token=<your-jwt-token>
-```
-
-### Dynamic Path Method (Go 1.22+)
 
 If using the SSE transport with dynamic paths:
 
 ```
-http://localhost:8080/<your-jwt-token>/sse
+http://localhost:8080/<generated-jwe-token>/sse
 ```
 
 ## Security Considerations
 
-- Always use HTTPS when transmitting JWT tokens to prevent token interception
+- Always use HTTPS when transmitting JWE tokens to prevent token interception
 - Use a strong, random secret key for token signing
 - Set appropriate token expiration times
-- Avoid including sensitive information in tokens if not necessary
-- Consider implementing token revocation if needed for additional security
+- To implementing token revocation if needed for additional security, change using jwe-secret-key in `altinity-mcp` configuration
