@@ -14,11 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
-
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -30,27 +25,12 @@ import (
 )
 
 // generateJWEToken is a helper to create JWE tokens for testing.
-func generateJWEToken(t *testing.T, claims map[string]interface{}, jwePublicKey *rsa.PublicKey, jwtSecretKey []byte) string {
-	token, err := jwe_auth.GenerateJWEToken(claims, jwePublicKey, jwtSecretKey)
+func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) string {
+	token, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 	require.NoError(t, err)
 	return token
 }
 
-// Helper functions for generating and encoding RSA keys for tests
-func generateRSAKeys(t *testing.T) (*rsa.PrivateKey, *rsa.PublicKey) {
-	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	return privateKey, &privateKey.PublicKey
-}
-
-func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) string {
-	t.Helper()
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}))
-}
 
 // AltinityTestServer wraps mcptest functionality to provide additional functionality
 // specific to Altinity MCP server testing.
@@ -368,9 +348,8 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 // TestOpenAPIHandlers tests the OpenAPI handler functions
 func TestOpenAPIHandlers(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-super-secret"
-	jweSecretKeyPEM := pemEncodePrivateKey(t, jwePrivateKey)
 	// Create valid JWE token
 	validClaims := map[string]interface{}{
 		"host":     chConfig.Host,
@@ -381,7 +360,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		"protocol": string(chConfig.Protocol),
 		"exp":      time.Now().Add(time.Hour).Unix(),
 	}
-	validTokenString := generateJWEToken(t, validClaims, jwePublicKey, []byte(jwtSecretKey))
+	validTokenString := generateJWEToken(t, validClaims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 	// Test cases with different configurations
 	testCases := []struct {
@@ -399,7 +378,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			jweConfig := config.JWEConfig{
 				Enabled:      tc.jweEnabled,
-				JWESecretKey: jweSecretKeyPEM,
+				JWESecretKey: jweSecretKey,
 				JWTSecretKey: jwtSecretKey,
 			}
 
@@ -617,7 +596,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 	t.Run("TokenExtraction", func(t *testing.T) {
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 		chJweServer := &ClickHouseJWEServer{
@@ -885,8 +864,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 // TestGetClickHouseClientWithJWE tests the JWE client creation
 func TestGetClickHouseClientWithJWE(t *testing.T) {
 	ctx := context.Background()
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
-	jweSecretKeyPEM := pemEncodePrivateKey(t, jwePrivateKey)
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret"
 
 	t.Run("without_jwe", func(t *testing.T) {
@@ -923,7 +901,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -945,7 +923,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -967,7 +945,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -984,7 +962,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"limit":    float64(500),
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This will fail to connect, but we're testing the JWE parsing logic
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
@@ -1006,7 +984,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -1028,7 +1006,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"tls_insecure_skip_verify": true,
 			"exp":                      time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This will fail to connect, but we're testing the JWE parsing logic
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
@@ -1048,11 +1026,10 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			Limit:    1000,
 		}
 
-		correctJwePrivateKey, _ := generateRSAKeys(t)
-		correctJwePrivateKeyPem := pemEncodePrivateKey(t, correctJwePrivateKey)
+		correctJweSecretKey := "this-is-a-different-32-byte-key!"
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: correctJwePrivateKeyPem,
+			JWESecretKey: correctJweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -1062,7 +1039,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This will fail because the token was encrypted with a different key
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
@@ -1081,7 +1058,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		jweConfig := config.JWEConfig{
 			Enabled:      true,
-			JWESecretKey: jweSecretKeyPEM,
+			JWESecretKey: jweSecretKey,
 			JWTSecretKey: jwtSecretKey,
 		}
 
@@ -1095,7 +1072,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			"invalid_claim": "this should not be allowed", // This key is not in whitelist
 			"exp":           time.Now().Add(time.Hour).Unix(),
 		}
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This should fail because the token contains a disallowed claim key
 		_, err := srv.parseAndDecryptJWE(tokenString)
@@ -1134,14 +1111,13 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
 
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
-	jweSecretKeyPEM := pemEncodePrivateKey(t, jwePrivateKey)
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret"
 
 	// Create JWE config
 	jweConfig := config.JWEConfig{
 		Enabled:      true,
-		JWESecretKey: jweSecretKeyPEM,
+		JWESecretKey: jweSecretKey,
 		JWTSecretKey: jwtSecretKey,
 	}
 
@@ -1158,7 +1134,7 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// Inject token into context
 		contextWithToken := context.WithValue(ctx, "jwe_token", tokenString)
@@ -1246,13 +1222,12 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		Protocol: config.HTTPProtocol,
 		Limit:    1000,
 	}
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
-	jweSecretKeyPEM := pemEncodePrivateKey(t, jwePrivateKey)
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret"
 
 	jweConfig := config.JWEConfig{
 		Enabled:      true,
-		JWESecretKey: jweSecretKeyPEM,
+		JWESecretKey: jweSecretKey,
 		JWTSecretKey: jwtSecretKey,
 	}
 
@@ -1266,7 +1241,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 			"exp":      time.Now().Add(time.Hour).Unix(),
 		}
 
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		parsedClaims, err := srv.parseAndDecryptJWE(tokenString)
 		require.NoError(t, err)
@@ -1286,7 +1261,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
 		}
 
-		tokenString := generateJWEToken(t, claims, jwePublicKey, []byte(jwtSecretKey))
+		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		_, err := srv.parseAndDecryptJWE(tokenString)
 		require.Equal(t, ErrInvalidToken, err)
