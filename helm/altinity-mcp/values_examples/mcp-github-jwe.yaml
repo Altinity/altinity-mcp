@@ -23,7 +23,8 @@ config:
     transport: "sse"
     jwe:
       enabled: true
-      encryption_key: "test-encryption-key"
+      jwe_secret_key: "test-encryption-key"
+      jwt_secret_key: "test-signing-key"
   
   logging:
     level: "debug"

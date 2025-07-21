@@ -95,11 +95,11 @@ func run(output io.Writer, args []string) error {
 	}
 
 	// 3. Print example usage with new encrypted token
-	fmt.Fprintln(output, "\nExample usage with SSE transport:")
-	fmt.Fprintf(output, "curl \"http://localhost:8080/%s/sse\"\n", encryptedToken)
+	_, _ = fmt.Fprintln(output, "\nExample usage with SSE transport:")
+	_, _ = fmt.Fprintf(output, "curl \"http://localhost:8080/%s/sse\"\n", encryptedToken)
 
-	fmt.Fprintln(output, "JWE Token:")
-	fmt.Fprintln(output, encryptedToken)
+	_, _ = fmt.Fprintln(output, "JWE Token:")
+	_, _ = fmt.Fprintln(output, encryptedToken)
 
 	return nil
 }

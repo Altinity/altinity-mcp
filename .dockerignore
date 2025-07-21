@@ -1,6 +1,3 @@
-# Ignore jwt_auth folder
-jwt_auth/
-
 # Ignore .github folder
 .github/
 
