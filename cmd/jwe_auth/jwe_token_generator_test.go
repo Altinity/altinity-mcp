@@ -20,7 +20,7 @@ import (
 
 
 func TestRunGenerator(t *testing.T) {
-	jweSecretKey := "this-is-a-32-byte-secret-key-!!" // 32 bytes for A256KW
+	jweSecretKey := "any-jwe-secret" // Will be hashed to 32 bytes
 
 	testCases := []struct {
 		name             string
@@ -118,8 +118,8 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	// 3. Define keys
-	jweSecretKey := "this-is-a-32-byte-secret-key-!!" // 32 bytes for A256KW
-	jwtSecretKey := "test-jwt-super-secret-from-go-test"
+	jweSecretKey := "any-jwe-secret" // Will be hashed to 32 bytes
+	jwtSecretKey := "any-jwt-secret" // Will be hashed to 32 bytes
 
 	// 4. Start the server as a subprocess
 	serverCmd := exec.Command(binaryPath,
