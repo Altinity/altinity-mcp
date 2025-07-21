@@ -22,25 +22,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Helper functions for generating and encoding RSA keys for tests
-func generateRSAKeys(t *testing.T) *rsa.PrivateKey {
-	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	return privateKey
-}
-
-func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) string {
-	t.Helper()
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}))
-}
 
 func TestRunGenerator(t *testing.T) {
-	privateKey := generateRSAKeys(t)
-	privateKeyPEM := pemEncodePrivateKey(t, privateKey)
+	jweSecretKey := "this-is-a-32-byte-secret-key-!!" // 32 bytes for A256KW
 
 	testCases := []struct {
 		name             string
@@ -51,7 +35,7 @@ func TestRunGenerator(t *testing.T) {
 		{
 			name: "successful_generation",
 			args: []string{
-				"--jwe-secret-key", privateKeyPEM,
+				"--jwe-secret-key", jweSecretKey,
 				"--jwt-secret-key", "test-jwt-secret",
 				"--host", "testhost",
 				"--port", "9000",
@@ -72,34 +56,10 @@ func TestRunGenerator(t *testing.T) {
 		{
 			name: "missing_jwt_secret_key",
 			args: []string{
-				"--jwe-secret-key", privateKeyPEM,
+				"--jwe-secret-key", jweSecretKey,
 			},
 			expectedError:    "--jwt-secret-key flag is required",
 			expectedInOutput: "Usage of jwe_token_generator:",
-		},
-		{
-			name: "invalid_jwe_key_not_pem",
-			args: []string{
-				"--jwe-secret-key", "not-a-pem-key",
-				"--jwt-secret-key", "test-jwt-secret",
-			},
-			expectedError: "failed to decode PEM block from jwe-secret-key",
-		},
-		{
-			name: "invalid_jwe_key_wrong_type",
-			args: []string{
-				"--jwe-secret-key", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("dummy")})),
-				"--jwt-secret-key", "test-jwt-secret",
-			},
-			expectedError: "jwe-secret-key is not of type RSA PRIVATE KEY",
-		},
-		{
-			name: "invalid_jwe_key_not_rsa",
-			args: []string{
-				"--jwe-secret-key", string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: []byte("invalid bytes")})),
-				"--jwt-secret-key", "test-jwt-secret",
-			},
-			expectedError: "failed to parse RSA private key",
 		},
 		{
 			name:             "help_flag",
@@ -153,9 +113,8 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	// 3. Generate keys
-	jwePrivateKey := generateRSAKeys(t)
-	jwePrivateKeyPEM := pemEncodePrivateKey(t, jwePrivateKey)
+	// 3. Define keys
+	jweSecretKey := "this-is-a-32-byte-secret-key-!!" // 32 bytes for A256KW
 	jwtSecretKey := "test-jwt-super-secret-from-go-test"
 
 	// 4. Start the server as a subprocess
@@ -164,7 +123,7 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 		fmt.Sprintf("--address=%s", "127.0.0.1"),
 		fmt.Sprintf("--port=%d", port),
 		"--allow-jwe-auth",
-		"--jwe-secret-key", jwePrivateKeyPEM,
+		"--jwe-secret-key", jweSecretKey,
 		"--jwt-secret-key", jwtSecretKey,
 		"--log-level=debug",
 	)
@@ -201,7 +160,7 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 	// 6. Generate the JWE token using the `run` function
 	var tokenOutput bytes.Buffer
 	tokenGenArgs := []string{
-		"--jwe-secret-key", jwePrivateKeyPEM,
+		"--jwe-secret-key", jweSecretKey,
 		"--jwt-secret-key", jwtSecretKey,
 		"--host", "localhost", // these are just dummy claims for the test
 	}

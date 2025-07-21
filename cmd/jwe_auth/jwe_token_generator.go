@@ -28,7 +28,7 @@ func run(output io.Writer, args []string) error {
 	fs.SetOutput(output)
 
 	var (
-		jweSecretKey          = fs.String("jwe-secret-key", "your-jwe-secret-key", "PEM-encoded RSA private key for JWE encryption")
+		jweSecretKey          = fs.String("jwe-secret-key", "your-jwe-secret-key", "Secret key for JWE token encryption")
 		jwtSecretKey          = fs.String("jwt-secret-key", "", "Symmetric secret key for JWT signing (required)")
 		host                  = fs.String("host", "localhost", "ClickHouse host")
 		port                  = fs.Int("port", 8123, "ClickHouse port")
@@ -91,28 +91,13 @@ func run(output io.Writer, args []string) error {
 		return fmt.Errorf("--jwt-secret-key flag is required")
 	}
 
-	// 2. Parse the provided RSA private key for JWE
-	block, _ := pem.Decode([]byte(*jweSecretKey))
-	if block == nil {
-		return fmt.Errorf("failed to decode PEM block from jwe-secret-key")
-	}
-
-	if block.Type != "RSA PRIVATE KEY" {
-		return fmt.Errorf("jwe-secret-key is not of type RSA PRIVATE KEY")
-	}
-
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse RSA private key: %w", err)
-	}
-
-	// 3. Encrypt the signed JWT into JWE format
-	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, &privateKey.PublicKey, []byte(*jwtSecretKey))
+	// 2. Encrypt the signed JWT into JWE format
+	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, []byte(*jweSecretKey), []byte(*jwtSecretKey))
 	if err != nil {
 		return fmt.Errorf("failed to generate JWE token: %w", err)
 	}
 
-	// 4. Print example usage with new encrypted token
+	// 3. Print example usage with new encrypted token
 	fmt.Fprintln(output, "\nExample usage with SSE transport:")
 	fmt.Fprintf(output, "curl \"http://localhost:8080/%s/sse\"\n", encryptedToken)
 
