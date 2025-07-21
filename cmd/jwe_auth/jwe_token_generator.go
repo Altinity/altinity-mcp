@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/x509"
-	"encoding/pem"
 	"flag"
 	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
