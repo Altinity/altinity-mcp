@@ -12,12 +12,10 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog/log"
 )
-
 
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
 type ClickHouseJWEServer struct {
@@ -103,9 +101,8 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	return client, nil
 }
 
-
 // buildConfigFromClaims builds a ClickHouse config from JWE claims
-func (s *ClickHouseJWEServer) buildConfigFromClaims(claims jwt.MapClaims) (config.ClickHouseConfig, error) {
+func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{}) (config.ClickHouseConfig, error) {
 	// Create a new ClickHouse config from the claims
 	chConfig := s.Config.ClickHouse // Use default as base
 

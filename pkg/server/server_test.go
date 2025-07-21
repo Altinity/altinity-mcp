@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
 	"github.com/mark3labs/mcp-go/server"
@@ -30,7 +29,6 @@ func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey 
 	require.NoError(t, err)
 	return token
 }
-
 
 // AltinityTestServer wraps mcptest functionality to provide additional functionality
 // specific to Altinity MCP server testing.
@@ -1075,7 +1073,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This should fail because the token contains a disallowed claim key
-		_, err := jwe_auth.ParseAndDecryptJWE(tokenString, []byte(jweSecretKey), []byte(jwtSecretKey))
+		_, err := srv.GetClickHouseClient(ctx, tokenString)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 		require.Contains(t, err.Error(), "disallowed claim key 'invalid_claim'")
@@ -1212,7 +1210,6 @@ func TestGetClickHouseJWEServerFromContext(t *testing.T) {
 	})
 }
 
-
 // TestBuildConfigFromClaims tests building ClickHouse config from JWE claims
 func TestBuildConfigFromClaims(t *testing.T) {
 	chConfig := config.ClickHouseConfig{
@@ -1232,7 +1229,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
 
 	t.Run("basic_claims", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"host":     "jwe-host",
 			"port":     float64(9000),
 			"database": "jwe-db",
@@ -1254,7 +1251,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 	})
 
 	t.Run("tls_claims", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"tls_enabled":              true,
 			"tls_ca_cert":              "/path/to/ca.crt",
 			"tls_client_cert":          "/path/to/client.crt",
@@ -1272,7 +1269,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 	})
 
 	t.Run("empty_claims", func(t *testing.T) {
-		claims := jwt.MapClaims{}
+		claims := map[string]interface{}{}
 
 		cfg, err := srv.buildConfigFromClaims(claims)
 		require.NoError(t, err)
@@ -1283,7 +1280,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 	})
 
 	t.Run("invalid_types", func(t *testing.T) {
-		claims := jwt.MapClaims{
+		claims := map[string]interface{}{
 			"host": 123,       // Should be string
 			"port": "invalid", // Should be number
 		}
