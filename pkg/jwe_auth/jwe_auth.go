@@ -1,6 +1,7 @@
 package jwe_auth
 
 import (
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"github.com/go-jose/go-jose/v4"
@@ -14,10 +15,24 @@ var (
 	ErrInvalidToken = errors.New("invalid JWE token")
 )
 
+// hashToKey converts any string to a 32-byte key using MD5 hash repeated to fill 32 bytes
+func hashToKey(input []byte) []byte {
+	hash := md5.Sum(input)
+	// Repeat the 16-byte MD5 hash twice to get 32 bytes
+	key := make([]byte, 32)
+	copy(key[:16], hash[:])
+	copy(key[16:], hash[:])
+	return key
+}
+
 // GenerateJWEToken creates a JWE token by signing a JWT with HS256 and encrypting it with AES Key Wrap (A256KW) and AES-GCM (A256GCM).
 func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) (string, error) {
+	// Hash the keys to ensure they are 32 bytes
+	hashedJWTKey := hashToKey(jwtSecretKey)
+	hashedJWEKey := hashToKey(jweSecretKey)
+
 	// 1. Create a new signer from the JWT secret key
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: jwtSecretKey}, (&jose.SignerOptions{}).WithType("JWT"))
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedJWTKey}, (&jose.SignerOptions{}).WithType("JWT"))
 	if err != nil {
 		return "", fmt.Errorf("failed to create JWT signer: %w", err)
 	}
@@ -32,7 +47,7 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 	// 3. Create an encrypter from the JWE secret key
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
-		jose.Recipient{Algorithm: jose.A256KW, Key: jweSecretKey},
+		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
 		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType("JWT"),
 	)
 	if err != nil {
@@ -51,6 +66,10 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 
 // ParseAndDecryptJWE parses and validates a JWE token
 func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []byte) (map[string]interface{}, error) {
+	// Hash the keys to ensure they are 32 bytes
+	hashedJWTKey := hashToKey(jwtSecretKey)
+	hashedJWEKey := hashToKey(jweSecretKey)
+
 	// 1. Parse the JWE token
 	jweObject, err := jose.ParseEncrypted(tokenParam, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
 	if err != nil {
@@ -58,7 +77,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 	}
 
 	// 2. Decrypt the JWE token
-	decrypted, err := jweObject.Decrypt(jweSecretKey)
+	decrypted, err := jweObject.Decrypt(hashedJWEKey)
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
@@ -71,7 +90,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 
 	// 4. Verify the signature and get the claims
 	claims := make(map[string]interface{})
-	if err := nestedToken.Claims(jwtSecretKey, &claims); err != nil {
+	if err := nestedToken.Claims(hashedJWTKey, &claims); err != nil {
 		return nil, ErrInvalidToken
 	}
 
