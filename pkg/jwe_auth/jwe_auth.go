@@ -1,7 +1,7 @@
 package jwe_auth
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"github.com/go-jose/go-jose/v4"
@@ -15,14 +15,10 @@ var (
 	ErrInvalidToken = errors.New("invalid JWE token")
 )
 
-// hashToKey converts any string to a 32-byte key using MD5 hash repeated to fill 32 bytes
+// hashToKey converts any string to a 32-byte key using SHA256 hash
 func hashToKey(input []byte) []byte {
-	hash := md5.Sum(input)
-	// Repeat the 16-byte MD5 hash twice to get 32 bytes
-	key := make([]byte, 32)
-	copy(key[:16], hash[:])
-	copy(key[16:], hash[:])
-	return key
+	hash := sha256.Sum256(input)
+	return hash[:]
 }
 
 // GenerateJWEToken creates a JWE token by signing a JWT with HS256 and encrypting it with AES Key Wrap (A256KW) and AES-GCM (A256GCM).
