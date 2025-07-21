@@ -641,7 +641,8 @@ func TestRunServer(t *testing.T) {
 			&cli.StringFlag{Name: "log-level", Value: "info"},
 			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
 			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
-			&cli.StringFlag{Name: "jwe-encryption-key", Value: ""},
+			&cli.StringFlag{Name: "jwe-secret-key", Value: ""},
+			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
 			&cli.IntFlag{Name: "config-reload-time", Value: 0},
 		}
 
@@ -731,7 +732,7 @@ func TestNewApplication(t *testing.T) {
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
 					Enabled:      true,
-					JWESecretKey: "", // Empty encryption key should cause error
+					JWESecretKey: "", // Empty secret key should cause error
 					JWTSecretKey: "jwt-secret",
 				},
 			},
@@ -766,7 +767,7 @@ func TestNewApplication(t *testing.T) {
 				JWE: config.JWEConfig{
 					Enabled:      true,
 					JWESecretKey: "jwe-secret",
-					JWTSecretKey: "", // Empty encryption key should cause error
+					JWTSecretKey: "", // Empty secret key should cause error
 				},
 			},
 		}
@@ -1737,7 +1738,7 @@ func TestRun(t *testing.T) {
 		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-secret-key", ""}
 		err := run(args)
 		require.Error(t, err)
-		// Should fail due to missing JWE encryption key
+		// Should fail due to missing JWE secret key
 	})
 
 	t.Run("invalid_config_file", func(t *testing.T) {
