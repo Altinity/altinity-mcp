@@ -198,43 +198,46 @@ The Altinity MCP Server supports seamless integration with OpenAI GPTs through i
 
 ### Authentication
 - **With JWE**: Add the JWE token to either:
-  1. Path parameter: ``/{token}/openapi/...``
-  2. Authorization header: ``Bearer {token}``
-  3. ``x-altinity-mcp-key`` header
+  1. Path parameter: `/{jwe_token}/openapi/...` (now required)
+  2. Authorization header: `Bearer {token}` (alternative)
+  3. `x-altinity-mcp-key` header (alternative)
 - **Without JWE**: Use server-configured credentials (no auth needed in requests)
 
 ### Available Actions
 
 #### 1. List Tables in Database
-**Path**: `/{token}/openapi/list_tables`  
+**Path**: `/openapi/list_tables`  
 **Parameters**:
-- `database`: Name of database (optional, returns all databases if omitted)
+- `jwe_token` (path param): JWE authentication token
+- `database` (query param): Name of database (optional, returns all databases if omitted)
 
 **Example OpenAPI Path**:
 ```
-GET /{token}/openapi/list_tables?database={db_name}
+GET /{jwe_token}/openapi/list_tables?database={db_name}
 ```
 
 #### 2. Describe Table Structure
-**Path**: `/{token}/openapi/describe_table`  
+**Path**: `/openapi/describe_table`  
 **Parameters**:
-- `database`: Name of database (required)
-- `table_name`: Name of table to describe (required)
+- `jwe_token` (path param): JWE authentication token
+- `database` (query param): Name of database (required)
+- `table_name` (query param): Name of table to describe (required)
 
 **Example OpenAPI Path**:
 ```
-GET /{token}/openapi/describe_table?database={db_name}&table_name={table_name}
+GET /{jwe_token}/openapi/describe_table?database={db_name}&table_name={table_name}
 ```
 
 #### 3. Execute SQL Query
-**Path**: `/{token}/openapi/execute_query`  
+**Path**: `/openapi/execute_query`  
 **Parameters**:
-- `query`: SQL query to execute (required)
-- `limit`: Maximum rows to return (optional, default 1000, max 10000)
+- `jwe_token` (path param): JWE authentication token
+- `query` (query param): SQL query to execute (required)
+- `limit` (query param): Maximum rows to return (optional, default 1000, max 10000)
 
 **Example OpenAPI Path**:
 ```
-GET /{token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
+GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 ```
 
 ### Configuration Example for GPTs
@@ -249,29 +252,67 @@ GET /{token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
     {"url": "https://your-server:8080/{token}"}
   ],
   "paths": {
-    "/openapi/list_tables": {
+    "/{jwe_token}/openapi/list_tables": {
       "get": {
         "operationId": "list_tables",
         "parameters": [
-          {"name": "database", "in": "query", "schema": {"type": "string"}}
+          {
+            "name": "jwe_token",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "database",
+            "in": "query",
+            "schema": {"type": "string"}
+          }
         ]
       }
     },
-    "/openapi/describe_table": {
+    "/{jwe_token}/openapi/describe_table": {
       "get": {
         "operationId": "describe_table",
         "parameters": [
-          {"name": "database", "in": "query", "required": true},
-          {"name": "table_name", "in": "query", "required": true}
+          {
+            "name": "jwe_token",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "database",
+            "in": "query",
+            "required": true
+          },
+          {
+            "name": "table_name",
+            "in": "query",
+            "required": true
+          }
         ]
       }
     },
-    "/openapi/execute_query": {
+    "/{jwe_token}/openapi/execute_query": {
       "get": {
         "operationId": "execute_query",
         "parameters": [
-          {"name": "query", "in": "query", "required": true},
-          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+          {
+            "name": "jwe_token",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": true
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {"type": "integer"}
+          }
         ]
       }
     }
