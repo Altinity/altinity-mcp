@@ -66,7 +66,7 @@ type ServerTLSConfig struct {
 // JWEConfig defines configuration for JWE authentication
 type JWEConfig struct {
 	Enabled      bool   `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" desc:"Enable JWE encryption for ClickHouse connection"`
-	JWESecretKey string `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" desc:"RSA private key for JWE token decryption"`
+	JWESecretKey string `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" desc:"Secret key for JWE token encryption/decryption"`
 	JWTSecretKey string `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT signature verification"`
 }
 
