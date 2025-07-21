@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/golang-jwt/jwt/v5"
 	"io"
 	"os"
 	"time"
@@ -50,7 +49,7 @@ func run(output io.Writer, args []string) error {
 	}
 
 	// Create claims for the token
-	claims := jwt.MapClaims{
+	claims := map[string]interface{}{
 		"host":     *host,
 		"port":     *port,
 		"database": *database,

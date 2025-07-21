@@ -3,8 +3,8 @@ package jwe_auth
 import (
 	"errors"
 	"fmt"
-	"github.com/golang-jwt/jwe"
-	"github.com/golang-jwt/jwt/v5"
+	"gopkg.in/go-jose/go-jose.v4"
+	"gopkg.in/go-jose/go-jose.v4/jwt"
 )
 
 var (
@@ -15,61 +15,66 @@ var (
 )
 
 // GenerateJWEToken creates a JWE token by signing a JWT with HS256 and encrypting it with AES Key Wrap (A256KW) and AES-GCM (A256GCM).
-func GenerateJWEToken(claims jwt.MapClaims, jweSecretKey []byte, jwtSecretKey []byte) (string, error) {
-	// Create JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedJWT, err := token.SignedString(jwtSecretKey)
+func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) (string, error) {
+	// 1. Create a new signer from the JWT secret key
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: jwtSecretKey}, (&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return "", fmt.Errorf("failed to create JWT signer: %w", err)
+	}
+
+	// 2. Sign the claims to create a JWT
+	signedJWT, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
 
-	// Encrypt JWT to JWE
-	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmRSAOAEP,
-		jweSecretKey,
-		jwe.EncryptionTypeA256GCM,
-		[]byte(signedJWT),
+	// 3. Create an encrypter from the JWE secret key
+	encrypter, err := jose.NewEncrypter(
+		jose.A256GCM,
+		jose.Recipient{Algorithm: jose.A256KW, Key: jweSecretKey},
+		(&jose.EncrypterOptions{}).WithType("JWE").SetContentType("JWT"),
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create JWE: %w", err)
+		return "", fmt.Errorf("failed to create JWE encrypter: %w", err)
 	}
 
-	compact, err := jweToken.CompactSerialize()
+	// 4. Encrypt the signed JWT
+	jweObject, err := encrypter.Encrypt([]byte(signedJWT))
 	if err != nil {
-		return "", fmt.Errorf("failed to serialize JWE: %w", err)
+		return "", fmt.Errorf("failed to encrypt JWE: %w", err)
 	}
-	return compact, nil
+
+	// 5. Serialize the JWE to compact form
+	return jweObject.CompactSerialize()
 }
 
 // ParseAndDecryptJWE parses and validates a JWE token
-func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []byte) (jwt.MapClaims, error) {
-	// 1. Decrypt JWE to get signed JWT payload
-	jweToken, err := jwe.ParseEncrypted(tokenParam)
-	if err != nil {
-		return nil, ErrInvalidToken
-	}
-	signedJWT, err := jweToken.Decrypt(jweSecretKey)
+func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []byte) (map[string]interface{}, error) {
+	// 1. Parse the JWE token
+	jweObject, err := jose.ParseEncrypted(tokenParam, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
 
-	// 2. Parse and validate inner JWT
-	token, err := jwt.Parse(string(signedJWT), func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return jwtSecretKey, nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
-
+	// 2. Decrypt the JWE token
+	decrypted, err := jweObject.Decrypt(jweSecretKey)
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
 
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
+	// 3. Parse the inner JWT
+	nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
+	if err != nil {
 		return nil, ErrInvalidToken
 	}
 
+	// 4. Verify the signature and get the claims
+	claims := make(map[string]interface{})
+	if err := nestedToken.Claims(jwtSecretKey, &claims); err != nil {
+		return nil, ErrInvalidToken
+	}
+
+	// 5. Validate claims
 	if err := validateClaimsWhitelist(claims); err != nil {
 		return nil, err
 	}
@@ -78,7 +83,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 }
 
 // validateClaimsWhitelist validates that JWE claims only contain allowed keys
-func validateClaimsWhitelist(claims jwt.MapClaims) error {
+func validateClaimsWhitelist(claims map[string]interface{}) error {
 	// Define whitelist of allowed claim keys
 	allowedKeys := map[string]bool{
 		// Standard JWT claims
