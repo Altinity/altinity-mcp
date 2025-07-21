@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/golang-jwt/jwe"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -31,23 +32,9 @@ import (
 
 // generateJWEToken is a helper to create JWE tokens for testing.
 func generateJWEToken(t *testing.T, claims map[string]interface{}, jwePublicKey *rsa.PublicKey, jwtSecretKey []byte) string {
-	// Create JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims(claims))
-	signedJWT, err := token.SignedString(jwtSecretKey)
+	token, err := jwe_auth.GenerateJWEToken(claims, jwePublicKey, jwtSecretKey)
 	require.NoError(t, err)
-
-	// Encrypt JWT to JWE
-	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmRSAOAEP,
-		jwePublicKey,
-		jwe.EncryptionTypeA256GCM,
-		[]byte(signedJWT),
-	)
-	require.NoError(t, err)
-
-	compact, err := jweToken.CompactSerialize()
-	require.NoError(t, err)
-	return compact
+	return token
 }
 
 // Helper functions for generating and encoding RSA keys for tests
@@ -326,37 +313,6 @@ func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTe
 	return s
 }
 
-// TestJWETokenGeneration tests JWE token generation with TLS configuration
-func TestJWETokenGeneration(t *testing.T) {
-	t.Parallel()
-	jwePrivateKey, jwePublicKey := generateRSAKeys(t)
-	jwtSecretKey := []byte("test-jwt-secret")
-
-	// Test basic JWE token generation
-	t.Run("basic_token", func(t *testing.T) {
-		claims := map[string]interface{}{
-			"host":     "localhost",
-			"port":     float64(8123),
-			"database": "default",
-			"username": "default",
-			"protocol": "http",
-			"exp":      time.Now().Add(time.Hour).Unix(),
-		}
-
-		tokenString := generateJWEToken(t, claims, jwePublicKey, jwtSecretKey)
-		require.NotEmpty(t, tokenString)
-
-		// Decrypt and verify the token
-		jweToken, err := jwe.ParseEncrypted(tokenString)
-		require.NoError(t, err)
-		decrypted, err := jweToken.Decrypt(jwePrivateKey)
-		require.NoError(t, err)
-
-		var parsedClaims jwt.MapClaims
-		err = json.Unmarshal(decrypted, &parsedClaims)
-		require.NoError(t, err)
-	})
-}
 
 // setupClickHouseContainer sets up a ClickHouse container for testing.
 func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {

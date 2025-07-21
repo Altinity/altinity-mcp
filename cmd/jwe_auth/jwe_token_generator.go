@@ -5,9 +5,9 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"time"
 
-	"github.com/golang-jwt/jwe"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -74,18 +74,7 @@ func main() {
 		flag.Usage()
 		return
 	}
-	// 2. Create and sign a JWT with our claims
-	token := jwt.NewWithClaims(
-		jwt.SigningMethodHS256,
-		jwt.MapClaims(claims),
-	)
-	signedJWT, err := token.SignedString([]byte(*jwtSecretKey))
-	if err != nil {
-		fmt.Printf("Failed to sign JWT: %v\n", err)
-		return
-	}
-
-	// 3. Parse the provided RSA private key for JWE
+	// 2. Parse the provided RSA private key for JWE
 	block, _ := pem.Decode([]byte(*jweSecretKey))
 	if block == nil || block.Type != "RSA PRIVATE KEY" {
 		fmt.Println("Failed to decode PEM containing private key")
@@ -99,19 +88,9 @@ func main() {
 	}
 
 	// 3. Encrypt the signed JWT into JWE format
-	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmRSAOAEP,
-		&privateKey.PublicKey,
-		jwe.EncryptionTypeA256GCM,
-		[]byte(signedJWT),
-	)
+	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, &privateKey.PublicKey, []byte(*jwtSecretKey))
 	if err != nil {
-		fmt.Printf("Failed to create JWE: %v\n", err)
-		return
-	}
-	encryptedToken, err := jweToken.CompactSerialize()
-	if err != nil {
-		fmt.Printf("Failed to serialize JWE: %v\n", err)
+		fmt.Printf("Failed to generate JWE token: %v\n", err)
 		return
 	}
 
