@@ -908,7 +908,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
 
 		_, err := srv.GetClickHouseClient(ctx, "")
-		require.Equal(t, ErrMissingToken, err)
+		require.Equal(t, jwe_auth.ErrMissingToken, err)
 	})
 
 	t.Run("with_jwe_invalid_token", func(t *testing.T) {
@@ -930,7 +930,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
 
 		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
-		require.Equal(t, ErrInvalidToken, err)
+		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("with_jwe_valid_token", func(t *testing.T) {
@@ -968,8 +968,8 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWE error
 		require.Error(t, err)
-		require.NotEqual(t, ErrMissingToken, err)
-		require.NotEqual(t, ErrInvalidToken, err)
+		require.NotEqual(t, jwe_auth.ErrMissingToken, err)
+		require.NotEqual(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("with_jwe_token_with_tls", func(t *testing.T) {
@@ -1012,8 +1012,8 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
 		// We expect a connection error, not a JWE error
 		require.Error(t, err)
-		require.NotEqual(t, ErrMissingToken, err)
-		require.NotEqual(t, ErrInvalidToken, err)
+		require.NotEqual(t, jwe_auth.ErrMissingToken, err)
+		require.NotEqual(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("with_jwe_invalid_encryption_key", func(t *testing.T) {
@@ -1043,7 +1043,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 
 		// This will fail because the token was encrypted with a different key
 		_, err := srv.GetClickHouseClient(ctx, tokenString)
-		require.Equal(t, ErrInvalidToken, err)
+		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("with_jwe_invalid_claims", func(t *testing.T) {
@@ -1075,7 +1075,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
 		// This should fail because the token contains a disallowed claim key
-		_, err := srv.parseAndDecryptJWE(tokenString)
+		_, err := jwe_auth.ParseAndDecryptJWE(tokenString, []byte(jweSecretKey), []byte(jwtSecretKey))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 		require.Contains(t, err.Error(), "disallowed claim key 'invalid_claim'")
@@ -1212,61 +1212,6 @@ func TestGetClickHouseJWEServerFromContext(t *testing.T) {
 	})
 }
 
-// TestParseAndDecryptJWE tests JWE parsing and validation
-func TestParseAndDecryptJWE(t *testing.T) {
-	chConfig := config.ClickHouseConfig{
-		Host:     "localhost",
-		Port:     8123,
-		Database: "default",
-		Username: "default",
-		Protocol: config.HTTPProtocol,
-		Limit:    1000,
-	}
-	jweSecretKey := "this-is-a-32-byte-secret-key!!"
-	jwtSecretKey := "test-jwt-secret"
-
-	jweConfig := config.JWEConfig{
-		Enabled:      true,
-		JWESecretKey: jweSecretKey,
-		JWTSecretKey: jwtSecretKey,
-	}
-
-	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
-
-	t.Run("valid_token", func(t *testing.T) {
-		claims := map[string]interface{}{
-			"host":     "test-host",
-			"port":     float64(9000),
-			"database": "test-db",
-			"exp":      time.Now().Add(time.Hour).Unix(),
-		}
-
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		parsedClaims, err := srv.parseAndDecryptJWE(tokenString)
-		require.NoError(t, err)
-		require.Equal(t, "test-host", parsedClaims["host"])
-		require.Equal(t, float64(9000), parsedClaims["port"])
-		require.Equal(t, "test-db", parsedClaims["database"])
-	})
-
-	t.Run("invalid_token", func(t *testing.T) {
-		_, err := srv.parseAndDecryptJWE("invalid-token")
-		require.Equal(t, ErrInvalidToken, err)
-	})
-
-	t.Run("expired_token", func(t *testing.T) {
-		claims := map[string]interface{}{
-			"host": "test-host",
-			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
-		}
-
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		_, err := srv.parseAndDecryptJWE(tokenString)
-		require.Equal(t, ErrInvalidToken, err)
-	})
-}
 
 // TestBuildConfigFromClaims tests building ClickHouse config from JWE claims
 func TestBuildConfigFromClaims(t *testing.T) {

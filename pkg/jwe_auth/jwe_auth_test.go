@@ -49,3 +49,45 @@ func TestJWETokenGeneration(t *testing.T) {
 		require.Equal(t, float64(8123), parsedClaims["port"])
 	})
 }
+
+// TestParseAndDecryptJWE tests JWE parsing and validation
+func TestParseAndDecryptJWE(t *testing.T) {
+	jweSecretKey := []byte("this-is-a-32-byte-secret-key!!")
+	jwtSecretKey := []byte("test-jwt-secret")
+
+	t.Run("valid_token", func(t *testing.T) {
+		claims := jwt.MapClaims{
+			"host":     "test-host",
+			"port":     float64(9000),
+			"database": "test-db",
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		tokenString, err := GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		parsedClaims, err := ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+		require.Equal(t, float64(9000), parsedClaims["port"])
+		require.Equal(t, "test-db", parsedClaims["database"])
+	})
+
+	t.Run("invalid_token", func(t *testing.T) {
+		_, err := ParseAndDecryptJWE("invalid-token", jweSecretKey, jwtSecretKey)
+		require.Equal(t, ErrInvalidToken, err)
+	})
+
+	t.Run("expired_token", func(t *testing.T) {
+		claims := jwt.MapClaims{
+			"host": "test-host",
+			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
+		}
+
+		tokenString, err := GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		_, err = ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.Equal(t, ErrInvalidToken, err)
+	})
+}
