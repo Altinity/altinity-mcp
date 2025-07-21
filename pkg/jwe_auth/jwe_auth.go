@@ -23,7 +23,8 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 	}
 
 	// 2. Sign the claims to create a JWT
-	signedJWT, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
+	builder := jwt.Signed(signer).Claims(claims)
+	signedJWT, err := builder.Serialize()
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
@@ -32,7 +33,7 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
 		jose.Recipient{Algorithm: jose.A256KW, Key: jweSecretKey},
-		(&jose.EncrypterOptions{}).WithType("JWE").SetContentType("JWT"),
+		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType("JWT"),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create JWE encrypter: %w", err)
