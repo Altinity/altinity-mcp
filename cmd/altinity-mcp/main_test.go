@@ -887,6 +887,7 @@ server:
 				JWE: config.JWEConfig{
 					Enabled:      true,
 					JWESecretKey: "test-secret-key",
+					JWTSecretKey: "test-jwt-secret-key",
 				},
 			},
 		}
@@ -1887,7 +1888,8 @@ clickhouse:
 server:
   jwe:
     enabled: true
-    encryption_key: "test-secret"
+    jwe_secret_key: "test-secret"
+    jwt_secret_key: "test-jwt-secret"
 logging:
   level: "debug"
 `
