@@ -17,7 +17,7 @@ func GenerateJWEToken(claims jwt.MapClaims, jweSecretKey []byte, jwtSecretKey []
 
 	// Encrypt JWT to JWE
 	jweToken, err := jwe.NewJWE(
-		jwe.KeyAlgorithmA256KW,
+		jwe.KeyAlgorithmRSAOAEP,
 		jweSecretKey,
 		jwe.EncryptionTypeA256GCM,
 		[]byte(signedJWT),
