@@ -10,9 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"crypto/x509"
-	"encoding/pem"
-
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/golang-jwt/jwe"
