@@ -63,6 +63,14 @@ func TestRunGenerator(t *testing.T) {
 			expectedError:    "flag: help requested",
 			expectedInOutput: "Usage of jwe_token_generator:",
 		},
+		{
+			name: "invalid_jwe_secret_key_length",
+			args: []string{
+				// Using default jwe-secret-key which is not 32 bytes long
+				"--jwt-secret-key", "test-jwt-secret",
+			},
+			expectedError: "failed to generate JWE token",
+		},
 	}
 
 	for _, tc := range testCases {
