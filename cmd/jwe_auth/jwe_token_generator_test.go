@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -193,7 +194,7 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		defer resp.Body.Close()
+		defer func() { require.NoError(t, resp.Body.Close()) }()
 		return resp.StatusCode == http.StatusOK
 	}, 10*time.Second, 200*time.Millisecond, "Server did not become healthy in time")
 
@@ -220,7 +221,7 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	require.NoError(t, err, "Request to SSE endpoint failed")
-	defer resp.Body.Close()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	// 8. Check for a successful connection
 	require.Equal(t, http.StatusOK, resp.StatusCode, "Expected OK status from SSE endpoint")
@@ -232,7 +233,7 @@ func TestJWEAuthEndToEnd(t *testing.T) {
 	defer cancel()
 	go func() {
 		<-readCtx.Done()
-		if readCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
 			_ = resp.Body.Close()
 		}
 	}()

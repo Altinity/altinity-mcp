@@ -20,7 +20,6 @@ import (
 	"encoding/pem"
 
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/golang-jwt/jwe"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
@@ -50,16 +49,6 @@ func pemEncodePrivateKey(t *testing.T, key *rsa.PrivateKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}))
-}
-
-func pemEncodePublicKey(t *testing.T, key *rsa.PublicKey) string {
-	t.Helper()
-	pubBytes, err := x509.MarshalPKIXPublicKey(key)
-	require.NoError(t, err)
-	return string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: pubBytes,
 	}))
 }
 
@@ -312,7 +301,6 @@ func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTe
 	s.chJweServer.Config.Server.JWE = jweConfig
 	return s
 }
-
 
 // setupClickHouseContainer sets up a ClickHouse container for testing.
 func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
