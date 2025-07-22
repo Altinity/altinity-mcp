@@ -990,7 +990,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 			return
 		}
 		if limit > s.Config.ClickHouse.Limit {
-			http.Error(w, fmt.Sprintf("Limit cannot exceed %s", s.Config.ClickHouse.Limit), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Limit cannot exceed %d", s.Config.ClickHouse.Limit), http.StatusBadRequest)
 			return
 		}
 	}
