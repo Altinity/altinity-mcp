@@ -661,28 +661,28 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Try to extract token from URL path first
-	pathParts := strings.Split(r.URL.Path, "/")
 	var token string
-	for i, part := range pathParts {
-		if part == "openapi" && i > 0 {
-			token = pathParts[i-1]
-			break
-		}
+	// try get token from Authorization header
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if strings.HasPrefix(authHeader, "Basic ") {
+		token = strings.TrimPrefix(authHeader, "Basic ")
 	}
 
-	// If no token  from path or token from OpenAI GPT tester, try other sources
-	if token == "" || token == "default" {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else if strings.HasPrefix(authHeader, "Basic ") {
-			token = strings.TrimPrefix(authHeader, "Basic ")
-		}
+	// Try x-altinity-mcp-key header
+	if token == "" {
+		token = r.Header.Get("x-altinity-mcp-key")
+	}
 
-		// Try x-altinity-mcp-key header
-		if token == "" {
-			token = r.Header.Get("x-altinity-mcp-key")
+	// Try to extract token from URL path first
+	if token == "" {
+		pathParts := strings.Split(r.URL.Path, "/")
+		for i, part := range pathParts {
+			if part == "openapi" && i > 0 {
+				token = pathParts[i-1]
+				break
+			}
 		}
 	}
 
@@ -713,11 +713,11 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
-		s.serveOpenAPISchema(w, r, hostURL, token)
+		s.serveOpenAPISchema(w, r, hostURL)
 	}
 }
 
-func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL, token string) {
+func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL string) {
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -749,7 +749,7 @@ func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    token,
+							"default":    "default",
 						},
 						{
 							"name":        "database",
@@ -806,7 +806,7 @@ func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    token,
+							"default":    "default",
 						},
 						{
 							"name":        "query",
@@ -819,7 +819,7 @@ func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 							"name":        "limit",
 							"in":          "query",
 							"required":    false,
-							"description": "Max rows to return (default 1000, max 10000).",
+							"description": "Max rows to return (default 1000, max 100000).",
 							"schema":      map[string]interface{}{"type": "integer"},
 						},
 					},
@@ -849,7 +849,7 @@ func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.
 								"type": "string",
 							},
 							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    token,
+							"default":    "default",
 						},
 						{
 							"name":        "database",
@@ -989,8 +989,8 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
 			return
 		}
-		if limit > 10000 {
-			http.Error(w, "Limit cannot exceed 10000", http.StatusBadRequest)
+		if limit > s.Config.ClickHouse.Limit {
+			http.Error(w, fmt.Sprintf("Limit cannot exceed %s", s.Config.ClickHouse.Limit), http.StatusBadRequest)
 			return
 		}
 	}
