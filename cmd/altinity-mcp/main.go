@@ -210,7 +210,7 @@ func run(args []string) error {
 			&cli.IntFlag{
 				Name:    "clickhouse-limit",
 				Usage:   "Default limit for query results",
-				Value:   1000,
+				Value:   100000,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
 			&cli.StringFlag{

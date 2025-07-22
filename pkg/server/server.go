@@ -182,7 +182,7 @@ func RegisterTools(srv AltinityMCPServer) {
 			mcp.Description("SQL query to execute (SELECT, INSERT, CREATE, etc.)"),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of rows to return (default: 1000, max: 10000)"),
+			mcp.Description("Maximum number of rows to return (default: 100000)"),
 		),
 	)
 
