@@ -57,6 +57,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 
 	log.Info().
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
+		Bool("read_only", cfg.ClickHouse.ReadOnly).
 		Int("default_limit", cfg.ClickHouse.Limit).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
