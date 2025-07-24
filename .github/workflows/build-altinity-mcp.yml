@@ -250,8 +250,8 @@ jobs:
       if: steps.check_tag.outputs.matched == 'true'
       run: |
         # Windows archives
-        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_amd64.zip altinity-mcp-windows-amd64.exe
-        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_arm64.zip altinity-mcp-windows-arm64.exe
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_amd64.zip altinity-mcp-windows-amd64.exe && cd -
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_arm64.zip altinity-mcp-windows-arm64.exe && cd -
 
     - name: Extract changelog for latest version
       if: steps.check_tag.outputs.matched == 'true'
