@@ -1501,6 +1501,98 @@ func TestApplicationStart(t *testing.T) {
 		}
 	})
 
+	t.Run("sse_transport_openapi_without_jwe", func(t *testing.T) {
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.SSETransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				JWE: config.JWEConfig{
+					Enabled: false,
+				},
+				OpenAPI: config.OpenAPIConfig{
+					Enabled: true,
+					TLS:     false,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
+				},
+			},
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+		}
+
+		// Start in a goroutine since it will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give it a moment to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Should start successfully (will block on ListenAndServe)
+		select {
+		case err := <-done:
+			// If it returns immediately, it should be an error
+			require.Error(t, err)
+		default:
+			// If it's still running, that's expected - stop it
+			if app.httpSrv != nil {
+				_ = app.httpSrv.Close()
+				<-done // Wait for it to finish
+			}
+		}
+	})
+
+	t.Run("http_transport_openapi_without_jwe", func(t *testing.T) {
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport: config.HTTPTransport,
+				Address:   "localhost",
+				Port:      0, // Use random port
+				JWE: config.JWEConfig{
+					Enabled: false,
+				},
+				OpenAPI: config.OpenAPIConfig{
+					Enabled: true,
+					TLS:     false,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
+				},
+			},
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+		}
+
+		// Start in a goroutine since it will block
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give it a moment to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Should start successfully (will block on ListenAndServe)
+		select {
+		case err := <-done:
+			// If it returns immediately, it should be an error
+			require.Error(t, err)
+		default:
+			// If it's still running, that's expected - stop it
+			if app.httpSrv != nil {
+				_ = app.httpSrv.Close()
+				<-done // Wait for it to finish
+			}
+		}
+	})
+
 	t.Run("sse_transport_with_tls_invalid_config", func(t *testing.T) {
 		cfg := config.Config{
 			Server: config.ServerConfig{
