@@ -180,10 +180,9 @@ jobs:
     - name: Install nfpm
       if: steps.check_tag.outputs.matched == 'true'
       run: |
+        echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
         sudo apt-get update
-        sudo apt-get install -y rpm
-        curl -sSLO https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_amd64.deb
-        sudo dpkg -i nfpm_amd64.deb
+        sudo apt-get install -y rpm nfpm
 
     - name: Build binaries
       if: steps.check_tag.outputs.matched == 'true'
