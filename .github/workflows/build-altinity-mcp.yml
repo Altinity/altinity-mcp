@@ -226,12 +226,12 @@ jobs:
       if: steps.check_tag.outputs.matched == 'true'
       run: |
         # Linux AMD64 packages
-        sed 's|dist/altinity-mcp-linux-amd64|/usr/bin/altinity-mcp|' nfpm.yaml > nfpm-amd64.yaml
+        cp nfpm.yaml nfpm-amd64.yaml
         nfpm pkg --config nfpm-amd64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.deb
         nfpm pkg --config nfpm-amd64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.rpm
         
         # Linux ARM64 packages
-        sed 's|dist/altinity-mcp-linux-amd64|/usr/bin/altinity-mcp|' nfpm.yaml | sed 's|amd64|arm64|' > nfpm-arm64.yaml
+        cat nfpm.yaml | sed 's|amd64|arm64|' > nfpm-arm64.yaml
         nfpm pkg --config nfpm-arm64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.deb
         nfpm pkg --config nfpm-arm64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.rpm
 
