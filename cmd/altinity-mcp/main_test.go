@@ -95,6 +95,35 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 	})
 
+	t.Run("openapi_enabled_http", func(t *testing.T) {
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "config"},
+			&cli.StringFlag{Name: "clickhouse-host", Value: "localhost"},
+			&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
+			&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
+			&cli.StringFlag{Name: "clickhouse-password", Value: ""},
+			&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
+			&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
+			&cli.BoolFlag{Name: "read-only", Value: false},
+			&cli.StringFlag{Name: "transport", Value: "stdio"},
+			&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
+			&cli.IntFlag{Name: "port", Value: 8080},
+			&cli.StringFlag{Name: "log-level", Value: "info"},
+			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
+			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
+			&cli.StringFlag{Name: "jwe-secret-key", Value: ""},
+			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
+			&cli.StringFlag{Name: "openapi", Value: "http"},
+		}
+
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+		require.Equal(t, true, cfg.Server.OpenAPI.Enabled)
+		require.Equal(t, false, cfg.Server.OpenAPI.TLS)
+	})
+
 	t.Run("nonexistent_config_file", func(t *testing.T) {
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{

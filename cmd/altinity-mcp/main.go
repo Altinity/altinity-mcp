@@ -361,7 +361,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/query", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -375,7 +375,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -446,7 +446,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/query", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -460,7 +460,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/query", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
