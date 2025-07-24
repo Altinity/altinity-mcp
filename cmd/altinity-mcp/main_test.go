@@ -1027,6 +1027,7 @@ logging:
 				"config":           true,
 				"clickhouse-host":  true,
 				"clickhouse-limit": true,
+				"openapi":          true,
 			},
 		}
 
@@ -1069,7 +1070,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"clickhouse-tls-client-key":           "/path/to/client.key",
 				"clickhouse-tls-insecure-skip-verify": true,
 				"clickhouse-limit":                    5000,
-				"openapi":                             true,
 			},
 			setFlags: map[string]bool{
 				"clickhouse-host":                     true,
@@ -1119,9 +1119,9 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-key-file":  "/path/to/server.key",
 				"server-tls-ca-cert":   "/path/to/server-ca.crt",
 				"allow-jwe-auth":       true,
-				"jwe-secret-key":   "jwe-secret123",
-				"jwt-secret-key":   "jwt-secret123",
-				"openapi":              true,
+				"jwe-secret-key":       "jwe-secret123",
+				"jwt-secret-key":       "jwt-secret123",
+				"openapi":              "https",
 			},
 			setFlags: map[string]bool{
 				"transport":            true,
@@ -1132,8 +1132,9 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"server-tls-key-file":  true,
 				"server-tls-ca-cert":   true,
 				"allow-jwe-auth":       true,
-				"jwe-secret-key":   true,
-				"jwt-secret-key":   true,
+				"jwe-secret-key":       true,
+				"jwt-secret-key":       true,
+				"openapi":              true,
 			},
 		}
 
@@ -1150,6 +1151,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.True(t, cfg.Server.JWE.Enabled)
 		require.Equal(t, "jwe-secret123", cfg.Server.JWE.JWESecretKey)
 		require.Equal(t, "jwt-secret123", cfg.Server.JWE.JWTSecretKey)
+		require.True(t, cfg.Server.OpenAPI.Enabled)
+		require.True(t, cfg.Server.OpenAPI.TLS)
 	})
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
@@ -1174,6 +1177,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
+		require.Equal(t, false, cfg.Server.OpenAPI.TLS)
 	})
 
 	t.Run("invalid_protocol_defaults_to_http", func(t *testing.T) {
