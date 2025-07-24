@@ -215,13 +215,8 @@ jobs:
         vendor: Altinity Inc.
         homepage: https://altinity.com
         license: Apache 2.0
-        bindir: /usr/bin
         contents:
           - src: dist/altinity-mcp-linux-amd64
-            dst: /usr/bin/altinity-mcp
-            file_info:
-              mode: 0755
-          - src: dist/altinity-mcp-linux-arm64
             dst: /usr/bin/altinity-mcp
             file_info:
               mode: 0755
