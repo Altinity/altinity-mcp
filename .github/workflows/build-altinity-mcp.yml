@@ -239,19 +239,19 @@ jobs:
       if: steps.check_tag.outputs.matched == 'true'
       run: |
         # Linux archives
-        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.tar.gz -C dist altinity-mcp-linux-amd64
-        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.tar.gz -C dist altinity-mcp-linux-arm64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_amd64.tar.gz -C dist altinity-mcp-linux-amd64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_arm64.tar.gz -C dist altinity-mcp-linux-arm64
         
         # Darwin archives
-        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_darwin_amd64.tar.gz -C dist altinity-mcp-darwin-amd64
-        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_darwin_arm64.tar.gz -C dist altinity-mcp-darwin-arm64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_darwin_amd64.tar.gz -C dist altinity-mcp-darwin-amd64
+        tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_darwin_arm64.tar.gz -C dist altinity-mcp-darwin-arm64
 
     - name: Create zip archives
       if: steps.check_tag.outputs.matched == 'true'
       run: |
         # Windows archives
-        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_amd64.zip altinity-mcp-windows-amd64.exe && cd -
-        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_arm64.zip altinity-mcp-windows-arm64.exe && cd -
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/}_windows_amd64.zip altinity-mcp-windows-amd64.exe && cd -
+        cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/}_windows_arm64.zip altinity-mcp-windows-arm64.exe && cd -
 
     - name: Check dist folder
       if: steps.check_tag.outputs.matched == 'true'
