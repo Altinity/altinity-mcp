@@ -253,17 +253,17 @@ jobs:
         cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_amd64.zip altinity-mcp-windows-amd64.exe && cd -
         cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/v}_windows_arm64.zip altinity-mcp-windows-arm64.exe && cd -
 
+    - name: Check dist folder
+      if: steps.check_tag.outputs.matched == 'true'
+      run: ls -la dist
+
     - name: Extract changelog for latest version
       if: steps.check_tag.outputs.matched == 'true'
       id: changelog
       run: |
         # Extract changelog for the current version
         VERSION=${GITHUB_REF#refs/tags/v}
-        awk -v ver="v${VERSION}" '
-          $0 ~ "^# " ver "$" {flag=1; next}
-          /^# v[0-9]/ && flag {exit}
-          flag && !/^#/ {print}
-        ' CHANGELOG.md > latest_changelog.md
+        awk '/^# / {s++} s == 1 {print}' CHANGELOG.md > latest_changelog.md
         
         # Create release notes
         cat > release_notes.md << EOF
@@ -271,14 +271,6 @@ jobs:
         
         ### Release Notes
         $(cat latest_changelog.md)
-        
-        ### Downloads
-        - **Linux AMD64**: .deb, .rpm, .tar.gz
-        - **Linux ARM64**: .deb, .rpm, .tar.gz
-        - **macOS AMD64**: .tar.gz
-        - **macOS ARM64**: .tar.gz
-        - **Windows AMD64**: .zip
-        - **Windows ARM64**: .zip
         
         ### Docker
         \`\`\`bash
