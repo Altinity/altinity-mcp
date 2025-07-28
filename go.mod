@@ -3,7 +3,7 @@ module github.com/altinity/altinity-mcp
 go 1.24
 
 require (
-	github.com/ClickHouse/clickhouse-go/v2 v2.37.2
+	github.com/ClickHouse/clickhouse-go/v2 v2.39.0
 	github.com/go-jose/go-jose/v4 v4.1.1
 	github.com/mark3labs/mcp-go v0.35.0
 	github.com/rs/zerolog v1.34.0
@@ -27,7 +27,7 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/docker v28.3.0+incompatible // indirect
+	github.com/docker/docker v28.3.2+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.8.4 // indirect
