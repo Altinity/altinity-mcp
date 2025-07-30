@@ -547,12 +547,17 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 			return cfg, fmt.Errorf("failed to load config file: %w", err)
 		}
 		cfg = *fileCfg
+		if logErr := setupLogging(string(cfg.Logging.Level)); logErr != nil {
+			return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
+		}
 		log.Info().Str("config_file", configFile).Msg("Configuration loaded from file")
 	}
 
 	// Override with CLI flags (CLI flags take precedence over config file)
 	overrideWithCLIFlags(&cfg, cmd)
-
+	if logErr := setupLogging(string(cfg.Logging.Level)); logErr != nil {
+		return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
+	}
 	return cfg, nil
 }
 
