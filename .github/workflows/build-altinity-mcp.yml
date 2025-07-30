@@ -226,13 +226,13 @@ jobs:
       run: |
         # Linux AMD64 packages
         cp nfpm.yaml nfpm-amd64.yaml
-        nfpm pkg --config nfpm-amd64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.deb
-        nfpm pkg --config nfpm-amd64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_amd64.rpm
+        nfpm pkg --config nfpm-amd64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_amd64.deb
+        nfpm pkg --config nfpm-amd64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_amd64.rpm
         
         # Linux ARM64 packages
         cat nfpm.yaml | sed 's|amd64|arm64|' > nfpm-arm64.yaml
-        nfpm pkg --config nfpm-arm64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.deb
-        nfpm pkg --config nfpm-arm64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/v}_linux_arm64.rpm
+        nfpm pkg --config nfpm-arm64.yaml --packager deb --target dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_arm64.deb
+        nfpm pkg --config nfpm-arm64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_arm64.rpm
 
     - name: Create tar.gz archives
       if: steps.check_tag.outputs.matched == 'true'
@@ -285,6 +285,7 @@ jobs:
         tag_name: ${{ github.ref_name }}
         body_path: release_notes.md
         draft: true
+        fail_on_unmatched_files: true
         files: |
           dist/altinity-mcp_${{ github.ref_name }}_linux_amd64.deb
           dist/altinity-mcp_${{ github.ref_name }}_linux_amd64.rpm
