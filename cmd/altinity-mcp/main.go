@@ -274,7 +274,7 @@ func setupLogging(level string) error {
 		return fmt.Errorf("invalid log level: %s", level)
 	}
 
-	log.Debug().Str("level", level).Msg("Logging configured")
+	log.Debug().Str("logging_level", level).Msg("Logging configured")
 	return nil
 }
 
