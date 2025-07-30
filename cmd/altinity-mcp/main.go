@@ -438,7 +438,6 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			server.WithUseFullURLForMessageEndpoint(false),
 		)
 
-		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
 		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
@@ -456,6 +455,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		sseServer := server.NewSSEServer(mcpServer)
 		mux := http.NewServeMux()
 		mux.Handle("/sse", serverInjector(sseServer))
+		mux.Handle("/message", serverInjector(sseServer.MessageHandler()))
 		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
