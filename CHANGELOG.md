@@ -1,3 +1,7 @@
+# v1.0.1
+BUG FIXES
+- fix `/messages` handler for MCP SSE transport when JWE disabled
+
 # v1.0.0
 Initial release of Altinity MCP Server
 
