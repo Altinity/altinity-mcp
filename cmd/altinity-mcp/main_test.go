@@ -691,9 +691,6 @@ func TestTestConnection(t *testing.T) {
 			ExposedPorts: []string{"8123/tcp", "8443/tcp"},
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-				"CLICKHOUSE_HTTPS_PORT":      "8443",
-				"CLICKHOUSE_SSL_CERT_FILE":   "/etc/clickhouse-server/server.crt",
-				"CLICKHOUSE_SSL_KEY_FILE":    "/etc/clickhouse-server/server.key",
 			},
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
