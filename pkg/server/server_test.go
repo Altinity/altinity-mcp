@@ -399,7 +399,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 				req := httptest.NewRequest("GET", path, nil)
 				// Inject the appropriate token into context
 				if token != "" {
-					t.Logf("SUKA!!! %s GET %s jwe_token!!!=%s", t.Name(), path, token)
 					req = req.WithContext(context.WithValue(req.Context(), "jwe_token", token))
 				}
 				w := httptest.NewRecorder()
@@ -416,7 +415,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 				resp := makeRequest(path, tc.tokenParam)
 				if tc.expectError {
-					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -436,7 +435,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 				resp := makeRequest(path, tc.tokenParam)
 				if tc.expectError {
-					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 				} else {
 					bodyBytes, err := io.ReadAll(resp.Body)
 					require.NoError(t, err)
@@ -474,7 +473,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 				resp := makeRequest(path, tc.tokenParam)
 				if tc.expectError {
-					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -495,7 +494,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 				resp := makeRequest(path, tc.tokenParam)
 				if tc.expectError {
-					require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 				} else {
 					require.Equal(t, http.StatusOK, resp.StatusCode)
 					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -644,7 +643,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer invalid-token")
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 		})
 	})
 }
@@ -656,7 +655,7 @@ func TestExtractTokenFromRequest(t *testing.T) {
 	t.Run("bearer_authorization_header", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("Authorization", "Bearer test-token-123")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "test-token-123", token)
 	})
@@ -664,7 +663,7 @@ func TestExtractTokenFromRequest(t *testing.T) {
 	t.Run("basic_authorization_header", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("Authorization", "Basic test-token-456")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "test-token-456", token)
 	})
@@ -672,14 +671,14 @@ func TestExtractTokenFromRequest(t *testing.T) {
 	t.Run("altinity_mcp_header", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("x-altinity-mcp-key", "test-token-789")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "test-token-789", token)
 	})
 
 	t.Run("openapi_path_token", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/some-token/openapi/list_tables", nil)
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "some-token", token)
 	})
@@ -688,7 +687,7 @@ func TestExtractTokenFromRequest(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("Authorization", "Bearer bearer-token")
 		req.Header.Set("x-altinity-mcp-key", "header-token")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "bearer-token", token)
 	})
@@ -697,14 +696,14 @@ func TestExtractTokenFromRequest(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("x-altinity-mcp-key", "header-token")
 		req.SetPathValue("token", "path-token")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "header-token", token)
 	})
 
 	t.Run("no_token", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "", token)
 	})
@@ -712,7 +711,7 @@ func TestExtractTokenFromRequest(t *testing.T) {
 	t.Run("invalid_authorization_header", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/test", nil)
 		req.Header.Set("Authorization", "Invalid test-token")
-		
+
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "", token)
 	})

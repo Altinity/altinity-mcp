@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -163,7 +164,7 @@ func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
 // ExtractTokenFromRequest extracts a token from an HTTP request
 func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
 	var token string
-	
+
 	// Try Authorization header (Bearer or Basic)
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
