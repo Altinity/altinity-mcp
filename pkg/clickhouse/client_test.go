@@ -190,4 +190,27 @@ func TestTLSConfig(t *testing.T) {
 		require.NotNil(t, tlsConfig)
 		require.True(t, tlsConfig.InsecureSkipVerify)
 	})
+
+	t.Run("ca_cert_not_found", func(t *testing.T) {
+		cfg := &config.TLSConfig{
+			Enabled: true,
+			CaCert:  "/path/that/does/not/exist/ca.crt",
+		}
+		tlsConfig, err := buildTLSConfig(cfg)
+		require.Error(t, err)
+		require.Nil(t, tlsConfig)
+		require.Contains(t, err.Error(), "failed to read CA certificate")
+	})
+
+	t.Run("client_cert_not_found", func(t *testing.T) {
+		cfg := &config.TLSConfig{
+			Enabled:    true,
+			ClientCert: "/path/that/does/not/exist/client.crt",
+			ClientKey:  "/path/that/does/not/exist/client.key",
+		}
+		tlsConfig, err := buildTLSConfig(cfg)
+		require.Error(t, err)
+		require.Nil(t, tlsConfig)
+		require.Contains(t, err.Error(), "failed to load client key pair")
+	})
 }
