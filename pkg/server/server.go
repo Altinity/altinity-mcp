@@ -160,6 +160,56 @@ func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
 	return ""
 }
 
+// ExtractTokenFromRequest extracts a token from an HTTP request
+func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
+	var token string
+	
+	// Try Authorization header (Bearer or Basic)
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if strings.HasPrefix(authHeader, "Basic ") {
+		token = strings.TrimPrefix(authHeader, "Basic ")
+	}
+
+	// Try x-altinity-mcp-key header
+	if token == "" {
+		token = r.Header.Get("x-altinity-mcp-key")
+	}
+
+	// Try to extract token from URL path (for OpenAPI compatibility)
+	if token == "" {
+		pathParts := strings.Split(r.URL.Path, "/")
+		for i, part := range pathParts {
+			if part == "openapi" && i > 0 {
+				token = pathParts[i-1]
+				break
+			}
+		}
+	}
+
+	return token
+}
+
+// ValidateJWEToken validates a JWE token if JWE auth is enabled
+func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
+	if !s.Config.Server.JWE.Enabled {
+		return nil
+	}
+
+	if token == "" {
+		return jwe_auth.ErrMissingToken
+	}
+
+	_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+	if err != nil {
+		log.Error().Err(err).Str("token", token).Msg("JWE token validation failed")
+		return err
+	}
+
+	return nil
+}
+
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
 	// List Tables Tool
@@ -661,39 +711,17 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var token string
-	// try get token from Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		token = strings.TrimPrefix(authHeader, "Bearer ")
-	} else if strings.HasPrefix(authHeader, "Basic ") {
-		token = strings.TrimPrefix(authHeader, "Basic ")
-	}
+	// Extract token from request
+	token := s.ExtractTokenFromRequest(r)
 
-	// Try x-altinity-mcp-key header
-	if token == "" {
-		token = r.Header.Get("x-altinity-mcp-key")
-	}
-
-	// Try to extract token from URL path first
-	if token == "" {
-		pathParts := strings.Split(r.URL.Path, "/")
-		for i, part := range pathParts {
-			if part == "openapi" && i > 0 {
-				token = pathParts[i-1]
-				break
-			}
-		}
-	}
-
-	// If JWE auth is enabled, validate token if provided
-	if chJweServer.Config.Server.JWE.Enabled && token != "" {
-		_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(chJweServer.Config.Server.JWE.JWESecretKey), []byte(chJweServer.Config.Server.JWE.JWTSecretKey))
-		if err != nil {
-			log.Error().Err(err).Str("token", token).Msg("OpenAPI handler: invalid JWE token")
-			http.Error(w, "Invalid JWE token", http.StatusInternalServerError)
+	// Validate JWE token if auth is enabled
+	if err := s.ValidateJWEToken(token); err != nil {
+		if errors.Is(err, jwe_auth.ErrMissingToken) {
+			http.Error(w, "Missing JWE token", http.StatusUnauthorized)
 			return
 		}
+		http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
+		return
 	}
 
 	// Get host URL based on OpenAPI TLS configuration
