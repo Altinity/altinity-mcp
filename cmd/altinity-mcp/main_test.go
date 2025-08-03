@@ -685,13 +685,43 @@ func TestTestConnection(t *testing.T) {
 	t.Run("connection_with_tls", func(t *testing.T) {
 		ctx := context.Background()
 
+		// Generate self-signed certificate
+		cert, key, err := generateSelfSignedCert()
+		require.NoError(t, err)
+
+		// Create temporary directory for certificates
+		tmpDir, err := os.MkdirTemp("", "clickhouse-tls-test")
+		require.NoError(t, err)
+		defer os.RemoveAll(tmpDir)
+
+		// Write certificate and key to temp files
+		certFile := filepath.Join(tmpDir, "server.crt")
+		keyFile := filepath.Join(tmpDir, "server.key")
+		
+		err = os.WriteFile(certFile, cert, 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(keyFile, key, 0644)
+		require.NoError(t, err)
+
+		// Create HTTPS port config
+		httpsConfig := `<clickhouse><https_port>8443</https_port></clickhouse>`
+		configFile := filepath.Join(tmpDir, "https_port.xml")
+		err = os.WriteFile(configFile, []byte(httpsConfig), 0644)
+		require.NoError(t, err)
+
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp", "8443/tcp"},
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
+				"CLICKHOUSE_HTTPS_PORT":      "8443",
 			},
+			Mounts: testcontainers.Mounts(
+				testcontainers.BindMount(certFile, "/etc/clickhouse-server/server.crt"),
+				testcontainers.BindMount(keyFile, "/etc/clickhouse-server/server.key"),
+				testcontainers.BindMount(configFile, "/etc/clickhouse-server/config.d/https_port.xml"),
+			),
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
@@ -2465,4 +2495,49 @@ logging:
 		newConfig := app.GetCurrentConfig()
 		require.Equal(t, config.DebugLevel, newConfig.Logging.Level)
 	})
+}
+
+// generateSelfSignedCert generates a self-signed certificate for testing
+func generateSelfSignedCert() ([]byte, []byte, error) {
+	// Generate private key
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Create certificate template
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Test Organization"},
+			CommonName:   "localhost",
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().AddDate(1, 0, 0), // Valid for 1 year
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+	}
+
+	// Create certificate
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Encode certificate and private key to PEM format
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certDER,
+	})
+
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+	})
+
+	return certPEM, privateKeyPEM, nil
 }
