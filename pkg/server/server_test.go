@@ -649,6 +649,75 @@ func TestOpenAPIHandlers(t *testing.T) {
 	})
 }
 
+// TestExtractTokenFromRequest tests token extraction from HTTP requests
+func TestExtractTokenFromRequest(t *testing.T) {
+	srv := &ClickHouseJWEServer{}
+
+	t.Run("bearer_authorization_header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Bearer test-token-123")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "test-token-123", token)
+	})
+
+	t.Run("basic_authorization_header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Basic test-token-456")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "test-token-456", token)
+	})
+
+	t.Run("altinity_mcp_header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("x-altinity-mcp-key", "test-token-789")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "test-token-789", token)
+	})
+
+	t.Run("openapi_path_token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/some-token/openapi/list_tables", nil)
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "some-token", token)
+	})
+
+	t.Run("bearer_priority", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Bearer bearer-token")
+		req.Header.Set("x-altinity-mcp-key", "header-token")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "bearer-token", token)
+	})
+
+	t.Run("header_priority", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("x-altinity-mcp-key", "header-token")
+		req.SetPathValue("token", "path-token")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "header-token", token)
+	})
+
+	t.Run("no_token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "", token)
+	})
+
+	t.Run("invalid_authorization_header", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/test", nil)
+		req.Header.Set("Authorization", "Invalid test-token")
+		
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "", token)
+	})
+}
+
 // TestMCPTestingWrapper tests the AltinityTestServer wrapper functionality.
 func TestMCPTestingWrapper(t *testing.T) {
 	ctx := context.Background()
