@@ -1,5 +1,6 @@
 .aider*
 CLAUDE.md
+CRUSH.md
 AGENTS.md
 *.pcap
 *.log
@@ -7,6 +8,7 @@ AGENTS.md
 .vscode/
 .idea/
 .kilocode/
+.crush/
 build/
 dist/
 coverage.out

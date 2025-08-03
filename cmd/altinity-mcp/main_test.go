@@ -378,7 +378,7 @@ func TestHealthHandler(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -386,7 +386,7 @@ func TestHealthHandler(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -598,7 +598,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -606,7 +606,7 @@ func TestTestConnection(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -641,11 +641,11 @@ func TestTestConnection(t *testing.T) {
 		// Start ClickHouse container
 		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"9000/tcp"},
+			ExposedPorts: []string{"9000/tcp", "8123/tcp"},
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -653,7 +653,7 @@ func TestTestConnection(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -688,14 +688,14 @@ func TestTestConnection(t *testing.T) {
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp"},
+			ExposedPorts: []string{"8123/tcp", "8443/tcp"},
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 				"CLICKHOUSE_HTTPS_PORT":      "8443",
 				"CLICKHOUSE_SSL_CERT_FILE":   "/etc/clickhouse-server/server.crt",
 				"CLICKHOUSE_SSL_KEY_FILE":    "/etc/clickhouse-server/server.key",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -703,7 +703,7 @@ func TestTestConnection(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -745,7 +745,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -753,7 +753,7 @@ func TestTestConnection(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -793,7 +793,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -801,7 +801,7 @@ func TestTestConnection(t *testing.T) {
 			Started:          true,
 		})
 		if err != nil {
-			t.Skip("Failed to start ClickHouse container, skipping test:", err)
+			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -817,12 +817,12 @@ func TestTestConnection(t *testing.T) {
 		require.NoError(t, err)
 
 		cfg := config.ClickHouseConfig{
-			Host:     host,
-			Port:     mappedPort.Int(),
-			Database: "default",
-			Username: "default",
-			Password: "",
-			Protocol: config.HTTPProtocol,
+			Host:             host,
+			Port:             mappedPort.Int(),
+			Database:         "default",
+			Username:         "default",
+			Password:         "",
+			Protocol:         config.HTTPProtocol,
 			MaxExecutionTime: 300,
 		}
 
@@ -1988,7 +1988,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 		Env: map[string]string{
 			"CLICKHOUSE_SKIP_USER_SETUP": "1",
 		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(3 * time.Second).WithPollInterval(1 * time.Second),
+		WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 	}
 
 	clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -1996,7 +1996,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 		Started:          true,
 	})
 	if err != nil {
-		t.Skip("Failed to start ClickHouse container, skipping test:", err)
+		t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 	}
 	defer func() {
 		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
@@ -2244,15 +2244,15 @@ logging:
 
 	t.Run("token_injection_middleware", func(t *testing.T) {
 		app := &application{}
-		
+
 		// Create the token injector middleware
 		tokenInjector := app.createTokenInjector()
-		
+
 		// Test with Bearer token
 		t.Run("bearer_token", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Bearer test-token-123")
-			
+
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				token := r.Context().Value("jwe_token")
@@ -2261,19 +2261,19 @@ logging:
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.Equal(t, "test-token-123", capturedToken)
 		})
-		
+
 		// Test with Basic token
 		t.Run("basic_token", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Basic test-token-456")
-			
+
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				token := r.Context().Value("jwe_token")
@@ -2282,19 +2282,19 @@ logging:
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.Equal(t, "test-token-456", capturedToken)
 		})
-		
+
 		// Test with x-altinity-mcp-key header
 		t.Run("altinity_header", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("x-altinity-mcp-key", "test-token-789")
-			
+
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				token := r.Context().Value("jwe_token")
@@ -2303,19 +2303,19 @@ logging:
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.Equal(t, "test-token-789", capturedToken)
 		})
-		
+
 		// Test with path token (fallback)
 		t.Run("path_token", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.SetPathValue("token", "test-token-path")
-			
+
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				token := r.Context().Value("jwe_token")
@@ -2324,21 +2324,21 @@ logging:
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.Equal(t, "test-token-path", capturedToken)
 		})
-		
+
 		// Test priority: Bearer > x-altinity-mcp-key > path
 		t.Run("token_priority", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Bearer bearer-token")
 			req.Header.Set("x-altinity-mcp-key", "header-token")
 			req.SetPathValue("token", "path-token")
-			
+
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				token := r.Context().Value("jwe_token")
@@ -2347,28 +2347,28 @@ logging:
 				}
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.Equal(t, "bearer-token", capturedToken)
 		})
-		
+
 		// Test with no token
 		t.Run("no_token", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
-			
+
 			tokenInContext := false
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_, tokenInContext = r.Context().Value("jwe_token").(string)
 				w.WriteHeader(http.StatusOK)
 			})
-			
+
 			handler := tokenInjector(testHandler)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, req)
-			
+
 			require.False(t, tokenInContext)
 		})
 	})
