@@ -278,14 +278,32 @@ func setupLogging(level string) error {
 	return nil
 }
 
-// createTokenInjector creates a middleware that injects JWE token from path into request context
+// createTokenInjector creates a middleware that injects JWE token from various sources into request context
 func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract token from path
-			token := r.PathValue("token")
+			var token string
+
+			// Try Authorization header (Bearer or Basic)
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token = strings.TrimPrefix(authHeader, "Bearer ")
+			} else if strings.HasPrefix(authHeader, "Basic ") {
+				token = strings.TrimPrefix(authHeader, "Basic ")
+			}
+
+			// Try x-altinity-mcp-key header
+			if token == "" {
+				token = r.Header.Get("x-altinity-mcp-key")
+			}
+
+			// Try to extract token from URL path
+			if token == "" {
+				token = r.PathValue("token")
+			}
+
+			// Inject token into request context if found
 			if token != "" {
-				// Inject token into request context
 				ctx := context.WithValue(r.Context(), "jwe_token", token)
 				r = r.WithContext(ctx)
 			}
