@@ -58,7 +58,58 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --openapi http
 ```
 
-## Installation
+## Installation & Deployment
+
+### Using Docker
+
+```bash
+docker run -it altinity/altinity-mcp:latest --clickhouse-host clickhouse
+```
+
+### Kubernetes with Helm
+
+From OCI helm registry (recommended)
+```bash
+# Install from OCI registry
+helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
+  --set config.clickhouse.host=clickhouse.example.com \
+  --set config.clickhouse.database=default \
+  --set config.clickhouse.limit=5000
+```
+
+From local helm chart
+```bash
+git clone https://github.com/Altinity/altinity-mcp
+cd altinity-mcp
+helm install altinity-mcp ./helm/altinity-mcp \
+  --set config.clickhouse.host=clickhouse-service \
+  --set config.clickhouse.database=analytics \
+  --set config.server.transport=http \
+  --set config.server.port=8080
+```
+
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  altinity-mcp:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - MCP_TRANSPORT=http
+      - MCP_PORT=8080
+    depends_on:
+      - clickhouse
+  
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+```
 
 ### From Source
 
@@ -68,23 +119,6 @@ cd altinity-mcp
 go build -o altinity-mcp ./cmd/altinity-mcp
 ```
 
-### Using Docker
-
-```bash
-docker build -t altinity-mcp .
-docker run -it altinity-mcp --clickhouse-host host.docker.internal
-```
-
-### Using Helm
-
-```bash
-git checkout https://github.com/Altinity/altinity-mcp
-cd altinity-mcp
-helm install altinity-mcp ./helm/altinity-mcp \
-  --set config.clickhouse.host=clickhouse.example.com \
-  --set config.clickhouse.database=default \
-  --set config.limit=5000
-```
 
 ## Configuration
 
@@ -422,53 +456,6 @@ go test ./pkg/...
 
 # Integration tests (requires Docker)
 go test -v ./cmd/altinity-mcp/...
-```
-
-## Deployment
-
-### Kubernetes with Helm
-
-From OCI helm registry (recommended)
-```bash
-# Install from OCI registry
-helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
-  --set config.clickhouse.host=clickhouse.example.com \
-  --set config.clickhouse.database=default \
-  --set config.clickhouse.limit=5000
-```
-
-From local helm chart
-```bash
-git clone https://github.com/Altinity/altinity-mcp
-cd altinity-mcp
-helm install altinity-mcp ./helm/altinity-mcp \
-  --set config.clickhouse.host=clickhouse-service \
-  --set config.clickhouse.database=analytics \
-  --set config.server.transport=http \
-  --set config.server.port=8080
-```
-
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  altinity-mcp:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - CLICKHOUSE_HOST=clickhouse
-      - MCP_TRANSPORT=http
-      - MCP_PORT=8080
-    depends_on:
-      - clickhouse
-  
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    ports:
-      - "8123:8123"
 ```
 
 ## CLI Reference
