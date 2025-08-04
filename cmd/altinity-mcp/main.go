@@ -505,9 +505,12 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	// For basic health check, we'll return 200 OK
 	// For readiness, we should test ClickHouse connection if JWE auth is disabled
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
+	ctx := r.Context()
+	var cancel context.CancelFunc
+	if !cfg.ClickHouse.ReadOnly {
+		ctx, cancel = context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+	}
 	status := map[string]interface{}{
 		"status":    "healthy",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
