@@ -2,11 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -697,7 +705,7 @@ func TestTestConnection(t *testing.T) {
 		// Write certificate and key to temp files
 		certFile := filepath.Join(tmpDir, "server.crt")
 		keyFile := filepath.Join(tmpDir, "server.key")
-		
+
 		err = os.WriteFile(certFile, cert, 0644)
 		require.NoError(t, err)
 		err = os.WriteFile(keyFile, key, 0644)
