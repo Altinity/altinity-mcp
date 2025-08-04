@@ -260,6 +260,19 @@ jobs:
       if: steps.check_tag.outputs.matched == 'true'
       run: ls -la dist
 
+    - name: Package and push Helm chart to OCI registry
+      if: steps.check_tag.outputs.matched == 'true'
+      run: |
+        # Install Helm
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        
+        # Login to GitHub Container Registry
+        echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+        
+        # Package and push Helm chart
+        helm package helm/altinity-mcp --version ${GITHUB_REF#refs/tags/v}
+        helm push altinity-mcp-${GITHUB_REF#refs/tags/v}.tgz oci://ghcr.io/altinity/altinity-mcp/helm
+
     - name: Extract changelog for latest version
       if: steps.check_tag.outputs.matched == 'true'
       id: changelog
