@@ -404,7 +404,7 @@ go test -v ./cmd/altinity-mcp/...
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.24 or later
 - Docker (for integration tests)
 - ClickHouse server (for development)
 
@@ -431,7 +431,7 @@ go test -v ./cmd/altinity-mcp/...
 From OCI helm registry (recommended)
 ```bash
 # Install from OCI registry
-helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm \
+helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
   --set config.clickhouse.host=clickhouse.example.com \
   --set config.clickhouse.database=default \
   --set config.clickhouse.limit=5000
