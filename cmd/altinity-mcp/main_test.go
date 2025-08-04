@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -710,16 +710,16 @@ func TestTestConnection(t *testing.T) {
 			},
 			Files: []testcontainers.ContainerFile{
 				{
-					Reader: strings.NewReader(string(cert)),
-					Path:   "/etc/clickhouse-server/server.crt",
+					Reader:            strings.NewReader(string(cert)),
+					ContainerFilePath: "/etc/clickhouse-server/server.crt",
 				},
 				{
-					Reader: strings.NewReader(string(key)),
-					Path:   "/etc/clickhouse-server/server.key",
+					Reader:            strings.NewReader(string(key)),
+					ContainerFilePath: "/etc/clickhouse-server/server.key",
 				},
 				{
-					Reader: strings.NewReader(httpsConfig),
-					Path:   "/etc/clickhouse-server/config.d/https_port.xml",
+					Reader:            strings.NewReader(httpsConfig),
+					ContainerFilePath: "/etc/clickhouse-server/config.d/https_port.xml",
 				},
 			},
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
