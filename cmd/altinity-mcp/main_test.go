@@ -681,8 +681,7 @@ func TestTestConnection(t *testing.T) {
 			Port:     mappedPort.Int(),
 			Database: "default",
 			Username: "default",
-			// https://github.com/ClickHouse/clickhouse-go/issues/1630
-			Password: "non_empty",
+			Password: "",
 			Protocol: config.TCPProtocol,
 		}
 
@@ -710,13 +709,15 @@ func TestTestConnection(t *testing.T) {
     </openSSL>
 </clickhouse>`
 
+		// https://github.com/ClickHouse/clickhouse-go/issues/1630
+		nonEmptyDefaultUserPassword := "<clickhouse><users><default><password>non_empty</password></default></users></clickhouse>"
+
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
 			ExposedPorts: []string{"8123/tcp", "8443/tcp"},
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-				"CLICKHOUSE_HTTPS_PORT":      "8443",
 			},
 			Files: []testcontainers.ContainerFile{
 				{
@@ -734,6 +735,12 @@ func TestTestConnection(t *testing.T) {
 					ContainerFilePath: "/etc/clickhouse-server/config.d/https_port.xml",
 					FileMode:          0644,
 				},
+				// https://github.com/ClickHouse/clickhouse-go/issues/1630
+				{
+					Reader:            strings.NewReader(nonEmptyDefaultUserPassword),
+					ContainerFilePath: "/etc/clickhouse-server/users.d/non_empty_password.xml",
+					FileMode:          0644,
+				},
 			},
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
@@ -745,13 +752,12 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		//defer func() {
-		//	if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-		//		t.Logf("Failed to terminate container: %v", termErr)
-		//	}
-		//}()
+		defer func() {
+			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
+				t.Logf("Failed to terminate container: %v", termErr)
+			}
+		}()
 
-		// Get the mapped port for HTTPS
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")
 		require.NoError(t, err)
 
@@ -763,11 +769,12 @@ func TestTestConnection(t *testing.T) {
 			Port:     mappedPort.Int(),
 			Database: "default",
 			Username: "default",
-			Password: "",
+			// https://github.com/ClickHouse/clickhouse-go/issues/1630
+			Password: "non_empty",
 			Protocol: config.HTTPProtocol,
 			TLS: config.TLSConfig{
 				Enabled:            true,
-				InsecureSkipVerify: true, // Disable TLS security check for testing
+				InsecureSkipVerify: true,
 			},
 		}
 
