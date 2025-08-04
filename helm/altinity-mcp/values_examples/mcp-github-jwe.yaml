@@ -1,6 +1,6 @@
 # Example values for altinity-mcp with JWE authentication enabled
 # This configuration is equivalent to running with:
-  # --allow-jwe-auth --jwe-secret-key=test-encryption-key --jwt-secret-key=test-signing-key --transport=http --port=8080 --log-level=debug --openapi --read-only
+# --allow-jwe-auth --jwe-secret-key=test-encryption-key --jwt-secret-key=test-signing-key --transport=http --port=8080 --log-level=debug --openapi --read-only
 
 image:
   tag: "main"
