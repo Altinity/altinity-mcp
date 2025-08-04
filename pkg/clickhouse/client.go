@@ -135,6 +135,7 @@ func (c *Client) connect() error {
 			Str("host", c.config.Host).
 			Int("port", c.config.Port).
 			Str("database", c.config.Database).
+			Bool("read_only", c.config.ReadOnly).
 			Str("protocol", string(c.config.Protocol)).
 			Msg("ClickHouse ping failed during connection")
 		_ = c.conn.Close()
@@ -169,6 +170,9 @@ func (c *Client) Ping(ctx context.Context) error {
 			Err(err).
 			Str("host", c.config.Host).
 			Int("port", c.config.Port).
+			Str("database", c.config.Database).
+			Bool("read_only", c.config.ReadOnly).
+			Str("protocol", string(c.config.Protocol)).
 			Msg("ClickHouse ping failed")
 		return fmt.Errorf("ping failed: %w", err)
 	}

@@ -1,3 +1,7 @@
+# v1.0.3
+BUG FIXES
+- fix `/health` behavior for `read_only=true` corner case, fix https://github.com/Altinity/altinity-mcp/issues/7
+
 # v1.0.2
 IMPROVEMENTS
 - add support `Authorization: Bearer`, `Authorization: Basic` and `x-altinity-mcp-key` headers for MCP servers
