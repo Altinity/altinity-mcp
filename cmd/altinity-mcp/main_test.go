@@ -697,8 +697,17 @@ func TestTestConnection(t *testing.T) {
 		cert, key, err := generateSelfSignedCert()
 		require.NoError(t, err)
 
-		// Create HTTPS port config
-		httpsConfig := `<clickhouse><https_port>8443</https_port></clickhouse>`
+		// Create HTTPS port config with OpenSSL server section
+		httpsConfig := `<clickhouse>
+    <https_port>8443</https_port>
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-server/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/server.key</privateKeyFile>
+            <verificationMode>none</verificationMode>
+        </server>
+    </openSSL>
+</clickhouse>`
 
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
