@@ -428,13 +428,26 @@ go test -v ./cmd/altinity-mcp/...
 
 ### Kubernetes with Helm
 
+From OCI helm registry (recommended)
 ```bash
+# Install from OCI registry
+helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
+  --set config.clickhouse.host=clickhouse.example.com \
+  --set config.clickhouse.database=default \
+  --set config.clickhouse.limit=5000
+```
+
+From local helm chart
+```bash
+git clone https://github.com/Altinity/altinity-mcp
+cd altinity-mcp
 helm install altinity-mcp ./helm/altinity-mcp \
   --set config.clickhouse.host=clickhouse-service \
   --set config.clickhouse.database=analytics \
   --set config.server.transport=http \
   --set config.server.port=8080
 ```
+
 
 ### Docker Compose
 
