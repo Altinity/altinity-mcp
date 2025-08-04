@@ -697,25 +697,8 @@ func TestTestConnection(t *testing.T) {
 		cert, key, err := generateSelfSignedCert()
 		require.NoError(t, err)
 
-		// Create temporary directory for certificates
-		tmpDir, err := os.MkdirTemp("", "clickhouse-tls-test")
-		require.NoError(t, err)
-		defer os.RemoveAll(tmpDir)
-
-		// Write certificate and key to temp files
-		certFile := filepath.Join(tmpDir, "server.crt")
-		keyFile := filepath.Join(tmpDir, "server.key")
-
-		err = os.WriteFile(certFile, cert, 0644)
-		require.NoError(t, err)
-		err = os.WriteFile(keyFile, key, 0644)
-		require.NoError(t, err)
-
 		// Create HTTPS port config
 		httpsConfig := `<clickhouse><https_port>8443</https_port></clickhouse>`
-		configFile := filepath.Join(tmpDir, "https_port.xml")
-		err = os.WriteFile(configFile, []byte(httpsConfig), 0644)
-		require.NoError(t, err)
 
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
@@ -725,11 +708,20 @@ func TestTestConnection(t *testing.T) {
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 				"CLICKHOUSE_HTTPS_PORT":      "8443",
 			},
-			Mounts: testcontainers.Mounts(
-				testcontainers.BindMount(certFile, "/etc/clickhouse-server/server.crt"),
-				testcontainers.BindMount(keyFile, "/etc/clickhouse-server/server.key"),
-				testcontainers.BindMount(configFile, "/etc/clickhouse-server/config.d/https_port.xml"),
-			),
+			Files: []testcontainers.ContainerFile{
+				{
+					Reader: strings.NewReader(string(cert)),
+					Path:   "/etc/clickhouse-server/server.crt",
+				},
+				{
+					Reader: strings.NewReader(string(key)),
+					Path:   "/etc/clickhouse-server/server.key",
+				},
+				{
+					Reader: strings.NewReader(httpsConfig),
+					Path:   "/etc/clickhouse-server/config.d/https_port.xml",
+				},
+			},
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
@@ -746,8 +738,8 @@ func TestTestConnection(t *testing.T) {
 			}
 		}()
 
-		// Get the mapped port
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
+		// Get the mapped port for HTTPS
+		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")
 		require.NoError(t, err)
 
 		host, err := clickhouseContainer.Host(ctx)
@@ -761,7 +753,8 @@ func TestTestConnection(t *testing.T) {
 			Password: "",
 			Protocol: config.HTTPProtocol,
 			TLS: config.TLSConfig{
-				Enabled: true,
+				Enabled:            true,
+				InsecureSkipVerify: true, // Disable TLS security check for testing
 			},
 		}
 
