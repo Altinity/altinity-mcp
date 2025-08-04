@@ -70,6 +70,9 @@ jobs:
         CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build \
           -ldflags "-X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
           -o build/linux/${{ matrix.platform }}/altinity-mcp ./cmd/altinity-mcp
+        CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.platform }} go build \
+          -ldflags "-X main.version=${{ github.ref_name }} -X main.commit=${{ github.sha }} -X main.date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+          -o build/linux/${{ matrix.platform }}/jwe-token-generator ./cmd/jwe_auth
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
@@ -87,6 +90,7 @@ jobs:
     - name: Build and push platform image
       run: |
         cp build/linux/${{ matrix.platform }}/altinity-mcp .
+        cp build/linux/${{ matrix.platform }}/jwe-token-generator .
         SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
         IMAGE_NAME_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
         docker buildx build --platform linux/${{ matrix.platform }} --push -t ${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:${{ matrix.platform }}-${SHORT_SHA} .
