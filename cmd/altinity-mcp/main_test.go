@@ -681,7 +681,8 @@ func TestTestConnection(t *testing.T) {
 			Port:     mappedPort.Int(),
 			Database: "default",
 			Username: "default",
-			Password: "",
+			// https://github.com/ClickHouse/clickhouse-go/issues/1630
+			Password: "non_empty",
 			Protocol: config.TCPProtocol,
 		}
 
@@ -692,7 +693,7 @@ func TestTestConnection(t *testing.T) {
 
 	t.Run("connection_with_tls", func(t *testing.T) {
 		ctx := context.Background()
-
+		require.NoError(t, setupLogging("debug"))
 		// Generate self-signed certificate
 		cert, key, err := generateSelfSignedCert()
 		require.NoError(t, err)
@@ -744,11 +745,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		//defer func() {
+		//	if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
+		//		t.Logf("Failed to terminate container: %v", termErr)
+		//	}
+		//}()
 
 		// Get the mapped port for HTTPS
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")

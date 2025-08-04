@@ -75,6 +75,8 @@ func (c *Client) connect() error {
 		Int("port", c.config.Port).
 		Str("database", c.config.Database).
 		Str("protocol", string(c.config.Protocol)).
+		Bool("read_only", c.config.ReadOnly).
+		Interface("tls", c.config.TLS).
 		Msg("Connecting to ClickHouse")
 
 	tlsConfig, err := buildTLSConfig(&c.config.TLS)
