@@ -1,3 +1,7 @@
+# v1.0.2
+IMPROVEMENTS
+- add support `Authorization: Bearer`, `Authorization: Basic` and `x-altinity-mcp-key` headers for MCP servers
+
 # v1.0.1
 BUG FIXES
 - fix `/messages` handler for MCP SSE transport when JWE disabled
@@ -6,7 +10,7 @@ BUG FIXES
 Initial release of Altinity MCP Server
 
 ## Features
-- JWE Token encryption
+- Using encrypted JWE Token to dynamically pass ClickHouse connection parameters
 - MCP with STDIO, SSE and Streaming HTTP protocol - https://modelcontextprotocol.io
 - OpenAPI for OpenAI GPTs actions - https://help.openai.com/en/articles/8554397-creating-a-gpt
 
