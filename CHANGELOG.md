@@ -1,7 +1,7 @@
 # v1.0.2
 IMPROVEMENTS
 - add support `Authorization: Bearer`, `Authorization: Basic` and `x-altinity-mcp-key` headers for MCP servers
-- add push helm chart into oci://ghcr.io/altinity/altinity-mcp/helm
+- add push helm chart into oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp
 
 # v1.0.1
 BUG FIXES
