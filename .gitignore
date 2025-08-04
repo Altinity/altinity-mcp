@@ -13,4 +13,3 @@ build/
 dist/
 coverage.out
 go-carpet*
-helm/altinity-mcp/values_examples/
