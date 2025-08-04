@@ -293,8 +293,14 @@ jobs:
         
         ### Docker
         \`\`\`bash
-        docker pull ghcr.io/altinity/altinity-mcp:${VERSION}
+        docker run --rm ghcr.io/altinity/altinity-mcp:${VERSION} --help
         \`\`\`
+
+        ### Helm
+        \`\`\`bash
+        helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp -n <your-namespace> -f <your-values.yaml>
+        \`\`\`
+        
         EOF
 
     - name: Create draft release
