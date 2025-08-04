@@ -386,7 +386,7 @@ func TestHealthHandler(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -606,7 +606,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -653,7 +653,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -712,17 +712,20 @@ func TestTestConnection(t *testing.T) {
 				{
 					Reader:            strings.NewReader(string(cert)),
 					ContainerFilePath: "/etc/clickhouse-server/server.crt",
+					FileMode:          0644,
 				},
 				{
 					Reader:            strings.NewReader(string(key)),
 					ContainerFilePath: "/etc/clickhouse-server/server.key",
+					FileMode:          0644,
 				},
 				{
 					Reader:            strings.NewReader(httpsConfig),
 					ContainerFilePath: "/etc/clickhouse-server/config.d/https_port.xml",
+					FileMode:          0644,
 				},
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -773,7 +776,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -821,7 +824,7 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
 		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -2016,7 +2019,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 		Env: map[string]string{
 			"CLICKHOUSE_SKIP_USER_SETUP": "1",
 		},
-		WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(15 * time.Second).WithPollInterval(1 * time.Second),
+		WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 	}
 
 	clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
