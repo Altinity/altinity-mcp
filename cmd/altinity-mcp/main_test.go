@@ -1,16 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"bytes"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -2529,7 +2530,9 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 
 		invalidApp.jweTokenGeneratorHandler(w, req)
-		require.Equal(t, http.StatusInternalServerError, w.Code)
+		reqBody, bodyErr := io.ReadAll(w.Result().Body)
+		require.NoError(t, bodyErr)
+		require.Equal(t, http.StatusInternalServerError, w.Code, "unexpected HTTP code, expect=%d,actual=%d, response.Body=%s", http.StatusInternalServerError, w.Code, reqBody)
 	})
 
 	t.Run("default_expiry_when_not_provided", func(t *testing.T) {
@@ -2568,18 +2571,18 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 
 	t.Run("all_optional_fields", func(t *testing.T) {
 		claims := map[string]interface{}{
-			"host":                   "localhost",
-			"port":                   8123,
-			"database":               "testdb",
-			"username":               "testuser",
-			"password":               "testpass",
-			"protocol":               "http",
-			"limit":                  1000,
-			"expiry":                 120,
-			"tls_enabled":            true,
-			"tls_ca_cert":            "/path/to/ca.crt",
-			"tls_client_cert":        "/path/to/client.crt",
-			"tls_client_key":         "/path/to/client.key",
+			"host":                     "localhost",
+			"port":                     8123,
+			"database":                 "testdb",
+			"username":                 "testuser",
+			"password":                 "testpass",
+			"protocol":                 "http",
+			"limit":                    1000,
+			"expiry":                   120,
+			"tls_enabled":              true,
+			"tls_ca_cert":              "/path/to/ca.crt",
+			"tls_client_cert":          "/path/to/client.crt",
+			"tls_client_key":           "/path/to/client.key",
 			"tls_insecure_skip_verify": true,
 		}
 		body, err := json.Marshal(claims)
