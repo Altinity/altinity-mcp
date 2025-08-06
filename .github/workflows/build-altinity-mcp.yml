@@ -171,7 +171,7 @@ jobs:
         fetch-depth: 0
 
     - name: Check Release Tag
-      id: check_tag
+      id: release_tag
       run: |
         if [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           echo "matched=true" >> $GITHUB_OUTPUT
@@ -181,20 +181,20 @@ jobs:
 
 
     - name: Set up Go
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
 
     - name: Install nfpm
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
         sudo apt-get update
         sudo apt-get install -y rpm nfpm
 
     - name: Build binaries
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         mkdir -p dist
         # Linux builds
@@ -213,7 +213,7 @@ jobs:
         CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w -X main.version=$VERSION -X main.commit=$GITHUB_SHA -X main.date=$DATE" -o dist/altinity-mcp-windows-arm64.exe ./cmd/altinity-mcp
 
     - name: Create nfpm configs
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         # Create nfpm configuration for deb/rpm packages
         cat > nfpm.yaml << EOF
@@ -232,7 +232,7 @@ jobs:
         EOF
 
     - name: Create deb and rpm packages
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         # Linux AMD64 packages
         cp nfpm.yaml nfpm-amd64.yaml
@@ -245,7 +245,7 @@ jobs:
         nfpm pkg --config nfpm-arm64.yaml --packager rpm --target dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_arm64.rpm
 
     - name: Create tar.gz archives
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         # Linux archives
         tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_linux_amd64.tar.gz -C dist altinity-mcp-linux-amd64
@@ -256,24 +256,24 @@ jobs:
         tar -czf dist/altinity-mcp_${GITHUB_REF#refs/tags/}_darwin_arm64.tar.gz -C dist altinity-mcp-darwin-arm64
 
     - name: Create zip archives
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         # Windows archives
         cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/}_windows_amd64.zip altinity-mcp-windows-amd64.exe && cd -
         cd dist && zip altinity-mcp_${GITHUB_REF#refs/tags/}_windows_arm64.zip altinity-mcp-windows-arm64.exe && cd -
 
     - name: Check dist folder
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: ls -la dist
 
     - name: Install helm
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       uses: azure/setup-helm@v4
       with:
         version: 'latest'
 
     - name: Package and push Helm chart to OCI registry
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         # Login to GitHub Container Registry
         echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -283,6 +283,7 @@ jobs:
         helm push altinity-mcp-${GITHUB_REF#refs/tags/v}.tgz oci://ghcr.io/altinity/altinity-mcp/helm
 
     - name: Install Minikube
+      if: steps.release_tag.outputs.matched == 'true'
       uses: medyagh/setup-minikube@master
       with:
         driver: docker
@@ -291,13 +292,14 @@ jobs:
         memory: max
 
     - name: Verify Helm chart
+      if: steps.release_tag.outputs.matched == 'true'
       run: |
         minikube start
         helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp
         minikube stop
 
     - name: Extract changelog for latest version
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       id: changelog
       run: |
         # Extract changelog for the current version
@@ -324,7 +326,7 @@ jobs:
         EOF
 
     - name: Create draft release
-      if: steps.check_tag.outputs.matched == 'true'
+      if: steps.release_tag.outputs.matched == 'true'
       uses: softprops/action-gh-release@v2
       with:
         name: Release ${{ github.ref_name }}
