@@ -1,6 +1,6 @@
 # v1.0.4
 FEATURES
-- add `/jwe-token-generator` endpoint to generate JWE tokens
+- add `/jwe-token-generator` endpoint to generate JWE tokens, fix https://github.com/Altinity/altinity-mcp/issues/8
 
 # v1.0.3
 BUG FIXES
