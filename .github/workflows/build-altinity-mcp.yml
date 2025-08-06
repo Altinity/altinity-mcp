@@ -97,9 +97,10 @@ jobs:
         
     - name: Verify Docker image
       run: |
+        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
         SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
         IMAGE_NAME_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-        docker run --rm ${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:${{ matrix.platform }}-${SHORT_SHA} altinity-mcp --help
+        docker run --rm --platform linux/${{ matrix.platform }} ${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:${{ matrix.platform }}-${SHORT_SHA} altinity-mcp --help
 
   create-multiplatform-manifest:
     needs: build-and-push-platforms
