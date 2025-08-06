@@ -2476,7 +2476,11 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		disabledApp := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
-					JWE: config.JWEConfig{Enabled: false},
+					JWE: config.JWEConfig{
+						JWESecretKey: jweSecretKey,
+						JWTSecretKey: jwtSecretKey,
+						Enabled:      false,
+					},
 				},
 			},
 		}
