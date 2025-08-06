@@ -35,6 +35,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
+            - altinity-mcp
             - --config
             - /etc/altinity-mcp/config.yaml
           ports:

@@ -1,8 +1,8 @@
 # Final stage
-FROM debian:stable-slim
+FROM alpine:latest
 
-# Install ca-certificates, curl and bash for HTTPS requests and debugging
-RUN apt-get update && apt-get install -y ca-certificates curl bash && rm -rf /var/lib/apt/lists/*
+# Install ca-certificates and curl for HTTPS requests and debug
+RUN apk --no-cache add ca-certificates curl bash
 
 # Set working directory
 WORKDIR /bin/
@@ -13,5 +13,3 @@ COPY jwe-token-generator .
 
 # Expose port (default for HTTP transport)
 EXPOSE 8080
-
-# No default entrypoint; the binary to run can be specified at container start
