@@ -76,6 +76,44 @@ go run cmd/jwe_auth/jwe_token_generator.go \
 This will generate a signed with --jwt-secret-key JWT token containing the specified ClickHouse connection parameters, valid for 1 hour (3600 seconds).
 And encrypt it with AES using --jwe-secret-key
 
+### JWE Token Generation Endpoint
+
+The Altinity MCP server provides a `/jwe-token-generator` endpoint that allows you to generate JWE tokens dynamically. This is useful for integrations where you need to generate tokens on the fly without using the command-line tool.
+
+To use this endpoint, you must have JWE authentication enabled on the server.
+
+**Endpoint:** `POST /jwe-token-generator`
+
+**Request Body:** A JSON object with the desired claims for the token. The claims are the same as the parameters for the CLI generator.
+
+**Example Request:**
+```bash
+curl -X POST http://localhost:8080/jwe-token-generator \
+-H "Content-Type: application/json" \
+-d '{
+    "host": "clickhouse.example.com",
+    "port": 8123,
+    "database": "my_database",
+    "username": "my_user",
+    "password": "my_password",
+    "protocol": "http",
+    "expiry": 3600
+}'
+```
+
+**Successful Response:** A JSON object containing the generated token.
+
+```json
+{
+    "token": "eyJhbGciOiJBMjU2S1ciLCJlbmMiOiJBMjU2R0NNIiwiY3R5IjoiSldUIiwidHlwIjoiSldFIn0. ..."
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: If JWE authentication is not enabled on the server.
+- `405 Method Not Allowed`: If a method other than `POST` is used.
+- `400 Bad Request`: If the request body is not valid JSON.
+
 ## JWT Token Structure
 
 The JWT token contains the following claims:
