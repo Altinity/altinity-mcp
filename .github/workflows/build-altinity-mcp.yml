@@ -282,6 +282,16 @@ jobs:
         helm package helm/altinity-mcp --version ${GITHUB_REF#refs/tags/v}
         helm push altinity-mcp-${GITHUB_REF#refs/tags/v}.tgz oci://ghcr.io/altinity/altinity-mcp/helm
 
+    - name: Verify Helm chart
+      run: |
+        # Start minikube (assumes minikube is available)
+        minikube start
+        # Install the chart from OCI registry into namespace 'test'
+        helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp -n test
+        # Clean up
+        helm uninstall altinity-mcp -n test
+        minikube stop
+
     - name: Extract changelog for latest version
       if: steps.check_tag.outputs.matched == 'true'
       id: changelog
