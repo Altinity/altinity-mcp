@@ -5,7 +5,7 @@ FROM alpine:latest
 RUN apk --no-cache add ca-certificates curl
 
 # Set working directory
-WORKDIR /app
+WORKDIR /bin/
 
 # Copy the pre-built binaries
 COPY altinity-mcp .
@@ -15,4 +15,4 @@ COPY jwe-token-generator .
 EXPOSE 8080
 
 # Run the application
-ENTRYPOINT ["./altinity-mcp"]
+ENTRYPOINT ["/bin/sh"]

@@ -104,6 +104,7 @@ services:
       - MCP_PORT=8080
     depends_on:
       - clickhouse
+    entrypoint: ["/bin/sh", "-c", "/bin/altinity-mcp"]
   
   clickhouse:
     image: clickhouse/clickhouse-server:latest
