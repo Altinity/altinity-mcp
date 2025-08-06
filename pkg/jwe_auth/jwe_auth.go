@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -160,7 +161,7 @@ func validateExpiration(claims map[string]interface{}) error {
 		default:
 			return ErrInvalidToken
 		}
-		
+
 		if time.Now().Unix() > expTime {
 			return ErrInvalidToken
 		}

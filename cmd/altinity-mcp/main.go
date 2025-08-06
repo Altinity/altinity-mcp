@@ -15,7 +15,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.comcom/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
