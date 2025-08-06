@@ -15,4 +15,4 @@ COPY jwe-token-generator .
 EXPOSE 8080
 
 # Run the application
-ENTRYPOINT ["/bin/sh"]
+ENTRYPOINT ["/bin/bash"]
