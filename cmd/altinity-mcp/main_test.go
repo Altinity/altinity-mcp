@@ -2501,6 +2501,153 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		app.jweTokenGeneratorHandler(w, req)
 		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
+
+	// Additional error test cases to increase coverage
+	t.Run("generate_token_failure", func(t *testing.T) {
+		// Create an app with invalid secret keys to force token generation failure
+		invalidApp := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					JWE: config.JWEConfig{
+						Enabled:      true,
+						JWESecretKey: "", // Empty key will cause generation to fail
+						JWTSecretKey: jwtSecretKey,
+					},
+				},
+			},
+		}
+
+		claims := map[string]interface{}{
+			"host":   "localhost",
+			"port":   8123,
+			"expiry": 60,
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		invalidApp.jweTokenGeneratorHandler(w, req)
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("default_expiry_when_not_provided", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":     "localhost",
+			"port":     8123,
+			"username": "test",
+			// No expiry provided - should default to 3600
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]string
+		err = json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Contains(t, resp, "token")
+
+		// Verify the token
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(jweSecretKey), []byte(jwtSecretKey))
+		require.NoError(t, err)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"])
+		// Check that expiry was set (should be present and in the future)
+		require.Contains(t, parsedClaims, "exp")
+		expiry, ok := parsedClaims["exp"].(float64)
+		require.True(t, ok)
+		require.True(t, expiry > float64(time.Now().Unix()))
+	})
+
+	t.Run("all_optional_fields", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":                   "localhost",
+			"port":                   8123,
+			"database":               "testdb",
+			"username":               "testuser",
+			"password":               "testpass",
+			"protocol":               "http",
+			"limit":                  1000,
+			"expiry":                 120,
+			"tls_enabled":            true,
+			"tls_ca_cert":            "/path/to/ca.crt",
+			"tls_client_cert":        "/path/to/client.crt",
+			"tls_client_key":         "/path/to/client.key",
+			"tls_insecure_skip_verify": true,
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]string
+		err = json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Contains(t, resp, "token")
+
+		// Verify the token contains all fields
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(jweSecretKey), []byte(jwtSecretKey))
+		require.NoError(t, err)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"])
+		require.Equal(t, "testdb", parsedClaims["database"])
+		require.Equal(t, "testuser", parsedClaims["username"])
+		require.Equal(t, "testpass", parsedClaims["password"])
+		require.Equal(t, "http", parsedClaims["protocol"])
+		require.Equal(t, float64(1000), parsedClaims["limit"])
+		require.Equal(t, true, parsedClaims["tls_enabled"])
+		require.Equal(t, "/path/to/ca.crt", parsedClaims["tls_ca_cert"])
+		require.Equal(t, "/path/to/client.crt", parsedClaims["tls_client_cert"])
+		require.Equal(t, "/path/to/client.key", parsedClaims["tls_client_key"])
+		require.Equal(t, true, parsedClaims["tls_insecure_skip_verify"])
+	})
+
+	t.Run("tls_fields_without_tls_enabled", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":            "localhost",
+			"port":            8123,
+			"expiry":          60,
+			"tls_ca_cert":     "/path/to/ca.crt",
+			"tls_client_cert": "/path/to/client.crt",
+			"tls_client_key":  "/path/to/client.key",
+			// tls_enabled is false by default, so TLS fields should not be included
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]string
+		err = json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Contains(t, resp, "token")
+
+		// Verify the token does NOT contain TLS fields since tls_enabled is false
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(jweSecretKey), []byte(jwtSecretKey))
+		require.NoError(t, err)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"])
+		require.NotContains(t, parsedClaims, "tls_ca_cert")
+		require.NotContains(t, parsedClaims, "tls_client_cert")
+		require.NotContains(t, parsedClaims, "tls_client_key")
+	})
 }
 
 // TestMainFunctionality tests various main function scenarios
