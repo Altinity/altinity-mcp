@@ -293,7 +293,7 @@ jobs:
         
         ### Docker
         \`\`\`bash
-        docker run --rm ghcr.io/altinity/altinity-mcp:${VERSION} --help
+        docker run --rm ghcr.io/altinity/altinity-mcp:${VERSION} altinity-mcp --help
         \`\`\`
 
         ### Helm
