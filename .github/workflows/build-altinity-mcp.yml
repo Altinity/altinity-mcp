@@ -93,7 +93,13 @@ jobs:
         cp build/linux/${{ matrix.platform }}/jwe-token-generator .
         SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
         IMAGE_NAME_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-        docker buildx build --platform linux/${{ matrix.platform }} --push -t ${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:${{ matrix.platform }}-${SHORT_SHA} .
+        docker buildx build --platform linux/${{ matrix.platform }} --push -t ${{ env.REGISTRY }}/${IMAGE_NAME_LOER}:${{ matrix.platform }}-${SHORT_SHA} .
+        
+    - name: Verify Docker image
+      run: |
+        SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+        IMAGE_NAME_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+        docker run --rm ${{ env.REGISTRY }}/${IMAGE_NAME_LOWER}:${{ matrix.platform }}-${SHORT_SHA} altinity-mcp --help
 
   create-multiplatform-manifest:
     needs: build-and-push-platforms
