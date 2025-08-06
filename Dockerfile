@@ -2,7 +2,7 @@
 FROM alpine:latest
 
 # Install ca-certificates and curl for HTTPS requests and debug
-RUN apk --no-cache add ca-certificates curl
+RUN apk --no-cache add ca-certificates curl bash
 
 # Set working directory
 WORKDIR /bin/
