@@ -7,6 +7,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"bytes"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -2419,6 +2422,84 @@ logging:
 
 			require.False(t, tokenInContext)
 		})
+	})
+}
+
+// TestJWETokenGeneratorHandler tests the JWE token generator endpoint.
+func TestJWETokenGeneratorHandler(t *testing.T) {
+	jweSecretKey := "a-secret-for-jwe-generation-test"
+	jwtSecretKey := "a-secret-for-jwt-generation-test"
+
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: jweSecretKey,
+					JWTSecretKey: jwtSecretKey,
+				},
+			},
+		},
+	}
+
+	t.Run("successful_generation", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":     "localhost",
+			"port":     8123,
+			"username": "test",
+			"expiry":   60,
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]string
+		err = json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		require.Contains(t, resp, "token")
+
+		// Verify the token
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(jweSecretKey), []byte(jwtSecretKey))
+		require.NoError(t, err)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"]) // json unmarshals numbers to float64
+	})
+
+	t.Run("jwe_disabled", func(t *testing.T) {
+		disabledApp := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					JWE: config.JWEConfig{Enabled: false},
+				},
+			},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", nil)
+		w := httptest.NewRecorder()
+
+		disabledApp.jweTokenGeneratorHandler(w, req)
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+		require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+	})
+
+	t.Run("invalid_request_body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", strings.NewReader("not-json"))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 }
 

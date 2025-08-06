@@ -1,3 +1,7 @@
+# v1.0.4
+FEATURES
+- add `/jwe-token-generator` endpoint to generate JWE tokens
+
 # v1.0.3
 BUG FIXES
 - fix `/health` behavior for `read_only=true` corner case, fix https://github.com/Altinity/altinity-mcp/issues/7

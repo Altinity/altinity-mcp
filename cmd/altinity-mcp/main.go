@@ -15,6 +15,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.comcom/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/rs/zerolog"
@@ -312,6 +313,98 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 	}
 }
 
+// jweTokenGeneratorHandler handles requests for generating JWE tokens.
+func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cfg := a.GetCurrentConfig()
+	if !cfg.Server.JWE.Enabled {
+		http.Error(w, "JWE authentication is not enabled", http.StatusForbidden)
+		return
+	}
+
+	var reqBody struct {
+		Host                  string `json:"host"`
+		Port                  int    `json:"port"`
+		Database              string `json:"database"`
+		Username              string `json:"username"`
+		Password              string `json:"password,omitempty"`
+		Protocol              string `json:"protocol"`
+		Limit                 int    `json:"limit,omitempty"`
+		Expiry                int    `json:"expiry"` // in seconds
+		TLSEnabled            bool   `json:"tls_enabled,omitempty"`
+		TLSCaCert             string `json:"tls_ca_cert,omitempty"`
+		TLSClientCert         string `json:"tls_client_cert,omitempty"`
+		TLSClientKey          string `json:"tls_client_key,omitempty"`
+		TLSInsecureSkipVerify bool   `json:"tls_insecure_skip_verify,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if reqBody.Expiry == 0 {
+		reqBody.Expiry = 3600 // default to 1 hour
+	}
+
+	claims := map[string]interface{}{
+		"exp": time.Now().Add(time.Duration(reqBody.Expiry) * time.Second).Unix(),
+	}
+
+	// Add optional claims if provided
+	if reqBody.Host != "" {
+		claims["host"] = reqBody.Host
+	}
+	if reqBody.Port > 0 {
+		claims["port"] = reqBody.Port
+	}
+	if reqBody.Database != "" {
+		claims["database"] = reqBody.Database
+	}
+	if reqBody.Username != "" {
+		claims["username"] = reqBody.Username
+	}
+	if reqBody.Password != "" {
+		claims["password"] = reqBody.Password
+	}
+	if reqBody.Protocol != "" {
+		claims["protocol"] = reqBody.Protocol
+	}
+	if reqBody.Limit > 0 {
+		claims["limit"] = reqBody.Limit
+	}
+	if reqBody.TLSEnabled {
+		claims["tls_enabled"] = true
+		if reqBody.TLSCaCert != "" {
+			claims["tls_ca_cert"] = reqBody.TLSCaCert
+		}
+		if reqBody.TLSClientCert != "" {
+			claims["tls_client_cert"] = reqBody.TLSClientCert
+		}
+		if reqBody.TLSClientKey != "" {
+			claims["tls_client_key"] = reqBody.TLSClientKey
+		}
+		if reqBody.TLSInsecureSkipVerify {
+			claims["tls_insecure_skip_verify"] = true
+		}
+	}
+
+	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, []byte(cfg.Server.JWE.JWESecretKey), []byte(cfg.Server.JWE.JWTSecretKey))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to generate JWE token")
+		http.Error(w, "Failed to generate JWE token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": encryptedToken})
+}
+
 // startHTTPServerWithTLS starts the HTTP server with or without TLS
 func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport string) error {
 	if cfg.Server.JWE.Enabled {
@@ -383,6 +476,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		httpHandler = mux
 	} else {
 		// Use standard HTTP server without dynamic paths
@@ -397,6 +491,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		httpHandler = mux
 	}
 
@@ -467,6 +562,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		sseHandler = mux
 	} else {
 		// Use standard SSE server without dynamic paths
@@ -482,6 +578,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		sseHandler = mux
 	}
 
