@@ -321,6 +321,10 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	cfg := a.GetCurrentConfig()
+	if cfg.Server.JWE.JWESecretKey == "" || cfg.Server.JWE.JWTSecretKey == "" {
+	    http.Error(w, "Missing JWE or JWT secret key", http.StatusInternalServerError)
+	    return
+	}
 	if !cfg.Server.JWE.Enabled {
 		http.Error(w, "JWE authentication is not enabled", http.StatusForbidden)
 		return
