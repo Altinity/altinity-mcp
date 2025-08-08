@@ -220,6 +220,12 @@ func run(args []string) error {
 				Value:   "disable",
 				Sources: cli.EnvVars("MCP_OPENAPI"),
 			},
+			&cli.StringFlag{
+				Name:    "cors-origin",
+				Usage:   "CORS origin for HTTP/SSE transports",
+				Value:   "*",
+				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -462,6 +468,25 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
+
+	// CORS handler
+	corsHandler := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+			// Handle preflight requests
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	var httpHandler http.Handler
 	if cfg.Server.JWE.Enabled {
 		log.Info().Msg("Using dynamic base path for JWE authentication")
@@ -481,7 +506,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		httpHandler = mux
+		httpHandler = corsHandler(mux)
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
@@ -496,7 +521,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		httpHandler = mux
+		httpHandler = corsHandler(mux)
 	}
 
 	a.httpSrv = &http.Server{
@@ -525,6 +550,24 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
+	}
+
+	// CORS handler
+	corsHandler := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key")
+			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+
+			// Handle preflight requests
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
 	}
 
 	protocol := "http"
@@ -567,7 +610,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		sseHandler = mux
+		sseHandler = corsHandler(mux)
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
@@ -583,7 +626,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		sseHandler = mux
+		sseHandler = corsHandler(mux)
 	}
 
 	a.httpSrv = &http.Server{
@@ -858,6 +901,13 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.ClickHouse.Limit = cmd.Int("clickhouse-limit")
 	} else if cfg.ClickHouse.Limit == 0 {
 		cfg.ClickHouse.Limit = 1000
+	}
+
+	// Override CORS origin with CLI flags
+	if cmd.IsSet("cors-origin") {
+		cfg.Server.CORSOrigin = cmd.String("cors-origin")
+	} else if cfg.Server.CORSOrigin == "" {
+		cfg.Server.CORSOrigin = "*"
 	}
 
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {

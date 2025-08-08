@@ -78,6 +78,7 @@ type ServerConfig struct {
 	TLS          ServerTLSConfig `json:"tls" yaml:"tls"`
 	JWE          JWEConfig       `json:"jwe" yaml:"jwe"`
 	OpenAPI      OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin   string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration
