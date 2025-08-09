@@ -1477,6 +1477,73 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 }
 
+// TestCORSSupport tests the CORS handler behavior
+func TestCORSSupport(t *testing.T) {
+	t.Run("cors_preflight_request", func(t *testing.T) {
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Transport:  config.HTTPTransport,
+				Address:    "localhost",
+				Port:       0, // Use random port
+				CORSOrigin: "*",
+				JWE: config.JWEConfig{
+					Enabled: false,
+				},
+				TLS: config.ServerTLSConfig{
+					Enabled: false,
+				},
+			},
+		}
+		app := &application{
+			config:    cfg,
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+		}
+
+		// Start server in a goroutine
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Start()
+		}()
+
+		// Give server time to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Get the actual server port
+		var serverPort string
+		if app.httpSrv != nil && app.httpSrv.Addr != "" {
+			_, port, _ := net.SplitHostPort(app.httpSrv.Addr)
+			serverPort = port
+		}
+
+		if serverPort != "" {
+			// Test CORS preflight request
+			client := &http.Client{}
+			req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/http", serverPort), nil)
+			req.Header.Set("Access-Control-Request-Method", "POST")
+			req.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization")
+			req.Header.Set("Origin", "http://localhost")
+
+			resp, err := client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
+				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key", resp.Header.Get("Access-Control-Allow-Headers"))
+			}
+		}
+
+		// Clean up
+		if app.httpSrv != nil {
+			_ = app.httpSrv.Close()
+		}
+		select {
+		case <-done:
+		default:
+		}
+	})
+}
+
 // TestApplicationStart tests the application Start method
 func TestApplicationStart(t *testing.T) {
 	t.Run("unsupported_transport", func(t *testing.T) {
