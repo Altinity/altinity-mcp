@@ -1,13 +1,13 @@
 # JWE (JSON Web Encryption) for Altinity MCP Server
 
-This document explains how to use JWE (JSON Web Encryption) authentication with the Altinity MCP Server to securely connect to ClickHouse instances.
+This document explains how to use JWE (JSON Web Encryption) authentication with the Altinity MCP Server to securely connect to ClickHouse® instances.
 
 ## Overview
 
 JWE authentication allows you to:
 
-- Securely pass ClickHouse connection parameters without exposing them in plain text
-- Create per-request ClickHouse connections with different parameters
+- Securely pass ClickHouse®® connection parameters without exposing them in plain text
+- Create per-request ClickHouse® connections with different parameters
 - Support dynamic connection parameters rather than using a single global connection
 - Implement token-based access control with expiration
 
@@ -16,7 +16,7 @@ JWE authentication allows you to:
 The following CLI options are available for JWE authentication:
 
 ```
---allow-jwe-auth                  Enable JWE encryption for ClickHouse connection
+--allow-jwe-auth                  Enable JWE encryption for ClickHouse® connection
 --jwe-secret-key string           Secret key for JWE token decryption
 --jwt-secret-key string           Secret key for nested JWT signature verification
 ```
@@ -73,7 +73,7 @@ go run cmd/jwe_auth/jwe_token_generator.go \
   --expiry=3600
 ```
 
-This will generate a signed with --jwt-secret-key JWT token containing the specified ClickHouse connection parameters, valid for 1 hour (3600 seconds).
+This will generate a signed with --jwt-secret-key JWT token containing the specified ClickHouse® connection parameters, valid for 1 hour (3600 seconds).
 And encrypt it with AES using --jwe-secret-key
 
 ### JWE Token Generation Endpoint
@@ -118,12 +118,12 @@ curl -X POST http://localhost:8080/jwe-token-generator \
 
 The JWT token contains the following claims:
 
-- `host`: ClickHouse server hostname
-- `port`: ClickHouse server port
-- `database`: ClickHouse database name
-- `username`: ClickHouse username
-- `password`: ClickHouse password (optional)
-- `protocol`: ClickHouse connection protocol (http/tcp)
+- `host`: ClickHouse® server hostname
+- `port`: ClickHouse® server port
+- `database`: ClickHouse® database name
+- `username`: ClickHouse® username
+- `password`: ClickHouse® password (optional)
+- `protocol`: ClickHouse® connection protocol (http/tcp)
 - `tls_enabled`: Boolean indicating if TLS is enabled (optional)
 - `tls_ca_cert`: Path to CA certificate file (optional)
 - `tls_client_cert`: Path to client certificate file (optional)
