@@ -1543,6 +1543,18 @@ func TestCORSSupport(t *testing.T) {
 	})
 }
 
+// getFreeRandomPort finds a free random port and returns it
+func getFreeRandomPort() (int, error) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, err
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	return addr.Port, nil
+}
+
 // TestApplicationStart tests the application Start method
 func TestApplicationStart(t *testing.T) {
 	t.Run("unsupported_transport", func(t *testing.T) {
@@ -1617,11 +1629,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_with_tls_missing_files", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				TLS: config.ServerTLSConfig{
 					Enabled:  true,
 					CertFile: "/nonexistent/cert.pem",
@@ -1634,17 +1649,20 @@ func TestApplicationStart(t *testing.T) {
 			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
-		err := app.Start()
+		err = app.Start()
 		require.Error(t, err)
 		// Should fail due to missing cert/key files
 	})
 
 	t.Run("sse_transport_without_jwe", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: false,
 				},
@@ -1682,11 +1700,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_jwe", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: true,
 				},
@@ -1724,11 +1745,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_jwe_and_openapi", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: true,
 				},
@@ -1770,11 +1794,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_with_jwe_and_openapi", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: true,
 				},
@@ -1816,11 +1843,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_openapi_without_jwe", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: false,
 				},
@@ -1862,11 +1892,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_openapi_without_jwe", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: false,
 				},
@@ -1908,11 +1941,14 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_tls_invalid_config", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.SSETransport,
 				Address:   "localhost",
-				Port:      0,
+				Port:      port,
 				JWE: config.JWEConfig{
 					Enabled: false,
 				},
@@ -1929,17 +1965,20 @@ func TestApplicationStart(t *testing.T) {
 			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
-		err := app.Start()
+		err = app.Start()
 		require.Error(t, err)
 		// Should fail due to invalid TLS config
 	})
 
 	t.Run("build_server_tls_config_error", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
 				Address:   "localhost",
-				Port:      0,
+				Port:      port,
 				TLS: config.ServerTLSConfig{
 					Enabled: true,
 					CaCert:  "/nonexistent/ca.pem", // This will cause buildServerTLSConfig to fail
@@ -1951,17 +1990,20 @@ func TestApplicationStart(t *testing.T) {
 			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
 		}
 
-		err := app.Start()
+		err = app.Start()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to read server CA certificate")
 	})
 
 	t.Run("http_transport_successful_start", func(t *testing.T) {
+		port, err := getFreeRandomPort()
+		require.NoError(t, err)
+
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
 				Address:   "localhost",
-				Port:      0, // Use random port
+				Port:      port,
 				TLS: config.ServerTLSConfig{
 					Enabled: false,
 				},
