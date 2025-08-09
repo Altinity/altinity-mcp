@@ -1,3 +1,10 @@
+# v1.0.5
+IMPROVEMENTS
+- add `--cors-origin` CLI parameter and `MCP_CORS_ORIGIN` config parameter, to allow custom origin in CORS policy
+
+BUG FIXES
+- minor fixes for CORS to pass https://playground.ai.cloudflare.com/
+
 # v1.0.4
 FEATURES
 - add `/jwe-token-generator` endpoint to generate JWE tokens, fix https://github.com/Altinity/altinity-mcp/issues/8
