@@ -1524,13 +1524,12 @@ func TestCORSSupport(t *testing.T) {
 			req.Header.Set("Origin", "http://localhost")
 
 			resp, err := client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				require.Equal(t, http.StatusOK, resp.StatusCode)
-				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
-				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
-				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key", resp.Header.Get("Access-Control-Allow-Headers"))
-			}
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+			require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
+			require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key", resp.Header.Get("Access-Control-Allow-Headers"))
 		}
 
 		// Clean up
