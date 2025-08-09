@@ -2,13 +2,13 @@
 
 [![Coverage Status](https://coveralls.io/repos/github/Altinity/altinity-mcp/badge.svg)](https://coveralls.io/github/Altinity/altinity-mcp)
 
-A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse databases. This server enables AI assistants and other MCP clients to query, analyze, and interact with ClickHouse databases through a standardized protocol.
+A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse® databases. This server enables AI assistants and other MCP clients to query, analyze, and interact with ClickHouse® databases through a standardized protocol.
 
 ## Features
 
 - **Multiple Transport Options**: Support for STDIO, HTTP, and Server-Sent Events (SSE) transports
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
-- **TLS Support**: Full TLS encryption support for both ClickHouse connections and MCP server endpoints
+- **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
 - **Comprehensive Tools**: Built-in tools for listing tables, describing schemas, and executing queries
 - **Resource Templates**: Dynamic resource discovery for database schemas and table information
 - **Query Prompts**: AI-assisted query building and optimization prompts

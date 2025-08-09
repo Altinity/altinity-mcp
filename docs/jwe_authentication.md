@@ -6,7 +6,7 @@ This document explains how to use JWE (JSON Web Encryption) authentication with 
 
 JWE authentication allows you to:
 
-- Securely pass ClickHouse®® connection parameters without exposing them in plain text
+- Securely pass ClickHouse® connection parameters without exposing them in plain text
 - Create per-request ClickHouse® connections with different parameters
 - Support dynamic connection parameters rather than using a single global connection
 - Implement token-based access control with expiration
