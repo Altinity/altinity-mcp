@@ -190,7 +190,7 @@ export LOG_LEVEL=debug
 ## Available Tools
 
 ### `list_tables`
-Lists all tables in a ClickHouse database with detailed information.
+Lists all tables in a ClickHouse® database with detailed information.
 
 **Parameters:**
 - `database` (optional): The database to list tables from
@@ -203,7 +203,7 @@ Describes the schema of a specific table including column types, constraints, an
 - `table_name` (required): The table name
 
 ### `execute_query`
-Executes SQL queries against ClickHouse with optional result limiting.
+Executes SQL queries against ClickHouse® with optional result limiting.
 
 **Parameters:**
 - `query` (required): The SQL query to execute
@@ -212,7 +212,7 @@ Executes SQL queries against ClickHouse with optional result limiting.
 ## Available Resources
 
 ### `clickhouse://schema`
-Provides complete schema information for the ClickHouse database in JSON format.
+Provides complete schema information for the ClickHouse® database in JSON format.
 
 ### `clickhouse://table/{database}/{table}`
 Provides detailed information about a specific table including schema, sample data, and statistics.
@@ -220,7 +220,7 @@ Provides detailed information about a specific table including schema, sample da
 ## Available Prompts
 
 ### `query_builder`
-Helps build efficient ClickHouse SQL queries with context about available tables and best practices.
+Helps build efficient ClickHouse® SQL queries with context about available tables and best practices.
 
 **Arguments:**
 - `database` (required): Name of the database
@@ -229,7 +229,7 @@ Helps build efficient ClickHouse SQL queries with context about available tables
 
 ## OpenAI GPTs Integration
 
-The Altinity MCP Server supports seamless integration with OpenAI GPTs through its OpenAPI-compatible endpoints. These endpoints enable GPT assistants to perform ClickHouse database operations directly.
+The Altinity MCP Server supports seamless integration with OpenAI GPTs through its OpenAPI-compatible endpoints. These endpoints enable GPT assistants to perform ClickHouse® database operations directly.
 
 ### Authentication
 - **With JWE**: Add the JWE token to either:
@@ -280,7 +280,7 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "ClickHouse SQL Interface",
+    "title": "ClickHouse® SQL Interface",
     "version": "1.0.0"
   },
   "servers": [
@@ -359,7 +359,7 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 ## JWE Authentication
 
-When JWE authentication is enabled, the server expects tokens encrypted using AES Key Wrap (A256KW) and AES-GCM (A256GCM). These tokens contain ClickHouse connection parameters:
+When JWE authentication is enabled, the server expects tokens encrypted using AES Key Wrap (A256KW) and AES-GCM (A256GCM). These tokens contain ClickHouse® connection parameters:
 
 ```json
 {
@@ -390,7 +390,7 @@ More details in [jwe_authentication.md](docs/jwe_authentication.md)
 
 ## TLS Configuration
 
-### ClickHouse TLS
+### ClickHouse® TLS
 
 ```bash
 ./altinity-mcp \
@@ -412,7 +412,7 @@ More details in [jwe_authentication.md](docs/jwe_authentication.md)
 
 ## Testing
 
-### Test ClickHouse Connection
+### Test ClickHouse® Connection
 
 ```bash
 ./altinity-mcp test-connection \
@@ -441,7 +441,7 @@ go test -v ./cmd/altinity-mcp/...
 
 - Go 1.24 or later
 - Docker (for integration tests)
-- ClickHouse server (for development)
+- ClickHouse® server (for development)
 
 ### Building
 
@@ -468,10 +468,10 @@ go test -v ./cmd/altinity-mcp/...
 - `--clickhouse-limit`: Default limit for query results (default: 1000)
 - `--openapi`: Enable OpenAPI endpoints (disable/http/https) (default: disable)
 
-### ClickHouse Flags
+### ClickHouse® Flags
 
-- `--clickhouse-host`: ClickHouse server host
-- `--clickhouse-port`: ClickHouse server port
+- `--clickhouse-host`: ClickHouse® server host
+- `--clickhouse-port`: ClickHouse® server port
 - `--clickhouse-database`: Database name
 - `--clickhouse-username`: Username
 - `--clickhouse-password`: Password
@@ -491,7 +491,7 @@ go test -v ./cmd/altinity-mcp/...
 ### Commands
 
 - `version`: Show version information
-- `test-connection`: Test ClickHouse connection
+- `test-connection`: Test ClickHouse® connection
 
 ## Contributing
 
