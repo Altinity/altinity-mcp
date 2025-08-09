@@ -474,7 +474,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight requests
@@ -557,7 +557,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight requests

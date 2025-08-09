@@ -1532,7 +1532,7 @@ func TestCORSSupport(t *testing.T) {
 				require.Equal(t, http.StatusOK, resp.StatusCode)
 				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
-				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key", resp.Header.Get("Access-Control-Allow-Headers"))
+				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
 			}
 
 			// Clean up
