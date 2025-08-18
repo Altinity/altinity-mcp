@@ -83,11 +83,6 @@ func run(output io.Writer, args []string) error {
 		}
 	}
 
-	if *jwtSecretKey == "" {
-		fs.Usage()
-		return fmt.Errorf("--jwt-secret-key flag is required")
-	}
-
 	// 2. Encrypt the signed JWT into JWE format
 	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, []byte(*jweSecretKey), []byte(*jwtSecretKey))
 	if err != nil {
