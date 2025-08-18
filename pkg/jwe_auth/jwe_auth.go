@@ -68,7 +68,7 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
 		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
-		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType(contentType),
+		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType(jose.ContentType(contentType)),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create JWE encrypter: %w", err)
@@ -103,7 +103,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 
 	// Get the content type to determine how to process the decrypted data
 	contentType := "JWT" // default for backward compatibility
-	if hdr := jweObject.GetHeader("cty"); hdr != nil {
+	if hdr, ok := jweObject.Headers.ExtraHeaders[jose.HeaderKey("cty")]; ok {
 		if ct, ok := hdr.(string); ok {
 			contentType = ct
 		}
