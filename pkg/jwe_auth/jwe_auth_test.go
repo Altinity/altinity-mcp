@@ -202,6 +202,36 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 	
+	// Test with disallowed claim key
+	t.Run("disallowed_claim_key", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":    "test-host",
+			"invalid": "not-allowed", // This key is not in the whitelist
+			"exp":     time.Now().Add(time.Hour).Unix(),
+		}
+
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid token claims format")
+	})
+	
+	// Test with invalid expiration type
+	t.Run("invalid_exp_type", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  "not-a-number", // Invalid type for exp
+		}
+
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.Equal(t, jwe_auth.ErrInvalidToken, err)
+	})
+	
 	// Test distinction between JWT-signed and JSON-encrypted tokens
 	t.Run("distinguish_jwt_and_json_tokens", func(t *testing.T) {
 		claims := map[string]interface{}{
