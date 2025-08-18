@@ -24,6 +24,11 @@ func hashToKey(input []byte) []byte {
 	return hash[:]
 }
 
+// HashToKeyForTesting exposes hashToKey for testing purposes
+func HashToKeyForTesting(input []byte) []byte {
+	return hashToKey(input)
+}
+
 // GenerateJWEToken creates a JWE token by either:
 // 1. Signing a JWT with HS256 and encrypting it (when jwtSecretKey is provided), or
 // 2. Serializing claims to JSON and encrypting that (when jwtSecretKey is empty)
@@ -219,34 +224,6 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 	}
 
 	return nil
-}
-
-func ParseJWEForTesting(token string) (*jose.JSONWebEncryption, error) {
-	return jose.ParseEncrypted(token, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
-}
-
-func RegenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []byte) (string, error) {
-	hashedJWEKey := hashToKey(jweSecretKey)
-	plaintext, err := jweObject.Decrypt(hashedJWEKey)
-	if err != nil {
-		return "", err
-	}
-
-	encrypter, err := jose.NewEncrypter(
-		jose.A256GCM,
-		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
-		&jose.EncrypterOptions{},
-	)
-	if err != nil {
-		return "", err
-	}
-
-	newJWE, err := encrypter.Encrypt(plaintext)
-	if err != nil {
-		return "", err
-	}
-
-	return newJWE.CompactSerialize()
 }
 
 // validateExpiration checks if the token has expired
