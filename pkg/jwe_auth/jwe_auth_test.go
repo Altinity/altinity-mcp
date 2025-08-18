@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,6 +64,36 @@ func TestJWETokenGeneration(t *testing.T) {
 		require.Equal(t, "default", parsedClaims["username"])
 		require.Equal(t, "http", parsedClaims["protocol"])
 	})
+}
+
+// parseJWEForTesting is a helper function for testing that parses a JWE token
+func parseJWEForTesting(token string) (*jose.JSONWebEncryption, error) {
+	return jose.ParseEncrypted(token, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
+}
+
+// regenerateJWEForTesting is a helper function for testing that regenerates a JWE token
+func regenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []byte) (string, error) {
+	hashedJWEKey := jwe_auth.HashToKeyForTesting(jweSecretKey)
+	plaintext, err := jweObject.Decrypt(hashedJWEKey)
+	if err != nil {
+		return "", err
+	}
+
+	encrypter, err := jose.NewEncrypter(
+		jose.A256GCM,
+		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
+		&jose.EncrypterOptions{},
+	)
+	if err != nil {
+		return "", err
+	}
+
+	newJWE, err := encrypter.Encrypt(plaintext)
+	if err != nil {
+		return "", err
+	}
+
+	return newJWE.CompactSerialize()
 }
 
 // TestParseAndDecryptJWE tests JWE parsing and validation
@@ -230,6 +261,35 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
+	})
+
+	// Test parsing with invalid content type
+	t.Run("invalid_content_type", func(t *testing.T) {
+		// Create a token with invalid content type manually
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  time.Now().Add(time.Hour).Unix(),
+		}
+
+		// Generate a valid token first
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		// Parse and modify the JWE header to have an invalid content type
+		jweObject, err := parseJWEForTesting(tokenString)
+		require.NoError(t, err)
+
+		// Set an invalid content type
+		jweObject.Header.ExtraHeaders["cty"] = "INVALID"
+
+		// Re-encrypt with invalid content type
+		invalidToken, err := regenerateJWEForTesting(jweObject, jweSecretKey)
+		require.NoError(t, err)
+
+		// Should still be able to parse it (falls back to default case)
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(invalidToken, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
 	})
 
 	// Test distinction between JWT-signed and JSON-encrypted tokens
