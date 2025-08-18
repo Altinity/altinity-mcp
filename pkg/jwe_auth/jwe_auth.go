@@ -18,15 +18,10 @@ var (
 	ErrInvalidToken = errors.New("invalid JWE token")
 )
 
-// hashToKey converts any string to a 32-byte key using SHA256 hash
-func hashToKey(input []byte) []byte {
+// HashSHA256 converts any string to a 32-byte key using SHA256 hash
+func HashSHA256(input []byte) []byte {
 	hash := sha256.Sum256(input)
 	return hash[:]
-}
-
-// HashToKeyForTesting exposes hashToKey for testing purposes
-func HashToKeyForTesting(input []byte) []byte {
-	return hashToKey(input)
 }
 
 // GenerateJWEToken creates a JWE token by either:
@@ -34,14 +29,14 @@ func HashToKeyForTesting(input []byte) []byte {
 // 2. Serializing claims to JSON and encrypting that (when jwtSecretKey is empty)
 func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) (string, error) {
 	// Hash the JWE key to ensure it is 32 bytes
-	hashedJWEKey := hashToKey(jweSecretKey)
+	hashedJWEKey := HashSHA256(jweSecretKey)
 
 	var plaintext []byte
 	var contentType string
 
 	if len(jwtSecretKey) > 0 {
 		// JWT signing is enabled - sign the claims first
-		hashedJWTKey := hashToKey(jwtSecretKey)
+		hashedJWTKey := HashSHA256(jwtSecretKey)
 
 		// 1. Create a new signer from the JWT secret key
 		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedJWTKey}, (&jose.SignerOptions{}).WithType("JWT"))
@@ -120,7 +115,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 	case "JWT":
 		// Try to parse as JWT if JWT secret key is provided
 		if len(jwtSecretKey) > 0 {
-			hashedJWTKey := hashToKey(jwtSecretKey)
+			hashedJWTKey := HashSHA256(jwtSecretKey)
 
 			// 3. Parse the inner JWT
 			nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
@@ -147,7 +142,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 	default:
 		// Try JWT first, then fall back to JSON
 		if len(jwtSecretKey) > 0 {
-			hashedJWTKey := hashToKey(jwtSecretKey)
+			hashedJWTKey := HashSHA256(jwtSecretKey)
 
 			// Try to parse as JWT
 			nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
