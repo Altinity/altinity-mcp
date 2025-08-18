@@ -18,7 +18,7 @@ The following CLI options are available for JWE authentication:
 ```
 --allow-jwe-auth                  Enable JWE encryption for ClickHouse® connection
 --jwe-secret-key string           Secret key for JWE token decryption
---jwt-secret-key string           Secret key for nested JWT signature verification
+--jwt-secret-key string           Secret key for nested JWT signature verification (optional)
 ```
 
 You can also set these options using environment variables:
@@ -76,6 +76,20 @@ go run cmd/jwe_auth/jwe_token_generator.go \
 This will generate a signed with --jwt-secret-key JWT token containing the specified ClickHouse® connection parameters, valid for 1 hour (3600 seconds).
 And encrypt it with AES using --jwe-secret-key
 
+To generate tokens without JWT signing (using JSON serialization instead), simply omit the `--jwt-secret-key` parameter:
+
+```bash
+go run cmd/jwe_auth/jwe_token_generator.go \
+  --jwe-secret-key="your-jwe-encryption-secret" \
+  --host=clickhouse.example.com \
+  --port=8123 \
+  --database=my_database \
+  --username=my_user \
+  --password=my_password \
+  --protocol=http \
+  --expiry=3600
+```
+
 ### JWE Token Generation Endpoint
 
 The Altinity MCP server provides a `/jwe-token-generator` endpoint that allows you to generate JWE tokens dynamically. This is useful for integrations where you need to generate tokens on the fly without using the command-line tool.
@@ -113,6 +127,20 @@ curl -X POST http://localhost:8080/jwe-token-generator \
 - `403 Forbidden`: If JWE authentication is not enabled on the server.
 - `405 Method Not Allowed`: If a method other than `POST` is used.
 - `400 Bad Request`: If the request body is not valid JSON.
+
+## Token Generation and Validation
+
+The JWE token generation supports two modes:
+
+1. **JWT-signed tokens** (when `--jwt-secret-key` is provided):
+   - Claims are serialized to JSON and signed using HS256 algorithm
+   - The signed JWT is then encrypted using JWE
+   - Provides both encryption and signature verification
+
+2. **JSON-encrypted tokens** (when `--jwt-secret-key` is omitted):
+   - Claims are serialized directly to JSON
+   - The JSON is then encrypted using JWE
+   - Provides encryption without signature verification
 
 ## JWT Token Structure
 
