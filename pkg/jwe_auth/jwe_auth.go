@@ -103,7 +103,7 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 
 	// Get the content type to determine how to process the decrypted data
 	contentType := "JWT" // default for backward compatibility
-	if hdr, ok := jweObject.Unprotected[jose.HeaderContentType]; ok {
+	if hdr, ok := jweObject.Header.ExtraHeaders[jose.HeaderContentType]; ok {
 		if ct, ok := hdr.(string); ok {
 			contentType = ct
 		}
