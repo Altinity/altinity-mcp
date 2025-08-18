@@ -221,6 +221,36 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 	return nil
 }
 
+// Helper functions for testing - only exported for testing purposes
+func ParseJWEForTesting(token string, jweSecretKey []byte) (*jose.JSONWebEncryption, error) {
+	hashedJWEKey := hashToKey(jweSecretKey)
+	return jose.ParseEncrypted(token, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
+}
+
+func RegenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []byte) (string, error) {
+	hashedJWEKey := hashToKey(jweSecretKey)
+	plaintext, err := jweObject.Decrypt(hashedJWEKey)
+	if err != nil {
+		return "", err
+	}
+	
+	encrypter, err := jose.NewEncrypter(
+		jose.A256GCM,
+		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
+		&jose.EncrypterOptions{},
+	)
+	if err != nil {
+		return "", err
+	}
+	
+	newJWE, err := encrypter.Encrypt(plaintext)
+	if err != nil {
+		return "", err
+	}
+	
+	return newJWE.CompactSerialize()
+}
+
 // validateExpiration checks if the token has expired
 func validateExpiration(claims map[string]interface{}) error {
 	if exp, ok := claims["exp"]; ok {
