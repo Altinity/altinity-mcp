@@ -87,7 +87,7 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 // ParseAndDecryptJWE parses and validates a JWE token
 func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []byte) (map[string]interface{}, error) {
 	// Hash the JWE key to ensure it is 32 bytes
-	hashedJWEKey := hashToKey(jweSecretKey)
+	hashedJWEKey := HashSHA256(jweSecretKey)
 
 	// 1. Parse the JWE token
 	jweObject, err := jose.ParseEncrypted(tokenParam, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
