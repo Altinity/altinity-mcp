@@ -36,7 +36,7 @@ func TestJWETokenGeneration(t *testing.T) {
 		require.Equal(t, "localhost", parsedClaims["host"])
 		require.Equal(t, float64(8123), parsedClaims["port"])
 	})
-	
+
 	// Test JWE token generation with empty JWT secret key
 	t.Run("empty_jwt_secret_key", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -105,7 +105,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
-	
+
 	// Test parsing with empty JWT secret key
 	t.Run("valid_token_empty_jwt_secret", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -142,7 +142,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, []byte{})
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
-	
+
 	// Test parsing with invalid content type
 	t.Run("invalid_content_type", func(t *testing.T) {
 		// Create a token with invalid content type manually
@@ -150,28 +150,28 @@ func TestParseAndDecryptJWE(t *testing.T) {
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),
 		}
-		
+
 		// Generate a valid token first
 		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
-		
+
 		// Parse and modify the JWE header to have an invalid content type
-		jweObject, err := jwe_auth.ParseJWEForTesting(tokenString, jweSecretKey)
+		jweObject, err := jwe_auth.ParseJWEForTesting(tokenString)
 		require.NoError(t, err)
-		
+
 		// Set an invalid content type
 		jweObject.Header.ExtraHeaders["cty"] = "INVALID"
-		
+
 		// Re-encrypt with invalid content type
 		invalidToken, err := jwe_auth.RegenerateJWEForTesting(jweObject, jweSecretKey)
 		require.NoError(t, err)
-		
+
 		// Should still be able to parse it (falls back to default case)
 		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(invalidToken, jweSecretKey, jwtSecretKey)
 		require.NoError(t, err)
 		require.Equal(t, "test-host", parsedClaims["host"])
 	})
-	
+
 	// Test with disallowed claim key
 	t.Run("disallowed_claim_key", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -187,7 +187,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 	})
-	
+
 	// Test with invalid expiration type
 	t.Run("invalid_exp_type", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -201,7 +201,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
-	
+
 	// Test with disallowed claim key
 	t.Run("disallowed_claim_key", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -217,7 +217,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid token claims format")
 	})
-	
+
 	// Test with invalid expiration type
 	t.Run("invalid_exp_type", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -231,7 +231,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		_, err = jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
-	
+
 	// Test distinction between JWT-signed and JSON-encrypted tokens
 	t.Run("distinguish_jwt_and_json_tokens", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -259,7 +259,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "test-host", parsedJsonClaims["host"])
 	})
-	
+
 	// Test JWT-signed token parsed without JWT secret key
 	t.Run("jwt_token_without_jwt_secret", func(t *testing.T) {
 		claims := map[string]interface{}{
@@ -275,7 +275,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		_, err = jwe_auth.ParseAndDecryptJWE(jwtToken, jweSecretKey, []byte{})
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
-	
+
 	// Test JSON token parsed with JWT secret key
 	t.Run("json_token_with_jwt_secret", func(t *testing.T) {
 		claims := map[string]interface{}{
