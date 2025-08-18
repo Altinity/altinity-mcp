@@ -221,9 +221,7 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 	return nil
 }
 
-// Helper functions for testing - only exported for testing purposes
-func ParseJWEForTesting(token string, jweSecretKey []byte) (*jose.JSONWebEncryption, error) {
-	hashedJWEKey := hashToKey(jweSecretKey)
+func ParseJWEForTesting(token string) (*jose.JSONWebEncryption, error) {
 	return jose.ParseEncrypted(token, []jose.KeyAlgorithm{jose.A256KW}, []jose.ContentEncryption{jose.A256GCM})
 }
 
@@ -233,7 +231,7 @@ func RegenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []b
 	if err != nil {
 		return "", err
 	}
-	
+
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
 		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
@@ -242,12 +240,12 @@ func RegenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []b
 	if err != nil {
 		return "", err
 	}
-	
+
 	newJWE, err := encrypter.Encrypt(plaintext)
 	if err != nil {
 		return "", err
 	}
-	
+
 	return newJWE.CompactSerialize()
 }
 
