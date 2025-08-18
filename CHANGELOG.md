@@ -1,3 +1,9 @@
+# v1.0.6
+IMPROVEMENTS
+- allow empty `--jwt-secret-key` parameter in CLI and inside `/jwe_token_generator`
+- when jwt secret empty then instead of use JWT inside JWE just use json serialization and encrypt it with JWE 
+- during check JWE token first of all try to validate encrypted token as JWT if this is not JWT token try try parse descryted JWE as json and try to check expire without JWT
+
 # v1.0.5
 IMPROVEMENTS
 - add `--cors-origin` CLI parameter and `MCP_CORS_ORIGIN` config parameter, to allow custom origin in CORS policy
