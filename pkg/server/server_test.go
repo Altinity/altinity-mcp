@@ -5,22 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/altinity/altinity-mcp/pkg/clickhouse"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
+	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/mcptest"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
-
-	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // generateJWEToken is a helper to create JWE tokens for testing.
