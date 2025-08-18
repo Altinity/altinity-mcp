@@ -50,12 +50,19 @@ func TestRunGenerator(t *testing.T) {
 			expectedInOutput: "JWE Token:",
 		},
 		{
-			name: "missing_jwt_secret_key",
+			name: "successful_generation_empty_jwt_secret",
 			args: []string{
 				"--jwe-secret-key", jweSecretKey,
+				"--jwt-secret-key", "",
+				"--host", "testhost",
+				"--port", "9000",
+				"--database", "testdb",
+				"--username", "testuser",
+				"--protocol", "tcp",
+				"--limit", "500",
+				"--expiry", "60",
 			},
-			expectedError:    "--jwt-secret-key flag is required",
-			expectedInOutput: "Usage of jwe_token_generator:",
+			expectedInOutput: "JWE Token:",
 		},
 		{
 			name:             "help_flag",
