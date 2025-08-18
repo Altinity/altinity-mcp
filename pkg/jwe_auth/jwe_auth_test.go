@@ -73,7 +73,7 @@ func parseJWEForTesting(token string) (*jose.JSONWebEncryption, error) {
 
 // regenerateJWEForTesting is a helper function for testing that regenerates a JWE token
 func regenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []byte) (string, error) {
-	hashedJWEKey := jwe_auth.HashToKeyForTesting(jweSecretKey)
+	hashedJWEKey := jwe_auth.HashSHA256(jweSecretKey)
 	plaintext, err := jweObject.Decrypt(hashedJWEKey)
 	if err != nil {
 		return "", err
@@ -187,14 +187,14 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.NoError(t, err)
 
 		// Parse and modify the JWE header to have an invalid content type
-		jweObject, err := jwe_auth.ParseJWEForTesting(tokenString)
+		jweObject, err := parseJWEForTesting(tokenString)
 		require.NoError(t, err)
 
 		// Set an invalid content type
 		jweObject.Header.ExtraHeaders["cty"] = "INVALID"
 
 		// Re-encrypt with invalid content type
-		invalidToken, err := jwe_auth.RegenerateJWEForTesting(jweObject, jweSecretKey)
+		invalidToken, err := regenerateJWEForTesting(jweObject, jweSecretKey)
 		require.NoError(t, err)
 
 		// Should still be able to parse it (falls back to default case)
