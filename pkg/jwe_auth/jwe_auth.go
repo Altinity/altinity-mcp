@@ -2,6 +2,7 @@ package jwe_auth
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -23,37 +24,58 @@ func hashToKey(input []byte) []byte {
 	return hash[:]
 }
 
-// GenerateJWEToken creates a JWE token by signing a JWT with HS256 and encrypting it with AES Key Wrap (A256KW) and AES-GCM (A256GCM).
+// GenerateJWEToken creates a JWE token by either:
+// 1. Signing a JWT with HS256 and encrypting it (when jwtSecretKey is provided), or
+// 2. Serializing claims to JSON and encrypting that (when jwtSecretKey is empty)
 func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) (string, error) {
-	// Hash the keys to ensure they are 32 bytes
-	hashedJWTKey := hashToKey(jwtSecretKey)
+	// Hash the JWE key to ensure it is 32 bytes
 	hashedJWEKey := hashToKey(jweSecretKey)
 
-	// 1. Create a new signer from the JWT secret key
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedJWTKey}, (&jose.SignerOptions{}).WithType("JWT"))
-	if err != nil {
-		return "", fmt.Errorf("failed to create JWT signer: %w", err)
-	}
+	var plaintext []byte
+	var contentType string
 
-	// 2. Sign the claims to create a JWT
-	builder := jwt.Signed(signer).Claims(claims)
-	signedJWT, err := builder.Serialize()
-	if err != nil {
-		return "", fmt.Errorf("failed to sign JWT: %w", err)
+	if len(jwtSecretKey) > 0 {
+		// JWT signing is enabled - sign the claims first
+		hashedJWTKey := hashToKey(jwtSecretKey)
+
+		// 1. Create a new signer from the JWT secret key
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedJWTKey}, (&jose.SignerOptions{}).WithType("JWT"))
+		if err != nil {
+			return "", fmt.Errorf("failed to create JWT signer: %w", err)
+		}
+
+		// 2. Sign the claims to create a JWT
+		builder := jwt.Signed(signer).Claims(claims)
+		signedJWT, err := builder.Serialize()
+		if err != nil {
+			return "", fmt.Errorf("failed to sign JWT: %w", err)
+		}
+
+		plaintext = []byte(signedJWT)
+		contentType = "JWT"
+	} else {
+		// No JWT signing - serialize claims directly to JSON
+		jsonData, err := json.Marshal(claims)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal claims to JSON: %w", err)
+		}
+
+		plaintext = jsonData
+		contentType = "JSON"
 	}
 
 	// 3. Create an encrypter from the JWE secret key
 	encrypter, err := jose.NewEncrypter(
 		jose.A256GCM,
 		jose.Recipient{Algorithm: jose.A256KW, Key: hashedJWEKey},
-		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType("JWT"),
+		(&jose.EncrypterOptions{}).WithType("JWE").WithContentType(contentType),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create JWE encrypter: %w", err)
 	}
 
-	// 4. Encrypt the signed JWT
-	jweObject, err := encrypter.Encrypt([]byte(signedJWT))
+	// 4. Encrypt the plaintext (signed JWT or JSON)
+	jweObject, err := encrypter.Encrypt(plaintext)
 	if err != nil {
 		return "", fmt.Errorf("failed to encrypt JWE: %w", err)
 	}
@@ -64,8 +86,7 @@ func GenerateJWEToken(claims map[string]interface{}, jweSecretKey []byte, jwtSec
 
 // ParseAndDecryptJWE parses and validates a JWE token
 func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []byte) (map[string]interface{}, error) {
-	// Hash the keys to ensure they are 32 bytes
-	hashedJWTKey := hashToKey(jwtSecretKey)
+	// Hash the JWE key to ensure it is 32 bytes
 	hashedJWEKey := hashToKey(jweSecretKey)
 
 	// 1. Parse the JWE token
@@ -80,16 +101,69 @@ func ParseAndDecryptJWE(tokenParam string, jweSecretKey []byte, jwtSecretKey []b
 		return nil, ErrInvalidToken
 	}
 
-	// 3. Parse the inner JWT
-	nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
-	if err != nil {
-		return nil, ErrInvalidToken
+	// Get the content type to determine how to process the decrypted data
+	contentType := "JWT" // default for backward compatibility
+	if hdr := jweObject.GetHeader("cty"); hdr != nil {
+		if ct, ok := hdr.(string); ok {
+			contentType = ct
+		}
 	}
 
-	// 4. Verify the signature and get the claims
-	claims := make(map[string]interface{})
-	if err := nestedToken.Claims(hashedJWTKey, &claims); err != nil {
-		return nil, ErrInvalidToken
+	var claims map[string]interface{}
+
+	switch contentType {
+	case "JWT":
+		// Try to parse as JWT if JWT secret key is provided
+		if len(jwtSecretKey) > 0 {
+			hashedJWTKey := hashToKey(jwtSecretKey)
+
+			// 3. Parse the inner JWT
+			nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
+			if err != nil {
+				return nil, ErrInvalidToken
+			}
+
+			// 4. Verify the signature and get the claims
+			claims = make(map[string]interface{})
+			if err := nestedToken.Claims(hashedJWTKey, &claims); err != nil {
+				return nil, ErrInvalidToken
+			}
+		} else {
+			// If no JWT secret key, treat as JSON
+			if err := json.Unmarshal(decrypted, &claims); err != nil {
+				return nil, ErrInvalidToken
+			}
+		}
+	case "JSON":
+		// Parse directly as JSON
+		if err := json.Unmarshal(decrypted, &claims); err != nil {
+			return nil, ErrInvalidToken
+		}
+	default:
+		// Try JWT first, then fall back to JSON
+		if len(jwtSecretKey) > 0 {
+			hashedJWTKey := hashToKey(jwtSecretKey)
+
+			// Try to parse as JWT
+			nestedToken, err := jwt.ParseSigned(string(decrypted), []jose.SignatureAlgorithm{jose.HS256})
+			if err != nil {
+				// Fall back to JSON parsing
+				if err := json.Unmarshal(decrypted, &claims); err != nil {
+					return nil, ErrInvalidToken
+				}
+			} else {
+				// Successfully parsed as JWT, verify signature
+				claims = make(map[string]interface{})
+				if err := nestedToken.Claims(hashedJWTKey, &claims); err != nil {
+					return nil, ErrInvalidToken
+				}
+			}
+		} else {
+			// No JWT secret key, parse as JSON
+			if err := json.Unmarshal(decrypted, &claims); err != nil {
+				return nil, ErrInvalidToken
+			}
+		}
 	}
 
 	// 5. Validate claims
