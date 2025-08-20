@@ -62,16 +62,23 @@ This will output a JWE token that can be used for authentication with the Altini
 
 To integrate Altinity MCP with Claude.ai:
 
-1. Navigate to [https://claude.ai](https://claude.ai) and log in to your account
-2. Create a new chat or open an existing one
-3. In the chat interface, click on the "Tools" button in the left sidebar
-4. Select "Add Tool" and choose "Custom Tool"
-5. Configure the tool with your Altinity MCP server endpoint:
-   ![Claude Web Integration Step 1](docs/screenshots/claude_web1.jpg)
-6. Enter the OpenAPI specification URL for your Altinity MCP server:
-   ![Claude Web Integration Step 2](docs/screenshots/claude_web2.jpg)
-7. Provide the JWE token when prompted for authentication:
-   ![Claude Web Integration Step 3](docs/screenshots/claude_web3.jpg)
+1.  Navigate to [https://claude.ai](https://claude.ai) and log in to your account.
+2.  Go to **Settings** > **Connectors**.
+    ![Claude Web Integration Step 1](screenshots/claude_web_connectors_0.jpg)
+3.  In the **Connectors** settings, click on **Add custom connector**.
+    ![Claude Web Integration Step 2](screenshots/claude_web_connectors_1.jpg)
+4.  Enter a name for your connector (e.g., `altinity-mcp-jwe`) and the server URL, which should include the JWE token. For example: `https://host/token/http`.
+    ![Claude Web Integration Step 3](screenshots/claude_web_connectors_2.jpg)
+5.  After adding the connector, you can enable it for your chat session by clicking the tool icon.
+    ![Claude Web Integration Step 4](screenshots/claude_web_connectors_3.jpg)
+6.  You can see the list of available tools and enable or disable them.
+    ![Claude Web Integration Step 5](screenshots/claude_web_connectors_4.jpg)
+7.  Once enabled, you can use the tools in your chat. For example, you can ask Claude to list tables from your ClickHouse database.
+    ![Claude Web Integration Step 6](screenshots/claude_web_connectors_5.jpg)
+8.  Claude will show the results from the tool execution.
+    ![Claude Web Integration Step 7](screenshots/claude_web_connectors_6.jpg)
+9.  You can continue the conversation with Claude to analyze the data.
+    ![Claude Web Integration Step 8](screenshots/claude_web_connectors_7.jpg)
 
 ## Integrate with OpenAI ChatGPT GPTs
 
