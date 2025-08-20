@@ -131,16 +131,20 @@ Replace `https://your-mcp-server-url/token/http` with the actual URL of your Alt
 
 ## Integrate with Cursor.com
 
-To integrate Altinity MCP with Cursor.com:
+To integrate Altinity MCP with Cursor.com, you need to add a new entry to the `mcpServers` section in the IDE's settings. This will allow you to use the Altinity MCP server as a tool provider.
 
-1. Open Cursor.com IDE
-2. Go to "Settings" (Ctrl/Cmd + ,)
-3. Navigate to "Tools" or "MCP" section
-4. Add a new MCP connection:
-   ![Cursor Integration](docs/screenshots/cursor.jpg)
-5. Enter your Altinity MCP server details
-6. Configure authentication with your JWE token
-7. Save and test the connection
+```json
+{
+  "mcpServers": [
+    {
+      "name": "altinity-mcp",
+      "url": "https://your-mcp-server-url/token/http"
+    }
+  ]
+}
+```
+
+Make sure to replace `https://your-mcp-server-url/token/http` with the correct URL for your Altinity MCP server.
 
 ## Integrate with Windsurf
 
