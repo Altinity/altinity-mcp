@@ -15,6 +15,24 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - **Configuration Management**: Flexible configuration via files, environment variables, or CLI flags
 - **Hot Reload**: Dynamic configuration reloading without server restart
 
+## Table of Contents
+- [Quick Start](#quick-start)
+- [Integration Guide](#integration-guide)
+- [Installation & Deployment](#installation--deployment)
+- [Configuration](#configuration)
+- [Available Tools](#available-tools)
+- [Available Resources](#available-resources)
+- [Available Prompts](#available-prompts)
+- [OpenAI GPTs Integration](#openai-gpts-integration)
+- [JWE Authentication](#jwe-authentication)
+- [TLS Configuration](#tls-configuration)
+- [Testing](#testing)
+- [Development](#development)
+- [CLI Reference](#cli-reference)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
+
 ## Quick Start
 
 ### Using STDIO Transport (Default)
@@ -57,6 +75,10 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
   --clickhouse-host localhost \
   --openapi http
 ```
+
+## Integration Guide
+
+For detailed instructions on integrating Altinity MCP with various AI tools and platforms, see our [Integration Guide](docs/howto_integrate.md).
 
 ## Installation & Deployment
 
