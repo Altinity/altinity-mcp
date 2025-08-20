@@ -148,16 +148,20 @@ Make sure to replace `https://your-mcp-server-url/token/http` with the correct U
 
 ## Integrate with Windsurf
 
-To integrate Altinity MCP with Windsurf:
+To integrate Altinity MCP with Windsurf, you need to add a new entry to the `mcpServers` section in the IDE's settings. This will allow you to use the Altinity MCP server as a tool provider.
 
-1. Open Windsurf IDE
-2. Go to "Preferences" or "Settings"
-3. Find the "Tools" or "MCP" section
-4. Add a new MCP tool configuration:
-   ![Windsurf Integration](docs/screenshots/windsurf.jpg)
-5. Enter your Altinity MCP server endpoint
-6. Configure authentication with your JWE token
-7. Save and verify the connection
+```json
+{
+  "mcpServers": [
+    {
+      "name": "altinity-mcp",
+      "url": "https://your-mcp-server-url/token/http"
+    }
+  ]
+}
+```
+
+Make sure to replace `https://your-mcp-server-url/token/http` with the correct URL for your Altinity MCP server.
 
 ## Troubleshooting
 
