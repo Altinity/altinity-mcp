@@ -111,66 +111,37 @@ affinity: {}
 
 # Configuration for the altinity-mcp application
 config:
-  # ClickHouse configuration
   clickhouse:
-    # -- ClickHouse server host
     host: "localhost"
-    # -- ClickHouse server port
     port: 8123
-    # -- ClickHouse database name
     database: "default"
-    # -- ClickHouse username
     username: "default"
-    # -- ClickHouse password
     password: ""
-    # -- ClickHouse protocol (http/tcp)
     protocol: "http"
-    # -- Enable read-only mode
     read_only: false
-    # -- Query timeout in seconds
     max_execution_time: 30
-    # -- Default limit for query results
     limit: 1000
     tls:
-      # -- Enable TLS for ClickHouse connection
       enabled: false
-      # -- Path to CA certificate
       ca_cert: ""
-      # -- Path to client certificate
       client_cert: ""
-      # -- Path to client key
       client_key: ""
-      # -- Skip TLS certificate verification
       insecure_skip_verify: false
   
-  # Server configuration
   server:
-    # -- Transport type (stdio/http/sse)
     transport: "http"
-    # -- Server address
     address: "0.0.0.0"
-    # -- Server port
     port: 8080
     tls:
-      # -- Enable TLS for server
       enabled: false
-      # -- Path to TLS certificate file
       cert_file: ""
-      # -- Path to TLS key file
       key_file: ""
-      # -- Path to CA certificate
       ca_cert: ""
     jwe:
-      # -- Enable JWE authentication
       enabled: false
-      # -- Secret key for JWT signature verification
       jwt_secret_key: ""
-      # -- Secret key for JWE token decryption
       jwe_secret_key: ""
-      # -- Token parameter name
       token_param: "token"
   
-  # Logging configuration
   logging:
-    # -- Logging level (debug/info/warn/error)
     level: "info"
