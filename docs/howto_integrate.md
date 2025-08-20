@@ -84,16 +84,21 @@ To integrate Altinity MCP with Claude.ai:
 
 To integrate Altinity MCP with OpenAI GPTs:
 
-1. Navigate to [https://chatgpt.com](https://chatgpt.com) and log in to your account
-2. Create a new GPT or edit an existing one
-3. In the configuration interface, go to the "Configure" tab
-4. Scroll down to the "API endpoints" section
-5. Add your Altinity MCP server as an API endpoint:
-   ![OpenAI GPTs Integration Step 1](docs/screenshots/openai_gpts_1.jpg)
-6. Configure the authentication with your JWE token:
-   ![OpenAI GPTs Integration Step 2](docs/screenshots/openai_gpts_2.jpg)
-7. Test the connection to ensure it's working properly:
-   ![OpenAI GPTs Integration Step 3](docs/screenshots/openai_gpts_3.jpg)
+1.  Navigate to [https://chatgpt.com](https://chatgpt.com) and log in to your account.
+2.  Go to the **GPTs** section and click **Create**.
+    ![OpenAI GPTs Integration Step 1](screenshots/openai_gpts_1.jpg)
+3.  In the configuration interface, go to the **Configure** tab.
+    ![OpenAI GPTs Integration Step 2](screenshots/openai_gpts_2.jpg)
+4.  Scroll down to the **Actions** section and click **Create new action**.
+    ![OpenAI GPTs Integration Step 3](screenshots/openai_gpts_3.jpg)
+5.  Import the OpenAPI schema from your Altinity MCP server URL. For example: `https://host/token/http`.
+    ![OpenAI GPTs Integration Step 4](screenshots/openai_gpts_4.jpg)
+6.  Configure the authentication with your JWE token using the **API Key** option.
+    ![OpenAI GPTs Integration Step 5](screenshots/openai_gpts_5.jpg)
+7.  Test the connection in the preview mode to ensure it's working properly.
+    ![OpenAI GPTs Integration Step 6](screenshots/openai_gpts_6.jpg)
+8.  You can now interact with your ClickHouse database using the GPT.
+    ![OpenAI GPTs Integration Step 7](screenshots/openai_gpts_7.jpg)
 
 ## Integrate with Claude Desktop
 
