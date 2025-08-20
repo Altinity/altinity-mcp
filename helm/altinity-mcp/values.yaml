@@ -2,32 +2,41 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+# -- Number of replicas to deploy
 replicaCount: 1
 
 image:
+  # -- Container image repository
   repository: ghcr.io/altinity/altinity-mcp
+  # -- Container image pull policy
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
+  # -- Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
+# -- Pull secrets for private images
 imagePullSecrets: []
+# -- Override the name of the chart
 nameOverride: ""
+# -- Override the full name of the chart
 fullnameOverride: ""
 
 serviceAccount:
-  # Specifies whether a service account should be created
+  # -- Specifies whether a service account should be created
   create: true
-  # Annotations to add to the service account
+  # -- Annotations to add to the service account
   annotations: {}
-  # The name of the service account to use.
+  # -- The name of the service account to use.
   # If not set and create is true, a name is generated using the fullname template
   name: ""
 
+# -- Pod annotations
 podAnnotations: {}
 
+# -- Pod security context
 podSecurityContext: {}
   # fsGroup: 2000
 
+# -- Container security context
 securityContext: {}
   # capabilities:
   #   drop:
@@ -37,26 +46,37 @@ securityContext: {}
   # runAsUser: 1000
 
 service:
+  # -- Service type
   type: ClusterIP
+  # -- Service port
   port: 8080
+  # -- Service annotations
   annotations: {}
 
 ingress:
+  # -- Enable ingress controller resource
   enabled: false
+  # -- Ingress class name
   className: ""
+  # -- Ingress annotations
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # kubernetes.io/tls-acme: "true"
   hosts:
+    # -- Ingress host
     - host: chart-example.local
       paths:
+        # -- Ingress path
         - path: /
+          # -- Ingress path type
           pathType: Prefix
+  # -- Ingress TLS configuration
   tls: []
   #  - secretName: chart-example-tls
   #    hosts:
   #      - chart-example.local
 
+# -- Container resource requests and limits
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
   # choice for the user. This also increases chances charts run on environments with little
@@ -70,54 +90,87 @@ resources: {}
   #   memory: 128Mi
 
 autoscaling:
+  # -- Enable autoscaling
   enabled: false
+  # -- Minimum number of replicas
   minReplicas: 1
+  # -- Maximum number of replicas
   maxReplicas: 100
+  # -- Target CPU utilization percentage
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
+# -- Node labels for pod assignment
 nodeSelector: {}
 
+# -- Toleration labels for pod assignment
 tolerations: []
 
+# -- Affinity settings for pod assignment
 affinity: {}
 
 # Configuration for the altinity-mcp application
 config:
   # ClickHouse configuration
   clickhouse:
+    # -- ClickHouse server host
     host: "localhost"
+    # -- ClickHouse server port
     port: 8123
+    # -- ClickHouse database name
     database: "default"
+    # -- ClickHouse username
     username: "default"
+    # -- ClickHouse password
     password: ""
+    # -- ClickHouse protocol (http/tcp)
     protocol: "http"
+    # -- Enable read-only mode
     read_only: false
+    # -- Query timeout in seconds
     max_execution_time: 30
+    # -- Default limit for query results
     limit: 1000
     tls:
+      # -- Enable TLS for ClickHouse connection
       enabled: false
+      # -- Path to CA certificate
       ca_cert: ""
+      # -- Path to client certificate
       client_cert: ""
+      # -- Path to client key
       client_key: ""
+      # -- Skip TLS certificate verification
       insecure_skip_verify: false
   
   # Server configuration
   server:
+    # -- Transport type (stdio/http/sse)
     transport: "http"
+    # -- Server address
     address: "0.0.0.0"
+    # -- Server port
     port: 8080
     tls:
+      # -- Enable TLS for server
       enabled: false
+      # -- Path to TLS certificate file
       cert_file: ""
+      # -- Path to TLS key file
       key_file: ""
+      # -- Path to CA certificate
       ca_cert: ""
     jwe:
+      # -- Enable JWE authentication
       enabled: false
+      # -- Secret key for JWT signature verification
       jwt_secret_key: ""
+      # -- Secret key for JWE token decryption
       jwe_secret_key: ""
+      # -- Token parameter name
       token_param: "token"
   
   # Logging configuration
   logging:
+    # -- Logging level (debug/info/warn/error)
     level: "info"

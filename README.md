@@ -88,6 +88,7 @@ helm install altinity-mcp ./helm/altinity-mcp \
   --set config.server.port=8080
 ```
 
+For detailed Helm chart configuration options, see [Helm Chart README](helm/altinity-mcp/README.md).
 
 ### Docker Compose
 
