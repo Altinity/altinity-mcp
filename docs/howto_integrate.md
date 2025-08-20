@@ -104,16 +104,13 @@ To integrate Altinity MCP with OpenAI GPTs:
 
 To integrate Altinity MCP with Claude Desktop:
 
-1. Open Claude Desktop application
-2. Go to "Settings" (gear icon) in the bottom left corner
-3. Select "Tools" from the settings menu
-4. Click "Add Custom Tool"
-5. Enter your Altinity MCP server details:
-   ![Claude Desktop Integration Step 1](docs/screenshots/claude_desktop1.jpg)
-6. Configure the authentication with your JWE token:
-   ![Claude Desktop Integration Step 2](docs/screenshots/claude_desktop2.jpg)
-7. Save the configuration and test the connection:
-   ![Claude Desktop Integration Step 3](docs/screenshots/claude_desktop3.jpg)
+1.  Open the Claude Desktop application.
+2.  Go to **Settings** > **Developer**.
+    ![Claude Desktop Integration Step 1](screenshots/claude_desktop_local_mcp_1.jpg)
+3.  In the **Local MCP servers** section, click on **Edit Config**.
+4.  Add your Altinity MCP server details to the configuration file.
+    ![Claude Desktop Integration Step 2](screenshots/claude_desktop_local_mcp_2.jpg)
+5.  Save the configuration and restart the application to apply the changes.
 
 ## Integrate with Claude Code (Claude MCP)
 
