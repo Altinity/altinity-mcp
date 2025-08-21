@@ -286,7 +286,7 @@ jobs:
         git config --local user.name "GitHub Action"
         git add helm/altinity-mcp/Chart.yaml
         git commit -m "Update Helm chart version to $VERSION"
-        git push origin HEAD:${GITHUB_REF_NAME}
+        git push origin main
         
         # Login to GitHub Container Registry
         echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
