@@ -152,13 +152,15 @@ To integrate Altinity MCP with Windsurf, you need to add a new entry to the `mcp
   "mcpServers": [
     {
       "name": "altinity-mcp",
-      "url": "https://your-mcp-server-url/token/http"
+      "type": "remote",
+      "url": "https://your-mcp-server-url",
+      "authorization": "Bearer your-jwe-token"
     }
   ]
 }
 ```
 
-Make sure to replace `https://your-mcp-server-url/token/http` with the correct URL for your Altinity MCP server.
+Make sure to replace `https://your-mcp-server-url` with the correct URL for your Altinity MCP server and `your-jwe-token` with your actual JWE token.
 
 ## Troubleshooting
 
