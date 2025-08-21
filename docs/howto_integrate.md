@@ -9,8 +9,8 @@ This guide provides step-by-step instructions for integrating the Altinity MCP S
 - [Integrate with Claude.ai Chat Web Interface](#integrate-with-claudeai-chat-web-interface)
 - [Integrate with OpenAI ChatGPT GPTs](#integrate-with-openai-chatgpt-gpts)
 - [Integrate with Claude Desktop](#integrate-with-claude-desktop)
-- [Integrate with Claude Code (Claude MCP)](#integrate-with-claude-code-claude-mcp)
-- [Integrate with Cursor.com](#integrate-with-cursorcom)
+- [Integrate with Claude Code](#integrate-with-claude-code)
+- [Integrate with Cursor.com](#integrate-with-cursor)
 - [Integrate with Windsurf](#integrate-with-windsurf)
 
 ## Install Helm Chart with Minikube and Helm from GHCR.io (Token Enabled)
@@ -123,7 +123,9 @@ To integrate Altinity MCP with Claude Desktop:
 ```
 
 
-## Integrate with Claude Code https://www.anthropic.com/claude-code
+## Integrate with Claude Code
+
+Download and install Claude Code https://www.anthropic.com/claude-code
 
 To integrate Altinity MCP with Claude Code, you can use the `claude mcp add` command for HTTP transport:
 
@@ -135,11 +137,12 @@ Replace `https://your-mcp-host:port/generated_jwe_token/http` with the actual UR
 
 This command will configure Claude Code to use your Altinity MCP server as a tool provider.
 
-## Integrate with Cursor.com
+## Integrate with Cursor
 
 Go to: `Settings` -> `Cursor Settings` -> `MCP` -> `Add new global MCP server`
 
-Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file is the recommended approach. You may also install in a specific project by creating `.cursor/mcp.json` in your project folder. See [Cursor MCP docs](https://docs.cursor.com/context/model-context-protocol) for more info.
+Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file is the recommended approach. You may also install in a specific project by creating `.cursor/mcp.json` in your project folder. 
+
 
 ```json
 {
@@ -153,6 +156,8 @@ Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file i
   }
 }
 ```
+
+See [Cursor MCP docs](https://docs.cursor.com/context/model-context-protocol) for more info.
 
 ## Integrate with Windsurf
 
