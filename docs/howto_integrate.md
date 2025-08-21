@@ -62,55 +62,87 @@ This will output a JWE token that can be used for authentication with the Altini
 
 To integrate Altinity MCP with Claude.ai:
 
-1.  Navigate to [https://claude.ai](https://claude.ai) and log in to your account.
-2.  Go to **Settings** > **Connectors**.
-    ![Claude Web Integration Step 1](screenshots/claude_web_connectors_0.jpg)
-3.  In the **Connectors** settings, click on **Add custom connector**.
-    ![Claude Web Integration Step 2](screenshots/claude_web_connectors_1.jpg)
-4.  Enter a name for your connector (e.g., `altinity-mcp-jwe`) and the server URL, which should include the JWE token. For example: `https://host/token/http`.
-    ![Claude Web Integration Step 3](screenshots/claude_web_connectors_2.jpg)
-5.  After adding the connector, you can enable it for your chat session by clicking the tool icon.
-    ![Claude Web Integration Step 4](screenshots/claude_web_connectors_3.jpg)
-6.  You can see the list of available tools and enable or disable them.
-    ![Claude Web Integration Step 5](screenshots/claude_web_connectors_4.jpg)
-7.  Once enabled, you can use the tools in your chat. For example, you can ask Claude to list tables from your ClickHouse database.
-    ![Claude Web Integration Step 6](screenshots/claude_web_connectors_5.jpg)
-8.  Claude will show the results from the tool execution.
-    ![Claude Web Integration Step 7](screenshots/claude_web_connectors_6.jpg)
-9.  You can continue the conversation with Claude to analyze the data.
-    ![Claude Web Integration Step 8](screenshots/claude_web_connectors_7.jpg)
+* Navigate to [https://claude.ai](https://claude.ai) and log in to your account.
+* Go to **Settings** > **Connectors**.
+    
+![Claude Web Integration Step 1](screenshots/claude_web_connectors_0.jpg)
+
+* In the **Connectors** settings, click on **Add custom connector**.
+
+![Claude Web Integration Step 2](screenshots/claude_web_connectors_1.jpg) 
+
+* Enter a name for your connector (e.g., `altinity-mcp-jwe`) and the server URL, which should include the JWE token. For example: `https://host/token/http`.
+
+![Claude Web Integration Step 3](screenshots/claude_web_connectors_2.jpg)
+ 
+* After adding the connector, you can enable it for your chat session by clicking the tool icon.
+
+![Claude Web Integration Step 4](screenshots/claude_web_connectors_3.jpg)
+ 
+* You can see the list of available tools and enable or disable them.
+
+![Claude Web Integration Step 5](screenshots/claude_web_connectors_4.jpg)
+
+* Once enabled, you can use the tools in your chat. For example, you can ask Claude to list tables from your ClickHouse database.
+
+![Claude Web Integration Step 6](screenshots/claude_web_connectors_5.jpg)
+ 
+* Claude will show the results from the tool execution.
+
+![Claude Web Integration Step 7](screenshots/claude_web_connectors_6.jpg)
+
+*  You can continue the conversation with Claude to analyze the data.
+
+![Claude Web Integration Step 8](screenshots/claude_web_connectors_7.jpg)
 
 ## Integrate with OpenAI ChatGPT GPTs
 
 To integrate Altinity MCP with OpenAI GPTs:
 
-1.  Navigate to [https://chatgpt.com](https://chatgpt.com) and log in to your account.
-2.  Go to the **GPTs** section and click **Create**.
-    ![OpenAI GPTs Integration Step 1](screenshots/openai_gpts_1.jpg)
-3.  In the configuration interface, go to the **Configure** tab.
-    ![OpenAI GPTs Integration Step 2](screenshots/openai_gpts_2.jpg)
-4.  Scroll down to the **Actions** section and click **Create new action**.
-    ![OpenAI GPTs Integration Step 3](screenshots/openai_gpts_3.jpg)
-5.  Import the OpenAPI schema from your Altinity MCP server URL. For example: `https://host/token/http`.
-    ![OpenAI GPTs Integration Step 4](screenshots/openai_gpts_4.jpg)
-6.  Configure the authentication with your JWE token using the **API Key** option.
-    ![OpenAI GPTs Integration Step 5](screenshots/openai_gpts_5.jpg)
-7.  Test the connection in the preview mode to ensure it's working properly.
-    ![OpenAI GPTs Integration Step 6](screenshots/openai_gpts_6.jpg)
-8.  You can now interact with your ClickHouse database using the GPT.
-    ![OpenAI GPTs Integration Step 7](screenshots/openai_gpts_7.jpg)
+* Navigate to [https://chatgpt.com](https://chatgpt.com) and log in to your account.
+* Go to the **GPTs** section and click **Create**.
+
+![OpenAI GPTs Integration Step 1](screenshots/openai_gpts_1.jpg)
+
+* In the configuration interface, go to the **Configure** tab.
+
+![OpenAI GPTs Integration Step 2](screenshots/openai_gpts_2.jpg)
+
+* Scroll down to the **Actions** section and click **Create new action**.
+
+![OpenAI GPTs Integration Step 3](screenshots/openai_gpts_3.jpg)
+
+* Import the OpenAPI schema from your Altinity MCP server URL. For example: `https://host/token/http`.
+
+![OpenAI GPTs Integration Step 4](screenshots/openai_gpts_4.jpg)
+
+* Configure the authentication with your JWE token using the **API Key** option.
+
+![OpenAI GPTs Integration Step 5](screenshots/openai_gpts_5.jpg)
+
+* Test the connection in the preview mode to ensure it's working properly.
+
+![OpenAI GPTs Integration Step 6](screenshots/openai_gpts_6.jpg)
+
+* You can now interact with your ClickHouse database using the GPT.
+
+![OpenAI GPTs Integration Step 7](screenshots/openai_gpts_7.jpg)
 
 ## Integrate with Claude Desktop
 
 To integrate Altinity MCP with Claude Desktop:
 
-1.  Download and Open the Claude Desktop application https://claude.ai/download.
-2.  Go to **Settings** > **Developer**.
-    ![Claude Desktop Integration Step 1](screenshots/claude_desktop_local_mcp_1.jpg)
-3.  In the **Local MCP servers** section, click on **Edit Config**.
-4.  Add your Altinity MCP server details to the configuration file.
-    ![Claude Desktop Integration Step 2](screenshots/claude_desktop_local_mcp_2.jpg)
-5.  Save the configuration with following format:
+* Download and Open the Claude Desktop application https://claude.ai/download.
+* Go to **Settings** > **Developer**.
+
+![Claude Desktop Integration Step 1](screenshots/claude_desktop_local_mcp_1.jpg)
+ 
+* In the **Local MCP servers** section, click on **Edit Config**.
+* Add your Altinity MCP server details to the configuration file.
+
+![Claude Desktop Integration Step 2](screenshots/claude_desktop_local_mcp_2.jpg)
+
+* Save the configuration with following format:
 ```json
 {
   "mcpServers": {
