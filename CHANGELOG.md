@@ -1,3 +1,9 @@
+# v1.0.7
+IMPROVEMENTS
+- Update and enhance integration documentation for AI tools like Claude, Cursor, Windsurf, and OpenAI GPTs.
+- Improve Helm chart documentation and resolve issues in the publishing workflow.
+- Update project dependencies.
+
 # v1.0.6
 IMPROVEMENTS
 - allow empty `--jwt-secret-key` parameter in CLI and inside `/jwe_token_generator`
