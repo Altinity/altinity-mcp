@@ -114,20 +114,15 @@ To integrate Altinity MCP with Claude Desktop:
 
 ## Integrate with Claude Code (Claude MCP)
 
-To integrate Altinity MCP with Claude Code, you need to configure the `mcpServers` section in the application's settings. Add a new entry for your Altinity MCP server with the following details:
+To integrate Altinity MCP with Claude Code, you can use the `claude mcp add` command for HTTP transport:
 
-```json
-{
-  "mcpServers": [
-    {
-      "name": "altinity-mcp",
-      "url": "https://your-mcp-server-url/token/http"
-    }
-  ]
-}
+```bash
+claude mcp add altinity-mcp https://your-mcp-server-url/token/http
 ```
 
 Replace `https://your-mcp-server-url/token/http` with the actual URL of your Altinity MCP server, including the JWE token.
+
+This command will configure Claude Code to use your Altinity MCP server as a tool provider.
 
 ## Integrate with Cursor.com
 
