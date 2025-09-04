@@ -112,7 +112,7 @@ To integrate Altinity MCP with OpenAI GPTs:
 
 ![OpenAI GPTs Integration Step 3](screenshots/openai_gpts_3.jpg)
 
-* Import the OpenAPI schema from your Altinity MCP server URL. For example: `https://host/token/http`.
+* Import the OpenAPI schema from your Altinity MCP server URL. For example: `https://host/token/openapi`.
 
 ![OpenAI GPTs Integration Step 4](screenshots/openai_gpts_4.jpg)
 
