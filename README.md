@@ -85,7 +85,7 @@ For detailed instructions on integrating Altinity MCP with various AI tools and 
 ### Using Docker
 
 ```bash
-docker run -it altinity/altinity-mcp:latest --clickhouse-host clickhouse
+docker run -it --rm ghcr.io/altinity/altinity-mcp:latest --clickhouse-host clickhouse
 ```
 
 ### Kubernetes with Helm
