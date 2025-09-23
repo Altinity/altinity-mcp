@@ -41,6 +41,7 @@ type ClickHouseConfig struct {
 	ReadOnly         bool               `json:"read_only" yaml:"read_only" flag:"read-only" desc:"Connect to ClickHouse in read-only mode"`
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Default limit for query results"`
+	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -72,13 +73,13 @@ type JWEConfig struct {
 
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport    MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address      string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port         int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS          ServerTLSConfig `json:"tls" yaml:"tls"`
-	JWE          JWEConfig       `json:"jwe" yaml:"jwe"`
-	OpenAPI      OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin   string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	Transport  MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address    string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port       int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS        ServerTLSConfig `json:"tls" yaml:"tls"`
+	JWE        JWEConfig       `json:"jwe" yaml:"jwe"`
+	OpenAPI    OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration

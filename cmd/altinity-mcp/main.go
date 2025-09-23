@@ -133,6 +133,12 @@ func run(args []string) error {
 				Value:   "",
 				Sources: cli.EnvVars("CLICKHOUSE_TLS_CLIENT_KEY"),
 			},
+			&cli.StringMapFlag{
+				Name:    "clickhouse-http-headers",
+				Usage:   "HTTP Headers for ClickHouse",
+				Value:   map[string]string{},
+				Sources: cli.EnvVars("CLICKHOUSE_HTTP_HEADERS"),
+			},
 			&cli.BoolFlag{
 				Name:    "clickhouse-tls-insecure-skip-verify",
 				Usage:   "Skip server certificate verification",
@@ -756,6 +762,7 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 
 // CommandInterface defines the interface needed by overrideWithCLIFlags
 type CommandInterface interface {
+	StringMap(name string) map[string]string
 	String(name string) string
 	Int(name string) int
 	Bool(name string) bool
@@ -929,6 +936,11 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.ClickHouse.Limit = cmd.Int("clickhouse-limit")
 	} else if cfg.ClickHouse.Limit == 0 {
 		cfg.ClickHouse.Limit = 1000
+	}
+
+	// Override ClickHouse HTTP Headers with CLI flags
+	if cmd.IsSet("clickhouse-http-headers") {
+		cfg.ClickHouse.HttpHeaders = cmd.StringMap("clickhouse-http-headers")
 	}
 
 	// Override CORS origin with CLI flags

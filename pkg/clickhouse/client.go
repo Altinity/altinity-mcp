@@ -110,6 +110,7 @@ func (c *Client) connect() error {
 		TLS:             tlsConfig,
 		Protocol:        protocol,
 		Settings:        settings,
+		HttpHeaders:     c.config.HttpHeaders,
 		DialTimeout:     time.Second * 10,
 		MaxOpenConns:    10,
 		MaxIdleConns:    5,
