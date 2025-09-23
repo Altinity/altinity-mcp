@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/go-jose/go-jose/v4 v4.1.2
-	github.com/mark3labs/mcp-go v0.39.1
+	github.com/mark3labs/mcp-go v0.40.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.38.0
