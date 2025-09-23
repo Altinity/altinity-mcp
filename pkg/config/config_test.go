@@ -20,6 +20,9 @@ clickhouse:
   password: "test-pass"
   protocol: "tcp"
   limit: 500
+  http_headers:
+    X-Custom-Header: "custom-value"
+    Authorization: "Bearer token123"
 server:
   openapi:
     enabled: true
@@ -48,6 +51,10 @@ logging:
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, DebugLevel, cfg.Logging.Level)
 		require.True(t, cfg.Server.OpenAPI.Enabled)
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 2)
+		require.Equal(t, "custom-value", cfg.ClickHouse.HttpHeaders["X-Custom-Header"])
+		require.Equal(t, "Bearer token123", cfg.ClickHouse.HttpHeaders["Authorization"])
 	})
 
 	t.Run("json_config", func(t *testing.T) {
@@ -58,7 +65,11 @@ logging:
     "database": "json-db",
     "username": "json-user",
     "protocol": "http",
-    "limit": 2000
+    "limit": 2000,
+    "http_headers": {
+      "X-JSON-Header": "json-value",
+      "User-Agent": "test-agent"
+    }
   },
   "server": {
     "transport": "sse",
@@ -90,6 +101,10 @@ logging:
 		require.Equal(t, 9090, cfg.Server.Port)
 		require.Equal(t, InfoLevel, cfg.Logging.Level)
 		require.False(t, cfg.Server.OpenAPI.Enabled)
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 2)
+		require.Equal(t, "json-value", cfg.ClickHouse.HttpHeaders["X-JSON-Header"])
+		require.Equal(t, "test-agent", cfg.ClickHouse.HttpHeaders["User-Agent"])
 	})
 
 	t.Run("nonexistent_file", func(t *testing.T) {
@@ -175,6 +190,7 @@ func TestConfigStructs(t *testing.T) {
 			ReadOnly:         true,
 			MaxExecutionTime: 300,
 			Limit:            1000,
+			HttpHeaders:      map[string]string{"X-Custom-Header": "custom-value"},
 		}
 
 		require.Equal(t, "localhost", cfg.Host)
@@ -186,6 +202,8 @@ func TestConfigStructs(t *testing.T) {
 		require.True(t, cfg.ReadOnly)
 		require.Equal(t, 300, cfg.MaxExecutionTime)
 		require.Equal(t, 1000, cfg.Limit)
+		require.NotNil(t, cfg.HttpHeaders)
+		require.Equal(t, "custom-value", cfg.HttpHeaders["X-Custom-Header"])
 	})
 
 	t.Run("tls_config", func(t *testing.T) {

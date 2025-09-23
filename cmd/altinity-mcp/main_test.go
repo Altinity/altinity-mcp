@@ -87,6 +87,7 @@ func TestBuildConfig(t *testing.T) {
 			&cli.StringFlag{Name: "jwe-secret-key", Value: ""},
 			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
 			&cli.StringFlag{Name: "openapi", Value: "disable"},
+			&cli.StringMapFlag{Name: "clickhouse-http-headers", Value: map[string]string{}},
 		}
 
 		cfg, err := buildConfig(cmd)
@@ -105,6 +106,28 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, "info", string(cfg.Logging.Level))
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Empty(t, cfg.ClickHouse.HttpHeaders)
+	})
+
+	t.Run("with_http_headers", func(t *testing.T) {
+		cmd := &cli.Command{}
+		cmd.Flags = []cli.Flag{
+			&cli.StringFlag{Name: "config"},
+			&cli.StringFlag{Name: "clickhouse-host", Value: "localhost"},
+			&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
+			&cli.StringMapFlag{Name: "clickhouse-http-headers", Value: map[string]string{
+				"X-Custom-Header": "custom-value",
+				"Authorization":   "Bearer token123",
+			}},
+		}
+
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 2)
+		require.Equal(t, "custom-value", cfg.ClickHouse.HttpHeaders["X-Custom-Header"])
+		require.Equal(t, "Bearer token123", cfg.ClickHouse.HttpHeaders["Authorization"])
 	})
 
 	t.Run("openapi_enabled_http", func(t *testing.T) {
@@ -159,6 +182,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 			setFlags: map[string]bool{
 				"clickhouse-protocol": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -175,6 +199,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 			setFlags: map[string]bool{
 				"transport": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -191,6 +216,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 			setFlags: map[string]bool{
 				"log-level": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -201,8 +227,16 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 
 // mockCommand implements CommandInterface for testing
 type mockCommand struct {
-	flags    map[string]interface{}
-	setFlags map[string]bool
+	flags      map[string]interface{}
+	setFlags   map[string]bool
+	stringMaps map[string]map[string]string
+}
+
+func (m *mockCommand) StringMap(name string) map[string]string {
+	if val, ok := m.stringMaps[name]; ok {
+		return val
+	}
+	return map[string]string{}
 }
 
 func (m *mockCommand) String(name string) string {
@@ -1020,7 +1054,8 @@ func TestNewApplication(t *testing.T) {
 				"config":             "",
 				"config-reload-time": 0,
 			},
-			setFlags: map[string]bool{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		ctx := context.Background()
@@ -1054,7 +1089,8 @@ func TestNewApplication(t *testing.T) {
 				"config":             "",
 				"config-reload-time": 0,
 			},
-			setFlags: map[string]bool{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		ctx := context.Background()
@@ -1088,7 +1124,8 @@ func TestNewApplication(t *testing.T) {
 				"config":             "",
 				"config-reload-time": 0,
 			},
-			setFlags: map[string]bool{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		ctx := context.Background()
@@ -1121,7 +1158,8 @@ func TestNewApplication(t *testing.T) {
 				"config":             "",
 				"config-reload-time": 0,
 			},
-			setFlags: map[string]bool{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		ctx := context.Background()
@@ -1179,6 +1217,7 @@ server:
 				"config":             true,
 				"config-reload-time": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		ctx := context.Background()
@@ -1242,6 +1281,9 @@ clickhouse:
   host: "config-host"
   port: 9000
   database: "config-db"
+  http_headers:
+    X-Config-Header: "config-value"
+    User-Agent: "config-agent"
 server:
   transport: "http"
   port: 9090
@@ -1277,6 +1319,7 @@ logging:
 				"clickhouse-limit": true,
 				"openapi":          true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg, err := buildConfig(cmd)
@@ -1293,9 +1336,58 @@ logging:
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		// CLI flag should set limit
 		require.Equal(t, 2000, cfg.ClickHouse.Limit)
+		// HTTP headers from config file should be preserved
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 2)
+		require.Equal(t, "config-value", cfg.ClickHouse.HttpHeaders["X-Config-Header"])
+		require.Equal(t, "config-agent", cfg.ClickHouse.HttpHeaders["User-Agent"])
 
 		// Verify reload time was preserved from CLI flag (not overwritten by config file)
 		require.Equal(t, 10, cfg.ReloadTime)
+	})
+
+	t.Run("with_http_headers_cli_override", func(t *testing.T) {
+		// Create a temporary config file
+		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		configContent := `
+clickhouse:
+  http_headers:
+    X-Config-Header: "config-value"
+    User-Agent: "config-agent"
+`
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		_ = tmpFile.Close()
+
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config": tmpFile.Name(),
+			},
+			setFlags: map[string]bool{
+				"config":                  true,
+				"clickhouse-http-headers": true,
+			},
+			stringMaps: map[string]map[string]string{
+				"clickhouse-http-headers": {
+					"X-CLI-Header": "cli-value",
+					"User-Agent":   "cli-agent",
+				},
+			},
+		}
+
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+
+		// CLI headers should override config file headers
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 2)
+		require.Equal(t, "cli-value", cfg.ClickHouse.HttpHeaders["X-CLI-Header"])
+		require.Equal(t, "cli-agent", cfg.ClickHouse.HttpHeaders["User-Agent"])
+		// Config header should be replaced
+		require.NotContains(t, cfg.ClickHouse.HttpHeaders, "X-Config-Header")
 	})
 }
 
@@ -1335,6 +1427,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"clickhouse-tls-insecure-skip-verify": true,
 				"clickhouse-limit":                    true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -1354,6 +1447,95 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, "/path/to/client.key", cfg.ClickHouse.TLS.ClientKey)
 		require.True(t, cfg.ClickHouse.TLS.InsecureSkipVerify)
 		require.Equal(t, 5000, cfg.ClickHouse.Limit)
+	})
+
+	t.Run("clickhouse_http_headers_flag", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{},
+			setFlags: map[string]bool{
+				"clickhouse-http-headers": true,
+			},
+			stringMaps: map[string]map[string]string{
+				"clickhouse-http-headers": {
+					"X-Custom-Header": "custom-value",
+					"User-Agent":      "test-agent",
+					"Authorization":   "Bearer token123",
+				},
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 3)
+		require.Equal(t, "custom-value", cfg.ClickHouse.HttpHeaders["X-Custom-Header"])
+		require.Equal(t, "test-agent", cfg.ClickHouse.HttpHeaders["User-Agent"])
+		require.Equal(t, "Bearer token123", cfg.ClickHouse.HttpHeaders["Authorization"])
+	})
+
+	t.Run("clickhouse_http_headers_flag_empty", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{},
+			setFlags: map[string]bool{
+				"clickhouse-http-headers": true,
+			},
+			stringMaps: map[string]map[string]string{
+				"clickhouse-http-headers": {},
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Empty(t, cfg.ClickHouse.HttpHeaders)
+	})
+
+	t.Run("clickhouse_http_headers_flag_not_set", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags:      map[string]interface{}{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		// Should be empty map when flag is not set
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Empty(t, cfg.ClickHouse.HttpHeaders)
+	})
+
+	t.Run("clickhouse_http_headers_with_other_flags", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"clickhouse-host":     "test-host",
+				"clickhouse-port":     9000,
+				"clickhouse-database": "test-db",
+			},
+			setFlags: map[string]bool{
+				"clickhouse-host":           true,
+				"clickhouse-port":           true,
+				"clickhouse-database":       true,
+				"clickhouse-http-headers":   true,
+			},
+			stringMaps: map[string]map[string]string{
+				"clickhouse-http-headers": {
+					"X-Test-Header": "test-value",
+				},
+			},
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+
+		require.Equal(t, "test-host", cfg.ClickHouse.Host)
+		require.Equal(t, 9000, cfg.ClickHouse.Port)
+		require.Equal(t, "test-db", cfg.ClickHouse.Database)
+		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Len(t, cfg.ClickHouse.HttpHeaders, 1)
+		require.Equal(t, "test-value", cfg.ClickHouse.HttpHeaders["X-Test-Header"])
 	})
 
 	t.Run("all_server_flags", func(t *testing.T) {
@@ -1384,6 +1566,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"jwt-secret-key":       true,
 				"openapi":              true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -1405,8 +1588,9 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
 		cmd := &mockCommand{
-			flags:    map[string]interface{}{},
-			setFlags: map[string]bool{},
+			flags:      map[string]interface{}{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -1436,6 +1620,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 			setFlags: map[string]bool{
 				"clickhouse-protocol": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -1452,6 +1637,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 			setFlags: map[string]bool{
 				"transport": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -1468,6 +1654,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 			setFlags: map[string]bool{
 				"log-level": true,
 			},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		cfg := &config.Config{}
@@ -2095,8 +2282,9 @@ logging:
 
 		// Mock command interface
 		cmd := &mockCommand{
-			flags:    map[string]interface{}{},
-			setFlags: map[string]bool{},
+			flags:      map[string]interface{}{},
+			setFlags:   map[string]bool{},
+			stringMaps: make(map[string]map[string]string),
 		}
 
 		// Store the original reload time before override
@@ -2126,6 +2314,7 @@ logging:
 		setFlags: map[string]bool{
 			"log-level": true,
 		},
+		stringMaps: make(map[string]map[string]string),
 	}
 
 	err = app.reloadConfig(cmd)

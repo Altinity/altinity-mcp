@@ -890,13 +890,21 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	} else if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
-	switch cmd.String("openapi") {
-	case "http":
-		cfg.Server.OpenAPI.Enabled = true
-		cfg.Server.OpenAPI.TLS = false
-	case "https":
-		cfg.Server.OpenAPI.Enabled = true
-		cfg.Server.OpenAPI.TLS = true
+	if cmd.IsSet("openapi") {
+		switch cmd.String("openapi") {
+		case "http":
+			cfg.Server.OpenAPI.Enabled = true
+			cfg.Server.OpenAPI.TLS = false
+		case "https":
+			cfg.Server.OpenAPI.Enabled = true
+			cfg.Server.OpenAPI.TLS = true
+		case "disable":
+			cfg.Server.OpenAPI.Enabled = false
+			cfg.Server.OpenAPI.TLS = false
+		default:
+			cfg.Server.OpenAPI.Enabled = false
+			cfg.Server.OpenAPI.TLS = false
+		}
 	}
 
 	// Override Server TLS config with CLI flags
