@@ -1,3 +1,10 @@
+# v1.1.0
+IMPROVEMENTS
+- switch to go 1.25, update go.mod
+
+BUG FIXES
+- generate OpenAPI schema with `/openapi` endpoint, even without JWE token, fix https://github.com/Altinity/altinity-mcp/issues/15
+
 # v1.0.7
 IMPROVEMENTS
 - Update and enhance integration documentation for AI tools like Claude, Cursor, Windsurf, and OpenAI GPTs.

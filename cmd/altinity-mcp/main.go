@@ -328,8 +328,8 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 
 	cfg := a.GetCurrentConfig()
 	if cfg.Server.JWE.JWESecretKey == "" || cfg.Server.JWE.JWTSecretKey == "" {
-	    http.Error(w, "Missing JWE or JWT secret key", http.StatusInternalServerError)
-	    return
+		http.Error(w, "Missing JWE or JWT secret key", http.StatusInternalServerError)
+		return
 	}
 	if !cfg.Server.JWE.Enabled {
 		http.Error(w, "JWE authentication is not enabled", http.StatusForbidden)
@@ -498,6 +498,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
 		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
