@@ -25,7 +25,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.25'
 
     - name: Run go vet
       run: go vet ./...
@@ -57,7 +57,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.25'
 
     - name: Install cross-compilation tools
       run: |
@@ -185,7 +185,7 @@ jobs:
       if: steps.release_tag.outputs.matched == 'true'
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.25'
 
     - name: Install nfpm
       if: steps.release_tag.outputs.matched == 'true'
