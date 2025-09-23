@@ -559,7 +559,7 @@ func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
 	}
-
+	log.Debug().Msg(string(jsonData))
 	return mcp.NewToolResultText(string(jsonData)), nil
 }
 
@@ -700,6 +700,7 @@ func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer
 			return chJweServer
 		}
 	}
+	log.Error().Msg("can't get 'clickhouse_jwe_server' from context")
 	return nil
 }
 
