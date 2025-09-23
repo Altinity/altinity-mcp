@@ -4,6 +4,7 @@ IMPROVEMENTS
 
 BUG FIXES
 - generate OpenAPI schema with `/openapi` endpoint, even without JWE token, fix https://github.com/Altinity/altinity-mcp/issues/15
+- fix `stdio` transport failures after implementations JWE, fix https://github.com/Altinity/altinity-mcp/issues/17
 
 # v1.0.7
 IMPROVEMENTS

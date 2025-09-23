@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
@@ -442,6 +444,31 @@ func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport 
 			log.Error().Err(err).Msg("HTTPS server failed")
 			return err
 		}
+	}
+	return nil
+}
+
+// startSTDIOServer starts the STDIO transport server
+func (a *application) startSTDIOServer(mcpServer *server.MCPServer) error {
+	log.Info().Msg("Starting MCP server with STDIO transport")
+	s := server.NewStdioServer(mcpServer)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", a.mcpServer)
+	defer cancel()
+
+	// Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	if err := s.Listen(ctx, os.Stdin, os.Stdout); err != nil {
+		log.Error().Err(err).Msg("STDIO listen failed")
+		return err
 	}
 	return nil
 }
@@ -1187,11 +1214,7 @@ func (a *application) Start() error {
 
 	switch cfg.Server.Transport {
 	case config.StdioTransport:
-		log.Info().Msg("Starting MCP server with STDIO transport")
-		if err := server.ServeStdio(mcpServer); err != nil {
-			log.Error().Err(err).Msg("STDIO server failed")
-			return err
-		}
+		return a.startSTDIOServer(mcpServer)
 
 	case config.HTTPTransport:
 		return a.startHTTPServer(cfg, mcpServer)
@@ -1202,6 +1225,4 @@ func (a *application) Start() error {
 	default:
 		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
-
-	return nil
 }
