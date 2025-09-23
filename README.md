@@ -501,6 +501,7 @@ go test -v ./cmd/altinity-mcp/...
 - `--clickhouse-protocol`: Protocol (http/tcp)
 - `--read-only`: Read-only mode
 - `--clickhouse-max-execution-time`: Query timeout in seconds
+- `--clickhouse-http-headers`: HTTP headers for ClickHouse requests (key=value pairs)
 
 ### Server Flags
 

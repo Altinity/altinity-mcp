@@ -1,6 +1,7 @@
 # v1.1.0
 IMPROVEMENTS
 - switch to go 1.25, update go.mod
+- add `--clickhouse-http-headers` and `CLICKHOUSE_HTTP_HEADERS` to configuration, fix https://github.com/Altinity/altinity-mcp/issues/18
 
 BUG FIXES
 - generate OpenAPI schema with `/openapi` endpoint, even without JWE token, fix https://github.com/Altinity/altinity-mcp/issues/15
