@@ -279,12 +279,12 @@ func setupLogging(level string) error {
 	switch strings.ToLower(level) {
 	case "debug":
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	case "info":
-		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	case "warn":
-		zerolog.SetGlobalLevel(zerolog.WarnLevel)
 	case "error":
 		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	case "warn":
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	case "info", "":
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	default:
 		return fmt.Errorf("invalid log level: %s", level)
 	}
@@ -890,21 +890,17 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	} else if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
-	if cmd.IsSet("openapi") {
-		switch cmd.String("openapi") {
-		case "http":
-			cfg.Server.OpenAPI.Enabled = true
-			cfg.Server.OpenAPI.TLS = false
-		case "https":
-			cfg.Server.OpenAPI.Enabled = true
-			cfg.Server.OpenAPI.TLS = true
-		case "disable":
-			cfg.Server.OpenAPI.Enabled = false
-			cfg.Server.OpenAPI.TLS = false
-		default:
-			cfg.Server.OpenAPI.Enabled = false
-			cfg.Server.OpenAPI.TLS = false
-		}
+
+	switch cmd.String("openapi") {
+	case "http":
+		cfg.Server.OpenAPI.Enabled = true
+		cfg.Server.OpenAPI.TLS = false
+	case "https":
+		cfg.Server.OpenAPI.Enabled = true
+		cfg.Server.OpenAPI.TLS = true
+	default:
+		cfg.Server.OpenAPI.Enabled = false
+		cfg.Server.OpenAPI.TLS = false
 	}
 
 	// Override Server TLS config with CLI flags
@@ -947,7 +943,7 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	}
 
 	// Override ClickHouse HTTP Headers with CLI flags
-	if cmd.IsSet("clickhouse-http-headers") {
+	if len(cmd.StringMap("clickhouse-http-headers")) > 0 {
 		cfg.ClickHouse.HttpHeaders = cmd.StringMap("clickhouse-http-headers")
 	}
 
