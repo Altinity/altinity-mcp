@@ -106,8 +106,7 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, "info", string(cfg.Logging.Level))
 		require.Equal(t, 1000, cfg.ClickHouse.Limit)
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
-		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
-		require.Empty(t, cfg.ClickHouse.HttpHeaders)
+		require.Nil(t, cfg.ClickHouse.HttpHeaders)
 	})
 
 	t.Run("with_http_headers", func(t *testing.T) {
@@ -133,23 +132,6 @@ func TestBuildConfig(t *testing.T) {
 	t.Run("openapi_enabled_http", func(t *testing.T) {
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
-			&cli.StringFlag{Name: "config"},
-			&cli.StringFlag{Name: "clickhouse-host", Value: "localhost"},
-			&cli.IntFlag{Name: "clickhouse-port", Value: 8123},
-			&cli.StringFlag{Name: "clickhouse-database", Value: "default"},
-			&cli.StringFlag{Name: "clickhouse-username", Value: "default"},
-			&cli.StringFlag{Name: "clickhouse-password", Value: ""},
-			&cli.StringFlag{Name: "clickhouse-protocol", Value: "http"},
-			&cli.IntFlag{Name: "clickhouse-max-execution-time", Value: 600},
-			&cli.BoolFlag{Name: "read-only", Value: false},
-			&cli.StringFlag{Name: "transport", Value: "stdio"},
-			&cli.StringFlag{Name: "address", Value: "0.0.0.0"},
-			&cli.IntFlag{Name: "port", Value: 8080},
-			&cli.StringFlag{Name: "log-level", Value: "info"},
-			&cli.IntFlag{Name: "clickhouse-limit", Value: 1000},
-			&cli.BoolFlag{Name: "allow-jwe-auth", Value: false},
-			&cli.StringFlag{Name: "jwe-secret-key", Value: ""},
-			&cli.StringFlag{Name: "jwt-secret-key", Value: ""},
 			&cli.StringFlag{Name: "openapi", Value: "http"},
 		}
 
@@ -1476,10 +1458,8 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 
 	t.Run("clickhouse_http_headers_flag_empty", func(t *testing.T) {
 		cmd := &mockCommand{
-			flags: map[string]interface{}{},
-			setFlags: map[string]bool{
-				"clickhouse-http-headers": true,
-			},
+			flags:    map[string]interface{}{},
+			setFlags: map[string]bool{},
 			stringMaps: map[string]map[string]string{
 				"clickhouse-http-headers": {},
 			},
@@ -1488,7 +1468,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		cfg := &config.Config{}
 		overrideWithCLIFlags(cfg, cmd)
 
-		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Nil(t, cfg.ClickHouse.HttpHeaders)
 		require.Empty(t, cfg.ClickHouse.HttpHeaders)
 	})
 
@@ -1503,7 +1483,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		overrideWithCLIFlags(cfg, cmd)
 
 		// Should be empty map when flag is not set
-		require.NotNil(t, cfg.ClickHouse.HttpHeaders)
+		require.Nil(t, cfg.ClickHouse.HttpHeaders)
 		require.Empty(t, cfg.ClickHouse.HttpHeaders)
 	})
 
@@ -1515,10 +1495,10 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 				"clickhouse-database": "test-db",
 			},
 			setFlags: map[string]bool{
-				"clickhouse-host":           true,
-				"clickhouse-port":           true,
-				"clickhouse-database":       true,
-				"clickhouse-http-headers":   true,
+				"clickhouse-host":         true,
+				"clickhouse-port":         true,
+				"clickhouse-database":     true,
+				"clickhouse-http-headers": true,
 			},
 			stringMaps: map[string]map[string]string{
 				"clickhouse-http-headers": {
