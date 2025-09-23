@@ -39,7 +39,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
-		"1.0.0",
+		"1.1.0",
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -725,13 +725,6 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Get host URL based on OpenAPI TLS configuration
-	protocol := "http"
-	if s.Config.Server.OpenAPI.TLS {
-		protocol = "https"
-	}
-	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
-
 	// Route to appropriate handler based on path suffix
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/openapi/list_tables"):
@@ -742,16 +735,22 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
 		// Serve OpenAPI schema by default
-		s.serveOpenAPISchema(w, r, hostURL)
+		s.ServeOpenAPISchema(w, r)
 	}
 }
 
-func (s *ClickHouseJWEServer) serveOpenAPISchema(w http.ResponseWriter, _ *http.Request, hostURL string) {
+func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.Request) {
+	// Get host URL based on OpenAPI TLS configuration
+	protocol := "http"
+	if s.Config.Server.OpenAPI.TLS {
+		protocol = "https"
+	}
+	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
 			"title":       "ClickHouse SQL Interface",
-			"version":     "1.0.0",
+			"version":     "1.1.0",
 			"description": "Run SQL queries against a ClickHouse instance via GPT-actions.",
 		},
 		"servers": []map[string]interface{}{
