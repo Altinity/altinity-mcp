@@ -156,6 +156,20 @@ func TestUtilityFunctions(t *testing.T) {
 		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
 		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
 		require.False(t, isSelectQuery("CREATE TABLE test (id INT)"))
+		// Test with -- comments
+		require.True(t, isSelectQuery("-- comment\nSELECT * FROM table"))
+		require.False(t, isSelectQuery("-- comment\nINSERT INTO table VALUES (1)"))
+		require.True(t, isSelectQuery("SELECT * FROM table -- comment"))
+		require.True(t, isSelectQuery("-- comment\nWITH cte AS (SELECT 1) SELECT * FROM cte"))
+		// Test with /* */ comments
+		require.True(t, isSelectQuery("/* comment */ SELECT * FROM table"))
+		require.False(t, isSelectQuery("/* comment */ INSERT INTO table VALUES (1)"))
+		require.True(t, isSelectQuery("SELECT /* comment */ * FROM table"))
+		require.True(t, isSelectQuery("/* multiline\ncomment */ SELECT * FROM table"))
+		require.False(t, isSelectQuery("/* comment */ CREATE TABLE test (id INT)"))
+		// Test with both comment types
+		require.True(t, isSelectQuery("-- line comment\n/* block comment */ SELECT * FROM table"))
+		require.False(t, isSelectQuery("-- line comment\n/* block comment */ INSERT INTO table VALUES (1)"))
 	})
 
 	t.Run("truncateString", func(t *testing.T) {
