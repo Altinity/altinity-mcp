@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -314,14 +315,11 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 }
 
 // ExecuteQuery executes a SQL query and returns results
+// For non-SELECT queries (DDL, DML) will return single row with `OK`
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
-	// Check if the query is a SELECT query
-	isSelect := isSelectQuery(query)
-
-	if isSelect {
+	if isSelectQuery(query) {
 		return c.executeSelect(ctx, query, args...)
 	}
-	// For non-SELECT queries (DDL, DML)
 	return c.executeNonSelect(ctx, query, args...)
 }
 
@@ -392,6 +390,7 @@ func (c *Client) executeNonSelect(ctx context.Context, query string, args ...int
 			Err(err).
 			Str("query", truncateString(query, 200)).
 			Int("arg_count", len(args)).
+			Interface("args", args).
 			Msg("ClickHouse exec failed: execute non-select")
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -448,11 +447,17 @@ func buildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 
 // Helper functions
 
+var singleLineCommentRE = regexp.MustCompile(`^--.+`)
+var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+
 // isSelectQuery determines if a query is a SELECT query
 func isSelectQuery(query string) bool {
+	// Remove SQL comments: /* */ and --
+	query = multiLineCommentRE.ReplaceAllString(query, "")
+	query = singleLineCommentRE.ReplaceAllString(query, "")
 	// Simple check - can be improved with more sophisticated parsing if needed
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
+	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW")
 }
 
 // truncateString truncates a string to the specified length
