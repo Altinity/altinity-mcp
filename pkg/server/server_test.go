@@ -425,6 +425,12 @@ func TestOpenAPIHandlers(t *testing.T) {
 					err := json.NewDecoder(resp.Body).Decode(&schema)
 					require.NoError(t, err)
 					require.Contains(t, schema, "openapi")
+					// Check version in OpenAPI schema
+					require.Contains(t, schema, "info")
+					info, ok := schema["info"].(map[string]interface{})
+					require.True(t, ok)
+					require.Contains(t, info, "version")
+					require.Equal(t, "test-version", info["version"])
 				}
 			})
 
@@ -733,6 +739,12 @@ func TestMCPTestingWrapper(t *testing.T) {
 	require.NoError(t, err)
 	defer testServer.Close()
 
+	// Test MCP server version in initialize response
+	t.Run("MCP_Initialize_Version", func(t *testing.T) {
+		// The mcptest.Server should handle initialize automatically, but we can check the server's version
+		require.Equal(t, "test-version", testServer.chJweServer.Version)
+	})
+
 	// Test our wrapper methods
 	t.Run("CallTool_ListTables", func(t *testing.T) {
 		// Test list_tables tool - this should succeed since we have a real ClickHouse container
@@ -923,11 +935,13 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Enabled: false,
 	}
 
-	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
+	version := "test-version"
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, version)
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer)
 	require.Equal(t, jweConfig, srv.Config.Server.JWE)
 	require.Equal(t, chConfig, srv.Config.ClickHouse)
+	require.Equal(t, version, srv.Version)
 }
 
 // TestGetClickHouseClientWithJWE tests the JWE client creation
