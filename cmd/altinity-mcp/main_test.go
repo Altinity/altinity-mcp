@@ -1695,7 +1695,7 @@ func TestCORSSupport(t *testing.T) {
 			}
 			app := &application{
 				config:    cfg,
-				mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+				mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 			}
 
 			// Start server in a goroutine
@@ -1874,7 +1874,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -1919,7 +1919,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -1968,7 +1968,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -2017,7 +2017,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -2066,7 +2066,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -2115,7 +2115,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
@@ -2163,7 +2163,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		err = app.Start()
@@ -2188,7 +2188,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		err = app.Start()
@@ -2212,7 +2212,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since it will block
