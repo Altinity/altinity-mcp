@@ -285,12 +285,17 @@ jobs:
         sed -i "s/^version: .*/version: $VERSION/" helm/altinity-mcp/Chart.yaml
         sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" helm/altinity-mcp/Chart.yaml
         
-        # Commit updated Chart.yaml
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add helm/altinity-mcp/Chart.yaml
-        git commit -m "Update Helm chart version to $VERSION"
-        git push origin main
+        # Check if Chart.yaml has changes
+        if git diff --quiet helm/altinity-mcp/Chart.yaml; then
+          echo "No changes to Chart.yaml, skipping commit"
+        else
+          # Commit updated Chart.yaml
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add helm/altinity-mcp/Chart.yaml
+          git commit -m "Update Helm chart version to $VERSION"
+          git push origin main
+        fi
         
         # Login to GitHub Container Registry
         echo ${{ secrets.GITHUB_TOKEN }} | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
