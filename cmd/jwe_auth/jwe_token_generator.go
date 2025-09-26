@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"io"
 	"os"
 	"time"
+
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 )
 
 // Generate JWE token using CLI flags
@@ -25,8 +26,8 @@ func run(output io.Writer, args []string) error {
 	fs.SetOutput(output)
 
 	var (
-		jweSecretKey          = fs.String("jwe-secret-key", "your-jwe-secret-key", "Secret key for JWE token encryption")
-		jwtSecretKey          = fs.String("jwt-secret-key", "", "Symmetric secret key for JWT signing (required)")
+		jweSecretKey          = fs.String("jwe-secret-key", "your-jwe-secret-key", "Secret key for JWE token encryption (required)")
+		jwtSecretKey          = fs.String("jwt-secret-key", "", "Symmetric secret key for JWT signing (optional)")
 		host                  = fs.String("host", "localhost", "ClickHouse host")
 		port                  = fs.Int("port", 8123, "ClickHouse port")
 		database              = fs.String("database", "default", "ClickHouse database")

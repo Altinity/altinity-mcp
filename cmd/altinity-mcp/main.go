@@ -349,10 +349,10 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 		Port                  int    `json:"port"`
 		Database              string `json:"database"`
 		Username              string `json:"username"`
-		Password              string `json:"password,omitempty"`
+		Password              string `json:"password"`
 		Protocol              string `json:"protocol"`
-		Limit                 int    `json:"limit,omitempty"`
 		Expiry                int    `json:"expiry"` // in seconds
+		Limit                 int    `json:"limit,omitempty"`
 		TLSEnabled            bool   `json:"tls_enabled,omitempty"`
 		TLSCaCert             string `json:"tls_ca_cert,omitempty"`
 		TLSClientCert         string `json:"tls_client_cert,omitempty"`
@@ -361,7 +361,7 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Invalid request body parsing error: %v", err), http.StatusBadRequest)
 		return
 	}
 
