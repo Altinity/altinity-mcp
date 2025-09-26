@@ -536,7 +536,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -551,7 +551,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -636,11 +636,12 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
 		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
 		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -656,7 +657,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("Started OpenAPI listening")
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -898,9 +899,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	case "https":
 		cfg.Server.OpenAPI.Enabled = true
 		cfg.Server.OpenAPI.TLS = true
-	default:
-		cfg.Server.OpenAPI.Enabled = false
-		cfg.Server.OpenAPI.TLS = false
 	}
 
 	// Override Server TLS config with CLI flags
@@ -1220,6 +1218,7 @@ func (a *application) Start() error {
 	log.Info().
 		Str("transport", string(cfg.Server.Transport)).
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
+		Bool("openapi_enabled", cfg.Server.OpenAPI.Enabled).
 		Msg("Starting MCP server...")
 
 	// Access the underlying MCPServer from our ClickHouseJWEServer
