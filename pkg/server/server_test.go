@@ -923,7 +923,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 		Enabled: false,
 	}
 
-	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer)
 	require.Equal(t, jweConfig, srv.Config.Server.JWE)
@@ -950,7 +950,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			Enabled: false,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		// This will fail to connect, but we're testing the logic, not the connection
 		_, err := srv.GetClickHouseClient(ctx, "")
@@ -974,7 +974,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		_, err := srv.GetClickHouseClient(ctx, "")
 		require.Equal(t, jwe_auth.ErrMissingToken, err)
@@ -996,7 +996,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
@@ -1018,7 +1018,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		// Create a valid JWE token
 		claims := map[string]interface{}{
@@ -1057,7 +1057,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		// Create a valid JWE token with TLS configuration
 		claims := map[string]interface{}{
@@ -1102,7 +1102,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		claims := map[string]interface{}{
 			"host": "test-host",
@@ -1131,7 +1131,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 		// Create a token with a disallowed claim key
 		claims := map[string]interface{}{
@@ -1297,7 +1297,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		JWESecretKey: "test-secret",
 	}
 
-	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig})
+	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
 
 	t.Run("basic_claims", func(t *testing.T) {
 		claims := map[string]interface{}{
