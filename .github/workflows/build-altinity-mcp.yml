@@ -267,6 +267,24 @@ jobs:
       if: steps.release_tag.outputs.matched == 'true'
       run: ls -la dist
 
+    - name: Upgrade server version
+      if: steps.release_tag.outputs.matched == 'true'
+      run: |
+        # Switch to main branch to avoid detached HEAD state
+        git fetch origin main
+        git checkout main
+        
+        # Update server.go with the release version
+        VERSION=${GITHUB_REF#refs/tags/v}
+        sed -i 's/"1\.1\.0"/"'$VERSION'"/g' pkg/server/server.go
+        
+        # Commit updated server.go
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add pkg/server/server.go
+        git commit -m "Upgrade server version to $VERSION"
+        git push origin main
+
     - name: Install helm
       if: steps.release_tag.outputs.matched == 'true'
       uses: azure/setup-helm@v4
