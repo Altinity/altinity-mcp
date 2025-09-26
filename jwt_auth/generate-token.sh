@@ -1,12 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-CLICKHOUSE="${1}"
-MCP="${2}"
-KEY_DIR="${HOME}/.mcp/${MCP}"
-JWE_FILE="${KEY_DIR}/jwe.key"
-JWT_FILE="${KEY_DIR}/jwt.key"
-PORT="${PORT:-9440}"
-PROTOCOL="${PROTOCOL:-tls}"
 
 # Colors
 RED="\033[0;31m"
@@ -25,11 +18,10 @@ show_help() {
   echo "  - Database (default: default)"
   echo "  - Username"
   echo "  - Password"
-  echo "  - Expiry in seconds (default: 86400 = 1 day), optional. To disable, enter none/None/NONE"
+  echo "  - Expiry in seconds (default: 86400 = 1 day). To set very long expiry (~3153600000 = 100 years), enter none/None/NONE"
   echo
   echo "Fixed values:"
   echo "  JWE key:   \$HOME/.mcp/<mcp>/jwe.key"
-  echo "  JWT key:   \$HOME/.mcp/<mcp>/jwt.key"
   echo "  Port:      configurable via --port (default: 9440)"
   echo "  Protocol:  configurable via --protocol (tcp/tls/http/https, default: tcp)"
   echo
@@ -38,9 +30,18 @@ show_help() {
   exit 1
 }
 
-if [ $# -gt 2 ] || [[ "${1:-}" == "--help" ]]; then
+if [ $# -ne 2 ] || [[ "${1:-}" == "--help" ]]; then
   show_help
 fi
+
+
+CLICKHOUSE="${1}"
+MCP="${2}"
+KEY_DIR="${HOME}/.mcp/${MCP}"
+JWE_FILE="${KEY_DIR}/jwe.key"
+PORT="${PORT:-9440}"
+PROTOCOL="${PROTOCOL:-tls}"
+
 
 # --- Validation for key files ---
 if [ ! -s "$JWE_FILE" ]; then
@@ -48,12 +49,7 @@ if [ ! -s "$JWE_FILE" ]; then
   exit 2
 fi
 
-if [ ! -s "$JWT_FILE" ]; then
-  echo -e "${RED}Error:${NC} JWT key file not found or empty: $JWT_FILE"
-  exit 3
-fi
-
-echo -e "${GREEN}=== JWE/JWT Token Generator ===${NC}"
+echo -e "${GREEN}=== JWE Token Generator ===${NC}"
 read -rp "Database [default]: " database
 database=${database:-default}
 read -rp "Username: " username
@@ -68,7 +64,7 @@ read -rp "Expiry in seconds [86400]: " expiry
 if [[ -z "$expiry" ]]; then
   expiry=86400
 elif [[ "$expiry" =~ ^([Nn][Oo][Nn][Ee])$ ]]; then
-  expiry=""
+  expiry=3153600000
 elif ! [[ "$expiry" =~ ^[0-9]+$ ]]; then
   echo -e "${YELLOW}Warning:${NC} Expiry must be a number. Using default (86400)."
   expiry=86400
@@ -101,13 +97,11 @@ case "$proto_lc" in
 esac
 
 jwe_token=$(tr -d '\n' < "$JWE_FILE")
-jwt_token=$(tr -d '\n' < "$JWT_FILE")
 
 echo -e "${GREEN}Running token generator...${NC}"
 
 output=$(docker run --rm ghcr.io/altinity/altinity-mcp:latest jwe-token-generator \
   --jwe-secret-key "$jwe_token" \
-  --jwt-secret-key "$jwt_token" \
   --host "$CLICKHOUSE" \
   --port "$PORT" \
   $proto_flag \
