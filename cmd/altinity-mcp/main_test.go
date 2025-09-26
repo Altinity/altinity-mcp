@@ -3043,7 +3043,7 @@ logging:
 		app := &application{
 			configFile: tmpFile.Name(),
 			config:     cfg,
-			mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		cmd := &mockCommand{
