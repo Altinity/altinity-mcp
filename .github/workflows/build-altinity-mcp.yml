@@ -33,12 +33,11 @@ jobs:
     - name: Run tests with coverage
       run: go test -v -coverprofile=coverage.out ./...
 
-# todo remove when fix 504 gateway timeout, https://github.com/lemurheavy/coveralls-public/issues/1824
-#    - name: Send coverage to Coveralls
-#      uses: coverallsapp/github-action@v2
-#      with:
-#        github-token: ${{ secrets.GITHUB_TOKEN }}
-#        file: coverage.out
+    - name: Send coverage to Coveralls
+      uses: coverallsapp/github-action@v2
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        file: coverage.out
 
   build-and-push-platforms:
     needs: test
