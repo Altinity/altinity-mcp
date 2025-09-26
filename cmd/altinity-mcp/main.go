@@ -335,8 +335,8 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	cfg := a.GetCurrentConfig()
-	if cfg.Server.JWE.JWESecretKey == "" || cfg.Server.JWE.JWTSecretKey == "" {
-		http.Error(w, "Missing JWE or JWT secret key", http.StatusInternalServerError)
+	if cfg.Server.JWE.JWESecretKey == "" {
+		http.Error(w, "Missing JWE secret key", http.StatusInternalServerError)
 		return
 	}
 	if !cfg.Server.JWE.Enabled {
@@ -1096,12 +1096,9 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	} else {
 		log.Debug().Msg("JWE encryption enabled, skipping default ClickHouse connection test")
 
-		// Validate both secrets are set when JWE auth is enabled
+		// Validate JWE secret key is set when JWE auth is enabled
 		if cfg.Server.JWE.JWESecretKey == "" {
 			return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
-		}
-		if cfg.Server.JWE.JWTSecretKey == "" {
-			return nil, fmt.Errorf("JWE encryption is enabled but no JWT secret key is provided")
 		}
 	}
 
