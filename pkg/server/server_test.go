@@ -66,6 +66,7 @@ func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *Alt
 	chJweServer := &ClickHouseJWEServer{
 		MCPServer: srv,
 		Config:    config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+		Version:   "test-version",
 	}
 
 	// Create wrapper that will register tools/resources/prompts with the test server
@@ -381,7 +382,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 			// Set up chJweServer with ClickHouse config and JWE
 			chJweServer := &ClickHouseJWEServer{
-				Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+				Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+				Version: "test-version",
 			}
 
 			// Create test server
@@ -513,7 +515,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 	t.Run("ErrorConditions", func(t *testing.T) {
 		jweConfig := config.JWEConfig{Enabled: false}
 		chJweServer := &ClickHouseJWEServer{
-			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+			Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+			Version: "test-version",
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -596,7 +599,8 @@ func TestOpenAPIHandlers(t *testing.T) {
 			JWTSecretKey: jwtSecretKey,
 		}
 		chJweServer := &ClickHouseJWEServer{
-			Config: config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+			Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
+			Version: "test-version",
 		}
 
 		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

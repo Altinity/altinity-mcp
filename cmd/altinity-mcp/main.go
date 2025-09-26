@@ -1102,7 +1102,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 
 	// Create MCP server
 	log.Debug().Msg("Creating MCP server...")
-	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg)
+	mcpServer := altinitymcp.NewClickHouseMCPServer(cfg, version)
 
 	// Move reload time from CLI flag to config
 	cfg.ReloadTime = cmd.Int("config-reload-time")
@@ -1192,7 +1192,7 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	}
 
 	// Create new MCP server with updated config
-	newMCPServer := altinitymcp.NewClickHouseMCPServer(*newCfg)
+	newMCPServer := altinitymcp.NewClickHouseMCPServer(*newCfg, version)
 
 	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
 	a.configMutex.Lock()

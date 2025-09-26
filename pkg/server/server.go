@@ -21,7 +21,8 @@ import (
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
 type ClickHouseJWEServer struct {
 	*server.MCPServer
-	Config config.Config
+	Config  config.Config
+	Version string
 }
 
 type AltinityMCPServer interface {
@@ -35,11 +36,11 @@ type AltinityMCPServer interface {
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
-func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
+func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWEServer {
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
-		"1.1.0",
+		version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -49,6 +50,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 	chJweServer := &ClickHouseJWEServer{
 		MCPServer: srv,
 		Config:    cfg,
+		Version:   version,
 	}
 
 	// Register tools, resources, and prompts
@@ -60,6 +62,7 @@ func NewClickHouseMCPServer(cfg config.Config) *ClickHouseJWEServer {
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
 		Bool("read_only", cfg.ClickHouse.ReadOnly).
 		Int("default_limit", cfg.ClickHouse.Limit).
+		Str("version", version).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
 	return chJweServer
@@ -755,7 +758,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
 			"title":       "ClickHouse SQL Interface",
-			"version":     "1.1.0",
+			"version":     s.Version,
 			"description": "Run SQL queries against a ClickHouse instance via GPT-actions.",
 		},
 		"servers": []map[string]interface{}{

@@ -1766,7 +1766,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		err := app.Start()
@@ -1782,7 +1782,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		// Start in a goroutine since STDIO transport will block
@@ -1821,7 +1821,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		err := app.Start()
@@ -1847,7 +1847,7 @@ func TestApplicationStart(t *testing.T) {
 		}
 		app := &application{
 			config:    cfg,
-			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg),
+			mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 		}
 
 		err = app.Start()
@@ -2313,7 +2313,7 @@ logging:
 	app := &application{
 		configFile: tmpFile.Name(),
 		config:     cfg,
-		mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg),
+		mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
 	}
 
 	cmd := &mockCommand{
