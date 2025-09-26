@@ -1,3 +1,7 @@
+# v1.1.2
+BUG FIXES
+- add /openapi for SSE transport, even without JWE token, when JWE enabled, fix wrong config override from CLI to allow `/openapi` endpoint, even without JWE token, fix https://github.com/Altinity/altinity-mcp/issues/15
+
 # v1.1.1
 IMPROVEMENTS
 - make `--jwt-secret-key` optional to use JSON serialization+JWE encryption instead of JWT signing+JWE encryption, fix https://github.com/Altinity/altinity-mcp/issues/25
