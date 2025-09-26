@@ -1,3 +1,7 @@
+# v1.1.3
+BUG FIXES
+- replace `single quote` and `backtick` chars to \uXXXX unicode representations in error message to avoid wrong MCP tool response handling in OpenAI, fix https://github.com/Altinity/altinity-mcp/issues/19 
+
 # v1.1.2
 BUG FIXES
 - add /openapi for SSE transport, even without JWE token, when JWE enabled, fix wrong config override from CLI to allow `/openapi` endpoint, even without JWE token, fix https://github.com/Altinity/altinity-mcp/issues/15

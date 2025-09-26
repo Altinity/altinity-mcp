@@ -211,6 +211,10 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 	return nil
 }
 
+// ErrJSONEscaper replacing for resolve OpenAI MCP wrong handling single quote and backtick characters in error message
+// look details in https://github.com/Altinity/altinity-mcp/issues/19
+var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
+
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
 	// List Tables Tool
@@ -389,7 +393,7 @@ func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mc
 			Str("table", tableName).
 			Str("resource", "table_structure").
 			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %w", err)
+		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")
@@ -627,7 +631,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")
@@ -682,7 +686,7 @@ func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 			Str("table", tableName).
 			Str("tool", "describe_table").
 			Msg("ClickHouse operation failed: describe table")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %s", ErrJSONEscaper.Replace(err.Error()))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")
