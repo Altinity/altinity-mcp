@@ -1061,7 +1061,7 @@ func TestNewApplication(t *testing.T) {
 				JWE: config.JWEConfig{
 					Enabled:      true,
 					JWESecretKey: "jwe-secret",
-					JWTSecretKey: "", // Empty secret key should cause error
+					JWTSecretKey: "", // Empty secret key is now allowed
 				},
 			},
 		}
@@ -1077,9 +1077,38 @@ func TestNewApplication(t *testing.T) {
 
 		ctx := context.Background()
 		app, err := newApplication(ctx, cfg, cmd)
-		require.Error(t, err)
-		require.Nil(t, app)
-		require.Contains(t, err.Error(), "JWE encryption is enabled but no JWT secret key is provided")
+		require.NoError(t, err)
+		require.NotNil(t, app)
+
+		claims := map[string]interface{}{
+			"host":     "localhost",
+			"port":     8123,
+			"database": "default",
+			"username": "default",
+			"protocol": "http",
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+		body, err := json.Marshal(claims)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+
+		app.jweTokenGeneratorHandler(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]string
+		err = json.NewDecoder(w.Body).Decode(&resp)
+		require.NoError(t, err)
+		require.Contains(t, resp, "token")
+
+		// Verify the token
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(cfg.Server.JWE.JWESecretKey), []byte(cfg.Server.JWE.JWTSecretKey))
+		require.NoError(t, err)
+		require.Equal(t, "localhost", parsedClaims["host"])
+		require.Equal(t, float64(8123), parsedClaims["port"])
+		app.Close()
 	})
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {

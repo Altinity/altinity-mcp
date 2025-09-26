@@ -1,3 +1,7 @@
+# v1.1.1
+IMPROVEMENTS
+- make `--jwt-secret-key` optional to use JSON serialization+JWE encryption instead of JWT signing+JWE encryption, fix https://github.com/Altinity/altinity-mcp/issues/25
+
 # v1.1.0
 IMPROVEMENTS
 - switch to go 1.25, update go.mod
