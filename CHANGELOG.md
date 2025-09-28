@@ -1,6 +1,10 @@
+# v1.1.4
+BUG FIXES
+- extend isSelectQuery to support DESC, EXISTS, and EXPLAIN queries, fix https://github.com/Altinity/altinity-mcp/issues/26
+
 # v1.1.3
 BUG FIXES
-- replace `single quote` and `backtick` chars to \uXXXX unicode representations in error message to avoid wrong MCP tool response handling in OpenAI, fix https://github.com/Altinity/altinity-mcp/issues/19 
+- replace `single quote` and `backtick` chars to \uXXXX unicode representations in error message to avoid wrong MCP tool response handling in OpenAI, fix https://github.com/Altinity/altinity-mcp/issues/19
 - properly show version in OpenAPI spec and MCP protocol
 
 # v1.1.2

@@ -170,6 +170,10 @@ func TestUtilityFunctions(t *testing.T) {
 		// Test with both comment types
 		require.True(t, isSelectQuery("-- line comment\n/* block comment */ SELECT * FROM table"))
 		require.False(t, isSelectQuery("-- line comment\n/* block comment */ INSERT INTO table VALUES (1)"))
+		// Additional query types
+		require.True(t, isSelectQuery("DESC table"))
+		require.True(t, isSelectQuery("EXISTS (SELECT 1)"))
+		require.True(t, isSelectQuery("EXPLAIN SELECT * FROM table"))
 	})
 
 	t.Run("truncateString", func(t *testing.T) {
