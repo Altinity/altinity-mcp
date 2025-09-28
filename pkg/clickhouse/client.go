@@ -457,7 +457,7 @@ func isSelectQuery(query string) bool {
 	query = singleLineCommentRE.ReplaceAllString(query, "")
 	// Simple check - can be improved with more sophisticated parsing if needed
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW")
+	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
 }
 
 // truncateString truncates a string to the specified length
