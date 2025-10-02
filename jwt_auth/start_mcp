@@ -1,0 +1,15 @@
+#!/bin/bash
+
+TARGET=${1}
+
+helm upgrade --install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
+  --set-string service.annotations."edge-proxy\.altinity\.com/port-mapping"="443:tls-to-tcp:8080" \
+  --set-string service.annotations."edge-proxy\.altinity\.com/tls-server-name"="$TARGET" \
+  --set config.clickhouse.limit=10000 \
+  --set config.clickhouse.read_only=false \
+  --set-string config.server.transport="http" \
+  --set config.server.openapi.enabled=true \
+  --set config.server.openapi.tls=true \
+  --set config.server.jwe.enabled=true \
+  --set-string config.logging.level="debug" \
+  --set-string config.server.jwe.jwe_secret_key="$(cat $HOME/.mcp/$TARGET/jwe.key)"
