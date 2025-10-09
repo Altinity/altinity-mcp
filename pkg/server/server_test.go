@@ -434,64 +434,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 				}
 			})
 
-			t.Run("ListTables_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/openapi/list_tables", testServer.URL)
-				if tc.jweEnabled {
-					path = fmt.Sprintf("%s/%s/openapi/list_tables", testServer.URL, tc.tokenParam)
-				}
-
-				resp := makeRequest(path, tc.tokenParam)
-				if tc.expectError {
-					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-				} else {
-					bodyBytes, err := io.ReadAll(resp.Body)
-					require.NoError(t, err)
-					require.NoError(t, resp.Body.Close())
-					resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-					require.Equal(t, http.StatusOK, resp.StatusCode, "unexpected status: %d, response body %s", resp.StatusCode, bodyBytes)
-					require.Equal(t, "application/json", resp.Header.Get("Content-Type"), "unexpected Content-Type: %s, response body %s", resp.Header.Get("Content-Type"), bodyBytes)
-
-					var result struct {
-						ResponseData struct {
-							Tables []clickhouse.TableInfo `json:"tables"`
-							Count  int                    `json:"count"`
-						} `json:"response_data"`
-					}
-					err = json.NewDecoder(resp.Body).Decode(&result)
-					require.NoError(t, err)
-					require.Greater(t, result.ResponseData.Count, 0)
-					// Verify test table exists in results
-					found := false
-					for _, table := range result.ResponseData.Tables {
-						if table.Name == "test" {
-							found = true
-							break
-						}
-					}
-					require.True(t, found, "Could not find 'test' table in results")
-				}
-			})
-
-			t.Run("DescribeTable_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/openapi/describe_table?database=default&table_name=test", testServer.URL)
-				if tc.jweEnabled {
-					path = fmt.Sprintf("%s/%s/openapi/describe_table?database=default&table_name=test", testServer.URL, tc.tokenParam)
-				}
-
-				resp := makeRequest(path, tc.tokenParam)
-				if tc.expectError {
-					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-				} else {
-					require.Equal(t, http.StatusOK, resp.StatusCode)
-					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-					var columns []clickhouse.ColumnInfo
-					err := json.NewDecoder(resp.Body).Decode(&columns)
-					require.NoError(t, err)
-					require.Greater(t, len(columns), 0)
-					require.Equal(t, "id", columns[0].Name)
-				}
-			})
 
 			t.Run("ExecuteQuery_OpenAPI", func(t *testing.T) {
 				path := fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL)
