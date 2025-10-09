@@ -1,3 +1,13 @@
+# v1.2.0
+
+FEATURES
+- remove `list_tables` and `describe_table` tools and resources
+- remove all prompt capabilities
+
+BUG FIXES
+- fix OpenAPI schema generation to exclude removed endpoints
+- remove references to deleted tools in documentation and tests
+
 # v1.1.4
 BUG FIXES
 - extend isSelectQuery to support DESC, EXISTS, and EXPLAIN queries, fix https://github.com/Altinity/altinity-mcp/issues/26
