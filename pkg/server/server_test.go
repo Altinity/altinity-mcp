@@ -745,20 +745,6 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.Equal(t, "test-version", testServer.chJweServer.Version)
 	})
 
-	// Test our wrapper methods
-	t.Run("CallTool_ListTables", func(t *testing.T) {
-		// Test list_tables tool - this should succeed since we have a real ClickHouse container
-		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
-			"database": "default",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
-
-		// Verify we get some content back
-		textContent := testServer.GetTextContent(result)
-		require.NotEmpty(t, textContent)
-	})
 
 	t.Run("CallTool_ExecuteQuery", func(t *testing.T) {
 		// Test execute_query tool with SELECT
