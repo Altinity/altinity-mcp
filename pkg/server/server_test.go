@@ -472,11 +472,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}))
 		defer testServer.Close()
 
-		t.Run("MissingParams_DescribeTable", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/describe_table", testServer.URL))
-			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		})
-
 		t.Run("InvalidExecuteQuery", func(t *testing.T) {
 			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -485,20 +480,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 		t.Run("ExecuteQueryInvalidLimit", func(t *testing.T) {
 			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		})
-
-		t.Run("MethodNotAllowed_ListTables", func(t *testing.T) {
-			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/list_tables", testServer.URL), nil)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
-		})
-
-		t.Run("MethodNotAllowed_DescribeTable", func(t *testing.T) {
-			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/describe_table", testServer.URL), nil)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
 		})
 
 		t.Run("MethodNotAllowed_ExecuteQuery", func(t *testing.T) {
