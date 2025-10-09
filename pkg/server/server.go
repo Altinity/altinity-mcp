@@ -250,7 +250,17 @@ func RegisterResources(srv AltinityMCPServer) {
 
 	srv.AddResource(schemaResource, HandleSchemaResource)
 
-	log.Info().Int("resource_count", 1).Msg("ClickHouse resources registered")
+	// Table Structure Template Resource
+	tableTemplate := mcp.NewResourceTemplate(
+		"clickhouse://table/{database}/{table_name}",
+		"Table Structure",
+		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
+		mcp.WithTemplateMIMEType("application/json"),
+	)
+
+	srv.AddResourceTemplate(tableTemplate, HandleTableResource)
+
+	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
 }
 
 // HandleSchemaResource handles the schema resource
@@ -310,6 +320,71 @@ func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp
 }
 
 // HandleTableResource handles the table resource
+func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	// Extract database and table name from URI
+	uri := req.Params.URI
+	parts := strings.Split(uri, "/")
+	// expected clickhouse://table/{database}/{table_name}
+	if len(parts) < 5 || parts[0] != "clickhouse:" || parts[1] != "" || parts[2] != "table" {
+		return nil, fmt.Errorf("invalid table URI format: %s", uri)
+	}
+	database := parts[len(parts)-2]
+	tableName := parts[len(parts)-1]
+
+	// Validate that database and table name are not empty
+	if database == "" || tableName == "" {
+		return nil, fmt.Errorf("invalid table URI format: %s", uri)
+	}
+
+	log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
+
+	// Get the ClickHouse JWE server from context
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
+	}
+
+	// Extract token from context
+	token := chJweServer.ExtractTokenFromCtx(ctx)
+
+	// Get ClickHouse client
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get ClickHouse client")
+		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().
+				Err(closeErr).
+				Msgf("clickhouse://table/%s/%s: can't close clickhouse", database, tableName)
+		}
+	}()
+
+	columns, err := chClient.DescribeTable(ctx, database, tableName)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("database", database).
+			Str("table", tableName).
+			Str("resource", "table_structure").
+			Msg("ClickHouse operation failed: get table structure")
+		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
+	}
+
+	jsonData, err := json.MarshalIndent(columns, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal table structure: %w", err)
+	}
+
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      uri,
+			MIMEType: "application/json",
+			Text:     string(jsonData),
+		},
+	}, nil
+}
 
 // RegisterPrompts adds ClickHouse prompts to the MCP server
 func RegisterPrompts(srv AltinityMCPServer) {
