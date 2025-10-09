@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -434,7 +433,6 @@ func TestOpenAPIHandlers(t *testing.T) {
 				}
 			})
 
-
 			t.Run("ExecuteQuery_OpenAPI", func(t *testing.T) {
 				path := fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL)
 				if tc.jweEnabled {
@@ -687,7 +685,6 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.Equal(t, "test-version", testServer.chJweServer.Version)
 	})
 
-
 	t.Run("CallTool_ExecuteQuery", func(t *testing.T) {
 		// Test execute_query tool with SELECT
 		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
@@ -736,7 +733,6 @@ func TestMCPTestingWrapper(t *testing.T) {
 		_ = result // Use the result to avoid unused variable error
 	})
 
-
 	t.Run("ReadResource_Schema", func(t *testing.T) {
 		// Test reading schema resource
 		result, err := testServer.ReadResource(ctx, "clickhouse://schema")
@@ -764,7 +760,6 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "`default`.`not_exists` columns not found")
 	})
-
 
 	t.Run("GetTextContent", func(t *testing.T) {
 		// Create a simple mock function that simulates the behavior without actually creating a proper CallToolResult

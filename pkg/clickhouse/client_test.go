@@ -72,7 +72,7 @@ func TestNewClient(t *testing.T) {
 			Username: "default",
 			Protocol: config.TCPProtocol,
 		}
-		
+
 		client, err := NewClient(ctx, cfg)
 		require.Error(t, err)
 		require.Nil(t, client)
@@ -88,7 +88,7 @@ func TestNewClient(t *testing.T) {
 			Username: "default",
 			Protocol: config.TCPProtocol,
 		}
-		
+
 		client, err := NewClient(ctx, cfg)
 		require.Error(t, err)
 		require.Nil(t, client)
