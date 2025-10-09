@@ -1229,9 +1229,9 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 		require.NoError(t, err)
 		defer testServer.Close()
 
-		// Test list_tables tool with JWE
-		result, err := testServer.CallTool(contextWithToken, "list_tables", map[string]interface{}{
-			"database": "default",
+		// Test execute_query tool with JWE
+		result, err := testServer.CallTool(contextWithToken, "execute_query", map[string]interface{}{
+			"query": "SELECT 1",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, result)
