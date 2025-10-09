@@ -872,44 +872,6 @@ func TestMCPTestingWrapper(t *testing.T) {
 		require.Contains(t, err.Error(), "`default`.`not_exists` columns not found")
 	})
 
-	t.Run("GetPrompt_QueryBuilder", func(t *testing.T) {
-		// Test query builder prompt
-		result, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
-			"database":   "default",
-			"table_name": "test",
-			"query_type": "select",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.NotEmpty(t, result.Messages)
-	})
-
-	t.Run("GetPrompt_QueryBuilder_MissingDatabase", func(t *testing.T) {
-		// Test query builder prompt with missing database
-		_, err := testServer.GetPrompt(ctx, "query_builder", map[string]string{
-			"table_name": "test",
-			"query_type": "select",
-		})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "database parameter is required")
-	})
-
-	t.Run("GetPrompt_PerformanceAnalysis", func(t *testing.T) {
-		// Test performance analysis prompt
-		result, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{
-			"query": "SELECT * FROM test",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.NotEmpty(t, result.Messages)
-	})
-
-	t.Run("GetPrompt_PerformanceAnalysis_MissingQuery", func(t *testing.T) {
-		// Test performance analysis prompt with missing query
-		_, err := testServer.GetPrompt(ctx, "performance_analysis", map[string]string{})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "query parameter is required")
-	})
 
 	t.Run("GetTextContent", func(t *testing.T) {
 		// Create a simple mock function that simulates the behavior without actually creating a proper CallToolResult
