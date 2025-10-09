@@ -224,6 +224,9 @@ Executes SQL queries against ClickHouse® with optional result limiting.
 ### `clickhouse://schema`
 Provides complete schema information for the ClickHouse® database in JSON format.
 
+### `clickhouse://table/{database}/{table}`
+Provides detailed information about a specific table including schema, sample data, and statistics.
+
 
 ## OpenAI GPTs Integration
 
