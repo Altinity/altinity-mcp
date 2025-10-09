@@ -1246,8 +1246,8 @@ func TestJWEWithRealClickHouse(t *testing.T) {
 		require.NoError(t, err)
 		defer testServer.Close()
 		// Test without token - should fail
-		result, err := testServer.CallTool(ctx, "list_tables", map[string]interface{}{
-			"database": "default",
+		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
+			"query": "SELECT 1",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, result)
