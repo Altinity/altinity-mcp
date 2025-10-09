@@ -1265,6 +1265,13 @@ func TestHelperFunctions(t *testing.T) {
 		require.False(t, isSelectQuery("CREATE TABLE test (id INT)"))
 	})
 
+	t.Run("hasLimitClause", func(t *testing.T) {
+		require.True(t, hasLimitClause("SELECT * FROM table LIMIT 100"))
+		require.True(t, hasLimitClause("select * from table limit 50"))
+		require.False(t, hasLimitClause("SELECT * FROM table"))
+		require.False(t, hasLimitClause("SELECT * FROM table ORDER BY id"))
+	})
+
 }
 
 // TestGetClickHouseJWEServerFromContext tests context extraction
