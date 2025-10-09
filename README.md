@@ -212,19 +212,6 @@ export LOG_LEVEL=debug
 
 ## Available Tools
 
-### `list_tables`
-Lists all tables in a ClickHouse® database with detailed information.
-
-**Parameters:**
-- `database` (optional): The database to list tables from
-
-### `describe_table`
-Describes the schema of a specific table including column types, constraints, and metadata.
-
-**Parameters:**
-- `database` (required): The database name
-- `table_name` (required): The table name
-
 ### `execute_query`
 Executes SQL queries against ClickHouse® with optional result limiting.
 
@@ -237,18 +224,6 @@ Executes SQL queries against ClickHouse® with optional result limiting.
 ### `clickhouse://schema`
 Provides complete schema information for the ClickHouse® database in JSON format.
 
-### `clickhouse://table/{database}/{table}`
-Provides detailed information about a specific table including schema, sample data, and statistics.
-
-## Available Prompts
-
-### `query_builder`
-Helps build efficient ClickHouse® SQL queries with context about available tables and best practices.
-
-**Arguments:**
-- `database` (required): Name of the database
-- `table_name` (optional): Specific table to focus on
-- `query_type` (optional): Type of query (SELECT, INSERT, etc.)
 
 ## OpenAI GPTs Integration
 
@@ -263,30 +238,7 @@ The Altinity MCP Server supports seamless integration with OpenAI GPTs through i
 
 ### Available Actions
 
-#### 1. List Tables in Database
-**Path**: `/openapi/list_tables`  
-**Parameters**:
-- `jwe_token` (path param): JWE authentication token
-- `database` (query param): Name of database (optional, returns all databases if omitted)
-
-**Example OpenAPI Path**:
-```
-GET /{jwe_token}/openapi/list_tables?database={db_name}
-```
-
-#### 2. Describe Table Structure
-**Path**: `/openapi/describe_table`  
-**Parameters**:
-- `jwe_token` (path param): JWE authentication token
-- `database` (query param): Name of database (required)
-- `table_name` (query param): Name of table to describe (required)
-
-**Example OpenAPI Path**:
-```
-GET /{jwe_token}/openapi/describe_table?database={db_name}&table_name={table_name}
-```
-
-#### 3. Execute SQL Query
+#### 1. Execute SQL Query
 **Path**: `/openapi/execute_query`  
 **Parameters**:
 - `jwe_token` (path param): JWE authentication token
@@ -310,47 +262,6 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
     {"url": "https://your-server:8080/{token}"}
   ],
   "paths": {
-    "/{jwe_token}/openapi/list_tables": {
-      "get": {
-        "operationId": "list_tables",
-        "parameters": [
-          {
-            "name": "jwe_token",
-            "in": "path",
-            "required": true,
-            "schema": {"type": "string"}
-          },
-          {
-            "name": "database",
-            "in": "query",
-            "schema": {"type": "string"}
-          }
-        ]
-      }
-    },
-    "/{jwe_token}/openapi/describe_table": {
-      "get": {
-        "operationId": "describe_table",
-        "parameters": [
-          {
-            "name": "jwe_token",
-            "in": "path",
-            "required": true,
-            "schema": {"type": "string"}
-          },
-          {
-            "name": "database",
-            "in": "query",
-            "required": true
-          },
-          {
-            "name": "table_name",
-            "in": "query",
-            "required": true
-          }
-        ]
-      }
-    },
     "/{jwe_token}/openapi/execute_query": {
       "get": {
         "operationId": "execute_query",
