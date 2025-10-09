@@ -220,17 +220,6 @@ var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
-	// List Tables Tool
-	listTablesTool := mcp.NewTool(
-		"list_tables",
-		mcp.WithDescription("Lists all tables in a ClickHouse database with detailed information. Can be filtered by database."),
-		mcp.WithString("database",
-			mcp.Description("Optional: The database to list tables from. If not provided, lists tables from all databases."),
-		),
-	)
-
-	srv.AddTool(listTablesTool, HandleListTables)
-
 	// Execute Query Tool
 	executeQueryTool := mcp.NewTool(
 		"execute_query",
@@ -246,23 +235,7 @@ func RegisterTools(srv AltinityMCPServer) {
 
 	srv.AddTool(executeQueryTool, HandleExecuteQuery)
 
-	// Describe Table Tool
-	describeTableTool := mcp.NewTool(
-		"describe_table",
-		mcp.WithDescription("Describes the structure of a ClickHouse table including columns, types, and constraints"),
-		mcp.WithString("database",
-			mcp.Required(),
-			mcp.Description("Name of the database the table belongs to"),
-		),
-		mcp.WithString("table_name",
-			mcp.Required(),
-			mcp.Description("Name of the table to describe"),
-		),
-	)
-
-	srv.AddTool(describeTableTool, HandleDescribeTable)
-
-	log.Info().Int("tool_count", 3).Msg("ClickHouse tools registered")
+	log.Info().Int("tool_count", 1).Msg("ClickHouse tools registered")
 }
 
 // RegisterResources adds ClickHouse resources to the MCP server
@@ -277,17 +250,7 @@ func RegisterResources(srv AltinityMCPServer) {
 
 	srv.AddResource(schemaResource, HandleSchemaResource)
 
-	// Table Structure Template Resource
-	tableTemplate := mcp.NewResourceTemplate(
-		"clickhouse://table/{database}/{table_name}",
-		"Table Structure",
-		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
-		mcp.WithTemplateMIMEType("application/json"),
-	)
-
-	srv.AddResourceTemplate(tableTemplate, HandleTableResource)
-
-	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
+	log.Info().Int("resource_count", 1).Msg("ClickHouse resources registered")
 }
 
 // HandleSchemaResource handles the schema resource
@@ -347,228 +310,14 @@ func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp
 }
 
 // HandleTableResource handles the table resource
-func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	// Extract database and table name from URI
-	uri := req.Params.URI
-	parts := strings.Split(uri, "/")
-	// expected clickhouse://table/{database}/{table_name}
-	if len(parts) < 5 || parts[0] != "clickhouse:" || parts[1] != "" || parts[2] != "table" {
-		return nil, fmt.Errorf("invalid table URI format: %s", uri)
-	}
-	database := parts[len(parts)-2]
-	tableName := parts[len(parts)-1]
-
-	// Validate that database and table name are not empty
-	if database == "" || tableName == "" {
-		return nil, fmt.Errorf("invalid table URI format: %s", uri)
-	}
-
-	log.Debug().Str("database", database).Str("table", tableName).Msg("Reading table structure resource")
-
-	// Get the ClickHouse JWE server from context
-	chJweServer := GetClickHouseJWEServerFromContext(ctx)
-	if chJweServer == nil {
-		return nil, fmt.Errorf("can't get JWEServer from context")
-	}
-
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get ClickHouse client")
-		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().
-				Err(closeErr).
-				Msgf("clickhouse://table/%s/%s: can't close clickhouse", database, tableName)
-		}
-	}()
-
-	columns, err := chClient.DescribeTable(ctx, database, tableName)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("database", database).
-			Str("table", tableName).
-			Str("resource", "table_structure").
-			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
-	}
-
-	jsonData, err := json.MarshalIndent(columns, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal table structure: %w", err)
-	}
-
-	return []mcp.ResourceContents{
-		mcp.TextResourceContents{
-			URI:      uri,
-			MIMEType: "application/json",
-			Text:     string(jsonData),
-		},
-	}, nil
-}
 
 // RegisterPrompts adds ClickHouse prompts to the MCP server
 func RegisterPrompts(srv AltinityMCPServer) {
-	// Query Builder Prompt
-	queryBuilderPrompt := mcp.NewPrompt(
-		"query_builder",
-		mcp.WithPromptDescription("Helps build efficient ClickHouse SQL queries"),
-		mcp.WithArgument("database",
-			mcp.ArgumentDescription("Name of the database for the query"),
-			mcp.RequiredArgument(),
-		),
-		mcp.WithArgument("table_name",
-			mcp.ArgumentDescription("Name of the table to query"),
-		),
-		mcp.WithArgument("query_type",
-			mcp.ArgumentDescription("Type of query (select, insert, create, etc.)"),
-		),
-	)
-
-	srv.AddPrompt(queryBuilderPrompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		database, ok := req.Params.Arguments["database"]
-		if !ok || database == "" {
-			return nil, fmt.Errorf("database parameter is required")
-		}
-		tableName := req.Params.Arguments["table_name"]
-		queryType := req.Params.Arguments["query_type"]
-
-		var promptText string
-		if tableName != "" {
-			promptText = fmt.Sprintf("Help me build a %s query for the ClickHouse table '%s.%s'. ", queryType, database, tableName)
-		} else {
-			promptText = fmt.Sprintf("Help me build a %s query for ClickHouse in database '%s'. ", queryType, database)
-		}
-
-		promptText += "Consider ClickHouse-specific optimizations like:\n" +
-			"- Using appropriate ORDER BY for MergeTree tables\n" +
-			"- Leveraging partition pruning when possible\n" +
-			"- Using PREWHERE for filtering before data reading\n" +
-			"- Considering data types and compression\n" +
-			"- Using appropriate JOIN algorithms\n\n" +
-			"Please provide the table schema if you need structure information."
-
-		messages := []mcp.PromptMessage{
-			mcp.NewPromptMessage(
-				mcp.RoleUser,
-				mcp.NewTextContent(promptText),
-			),
-		}
-
-		// Add table schema reference if table name is provided
-		if tableName != "" {
-			schemaPrompt := fmt.Sprintf("\n\nTo get the table schema, use the resource: clickhouse://table/%s/%s", database, tableName)
-			messages = append(messages, mcp.NewPromptMessage(
-				mcp.RoleUser,
-				mcp.NewTextContent(schemaPrompt),
-			))
-		}
-
-		return mcp.NewGetPromptResult(
-			"ClickHouse Query Builder Assistant",
-			messages,
-		), nil
-	})
-
-	// Performance Analysis Prompt
-	perfAnalysisPrompt := mcp.NewPrompt(
-		"performance_analysis",
-		mcp.WithPromptDescription("Analyzes ClickHouse query performance and suggests optimizations"),
-		mcp.WithArgument("query",
-			mcp.ArgumentDescription("SQL query to analyze"),
-			mcp.RequiredArgument(),
-		),
-	)
-
-	srv.AddPrompt(perfAnalysisPrompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		query := req.Params.Arguments["query"]
-		if query == "" {
-			return nil, fmt.Errorf("query parameter is required")
-		}
-
-		promptText := fmt.Sprintf("Analyze this ClickHouse query for performance optimization:\n\n```sql\n%s\n```\n\n", query) +
-			"Please consider:\n" +
-			"- Index usage and effectiveness\n" +
-			"- Partition pruning opportunities\n" +
-			"- JOIN optimization strategies\n" +
-			"- Memory usage patterns\n" +
-			"- Parallelization potential\n" +
-			"- Data compression impact\n" +
-			"- Alternative query structures\n\n" +
-			"Provide specific recommendations for improvement."
-
-		schemaPrompt := "\n\nTo get the database schema, use the resource: clickhouse://schema"
-
-		return mcp.NewGetPromptResult(
-			"ClickHouse Performance Analysis",
-			[]mcp.PromptMessage{
-				mcp.NewPromptMessage(
-					mcp.RoleUser,
-					mcp.NewTextContent(promptText+schemaPrompt),
-				),
-			},
-		), nil
-	})
-
-	log.Info().Int("prompt_count", 2).Msg("ClickHouse prompts registered")
+	// No prompts registered
+	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
 }
 
 // HandleListTables implements the list_tables tool handler
-func HandleListTables(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	database := req.GetString("database", "")
-	log.Debug().Str("database", database).Msg("Executing list_tables tool")
-
-	// Get the ClickHouse JWE server from context
-	chJweServer := GetClickHouseJWEServerFromContext(ctx)
-	if chJweServer == nil {
-		return nil, fmt.Errorf("can't get JWEServer from context")
-	}
-
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get ClickHouse client")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().
-				Err(closeErr).
-				Msg("list_tables: can't close clickhouse")
-		}
-	}()
-
-	tables, err := chClient.ListTables(ctx, database)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("database", database).
-			Str("tool", "list_tables").
-			Msg("ClickHouse operation failed: list tables")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list tables: %v", err)), nil
-	}
-
-	response := map[string]interface{}{
-		"tables": tables,
-		"count":  len(tables),
-	}
-
-	jsonData, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal response: %v", err)), nil
-	}
-	log.Debug().Msg(string(jsonData))
-	return mcp.NewToolResultText(string(jsonData)), nil
-}
 
 // HandleExecuteQuery implements the execute_query tool handler
 func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -646,59 +395,6 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 }
 
 // HandleDescribeTable implements the describe_table tool handler
-func HandleDescribeTable(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	database, err := req.RequireString("database")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	tableName, err := req.RequireString("table_name")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
-	log.Debug().Str("database", database).Str("table", tableName).Msg("Describing table structure")
-
-	// Get the ClickHouse JWE server from context
-	chJweServer := GetClickHouseJWEServerFromContext(ctx)
-	if chJweServer == nil {
-		return nil, fmt.Errorf("can't get JWEServer from context")
-	}
-
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get ClickHouse client")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().
-				Err(closeErr).
-				Msg("describe_table: can't close clickhouse")
-		}
-	}()
-
-	columns, err := chClient.DescribeTable(ctx, database, tableName)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("database", database).
-			Str("table", tableName).
-			Str("tool", "describe_table").
-			Msg("ClickHouse operation failed: describe table")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to describe table: %s", ErrJSONEscaper.Replace(err.Error()))), nil
-	}
-
-	jsonData, err := json.MarshalIndent(columns, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(jsonData)), nil
-}
 
 // GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context
 func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer {
@@ -735,10 +431,6 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 
 	// Route to appropriate handler based on path suffix
 	switch {
-	case strings.HasSuffix(r.URL.Path, "/openapi/list_tables"):
-		s.handleListTablesOpenAPI(w, r, token)
-	case strings.HasSuffix(r.URL.Path, "/openapi/describe_table"):
-		s.handleDescribeTableOpenAPI(w, r, token)
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	default:
@@ -771,63 +463,6 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 			"schemas": map[string]interface{}{},
 		},
 		"paths": map[string]interface{}{
-			"/{jwe_token}/openapi/list_tables": map[string]interface{}{
-				"get": map[string]interface{}{
-					"operationId": "list_tables",
-					"summary":     "List tables in a ClickHouse database",
-					"parameters": []map[string]interface{}{
-						{
-							"name":        "jwe_token",
-							"in":          "path",
-							"required":    true,
-							"description": "JWE token for authentication",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    "default",
-						},
-						{
-							"name":        "database",
-							"in":          "query",
-							"required":    false,
-							"description": "Database to list tables from (omit for all DBs).",
-							"schema":      map[string]interface{}{"type": "string"},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{
-							"description": "JSON list of tables",
-							"content": map[string]interface{}{
-								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{
-										"type": "object",
-										"properties": map[string]interface{}{
-											"response_data": map[string]interface{}{
-												"type": "object",
-												"properties": map[string]interface{}{
-													"count": map[string]interface{}{"type": "integer"},
-													"tables": map[string]interface{}{
-														"type": "array",
-														"items": map[string]interface{}{
-															"type": "object",
-															"properties": map[string]interface{}{
-																"name":     map[string]interface{}{"type": "string"},
-																"database": map[string]interface{}{"type": "string"},
-																"engine":   map[string]interface{}{"type": "string"},
-															},
-														},
-													},
-												},
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
 			"/{jwe_token}/openapi/execute_query": map[string]interface{}{
 				"get": map[string]interface{}{
 					"operationId": "execute_query",
@@ -864,50 +499,25 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 							"description": "Query result as JSON",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{"type": "string"},
-								},
-							},
-						},
-					},
-				},
-			},
-			"/{jwe_token}/openapi/describe_table": map[string]interface{}{
-				"get": map[string]interface{}{
-					"operationId": "describe_table",
-					"summary":     "Describe a ClickHouse table",
-					"parameters": []map[string]interface{}{
-						{
-							"name":        "jwe_token",
-							"in":          "path",
-							"required":    true,
-							"description": "JWE token for authentication",
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    "default",
-						},
-						{
-							"name":        "database",
-							"in":          "query",
-							"required":    true,
-							"description": "Database containing the table.",
-							"schema":      map[string]interface{}{"type": "string"},
-						},
-						{
-							"name":        "table_name",
-							"in":          "query",
-							"required":    true,
-							"description": "Table to describe.",
-							"schema":      map[string]interface{}{"type": "string"},
-						},
-					},
-					"responses": map[string]interface{}{
-						"200": map[string]interface{}{
-							"description": "Table structure as JSON",
-							"content": map[string]interface{}{
-								"application/json": map[string]interface{}{
-									"schema": map[string]interface{}{"type": "string"},
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"columns": map[string]interface{}{
+												"type":  "array",
+												"items": map[string]interface{}{"type": "string"},
+											},
+											"types": map[string]interface{}{
+												"type":  "array",
+												"items": map[string]interface{}{"type": "string"},
+											},
+											"rows": map[string]interface{}{
+												"type":  "array",
+												"items": map[string]interface{}{"type": "array"},
+											},
+											"count": map[string]interface{}{"type": "integer"},
+											"error": map[string]interface{}{"type": "string"},
+										},
+									},
 								},
 							},
 						},
@@ -923,86 +533,6 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	}
 }
 
-func (s *ClickHouseJWEServer) handleListTablesOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	database := r.URL.Query().Get("database")
-
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
-
-	// Get ClickHouse client
-	chClient, err := s.GetClickHouseClient(ctx, token)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().Err(closeErr).Send()
-		}
-	}()
-
-	tables, err := chClient.ListTables(ctx, database)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to list tables: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	response := map[string]interface{}{
-		"response_data": map[string]interface{}{
-			"count":  len(tables),
-			"tables": tables,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if encodeErr := json.NewEncoder(w).Encode(response); encodeErr != nil {
-		log.Err(encodeErr).Msg("can't encode /openapi/list_tables result")
-	}
-}
-
-func (s *ClickHouseJWEServer) handleDescribeTableOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	database := r.URL.Query().Get("database")
-	tableName := r.URL.Query().Get("table_name")
-
-	if database == "" || tableName == "" {
-		http.Error(w, "Both database and table_name parameters are required", http.StatusBadRequest)
-		return
-	}
-
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
-
-	// Get ClickHouse client
-	chClient, err := s.GetClickHouseClient(ctx, token)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().Err(closeErr).Send()
-		}
-	}()
-
-	columns, err := chClient.DescribeTable(ctx, database, tableName)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to describe table: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if encodeErr := json.NewEncoder(w).Encode(columns); encodeErr != nil {
-		log.Err(encodeErr).Msg("can't encode /openapi/describe_table result")
-	}
-}
 
 func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
 	if r.Method != http.MethodGet {
