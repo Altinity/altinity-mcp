@@ -788,7 +788,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			Database: "default",
 			Username: "default",
 			Protocol: config.HTTPProtocol,
-			Limit:    1000,
+			Limit:    0,
 		}
 
 		jweConfig := config.JWEConfig{
@@ -810,7 +810,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			Database: "default",
 			Username: "default",
 			Protocol: config.HTTPProtocol,
-			Limit:    1000,
+			Limit:    0,
 		}
 
 		jweConfig := config.JWEConfig{
@@ -832,7 +832,7 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 			Database: "default",
 			Username: "default",
 			Protocol: config.HTTPProtocol,
-			Limit:    1000,
+			Limit:    0,
 		}
 
 		jweConfig := config.JWEConfig{

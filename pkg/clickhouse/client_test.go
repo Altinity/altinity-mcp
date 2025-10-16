@@ -57,7 +57,7 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 		Protocol:         config.TCPProtocol,
 		ReadOnly:         false,
 		MaxExecutionTime: 60,
-		Limit:            1000,
+		Limit:            0,
 	}
 }
 
