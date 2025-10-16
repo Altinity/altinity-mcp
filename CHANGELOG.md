@@ -1,3 +1,13 @@
+# v1.2.1
+IMPROVEMENTS
+- remove default limit behavior - LIMIT clause is now only added when explicitly specified by the user
+- change `--clickhouse-limit` default from 1000 to 0 (no limit)
+- `--clickhouse-limit` now acts as a maximum cap rather than a default value
+- update OpenAPI documentation to clarify optional limit parameter behavior
+
+BUG FIXES
+- fix test expectations to match new limit behavior (expect 0 instead of 1000)
+
 # v1.2.0
 IMPROVEMENTS
 - remove `list_tables` and `describe_table` tools and resources
