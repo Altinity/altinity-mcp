@@ -407,18 +407,16 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
-	// Get default limit based on server type
-	defaultLimit := float64(chJweServer.Config.ClickHouse.Limit)
-
-	// Get optional limit parameter, use server default if not provided
-	limit := defaultLimit
+	// Get optional limit parameter
+	var limit float64
+	hasLimit := false
 	if limitVal, exists := req.GetArguments()["limit"]; exists {
-		if l, ok := limitVal.(float64); ok {
-			if l > defaultLimit {
-				return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %.0f rows", defaultLimit)), nil
-			}
-			if l > 0 {
-				limit = l
+		if l, ok := limitVal.(float64); ok && l > 0 {
+			limit = l
+			hasLimit = true
+			// Check against configured max limit if one is set
+			if chJweServer.Config.ClickHouse.Limit > 0 && int(l) > chJweServer.Config.ClickHouse.Limit {
+				return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %d rows", chJweServer.Config.ClickHouse.Limit)), nil
 			}
 		}
 	}
@@ -426,10 +424,11 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	log.Debug().
 		Str("query", query).
 		Float64("limit", limit).
+		Bool("has_limit", hasLimit).
 		Msg("Executing query")
 
-	// Add LIMIT clause for SELECT queries if not already present
-	if isSelectQuery(query) && !hasLimitClause(query) {
+	// Add LIMIT clause for SELECT queries if limit is specified and not already present
+	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
@@ -565,7 +564,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 							"name":        "limit",
 							"in":          "query",
 							"required":    false,
-							"description": "Max rows to return (default 1000, max 100000).",
+							"description": "Optional max rows to return. If not specified, no limit is applied. If configured, cannot exceed server's maximum limit.",
 							"schema":      map[string]interface{}{"type": "integer"},
 						},
 					},
@@ -622,7 +621,8 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	limitStr := r.URL.Query().Get("limit")
-	limit := s.Config.ClickHouse.Limit
+	var limit int
+	hasLimit := false
 	if limitStr != "" {
 		var err error
 		limit, err = strconv.Atoi(limitStr)
@@ -630,14 +630,16 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
 			return
 		}
-		if limit > s.Config.ClickHouse.Limit {
+		hasLimit = true
+		// Check against configured max limit if one is set
+		if s.Config.ClickHouse.Limit > 0 && limit > s.Config.ClickHouse.Limit {
 			http.Error(w, fmt.Sprintf("Limit cannot exceed %d", s.Config.ClickHouse.Limit), http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Add LIMIT clause for SELECT queries if not already present
-	if isSelectQuery(query) && !hasLimitClause(query) {
+	// Add LIMIT clause for SELECT queries if limit is specified and not already present
+	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
