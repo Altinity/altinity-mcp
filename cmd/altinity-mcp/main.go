@@ -218,8 +218,8 @@ func run(args []string) error {
 			},
 			&cli.IntFlag{
 				Name:    "clickhouse-limit",
-				Usage:   "Default limit for query results",
-				Value:   100000,
+				Usage:   "Maximum limit for query results (0 means no limit)",
+				Value:   0,
 				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
 			},
 			&cli.StringFlag{
@@ -936,8 +936,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	// Override ClickHouse Limit config with CLI flags
 	if cmd.IsSet("clickhouse-limit") {
 		cfg.ClickHouse.Limit = cmd.Int("clickhouse-limit")
-	} else if cfg.ClickHouse.Limit == 0 {
-		cfg.ClickHouse.Limit = 1000
 	}
 
 	// Override ClickHouse HTTP Headers with CLI flags
