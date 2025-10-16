@@ -104,7 +104,7 @@ func TestBuildConfig(t *testing.T) {
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, "info", string(cfg.Logging.Level))
-		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, 0, cfg.ClickHouse.Limit)
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		require.Nil(t, cfg.ClickHouse.HttpHeaders)
 	})
@@ -1616,7 +1616,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
-		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, 0, cfg.ClickHouse.Limit)
 		require.Equal(t, false, cfg.Server.OpenAPI.Enabled)
 		require.Equal(t, false, cfg.Server.OpenAPI.TLS)
 	})
@@ -3011,7 +3011,7 @@ func TestMainFunctionality(t *testing.T) {
 		require.Equal(t, "0.0.0.0", cfg.Server.Address)
 		require.Equal(t, 8080, cfg.Server.Port)
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
-		require.Equal(t, 1000, cfg.ClickHouse.Limit)
+		require.Equal(t, 0, cfg.ClickHouse.Limit)
 	})
 
 	t.Run("config_reload_with_logging_level_change", func(t *testing.T) {
