@@ -153,6 +153,59 @@ func TestBuildConfig(t *testing.T) {
 	})
 }
 
+// TestStripTrailingSlashMiddleware ensures routes work with and without a trailing slash
+func TestStripTrailingSlashMiddleware(t *testing.T) {
+	// helper to create a mux with our middleware
+	newMux := func(jwe bool) http.Handler {
+		mux := http.NewServeMux()
+		// static route
+		mux.HandleFunc("/http", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("http"))
+		})
+		// dynamic route when JWE is enabled
+		if jwe {
+			mux.HandleFunc("/{token}/http", func(w http.ResponseWriter, r *http.Request) {
+				token := r.PathValue("token")
+				if token == "" {
+					http.Error(w, "missing token", http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("dyn:" + token))
+			})
+		}
+		return stripTrailingSlash(mux)
+	}
+
+	t.Run("static_path_with_and_without_slash", func(t *testing.T) {
+		h := newMux(false)
+		cases := []string{"/http", "/http/"}
+		for _, path := range cases {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code, path)
+			require.Equal(t, "http", strings.TrimSpace(rr.Body.String()))
+		}
+	})
+
+	t.Run("dynamic_path_with_and_without_slash", func(t *testing.T) {
+		h := newMux(true)
+		cases := []struct{ in, want string }{
+			{"/abc/http", "dyn:abc"},
+			{"/abc/http/", "dyn:abc"},
+		}
+		for _, c := range cases {
+			req := httptest.NewRequest(http.MethodGet, c.in, nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code, c.in)
+			require.Equal(t, c.want, strings.TrimSpace(rr.Body.String()))
+		}
+	})
+}
+
 // TestOverrideWithCLIFlags tests CLI flag override functionality
 func TestOverrideWithCLIFlags(t *testing.T) {
 	t.Run("protocol_override", func(t *testing.T) {
