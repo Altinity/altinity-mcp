@@ -327,6 +327,16 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 	}
 }
 
+// stripTrailingSlash normalizes paths to remove a single trailing slash (except root)
+func stripTrailingSlash(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" && strings.HasSuffix(r.URL.Path, "/") {
+			r.URL.Path = strings.TrimSuffix(r.URL.Path, "/")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // jweTokenGeneratorHandler handles requests for generating JWE tokens.
 func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -540,7 +550,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		httpHandler = corsHandler(mux)
+		httpHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
@@ -555,7 +565,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		httpHandler = corsHandler(mux)
+		httpHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
 	a.httpSrv = &http.Server{
@@ -645,7 +655,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		sseHandler = corsHandler(mux)
+		sseHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
@@ -661,7 +671,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		sseHandler = corsHandler(mux)
+		sseHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
 	a.httpSrv = &http.Server{
