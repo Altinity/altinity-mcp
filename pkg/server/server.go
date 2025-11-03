@@ -446,6 +446,7 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 	type ruleCompiled struct {
 		r      *regexp.Regexp
 		prefix string
+		name   string
 	}
 	rules := make([]ruleCompiled, 0, len(s.Config.Server.DynamicTools))
 	for _, rule := range s.Config.Server.DynamicTools {
@@ -457,12 +458,21 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 			log.Error().Err(compErr).Str("regexp", rule.Regexp).Msg("dynamic_tools: invalid regexp, skipping rule")
 			continue
 		}
-		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix})
+		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix, name: rule.Name})
 	}
 
 	// detect overlaps: map view -> matched rule indexes
 	overlaps := false
 	dynamicCount := 0
+
+	// Track matches for rules with name field to ensure they match exactly once
+	namedRuleMatches := make(map[int][]string) // rule index -> matched views
+	for i, rc := range rules {
+		if rc.name != "" {
+			namedRuleMatches[i] = make([]string, 0)
+		}
+	}
+
 	for _, row := range result.Rows {
 		if len(row) < 4 {
 			continue
@@ -477,6 +487,10 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 		for i, rc := range rules {
 			if rc.r.MatchString(full) {
 				matched = append(matched, i)
+				// Track named rule matches
+				if rc.name != "" {
+					namedRuleMatches[i] = append(namedRuleMatches[i], full)
+				}
 			}
 		}
 		if len(matched) == 0 {
@@ -490,7 +504,17 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 
 		// single rule match -> register tool
 		rc := rules[matched[0]]
-		toolName := snakeCase(rc.prefix + full)
+
+		// Determine tool name
+		var toolName string
+		if rc.name != "" {
+			// Use explicit name if provided
+			toolName = snakeCase(rc.prefix + rc.name)
+		} else {
+			// Generate from view name
+			toolName = snakeCase(rc.prefix + full)
+		}
+
 		params := parseViewParams(create)
 		meta := dynamicToolMeta{
 			ToolName:    toolName,
@@ -516,6 +540,16 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 		tool := mcp.NewTool(toolName, opts...)
 		s.AddTool(tool, makeDynamicToolHandler(meta))
 		dynamicCount++
+	}
+
+	// Validate named rules matched exactly once
+	for i, matches := range namedRuleMatches {
+		rc := rules[i]
+		if len(matches) == 0 {
+			log.Error().Str("name", rc.name).Str("regexp", rc.r.String()).Msg("dynamic_tools: named rule matched no views")
+		} else if len(matches) > 1 {
+			log.Error().Str("name", rc.name).Str("regexp", rc.r.String()).Strs("matched_views", matches).Msg("dynamic_tools: named rule matched multiple views, expected exactly one")
+		}
 	}
 
 	if overlaps {
