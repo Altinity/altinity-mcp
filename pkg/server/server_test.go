@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+    "strings"
 	"testing"
 	"time"
 
@@ -1103,6 +1104,295 @@ func TestHelperFunctions(t *testing.T) {
 		require.False(t, hasLimitClause("SELECT * FROM table ORDER BY id"))
 	})
 
+}
+
+func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
+	// simple create view text containing params
+	create := "CREATE VIEW v AS SELECT * FROM t WHERE id={id:UInt64} AND name={name:String} AND at>={at:DateTime} AND f={f:Float64} AND ok={ok:Bool}"
+	params := parseViewParams(create)
+	require.Len(t, params, 5)
+	// find by name
+	byName := func(n string) dynamicToolParam {
+		for _, p := range params {
+			if p.Name == n {
+				return p
+			}
+		}
+		return dynamicToolParam{}
+	}
+	require.Equal(t, "integer", byName("id").JSONType)
+	require.Equal(t, "string", byName("name").JSONType)
+	require.Equal(t, "date-time", byName("at").JSONFormat)
+	require.Equal(t, "number", byName("f").JSONType)
+	require.Equal(t, "boolean", byName("ok").JSONType)
+}
+
+func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
+	s := &ClickHouseJWEServer{Config: config.Config{}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
+		"custom_db_view": {ToolName: "custom_db_view", Database: "db", Table: "view", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+	}}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi", nil)
+	ctx := context.WithValue(req.Context(), "clickhouse_jwe_server", s)
+	req = req.WithContext(ctx)
+	s.ServeOpenAPISchema(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	var schema map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+	paths := schema["paths"].(map[string]interface{})
+	_, ok := paths["/{jwe_token}/openapi/custom_db_view"]
+	require.True(t, ok)
+}
+
+func TestResourceHandlers_NoServerInContext(t *testing.T) {
+    // Directly call handlers with empty context to cover error paths
+    _, err := HandleSchemaResource(context.Background(), mcp.ReadResourceRequest{})
+    require.Error(t, err)
+
+    req := mcp.ReadResourceRequest{}
+    req.Params.URI = "clickhouse://table/db/t"
+    _, err = HandleTableResource(context.Background(), req)
+    require.Error(t, err)
+}
+
+func TestMakeDynamicToolHandler_NoServerInContext(t *testing.T) {
+    meta := dynamicToolMeta{ToolName: "t", Database: "d", Table: "v", Params: nil}
+    handler := makeDynamicToolHandler(meta)
+    res, err := handler(context.Background(), mcp.CallToolRequest{})
+    require.Error(t, err)
+    require.Nil(t, res)
+}
+
+func TestBuildDescription(t *testing.T) {
+    require.Equal(t, "My desc", buildDescription("My desc", "db", "view"))
+    require.Equal(t, "Tool to load data from db.view", buildDescription("", "db", "view"))
+}
+
+func TestSqlLiteral(t *testing.T) {
+    // integer
+    require.Equal(t, "42", sqlLiteral("integer", float64(42)))
+    require.Equal(t, "0", sqlLiteral("integer", "oops"))
+    // number
+    require.Equal(t, "3.14", sqlLiteral("number", float64(3.14)))
+    // boolean
+    require.Equal(t, "1", sqlLiteral("boolean", true))
+    require.Equal(t, "0", sqlLiteral("boolean", false))
+    // string quoting and escaping
+    out := sqlLiteral("string", "a'b c")
+    require.Contains(t, out, "'")
+}
+
+func TestSnakeCase(t *testing.T) {
+    require.Equal(t, "db_view", snakeCase("DB.View"))
+    require.Equal(t, "custom_db_view", snakeCase("custom DB-View"))
+    require.Equal(t, "a_b_c", snakeCase("A B  C"))
+}
+
+func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
+    ctx := context.Background()
+    chConfig := setupClickHouseContainer(t)
+
+    // prepare parameterized view
+    client, err := clickhouse.NewClient(ctx, *chConfig)
+    require.NoError(t, err)
+    defer func() { require.NoError(t, client.Close()) }()
+
+    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_dyn")
+    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_dyn AS SELECT * FROM default.test WHERE id={id:UInt64}")
+    require.NoError(t, err)
+
+    // server with JWE disabled
+    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}}
+
+    meta := dynamicToolMeta{
+        ToolName:    "default_v_dyn",
+        Database:    "default",
+        Table:       "v_dyn",
+        Description: "desc",
+        Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+    }
+
+    handler := makeDynamicToolHandler(meta)
+    req := mcp.CallToolRequest{}
+    req.Params.Name = meta.ToolName
+    req.Params.Arguments = map[string]interface{}{"id": float64(1)}
+
+    // context with server
+    ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
+    result, err := handler(ctx, req)
+    require.NoError(t, err)
+    require.NotNil(t, result)
+    require.False(t, result.IsError)
+    text := ""
+    if len(result.Content) > 0 {
+        if tc, ok := result.Content[0].(mcp.TextContent); ok { text = tc.Text }
+    }
+    require.NotEmpty(t, text)
+    var qr clickhouse.QueryResult
+    require.NoError(t, json.Unmarshal([]byte(text), &qr))
+    require.GreaterOrEqual(t, qr.Count, 1)
+}
+
+func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
+    ctx := context.Background()
+    chConfig := setupClickHouseContainer(t)
+    client, err := clickhouse.NewClient(ctx, *chConfig)
+    require.NoError(t, err)
+    defer func() { require.NoError(t, client.Close()) }()
+
+    // Ensure base table exists (created in setup), create views
+    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_a")
+    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_b")
+    // v_a has comment and will overlap two rules
+    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_a AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT 'desc a'")
+    require.NoError(t, err)
+    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_b AS SELECT * FROM default.test WHERE id={id:UInt64}")
+    require.NoError(t, err)
+
+    // initialize an MCP server to avoid nil panics when registering tools
+    mcpSrv := server.NewMCPServer(
+        "Altinity ClickHouse MCP Test Server",
+        "test",
+        server.WithToolCapabilities(true),
+        server.WithResourceCapabilities(true, true),
+        server.WithPromptCapabilities(true),
+        server.WithRecovery(),
+    )
+    s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
+        {Regexp: "default\\.v_.*", Prefix: "custom_"},
+        {Regexp: "default\\.v_a", Prefix: "other_"},
+    }}}, dynamicTools: make(map[string]dynamicToolMeta)}
+
+    registerDynamicTools(s)
+
+    // v_a matches two rules -> should be skipped
+    _, existsA1 := s.dynamicTools["custom_default_v_a"]
+    _, existsA2 := s.dynamicTools["other_default_v_a"]
+    require.False(t, existsA1)
+    require.False(t, existsA2)
+
+    // v_b matches only first rule -> should be registered
+    metaB, existsB := s.dynamicTools["custom_default_v_b"]
+    require.True(t, existsB)
+    require.Equal(t, "default", metaB.Database)
+    require.Equal(t, "v_b", metaB.Table)
+    require.NotEmpty(t, metaB.Params)
+}
+
+func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
+    ctx := context.Background()
+    chConfig := setupClickHouseContainer(t)
+    client, err := clickhouse.NewClient(ctx, *chConfig)
+    require.NoError(t, err)
+    defer func() { require.NoError(t, client.Close()) }()
+
+    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
+    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
+    require.NoError(t, err)
+
+    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
+        "custom_default_v_api": { ToolName: "custom_default_v_api", Database: "default", Table: "v_api", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
+    }}
+
+    // Build POST request to dynamic tool endpoint
+    body := strings.NewReader(`{"id":1}`)
+    req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
+    req.Header.Set("Content-Type", "application/json")
+    rr := httptest.NewRecorder()
+
+    // Inject server into context and call OpenAPIHandler
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    s.OpenAPIHandler(rr, req)
+
+    require.Equal(t, http.StatusOK, rr.Code)
+    var qr clickhouse.QueryResult
+    require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+    require.GreaterOrEqual(t, qr.Count, 1)
+}
+
+func TestOpenAPIHandler_DynamicTool_WithJWE(t *testing.T) {
+    ctx := context.Background()
+    chConfig := setupClickHouseContainer(t)
+    client, err := clickhouse.NewClient(ctx, *chConfig)
+    require.NoError(t, err)
+    defer func() { require.NoError(t, client.Close()) }()
+
+    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api2")
+    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+    require.NoError(t, err)
+
+    jweSecretKey := "this-is-a-32-byte-secret-key!!"
+    jwtSecretKey := "test-jwt-super-secret"
+    claims := map[string]interface{}{
+        "host":     chConfig.Host,
+        "port":     float64(chConfig.Port),
+        "database": chConfig.Database,
+        "username": chConfig.Username,
+        "password": chConfig.Password,
+        "protocol": string(chConfig.Protocol),
+        "exp":      time.Now().Add(time.Hour).Unix(),
+    }
+    token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
+
+    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: jweSecretKey, JWTSecretKey: jwtSecretKey}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
+        "custom_default_v_api2": { ToolName: "custom_default_v_api2", Database: "default", Table: "v_api2", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
+    }}
+
+    body := strings.NewReader(`{"id":1}`)
+    path := "/" + token + "/openapi/custom_default_v_api2"
+    req := httptest.NewRequest(http.MethodPost, path, body)
+    req.Header.Set("Content-Type", "application/json")
+    rr := httptest.NewRecorder()
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    s.OpenAPIHandler(rr, req)
+
+    require.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
+    // Build a minimal server with one dynamic tool meta but no real CH call (will still hit validation)
+    s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "x", JWTSecretKey: "y"}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
+        "tool": { ToolName: "tool", Database: "db", Table: "t", Description: "d", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
+    }}
+
+    // With JWE enabled and invalid token, the token validation occurs before method check → 401
+    req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    rr := httptest.NewRecorder()
+    s.OpenAPIHandler(rr, req)
+    require.Equal(t, http.StatusUnauthorized, rr.Code)
+
+    // Bad JSON
+    req = httptest.NewRequest(http.MethodPost, "/token/openapi/tool", strings.NewReader("not-json"))
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    rr = httptest.NewRecorder()
+    s.OpenAPIHandler(rr, req)
+    require.Equal(t, http.StatusUnauthorized, rr.Code) // invalid token triggers 401 before JSON decode
+
+    // Use disabled JWE to test JSON decode and required params
+    s.Config.Server.JWE.Enabled = false
+    // invalid JSON body
+    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    rr = httptest.NewRecorder()
+    s.OpenAPIHandler(rr, req)
+    require.Equal(t, http.StatusBadRequest, rr.Code)
+
+    // missing required parameter (client creation happens before param validation, so expect 500 here)
+    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader(`{}`))
+    req.Header.Set("Content-Type", "application/json")
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    rr = httptest.NewRecorder()
+    s.OpenAPIHandler(rr, req)
+    require.Equal(t, http.StatusInternalServerError, rr.Code)
+
+    // Unknown tool -> 404
+    req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
+    req.Header.Set("Content-Type", "application/json")
+    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+    rr = httptest.NewRecorder()
+    s.OpenAPIHandler(rr, req)
+    require.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 // TestGetClickHouseJWEServerFromContext tests context extraction

@@ -8,6 +8,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestLoadConfigWithDynamicTools(t *testing.T) {
+	yaml := []byte(`
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+  username: default
+  protocol: http
+server:
+  transport: http
+  address: 0.0.0.0
+  port: 8080
+  openapi:
+    enabled: true
+  dynamic_tools:
+    - regexp: "db\\..*"
+      prefix: "custom_"
+logging:
+  level: info
+`)
+
+	// Write to temp file
+	f := t.TempDir() + "/config.yaml"
+	require.NoError(t, os.WriteFile(f, yaml, 0o600))
+
+	cfg, err := LoadConfigFromFile(f)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Server.DynamicTools, 1)
+	require.Equal(t, "db\\..*", cfg.Server.DynamicTools[0].Regexp)
+	require.Equal(t, "custom_", cfg.Server.DynamicTools[0].Prefix)
+}
+
 // TestLoadConfigFromFile tests configuration loading from files
 func TestLoadConfigFromFile(t *testing.T) {
 	t.Run("yaml_config", func(t *testing.T) {

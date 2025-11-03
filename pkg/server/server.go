@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,24 @@ type ClickHouseJWEServer struct {
 	*server.MCPServer
 	Config  config.Config
 	Version string
+	// dynamic tools metadata for OpenAPI routing and schema
+	dynamicTools map[string]dynamicToolMeta
+}
+
+type dynamicToolParam struct {
+	Name       string
+	CHType     string
+	JSONType   string
+	JSONFormat string
+	Required   bool
+}
+
+type dynamicToolMeta struct {
+	ToolName    string
+	Database    string
+	Table       string
+	Description string
+	Params      []dynamicToolParam
 }
 
 type AltinityMCPServer interface {
@@ -48,13 +67,16 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	)
 
 	chJweServer := &ClickHouseJWEServer{
-		MCPServer: srv,
-		Config:    cfg,
-		Version:   version,
+		MCPServer:    srv,
+		Config:       cfg,
+		Version:      version,
+		dynamicTools: make(map[string]dynamicToolMeta),
 	}
 
 	// Register tools, resources, and prompts
 	RegisterTools(chJweServer)
+	// dynamic tools registered after static ones
+	registerDynamicTools(chJweServer)
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
 
@@ -392,6 +414,272 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
 }
 
+// registerDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools
+func registerDynamicTools(s *ClickHouseJWEServer) {
+	if len(s.Config.Server.DynamicTools) == 0 {
+		return
+	}
+
+	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", s)
+	token := ""
+	// Get ClickHouse client
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		log.Error().Err(err).Msg("dynamic_tools: failed to get ClickHouse client")
+		return
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("dynamic_tools: can't close clickhouse")
+		}
+	}()
+
+	// fetch views
+	q := "SELECT database, name, create_table_query, comment FROM system.tables WHERE engine='View'"
+	result, err := chClient.ExecuteQuery(ctx, q)
+	if err != nil {
+		log.Error().Err(err).Str("query", q).Msg("dynamic_tools: failed to list views")
+		return
+	}
+
+	// compile regex rules
+	type ruleCompiled struct {
+		r      *regexp.Regexp
+		prefix string
+	}
+	rules := make([]ruleCompiled, 0, len(s.Config.Server.DynamicTools))
+	for _, rule := range s.Config.Server.DynamicTools {
+		if rule.Regexp == "" {
+			continue
+		}
+		compiled, compErr := regexp.Compile(rule.Regexp)
+		if compErr != nil {
+			log.Error().Err(compErr).Str("regexp", rule.Regexp).Msg("dynamic_tools: invalid regexp, skipping rule")
+			continue
+		}
+		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix})
+	}
+
+	// detect overlaps: map view -> matched rule indexes
+	overlaps := false
+	dynamicCount := 0
+	for _, row := range result.Rows {
+		if len(row) < 4 {
+			continue
+		}
+		db, _ := row[0].(string)
+		name, _ := row[1].(string)
+		create, _ := row[2].(string)
+		comment, _ := row[3].(string)
+		full := db + "." + name
+
+		matched := make([]int, 0)
+		for i, rc := range rules {
+			if rc.r.MatchString(full) {
+				matched = append(matched, i)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		if len(matched) > 1 {
+			log.Error().Str("view", full).Msg("dynamic_tools: overlap between rules detected for view")
+			overlaps = true
+			continue
+		}
+
+		// single rule match -> register tool
+		rc := rules[matched[0]]
+		toolName := snakeCase(rc.prefix + full)
+		params := parseViewParams(create)
+		meta := dynamicToolMeta{
+			ToolName:    toolName,
+			Database:    db,
+			Table:       name,
+			Description: buildDescription(comment, db, name),
+			Params:      params,
+		}
+		s.dynamicTools[toolName] = meta
+
+		// create MCP tool with parameters
+		opts := []mcp.ToolOption{mcp.WithDescription(meta.Description)}
+		for _, p := range meta.Params {
+			switch p.JSONType {
+			case "boolean":
+				opts = append(opts, mcp.WithBoolean(p.Name, mcp.Description(p.CHType)))
+			case "number":
+				opts = append(opts, mcp.WithNumber(p.Name, mcp.Description(p.CHType)))
+			default:
+				opts = append(opts, mcp.WithString(p.Name, mcp.Description(p.CHType)))
+			}
+		}
+		tool := mcp.NewTool(toolName, opts...)
+		s.AddTool(tool, makeDynamicToolHandler(meta))
+		dynamicCount++
+	}
+
+	if overlaps {
+		log.Error().Msg("dynamic_tools: overlaps detected; conflicting views were skipped as per policy 'error on overlap'")
+	}
+	log.Info().Int("tool_count", dynamicCount).Msg("Dynamic ClickHouse view tools registered")
+}
+
+func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		chJweServer := GetClickHouseJWEServerFromContext(ctx)
+		if chJweServer == nil {
+			return nil, fmt.Errorf("can't get JWEServer from context")
+		}
+		// Extract token
+		token := chJweServer.ExtractTokenFromCtx(ctx)
+		// Client
+		chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		}
+		defer func() {
+			if closeErr := chClient.Close(); closeErr != nil {
+				log.Error().Err(closeErr).Str("tool", meta.ToolName).Msg("dynamic_tools: close client failed")
+			}
+		}()
+
+		// build param list
+		args := make([]string, 0, len(meta.Params))
+		for _, p := range meta.Params {
+			if v, ok := req.GetArguments()[p.Name]; ok {
+				// encode to SQL literal based on expected type
+				literal := sqlLiteral(p.JSONType, v)
+				args = append(args, fmt.Sprintf("%s=%s", p.Name, literal))
+			}
+		}
+		fn := meta.Table
+		if len(args) > 0 {
+			fn = fmt.Sprintf("%s(%s)", meta.Table, strings.Join(args, ", "))
+		}
+		query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
+
+		result, err := chClient.ExecuteQuery(ctx, query)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
+			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		}
+		jsonData, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: string(jsonData)}}}, nil
+	}
+}
+
+func buildDescription(comment, db, table string) string {
+	if strings.TrimSpace(comment) != "" {
+		return comment
+	}
+	return fmt.Sprintf("Tool to load data from %s.%s", db, table)
+}
+
+var paramRe = regexp.MustCompile(`\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)\}`)
+
+func parseViewParams(createSQL string) []dynamicToolParam {
+	matches := paramRe.FindAllStringSubmatch(createSQL, -1)
+	params := make([]dynamicToolParam, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		name := m[1]
+		ch := strings.TrimSpace(m[2])
+		jType, jFmt := mapCHType(ch)
+		params = append(params, dynamicToolParam{Name: name, CHType: ch, JSONType: jType, JSONFormat: jFmt, Required: true})
+	}
+	return params
+}
+
+func mapCHType(chType string) (jsonType, jsonFormat string) {
+	t := strings.ToLower(chType)
+	switch {
+	case strings.HasPrefix(t, "uint"):
+		return "integer", "int64"
+	case strings.HasPrefix(t, "int"):
+		return "integer", "int64"
+	case strings.HasPrefix(t, "float") || strings.HasPrefix(t, "decimal"):
+		return "number", "double"
+	case strings.HasPrefix(t, "bool") || t == "uint8" && strings.Contains(strings.ToLower(chType), "bool"):
+		return "boolean", ""
+	case strings.HasPrefix(t, "date32") || t == "date":
+		return "string", "date"
+	case strings.HasPrefix(t, "datetime"):
+		return "string", "date-time"
+	case strings.Contains(t, "uuid"):
+		return "string", "uuid"
+	default:
+		return "string", ""
+	}
+}
+
+func sqlLiteral(jsonType string, v interface{}) string {
+	switch jsonType {
+	case "integer":
+		switch n := v.(type) {
+		case float64:
+			return strconv.FormatInt(int64(n), 10)
+		case int64:
+			return strconv.FormatInt(n, 10)
+		case int:
+			return strconv.Itoa(n)
+		default:
+			return "0"
+		}
+	case "number":
+		switch n := v.(type) {
+		case float64:
+			return strconv.FormatFloat(n, 'f', -1, 64)
+		default:
+			return "0"
+		}
+	case "boolean":
+		if b, ok := v.(bool); ok {
+			if b {
+				return "1"
+			}
+			return "0"
+		}
+		return "0"
+	default: // string
+		// URL-escape then single-quote, minimal safety; ClickHouse expects single-quoted strings
+		s := ""
+		switch x := v.(type) {
+		case string:
+			s = x
+		default:
+			b, _ := json.Marshal(v)
+			s = string(b)
+		}
+		return "'" + strings.ReplaceAll(url.QueryEscape(s), "'", "''") + "'"
+	}
+}
+
+func snakeCase(s string) string {
+	s = strings.ToLower(s)
+	b := strings.Builder{}
+	prevUnderscore := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevUnderscore = false
+		} else {
+			if !prevUnderscore {
+				b.WriteByte('_')
+				prevUnderscore = true
+			}
+		}
+	}
+	out := b.String()
+	out = strings.Trim(out, "_")
+	return out
+}
+
 // HandleListTables implements the list_tables tool handler
 
 // HandleExecuteQuery implements the execute_query tool handler
@@ -507,6 +795,17 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
+	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
+		// dynamic tool endpoint: /openapi/{tool}
+		parts := strings.Split(r.URL.Path, "/openapi/")
+		if len(parts) == 2 {
+			tool := strings.Trim(parts[1], "/")
+			if meta, ok := s.dynamicTools[tool]; ok {
+				s.handleDynamicToolOpenAPI(w, r, token, meta)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	default:
 		// Serve OpenAPI schema by default
 		s.ServeOpenAPISchema(w, r)
@@ -601,12 +900,59 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		},
 	}
 
+	// add dynamic tool paths (POST)
+	paths := schema["paths"].(map[string]interface{})
+	for toolName, meta := range s.dynamicTools {
+		path := "/{jwe_token}/openapi/" + toolName
+		// request body schema
+		props := map[string]interface{}{}
+		required := []string{}
+		for _, p := range meta.Params {
+			prop := map[string]interface{}{"type": p.JSONType}
+			if p.JSONFormat != "" {
+				prop["format"] = p.JSONFormat
+			}
+			props[p.Name] = prop
+			if p.Required {
+				required = append(required, p.Name)
+			}
+		}
+		paths[path] = map[string]interface{}{
+			"post": map[string]interface{}{
+				"summary": meta.Description,
+				"requestBody": map[string]interface{}{
+					"required": true,
+					"content": map[string]interface{}{
+						"application/json": map[string]interface{}{
+							"schema": map[string]interface{}{
+								"type":       "object",
+								"properties": props,
+								"required":   required,
+							},
+						},
+					},
+				},
+				"responses": map[string]interface{}{
+					"200": map[string]interface{}{
+						"description": "Query result",
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if encodeErr := json.NewEncoder(w).Encode(schema); encodeErr != nil {
 		log.Err(encodeErr).Msg("can't encode /openapi schema")
 	}
 }
-
 
 func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
 	if r.Method != http.MethodGet {
@@ -666,6 +1012,62 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	w.Header().Set("Content-Type", "application/json")
 	if encodeErr := json.NewEncoder(w).Encode(result); encodeErr != nil {
 		log.Err(encodeErr).Msg("can't encode /openapi/execute_query result")
+	}
+}
+
+func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r *http.Request, token string, meta dynamicToolMeta) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// validate JWE already done by caller
+	// decode JSON body
+	var body map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Str("tool", meta.ToolName).Msg("dynamic_tools openapi: can't close clickhouse")
+		}
+	}()
+
+	// build args in stable order of declared params
+	argPairs := make([]string, 0, len(meta.Params))
+	for _, p := range meta.Params {
+		v, ok := body[p.Name]
+		if !ok && p.Required {
+			http.Error(w, fmt.Sprintf("Missing required parameter: %s", p.Name), http.StatusBadRequest)
+			return
+		}
+		if ok {
+			literal := sqlLiteral(p.JSONType, v)
+			argPairs = append(argPairs, fmt.Sprintf("%s=%s", p.Name, literal))
+		}
+	}
+	fn := meta.Table
+	if len(argPairs) > 0 {
+		fn = fmt.Sprintf("%s(%s)", meta.Table, strings.Join(argPairs, ", "))
+	}
+	query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
+
+	result, err := chClient.ExecuteQuery(ctx, query)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error())), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if encodeErr := json.NewEncoder(w).Encode(result); encodeErr != nil {
+		log.Err(encodeErr).Msg("can't encode dynamic tool result")
 	}
 }
 
