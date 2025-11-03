@@ -92,6 +92,7 @@ type OpenAPIConfig struct {
 
 // DynamicToolRule describes a rule to create dynamic tools from views
 type DynamicToolRule struct {
+    Name   string `json:"name" yaml:"name"`
     Regexp string `json:"regexp" yaml:"regexp"`
     Prefix string `json:"prefix" yaml:"prefix"`
 }

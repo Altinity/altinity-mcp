@@ -9,7 +9,8 @@ import (
 )
 
 func TestLoadConfigWithDynamicTools(t *testing.T) {
-	yaml := []byte(`
+	t.Run("basic_dynamic_tools", func(t *testing.T) {
+		yaml := []byte(`
 clickhouse:
   host: localhost
   port: 8123
@@ -29,16 +30,146 @@ logging:
   level: info
 `)
 
-	// Write to temp file
-	f := t.TempDir() + "/config.yaml"
-	require.NoError(t, os.WriteFile(f, yaml, 0o600))
+		// Write to temp file
+		f := t.TempDir() + "/config.yaml"
+		require.NoError(t, os.WriteFile(f, yaml, 0o600))
 
-	cfg, err := LoadConfigFromFile(f)
-	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	require.Len(t, cfg.Server.DynamicTools, 1)
-	require.Equal(t, "db\\..*", cfg.Server.DynamicTools[0].Regexp)
-	require.Equal(t, "custom_", cfg.Server.DynamicTools[0].Prefix)
+		cfg, err := LoadConfigFromFile(f)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.Len(t, cfg.Server.DynamicTools, 1)
+		require.Equal(t, "db\\..*", cfg.Server.DynamicTools[0].Regexp)
+		require.Equal(t, "custom_", cfg.Server.DynamicTools[0].Prefix)
+		require.Equal(t, "", cfg.Server.DynamicTools[0].Name)
+	})
+
+	t.Run("dynamic_tools_with_name", func(t *testing.T) {
+		yaml := []byte(`
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+  username: default
+  protocol: http
+server:
+  transport: http
+  address: 0.0.0.0
+  port: 8080
+  openapi:
+    enabled: true
+  dynamic_tools:
+    - name: "my_specific_tool"
+      regexp: "mydb\\.my_view"
+      prefix: "tool_"
+logging:
+  level: info
+`)
+
+		// Write to temp file
+		f := t.TempDir() + "/config.yaml"
+		require.NoError(t, os.WriteFile(f, yaml, 0o600))
+
+		cfg, err := LoadConfigFromFile(f)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.Len(t, cfg.Server.DynamicTools, 1)
+		require.Equal(t, "mydb\\.my_view", cfg.Server.DynamicTools[0].Regexp)
+		require.Equal(t, "tool_", cfg.Server.DynamicTools[0].Prefix)
+		require.Equal(t, "my_specific_tool", cfg.Server.DynamicTools[0].Name)
+	})
+
+	t.Run("multiple_dynamic_tools_mixed", func(t *testing.T) {
+		yaml := []byte(`
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+  username: default
+  protocol: http
+server:
+  transport: http
+  address: 0.0.0.0
+  port: 8080
+  openapi:
+    enabled: true
+  dynamic_tools:
+    - regexp: "db\\..*"
+      prefix: "custom_"
+    - name: "specific_tool"
+      regexp: "testdb\\.test_view"
+    - name: "another_tool"
+      regexp: "proddb\\.prod_view"
+      prefix: "prod_"
+logging:
+  level: info
+`)
+
+		// Write to temp file
+		f := t.TempDir() + "/config.yaml"
+		require.NoError(t, os.WriteFile(f, yaml, 0o600))
+
+		cfg, err := LoadConfigFromFile(f)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.Len(t, cfg.Server.DynamicTools, 3)
+
+		// First rule: no name
+		require.Equal(t, "db\\..*", cfg.Server.DynamicTools[0].Regexp)
+		require.Equal(t, "custom_", cfg.Server.DynamicTools[0].Prefix)
+		require.Equal(t, "", cfg.Server.DynamicTools[0].Name)
+
+		// Second rule: with name, no prefix
+		require.Equal(t, "testdb\\.test_view", cfg.Server.DynamicTools[1].Regexp)
+		require.Equal(t, "", cfg.Server.DynamicTools[1].Prefix)
+		require.Equal(t, "specific_tool", cfg.Server.DynamicTools[1].Name)
+
+		// Third rule: with name and prefix
+		require.Equal(t, "proddb\\.prod_view", cfg.Server.DynamicTools[2].Regexp)
+		require.Equal(t, "prod_", cfg.Server.DynamicTools[2].Prefix)
+		require.Equal(t, "another_tool", cfg.Server.DynamicTools[2].Name)
+	})
+
+	t.Run("dynamic_tools_with_name_json", func(t *testing.T) {
+		jsonContent := []byte(`{
+  "clickhouse": {
+    "host": "localhost",
+    "port": 8123,
+    "database": "default",
+    "username": "default",
+    "protocol": "http"
+  },
+  "server": {
+    "transport": "http",
+    "address": "0.0.0.0",
+    "port": 8080,
+    "openapi": {
+      "enabled": true
+    },
+    "dynamic_tools": [
+      {
+        "name": "json_tool",
+        "regexp": "testdb\\..*",
+        "prefix": "json_"
+      }
+    ]
+  },
+  "logging": {
+    "level": "info"
+  }
+}`)
+
+		// Write to temp file
+		f := t.TempDir() + "/config.json"
+		require.NoError(t, os.WriteFile(f, jsonContent, 0o600))
+
+		cfg, err := LoadConfigFromFile(f)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.Len(t, cfg.Server.DynamicTools, 1)
+		require.Equal(t, "testdb\\..*", cfg.Server.DynamicTools[0].Regexp)
+		require.Equal(t, "json_", cfg.Server.DynamicTools[0].Prefix)
+		require.Equal(t, "json_tool", cfg.Server.DynamicTools[0].Name)
+	})
 }
 
 // TestLoadConfigFromFile tests configuration loading from files

@@ -10,6 +10,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
 - **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
 - **Comprehensive Tools**: Built-in tools for listing tables, describing schemas, and executing queries
+- **Dynamic Tools**: Automatically generate MCP tools from ClickHouse® views (see [Dynamic Tools Documentation](docs/dynamic_tools.md))
 - **Resource Templates**: Dynamic resource discovery for database schemas and table information
 - **Query Prompts**: AI-assisted query building and optimization prompts
 - **Configuration Management**: Flexible configuration via files, environment variables, or CLI flags
@@ -183,10 +184,17 @@ server:
   openapi:
     enabled: false
     tls: false
+  dynamic_tools:
+    - regexp: "mydb\\..*"
+      prefix: "db_"
+    - name: "get_user_data"
+      regexp: "users\\.user_info_view"
 
 logging:
   level: "info"
 ```
+
+> **Note**: For detailed information about dynamic tools configuration, see the [Dynamic Tools Documentation](docs/dynamic_tools.md).
 
 Use the configuration file:
 
