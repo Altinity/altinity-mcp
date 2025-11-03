@@ -267,6 +267,33 @@ jobs:
       if: steps.release_tag.outputs.matched == 'true'
       run: ls -la dist
 
+    - name: Extract changelog for latest version
+      if: steps.release_tag.outputs.matched == 'true'
+      id: changelog
+      run: |
+        # Extract changelog for the current version from the tagged commit
+        VERSION=${GITHUB_REF#refs/tags/v}
+        awk '/^# / {s++} s == 1 {print}' CHANGELOG.md > latest_changelog.md
+
+        # Create release notes
+        cat > release_notes.md << EOF
+        ## Altinity MCP Server v${VERSION}
+
+        ### Release Notes
+        $(cat latest_changelog.md)
+
+        ### Docker
+        \`\`\`bash
+        docker run --rm ghcr.io/altinity/altinity-mcp:${VERSION} altinity-mcp --help
+        \`\`\`
+
+        ### Helm
+        \`\`\`bash
+        helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp -n <your-namespace> -f <your-values.yaml>
+        \`\`\`
+
+        EOF
+
     - name: Install helm
       if: steps.release_tag.outputs.matched == 'true'
       uses: azure/setup-helm@v4
@@ -319,33 +346,6 @@ jobs:
         minikube start
         helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp
         minikube stop
-
-    - name: Extract changelog for latest version
-      if: steps.release_tag.outputs.matched == 'true'
-      id: changelog
-      run: |
-        # Extract changelog for the current version
-        VERSION=${GITHUB_REF#refs/tags/v}
-        awk '/^# / {s++} s == 1 {print}' CHANGELOG.md > latest_changelog.md
-        
-        # Create release notes
-        cat > release_notes.md << EOF
-        ## Altinity MCP Server v${VERSION}
-        
-        ### Release Notes
-        $(cat latest_changelog.md)
-        
-        ### Docker
-        \`\`\`bash
-        docker run --rm ghcr.io/altinity/altinity-mcp:${VERSION} altinity-mcp --help
-        \`\`\`
-
-        ### Helm
-        \`\`\`bash
-        helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp -n <your-namespace> -f <your-values.yaml>
-        \`\`\`
-        
-        EOF
 
     - name: Create draft release
       if: steps.release_tag.outputs.matched == 'true'
