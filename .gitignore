@@ -9,6 +9,7 @@ AGENTS.md
 .idea/
 .kilocode/
 .crush/
+.code/
 build/
 dist/
 coverage.out

@@ -19,9 +19,11 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
+    "time"
+    "path/filepath"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+    "github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/stretchr/testify/require"
@@ -356,6 +358,174 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
 		require.NotNil(t, tlsConfig.ClientCAs)
 		require.Equal(t, tls.RequireAndVerifyClientCert, tlsConfig.ClientAuth)
 	})
+}
+
+// setupClickHouseContainerMain is a local helper for this package's tests
+func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
+    t.Helper()
+    ctx := context.Background()
+
+    req := testcontainers.ContainerRequest{
+        Image:        "clickhouse/clickhouse-server:latest",
+        ExposedPorts: []string{"8123/tcp", "9000/tcp"},
+        Env: map[string]string{
+            "CLICKHOUSE_SKIP_USER_SETUP":           "1",
+            "CLICKHOUSE_DB":                        "default",
+            "CLICKHOUSE_USER":                      "default",
+            "CLICKHOUSE_PASSWORD":                  "",
+            "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
+        },
+        WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
+    }
+    chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: req, Started: true})
+    require.NoError(t, err)
+
+    t.Cleanup(func() {
+        cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        _ = chContainer.Terminate(cleanupCtx)
+    })
+
+    host, err := chContainer.Host(ctx)
+    require.NoError(t, err)
+    port, err := chContainer.MappedPort(ctx, "9000")
+    require.NoError(t, err)
+
+    cfg := &config.ClickHouseConfig{
+        Host:             host,
+        Port:             port.Int(),
+        Database:         "default",
+        Username:         "default",
+        Password:         "",
+        Protocol:         config.TCPProtocol,
+        ReadOnly:         false,
+        MaxExecutionTime: 60,
+        Limit:            1000,
+    }
+
+    // create base table
+    client, err := clickhouse.NewClient(ctx, *cfg)
+    require.NoError(t, err)
+    defer func() { _ = client.Close() }()
+    _, _ = client.ExecuteQuery(ctx, "CREATE TABLE IF NOT EXISTS default.test (id UInt64, value String) ENGINE = Memory")
+    _, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
+    return cfg
+}
+
+// Health handler tests
+func TestHealthHandler_Additions(t *testing.T) {
+    // JWE enabled -> should return 200 and auth=jwe_enabled
+    t.Run("jwe_enabled", func(t *testing.T) {
+        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
+        rr := httptest.NewRecorder()
+        req := httptest.NewRequest(http.MethodGet, "/health", nil)
+        app.healthHandler(rr, req)
+        require.Equal(t, http.StatusOK, rr.Code)
+        var body map[string]interface{}
+        require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+        require.Equal(t, "jwe_enabled", body["auth"])
+    })
+
+    // JWE disabled with invalid CH -> 503
+    t.Run("clickhouse_unhealthy", func(t *testing.T) {
+        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}}}
+        rr := httptest.NewRecorder()
+        req := httptest.NewRequest(http.MethodGet, "/health", nil)
+        app.healthHandler(rr, req)
+        require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+    })
+
+    // JWE disabled with real CH -> 200
+    t.Run("clickhouse_healthy", func(t *testing.T) {
+        // spin container
+        ctx := context.Background()
+        cfg := setupClickHouseContainerMain(t)
+        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: *cfg}}
+        rr := httptest.NewRecorder()
+        req := httptest.NewRequest(http.MethodGet, "/health", nil)
+        app.healthHandler(rr, req)
+        require.Equal(t, http.StatusOK, rr.Code)
+        var body map[string]interface{}
+        require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+        require.Equal(t, "connected", body["clickhouse"])
+        _ = ctx
+    })
+
+    // Method not allowed
+    t.Run("method_not_allowed", func(t *testing.T) {
+        app := &application{config: config.Config{}}
+        rr := httptest.NewRecorder()
+        req := httptest.NewRequest(http.MethodPost, "/health", nil)
+        app.healthHandler(rr, req)
+        require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+    })
+}
+
+// testConnection tests
+func TestTestConnection_Additions(t *testing.T) {
+    t.Run("success", func(t *testing.T) {
+        cfg := setupClickHouseContainerMain(t)
+        ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+        defer cancel()
+        err := testConnection(ctx, *cfg)
+        require.NoError(t, err)
+    })
+
+    t.Run("failure", func(t *testing.T) {
+        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        defer cancel()
+        bad := config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}
+        err := testConnection(ctx, bad)
+        require.Error(t, err)
+    })
+}
+
+func TestNewApplication_ErrorPaths(t *testing.T) {
+    ctx := context.Background()
+    t.Run("jwe_enabled_missing_key", func(t *testing.T) {
+        cfg := config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}
+        _, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
+        require.Error(t, err)
+        require.Contains(t, err.Error(), "JWE encryption is enabled")
+    })
+
+    t.Run("clickhouse_ping_fail", func(t *testing.T) {
+        cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}}
+        _, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
+        require.Error(t, err)
+    })
+}
+
+func TestConfigReloadLoop_ErrorAndStop(t *testing.T) {
+    // Create temp invalid config file to trigger reload error
+    dir := t.TempDir()
+    cfgPath := filepath.Join(dir, "config.yaml")
+    require.NoError(t, os.WriteFile(cfgPath, []byte("invalid: : yaml"), 0o600))
+
+    cfg := config.Config{ReloadTime: 1}
+    app := &application{config: cfg, configFile: cfgPath, stopConfigReload: make(chan struct{}), mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{}, "test")}
+
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+    done := make(chan struct{})
+    go func() { app.configReloadLoop(ctx, &mockCommand{flags: map[string]interface{}{}, setFlags: map[string]bool{}, stringMaps: map[string]map[string]string{}}); close(done) }()
+    time.Sleep(1500 * time.Millisecond)
+    close(app.stopConfigReload)
+    <-done
+}
+
+// ClickHouse client Ping/DescribeTable extra coverage
+func TestClickHouseClient_PingAndDescribeTable(t *testing.T) {
+    cfg := setupClickHouseContainerMain(t)
+    ctx := context.Background()
+    client, err := clickhouse.NewClient(ctx, *cfg)
+    require.NoError(t, err)
+    defer func() { require.NoError(t, client.Close()) }()
+
+    require.NoError(t, client.Ping(ctx))
+    cols, err := client.DescribeTable(ctx, cfg.Database, "test")
+    require.NoError(t, err)
+    require.NotEmpty(t, cols)
 }
 
 // TestHealthHandler tests the health check endpoint

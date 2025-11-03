@@ -80,12 +80,20 @@ type ServerConfig struct {
 	JWE        JWEConfig       `json:"jwe" yaml:"jwe"`
 	OpenAPI    OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
 	CORSOrigin string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+    // DynamicTools defines rules for generating tools from ClickHouse views
+    DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration
 type OpenAPIConfig struct {
 	Enabled bool `json:"enabled" yaml:"enabled" desc:"Enable OpenAPI endpoints"`
 	TLS     bool `json:"tls" yaml:"tls" desc:"Use TLS (https) for OpenAPI endpoints"`
+}
+
+// DynamicToolRule describes a rule to create dynamic tools from views
+type DynamicToolRule struct {
+    Regexp string `json:"regexp" yaml:"regexp"`
+    Prefix string `json:"prefix" yaml:"prefix"`
 }
 
 // LogLevel defines the logging level

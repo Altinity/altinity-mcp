@@ -142,6 +142,10 @@ config:
       jwt_secret_key: ""
       jwe_secret_key: ""
       token_param: "token"
+    # Dynamic tools generated from ClickHouse views
+    dynamic_tools: []
+    #  - regexp: "db\\..*"
+    #    prefix: "custom_"
   
   logging:
     level: "info"
