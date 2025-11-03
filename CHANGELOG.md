@@ -1,3 +1,19 @@
+# v1.3.0
+FEATURES
+- add dynamic tools support - automatically generate MCP tools from ClickHouse views, fix https://github.com/Altinity/altinity-mcp/issues/27
+  - configure rules to match views using regexp patterns against `system.tables`
+  - optionally specify explicit tool names with `name` field (requires regexp to match exactly one view)
+  - automatic parameter detection from view definitions `{param: Type}`
+  - support for both MCP and OpenAPI endpoints
+  - comprehensive documentation in `docs/dynamic_tools.md`
+
+IMPROVEMENTS
+- add Microsoft Copilot Studio compatibility by handling trailing slashes in HTTP paths (contribution by @derFunk)
+- update dependencies:
+  - bump `github.com/mark3labs/mcp-go` from 0.41.1 to 0.42.0
+  - bump `github.com/urfave/cli/v3` from 3.4.1 to 3.5.0
+- update Helm chart values.yaml
+
 # v1.2.1
 IMPROVEMENTS
 - remove default limit behavior - LIMIT clause is now only added when explicitly specified by the user
