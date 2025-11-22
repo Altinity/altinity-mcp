@@ -1171,12 +1171,15 @@ func TestBuildDescription(t *testing.T) {
 func TestSqlLiteral(t *testing.T) {
     // integer
     require.Equal(t, "42", sqlLiteral("integer", float64(42)))
+    require.Equal(t, "100", sqlLiteral("integer", "100"))
     require.Equal(t, "0", sqlLiteral("integer", "oops"))
     // number
     require.Equal(t, "3.14", sqlLiteral("number", float64(3.14)))
+    require.Equal(t, "3.14", sqlLiteral("number", "3.14"))
     // boolean
     require.Equal(t, "1", sqlLiteral("boolean", true))
     require.Equal(t, "0", sqlLiteral("boolean", false))
+    require.Equal(t, "1", sqlLiteral("boolean", "true"))
     // string quoting and escaping
     out := sqlLiteral("string", "a'b c")
     require.Contains(t, out, "'")

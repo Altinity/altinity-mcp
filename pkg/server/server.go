@@ -675,6 +675,14 @@ func sqlLiteral(jsonType string, v interface{}) string {
 			return strconv.FormatInt(n, 10)
 		case int:
 			return strconv.Itoa(n)
+		case string:
+			if i, err := strconv.ParseInt(n, 10, 64); err == nil {
+				return strconv.FormatInt(i, 10)
+			}
+			if f, err := strconv.ParseFloat(n, 64); err == nil {
+				return strconv.FormatInt(int64(f), 10)
+			}
+			return "0"
 		default:
 			return "0"
 		}
@@ -682,6 +690,11 @@ func sqlLiteral(jsonType string, v interface{}) string {
 		switch n := v.(type) {
 		case float64:
 			return strconv.FormatFloat(n, 'f', -1, 64)
+		case string:
+			if f, err := strconv.ParseFloat(n, 64); err == nil {
+				return strconv.FormatFloat(f, 'f', -1, 64)
+			}
+			return "0"
 		default:
 			return "0"
 		}
@@ -691,6 +704,14 @@ func sqlLiteral(jsonType string, v interface{}) string {
 				return "1"
 			}
 			return "0"
+		}
+		if s, ok := v.(string); ok {
+			if b, err := strconv.ParseBool(s); err == nil {
+				if b {
+					return "1"
+				}
+				return "0"
+			}
 		}
 		return "0"
 	default: // string
