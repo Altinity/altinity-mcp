@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -25,7 +26,9 @@ type ClickHouseJWEServer struct {
 	Config  config.Config
 	Version string
 	// dynamic tools metadata for OpenAPI routing and schema
-	dynamicTools map[string]dynamicToolMeta
+	dynamicTools     map[string]dynamicToolMeta
+	dynamicToolsMu   sync.RWMutex
+	dynamicToolsInit bool
 }
 
 type dynamicToolParam struct {
@@ -75,8 +78,7 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 
 	// Register tools, resources, and prompts
 	RegisterTools(chJweServer)
-	// dynamic tools registered after static ones
-	registerDynamicTools(chJweServer)
+	// dynamic tools registered lazily via EnsureDynamicTools
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
 
@@ -414,19 +416,28 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
 }
 
-// registerDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools
-func registerDynamicTools(s *ClickHouseJWEServer) {
-	if len(s.Config.Server.DynamicTools) == 0 {
-		return
+// EnsureDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools
+func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
+	s.dynamicToolsMu.Lock()
+	defer s.dynamicToolsMu.Unlock()
+
+	if s.dynamicToolsInit {
+		return nil
 	}
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", s)
-	token := ""
+	if len(s.Config.Server.DynamicTools) == 0 {
+		s.dynamicToolsInit = true
+		return nil
+	}
+
+	// Check if we have a valid client/token to proceed
+	token := s.ExtractTokenFromCtx(ctx)
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
-		log.Error().Err(err).Msg("dynamic_tools: failed to get ClickHouse client")
-		return
+		// If we can't get a client (e.g. missing token when JWE enabled), we can't register dynamic tools yet
+		// Return error so we retry later
+		return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
@@ -438,8 +449,7 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 	q := "SELECT database, name, create_table_query, comment FROM system.tables WHERE engine='View'"
 	result, err := chClient.ExecuteQuery(ctx, q)
 	if err != nil {
-		log.Error().Err(err).Str("query", q).Msg("dynamic_tools: failed to list views")
-		return
+		return fmt.Errorf("dynamic_tools: failed to list views: %w", err)
 	}
 
 	// compile regex rules
@@ -556,6 +566,9 @@ func registerDynamicTools(s *ClickHouseJWEServer) {
 		log.Error().Msg("dynamic_tools: overlaps detected; conflicting views were skipped as per policy 'error on overlap'")
 	}
 	log.Info().Int("tool_count", dynamicCount).Msg("Dynamic ClickHouse view tools registered")
+
+	s.dynamicToolsInit = true
+	return nil
 }
 
 func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
@@ -830,11 +843,21 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
+		// Ensure dynamic tools are loaded
+		if err := s.EnsureDynamicTools(r.Context()); err != nil {
+			log.Warn().Err(err).Msg("Failed to ensure dynamic tools in OpenAPI handler")
+		}
+
 		// dynamic tool endpoint: /openapi/{tool}
 		parts := strings.Split(r.URL.Path, "/openapi/")
 		if len(parts) == 2 {
 			tool := strings.Trim(parts[1], "/")
-			if meta, ok := s.dynamicTools[tool]; ok {
+
+			s.dynamicToolsMu.RLock()
+			meta, ok := s.dynamicTools[tool]
+			s.dynamicToolsMu.RUnlock()
+
+			if ok {
 				s.handleDynamicToolOpenAPI(w, r, token, meta)
 				return
 			}
@@ -847,6 +870,11 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.Request) {
+	// Ensure dynamic tools are loaded
+	if err := s.EnsureDynamicTools(r.Context()); err != nil {
+		log.Warn().Err(err).Msg("Failed to ensure dynamic tools in ServeOpenAPISchema")
+	}
+
 	// Get host URL based on OpenAPI TLS configuration
 	protocol := "http"
 	if s.Config.Server.OpenAPI.TLS {
@@ -936,6 +964,10 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 
 	// add dynamic tool paths (POST)
 	paths := schema["paths"].(map[string]interface{})
+
+	s.dynamicToolsMu.RLock()
+	defer s.dynamicToolsMu.RUnlock()
+
 	for toolName, meta := range s.dynamicTools {
 		path := "/{jwe_token}/openapi/" + toolName
 		// request body schema
