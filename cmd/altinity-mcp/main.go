@@ -327,6 +327,17 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 	}
 }
 
+// dynamicToolsInjector creates a middleware that ensures dynamic tools are loaded
+func (a *application) dynamicToolsInjector(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := a.mcpServer.EnsureDynamicTools(r.Context()); err != nil {
+			// Log error but continue, static tools should still work
+			log.Warn().Err(err).Msg("Failed to ensure dynamic tools")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // stripTrailingSlash normalizes paths to remove a single trailing slash (except root)
 func stripTrailingSlash(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -535,11 +546,12 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		log.Info().Msg("Using dynamic base path for JWE authentication")
 
 		tokenInjector := a.createTokenInjector()
+		dtInjector := a.dynamicToolsInjector
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/http", serverInjector(tokenInjector(httpServer)))
+		mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
         if cfg.Server.OpenAPI.Enabled {
             mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
             mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
@@ -555,8 +567,9 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := server.NewStreamableHTTPServer(mcpServer)
+		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/http", serverInjector(httpServer))
+		mux.Handle("/http", serverInjector(dtInjector(httpServer)))
         if cfg.Server.OpenAPI.Enabled {
             mux.HandleFunc("/openapi", serverInjectorOpenAPI)
             mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
@@ -629,6 +642,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		log.Info().Msg("Using dynamic base path for JWE authentication")
 
 		tokenInjector := a.createTokenInjector()
+		dtInjector := a.dynamicToolsInjector
 
 		sseServer := server.NewSSEServer(
 			mcpServer,
@@ -645,8 +659,8 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		)
 
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/sse", serverInjector(tokenInjector(sseServer.SSEHandler())))
-		mux.Handle("/{token}/message", serverInjector(tokenInjector(sseServer.MessageHandler())))
+		mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer.SSEHandler()))))
+		mux.Handle("/{token}/message", serverInjector(tokenInjector(dtInjector(sseServer.MessageHandler()))))
         if cfg.Server.OpenAPI.Enabled {
             mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
             mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
@@ -662,9 +676,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 	} else {
 		// Use standard SSE server without dynamic paths
 		sseServer := server.NewSSEServer(mcpServer)
+		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/sse", serverInjector(sseServer))
-		mux.Handle("/message", serverInjector(sseServer.MessageHandler()))
+		mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
+		mux.Handle("/message", serverInjector(dtInjector(sseServer.MessageHandler())))
         if cfg.Server.OpenAPI.Enabled {
             mux.HandleFunc("/openapi", serverInjectorOpenAPI)
             mux.HandleFunc("/openapi/", serverInjectorOpenAPI)

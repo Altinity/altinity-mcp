@@ -1263,7 +1263,8 @@ func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
         {Regexp: "default\\.v_a", Prefix: "other_"},
     }}}, dynamicTools: make(map[string]dynamicToolMeta)}
 
-    registerDynamicTools(s)
+    err = s.EnsureDynamicTools(ctx)
+    require.NoError(t, err)
 
     // v_a matches two rules -> should be skipped
     _, existsA1 := s.dynamicTools["custom_default_v_a"]
