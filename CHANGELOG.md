@@ -1,3 +1,10 @@
+# v1.3.1
+IMPROVEMENTS
+- implement lazy loading for dynamic tools to improve startup time and reliability
+
+BUG FIXES
+- ensure dynamic tools are properly initialized when using JWE authentication by loading them upon first request with valid token
+
 # v1.3.0
 FEATURES
 - add dynamic tools support - automatically generate MCP tools from ClickHouse views, fix https://github.com/Altinity/altinity-mcp/issues/27
