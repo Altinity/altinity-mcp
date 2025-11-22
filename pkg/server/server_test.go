@@ -1500,3 +1500,100 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		require.Equal(t, 8123, cfg.Port)
 	})
 }
+
+func TestLazyLoading_OpenAPISchema(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create view
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_lazy")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_lazy AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Server config
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_lazy", Prefix: "lazy_"},
+			},
+		},
+	}
+
+	// Initialize server (dynamic tools not loaded yet)
+	s := NewClickHouseMCPServer(cfg, "test")
+
+	// Verify dynamic tools map is empty initially
+	s.dynamicToolsMu.RLock()
+	require.Empty(t, s.dynamicTools)
+	s.dynamicToolsMu.RUnlock()
+
+	// Call ServeOpenAPISchema
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi", nil)
+
+	s.ServeOpenAPISchema(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// Verify dynamic tools map is populated
+	s.dynamicToolsMu.RLock()
+	require.Len(t, s.dynamicTools, 1)
+	_, ok := s.dynamicTools["lazy_default_v_lazy"]
+	require.True(t, ok)
+	s.dynamicToolsMu.RUnlock()
+
+	// Verify schema contains the path
+	var schema map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+	paths := schema["paths"].(map[string]interface{})
+	// Path format: /{jwe_token}/openapi/{tool}
+	_, ok = paths["/{jwe_token}/openapi/lazy_default_v_lazy"]
+	require.True(t, ok)
+}
+
+func TestLazyLoading_MCPTools(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create view
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_mcp_lazy")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_mcp_lazy AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Server config
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_mcp_lazy", Prefix: "mcp_"},
+			},
+		},
+	}
+
+	// Initialize server
+	s := NewClickHouseMCPServer(cfg, "test")
+
+	// Verify dynamic tools map is empty initially
+	s.dynamicToolsMu.RLock()
+	require.Empty(t, s.dynamicTools)
+	s.dynamicToolsMu.RUnlock()
+
+	// Simulate middleware calling EnsureDynamicTools
+	err = s.EnsureDynamicTools(ctx)
+	require.NoError(t, err)
+
+	// Verify tool is registered in dynamic tools map
+	s.dynamicToolsMu.RLock()
+	require.Len(t, s.dynamicTools, 1)
+	_, ok := s.dynamicTools["mcp_default_v_mcp_lazy"]
+	require.True(t, ok)
+	s.dynamicToolsMu.RUnlock()
+}
