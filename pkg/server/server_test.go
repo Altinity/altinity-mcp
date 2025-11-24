@@ -1174,23 +1174,30 @@ func TestParseComment(t *testing.T) {
 	require.Equal(t, "Tool to load data from db.view", desc)
 	require.Nil(t, params)
 
-	// JSON with specific key
-	jsonComment := `{"db.view:description": "JSON Desc", "p1": "Param 1 desc"}`
+	// New JSON format with all fields
+	jsonComment := `{"name": "custom_tool", "description": "JSON Desc", "params": {"p1": "Param 1 desc", "p2": "Param 2 desc"}}`
 	desc, params = parseComment(jsonComment, "db", "view")
 	require.Equal(t, "JSON Desc", desc)
 	require.Equal(t, "Param 1 desc", params["p1"])
+	require.Equal(t, "Param 2 desc", params["p2"])
 
-	// JSON with generic description key
-	jsonComment2 := `{"description": "Generic Desc", "p1": "Param 1 desc"}`
+	// New JSON format with only description
+	jsonComment2 := `{"description": "Generic Desc"}`
 	desc, params = parseComment(jsonComment2, "db", "view")
 	require.Equal(t, "Generic Desc", desc)
-	require.Equal(t, "Param 1 desc", params["p1"])
+	require.Nil(t, params)
 
-	// JSON without description
-	jsonComment3 := `{"p1": "Param 1 desc"}`
+	// New JSON format without description
+	jsonComment3 := `{"params": {"p1": "Param 1 desc"}}`
 	desc, params = parseComment(jsonComment3, "db", "view")
 	require.Equal(t, "Tool to load data from db.view", desc)
 	require.Equal(t, "Param 1 desc", params["p1"])
+
+	// New JSON format with name only (name field is ignored in parseComment, used elsewhere)
+	jsonComment4 := `{"name": "my_tool"}`
+	desc, params = parseComment(jsonComment4, "db", "view")
+	require.Equal(t, "Tool to load data from db.view", desc)
+	require.Nil(t, params)
 }
 
 func TestSqlLiteral(t *testing.T) {
@@ -1316,8 +1323,8 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 	defer func() { require.NoError(t, client.Close()) }()
 
 	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_json")
-	// Escape quotes for SQL
-	comment := `{"default.v_json:description": "Main Desc", "id": "ID Param Desc"}`
+	// Escape quotes for SQL - new JSON format
+	comment := `{"name": "custom_v_json", "description": "Main Desc", "params": {"id": "ID Param Desc"}}`
 	query := fmt.Sprintf("CREATE VIEW default.v_json AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT '%s'", comment)
 	_, err = client.ExecuteQuery(ctx, query)
 	require.NoError(t, err)
@@ -1666,12 +1673,12 @@ func TestDynamicTool_ParamDescriptionFormat(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
 
-	// Create view with JSON comment
+	// Create view with JSON comment - new format
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
 	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_desc")
-	comment := `{"id": "The ID"}`
+	comment := `{"params": {"id": "The ID"}}`
 	query := fmt.Sprintf("CREATE VIEW default.v_desc AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT '%s'", comment)
 	_, err = client.ExecuteQuery(ctx, query)
 	require.NoError(t, err)

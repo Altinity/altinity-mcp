@@ -637,22 +637,18 @@ func parseComment(comment, db, table string) (string, map[string]string) {
 		return fmt.Sprintf("Tool to load data from %s.%s", db, table), nil
 	}
 
-	var commentMap map[string]string
-	if err := json.Unmarshal([]byte(comment), &commentMap); err == nil {
-		// It is valid JSON
-		descKey := fmt.Sprintf("%s.%s:description", db, table)
-		toolDesc := ""
-		if d, ok := commentMap[descKey]; ok {
-			toolDesc = d
-		} else if d, ok := commentMap["description"]; ok {
-			toolDesc = d
-		}
-
+	// Try to parse as new JSON format
+	var commentStruct struct {
+		Name        string            `json:"name"`
+		Description string            `json:"description"`
+		Params      map[string]string `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(comment), &commentStruct); err == nil {
+		toolDesc := commentStruct.Description
 		if toolDesc == "" {
 			toolDesc = fmt.Sprintf("Tool to load data from %s.%s", db, table)
 		}
-
-		return toolDesc, commentMap
+		return toolDesc, commentStruct.Params
 	}
 
 	// Not JSON, return as is

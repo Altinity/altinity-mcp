@@ -1,3 +1,7 @@
+# v1.3.3
+IMPROVEMENTS
+- change dynamic tools JSON comment format to `{"name":"tool_name", "description":"tool description", "params": {"param1":"param1 description","param2":"description"}}`
+
 # v1.3.2
 FEATURES
 - support JSON comments for rich dynamic tool descriptions
