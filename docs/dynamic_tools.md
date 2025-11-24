@@ -96,9 +96,12 @@ You can provide richer descriptions for both the tool and its parameters by usin
 
 ```json
 {
-  "database.view_name:description": "Main tool description",
-  "param1": "Description for param1",
-  "param2": "Description for param2"
+  "name": "tool_name",
+  "description": "Main tool description",
+  "params": {
+    "param1": "Description for param1",
+    "param2": "Description for param2"
+  }
 }
 ```
 
@@ -107,12 +110,13 @@ Example:
 ```sql
 CREATE VIEW analytics.user_sessions AS
 SELECT ...
-COMMENT '{"analytics.user_sessions:description": "Get user session data", "user_id": "The user ID to filter by", "start_date": "Start of the period"}'
+COMMENT '{"name": "get_user_sessions", "description": "Get user session data", "params": {"user_id": "The user ID to filter by", "start_date": "Start of the period"}}'
 ```
 
-If the comment is not valid JSON, it is treated as a plain string description for the tool.
-
-When a parameter description is provided via JSON, it is appended to the ClickHouse type in the tool's parameter description (e.g., "UInt64, The user ID to filter by").
+Notes:
+- The `name` field is optional and will override the auto-generated tool name if provided
+- If the comment is not valid JSON, it is treated as a plain string description for the tool
+- When a parameter description is provided via JSON, it is appended to the ClickHouse type in the tool's parameter description (e.g., "UInt64, The user ID to filter by")
 
 ## Type Mapping
 
