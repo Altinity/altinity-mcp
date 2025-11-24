@@ -32,11 +32,12 @@ type ClickHouseJWEServer struct {
 }
 
 type dynamicToolParam struct {
-	Name       string
-	CHType     string
-	JSONType   string
-	JSONFormat string
-	Required   bool
+	Name        string
+	CHType      string
+	JSONType    string
+	JSONFormat  string
+	Required    bool
+	Description string
 }
 
 type dynamicToolMeta struct {
@@ -526,11 +527,19 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		}
 
 		params := parseViewParams(create)
+		toolDesc, paramDescs := parseComment(comment, db, name)
+
+		for i := range params {
+			if d, ok := paramDescs[params[i].Name]; ok {
+				params[i].Description = d
+			}
+		}
+
 		meta := dynamicToolMeta{
 			ToolName:    toolName,
 			Database:    db,
 			Table:       name,
-			Description: buildDescription(comment, db, name),
+			Description: toolDesc,
 			Params:      params,
 		}
 		s.dynamicTools[toolName] = meta
@@ -538,13 +547,17 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		// create MCP tool with parameters
 		opts := []mcp.ToolOption{mcp.WithDescription(meta.Description)}
 		for _, p := range meta.Params {
+			desc := p.CHType
+			if p.Description != "" {
+				desc = p.Description
+			}
 			switch p.JSONType {
 			case "boolean":
-				opts = append(opts, mcp.WithBoolean(p.Name, mcp.Description(p.CHType)))
+				opts = append(opts, mcp.WithBoolean(p.Name, mcp.Description(desc)))
 			case "number":
-				opts = append(opts, mcp.WithNumber(p.Name, mcp.Description(p.CHType)))
+				opts = append(opts, mcp.WithNumber(p.Name, mcp.Description(desc)))
 			default:
-				opts = append(opts, mcp.WithString(p.Name, mcp.Description(p.CHType)))
+				opts = append(opts, mcp.WithString(p.Name, mcp.Description(desc)))
 			}
 		}
 		tool := mcp.NewTool(toolName, opts...)
@@ -619,11 +632,31 @@ func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
 	}
 }
 
-func buildDescription(comment, db, table string) string {
-	if strings.TrimSpace(comment) != "" {
-		return comment
+func parseComment(comment, db, table string) (string, map[string]string) {
+	if strings.TrimSpace(comment) == "" {
+		return fmt.Sprintf("Tool to load data from %s.%s", db, table), nil
 	}
-	return fmt.Sprintf("Tool to load data from %s.%s", db, table)
+
+	var commentMap map[string]string
+	if err := json.Unmarshal([]byte(comment), &commentMap); err == nil {
+		// It is valid JSON
+		descKey := fmt.Sprintf("%s.%s:description", db, table)
+		toolDesc := ""
+		if d, ok := commentMap[descKey]; ok {
+			toolDesc = d
+		} else if d, ok := commentMap["description"]; ok {
+			toolDesc = d
+		}
+
+		if toolDesc == "" {
+			toolDesc = fmt.Sprintf("Tool to load data from %s.%s", db, table)
+		}
+
+		return toolDesc, commentMap
+	}
+
+	// Not JSON, return as is
+	return comment, nil
 }
 
 var paramRe = regexp.MustCompile(`\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)\}`)
@@ -998,6 +1031,11 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 			prop := map[string]interface{}{"type": p.JSONType}
 			if p.JSONFormat != "" {
 				prop["format"] = p.JSONFormat
+			}
+			if p.Description != "" {
+				prop["description"] = p.Description
+			} else {
+				prop["description"] = p.CHType
 			}
 			props[p.Name] = prop
 			if p.Required {
