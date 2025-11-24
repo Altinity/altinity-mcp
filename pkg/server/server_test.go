@@ -1661,3 +1661,52 @@ func TestLazyLoading_MCPTools(t *testing.T) {
 	require.True(t, ok)
 	s.dynamicToolsMu.RUnlock()
 }
+
+func TestDynamicTool_ParamDescriptionFormat(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create view with JSON comment
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_desc")
+	comment := `{"id": "The ID"}`
+	query := fmt.Sprintf("CREATE VIEW default.v_desc AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT '%s'", comment)
+	_, err = client.ExecuteQuery(ctx, query)
+	require.NoError(t, err)
+
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_desc"},
+			},
+		},
+	}
+
+	s := NewClickHouseMCPServer(cfg, "test")
+	err = s.EnsureDynamicTools(ctx)
+	require.NoError(t, err)
+
+	// Verify OpenAPI schema description
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi", nil)
+	s.ServeOpenAPISchema(rr, req)
+
+	var schema map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+	paths := schema["paths"].(map[string]interface{})
+	path := paths["/{jwe_token}/openapi/default_v_desc"].(map[string]interface{})
+	post := path["post"].(map[string]interface{})
+	reqBody := post["requestBody"].(map[string]interface{})
+	content := reqBody["content"].(map[string]interface{})
+	jsonContent := content["application/json"].(map[string]interface{})
+	schemaObj := jsonContent["schema"].(map[string]interface{})
+	props := schemaObj["properties"].(map[string]interface{})
+	idProp := props["id"].(map[string]interface{})
+
+	// Check that description contains both type and custom description
+	require.Equal(t, "UInt64, The ID", idProp["description"])
+}
