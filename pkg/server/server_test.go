@@ -1308,6 +1308,42 @@ func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
     require.NotEmpty(t, metaB.Params)
 }
 
+func TestDynamicTools_JSONComment(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_json")
+	// Escape quotes for SQL
+	comment := `{"default.v_json:description": "Main Desc", "id": "ID Param Desc"}`
+	query := fmt.Sprintf("CREATE VIEW default.v_json AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT '%s'", comment)
+	_, err = client.ExecuteQuery(ctx, query)
+	require.NoError(t, err)
+
+	mcpSrv := server.NewMCPServer(
+		"Altinity ClickHouse MCP Test Server",
+		"test",
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+		server.WithRecovery(),
+	)
+	s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
+		{Regexp: "default\\.v_json"},
+	}}}, dynamicTools: make(map[string]dynamicToolMeta)}
+
+	err = s.EnsureDynamicTools(ctx)
+	require.NoError(t, err)
+
+	meta, ok := s.dynamicTools["default_v_json"]
+	require.True(t, ok)
+	require.Equal(t, "Main Desc", meta.Description)
+	require.Len(t, meta.Params, 1)
+	require.Equal(t, "ID Param Desc", meta.Params[0].Description)
+}
+
 func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
     ctx := context.Background()
     chConfig := setupClickHouseContainer(t)
