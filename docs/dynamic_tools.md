@@ -112,6 +112,8 @@ COMMENT '{"analytics.user_sessions:description": "Get user session data", "user_
 
 If the comment is not valid JSON, it is treated as a plain string description for the tool.
 
+When a parameter description is provided via JSON, it is appended to the ClickHouse type in the tool's parameter description (e.g., "UInt64, The user ID to filter by").
+
 ## Type Mapping
 
 ClickHouse types are automatically mapped to JSON Schema types for the MCP tool interface:

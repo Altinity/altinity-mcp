@@ -549,7 +549,7 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		for _, p := range meta.Params {
 			desc := p.CHType
 			if p.Description != "" {
-				desc = p.Description
+				desc = fmt.Sprintf("%s, %s", p.CHType, p.Description)
 			}
 			switch p.JSONType {
 			case "boolean":
@@ -1033,7 +1033,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				prop["format"] = p.JSONFormat
 			}
 			if p.Description != "" {
-				prop["description"] = p.Description
+				prop["description"] = fmt.Sprintf("%s, %s", p.CHType, p.Description)
 			} else {
 				prop["description"] = p.CHType
 			}
