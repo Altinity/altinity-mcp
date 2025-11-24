@@ -1,3 +1,11 @@
+# v1.3.2
+FEATURES
+- support JSON comments for rich dynamic tool descriptions
+- append custom description to ClickHouse type in parameter details
+
+TESTING
+- add test for dynamic tools JSON comment parsing
+
 # v1.3.1
 IMPROVEMENTS
 - implement lazy loading for dynamic tools to improve startup time and reliability
