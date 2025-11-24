@@ -1163,9 +1163,34 @@ func TestMakeDynamicToolHandler_NoServerInContext(t *testing.T) {
     require.Nil(t, res)
 }
 
-func TestBuildDescription(t *testing.T) {
-    require.Equal(t, "My desc", buildDescription("My desc", "db", "view"))
-    require.Equal(t, "Tool to load data from db.view", buildDescription("", "db", "view"))
+func TestParseComment(t *testing.T) {
+	// Plain string
+	desc, params := parseComment("My desc", "db", "view")
+	require.Equal(t, "My desc", desc)
+	require.Nil(t, params)
+
+	// Empty string
+	desc, params = parseComment("", "db", "view")
+	require.Equal(t, "Tool to load data from db.view", desc)
+	require.Nil(t, params)
+
+	// JSON with specific key
+	jsonComment := `{"db.view:description": "JSON Desc", "p1": "Param 1 desc"}`
+	desc, params = parseComment(jsonComment, "db", "view")
+	require.Equal(t, "JSON Desc", desc)
+	require.Equal(t, "Param 1 desc", params["p1"])
+
+	// JSON with generic description key
+	jsonComment2 := `{"description": "Generic Desc", "p1": "Param 1 desc"}`
+	desc, params = parseComment(jsonComment2, "db", "view")
+	require.Equal(t, "Generic Desc", desc)
+	require.Equal(t, "Param 1 desc", params["p1"])
+
+	// JSON without description
+	jsonComment3 := `{"p1": "Param 1 desc"}`
+	desc, params = parseComment(jsonComment3, "db", "view")
+	require.Equal(t, "Tool to load data from db.view", desc)
+	require.Equal(t, "Param 1 desc", params["p1"])
 }
 
 func TestSqlLiteral(t *testing.T) {

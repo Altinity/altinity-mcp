@@ -90,6 +90,28 @@ This view will generate a tool with three parameters:
 
 The view's `COMMENT` will be used as the tool's description. If no comment is provided, a default description is generated.
 
+### Rich Descriptions with JSON
+
+You can provide richer descriptions for both the tool and its parameters by using a JSON object in the view's comment. The format is:
+
+```json
+{
+  "database.view_name:description": "Main tool description",
+  "param1": "Description for param1",
+  "param2": "Description for param2"
+}
+```
+
+Example:
+
+```sql
+CREATE VIEW analytics.user_sessions AS
+SELECT ...
+COMMENT '{"analytics.user_sessions:description": "Get user session data", "user_id": "The user ID to filter by", "start_date": "Start of the period"}'
+```
+
+If the comment is not valid JSON, it is treated as a plain string description for the tool.
+
 ## Type Mapping
 
 ClickHouse types are automatically mapped to JSON Schema types for the MCP tool interface:
