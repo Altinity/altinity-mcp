@@ -1662,7 +1662,7 @@ func TestOpenAPIHandler_DynamicTool_WithJWE(t *testing.T) {
 	}
 	token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
-	connKey := GetConnectionKey(*chConfig)
+	// Don't pre-populate dynamicTools - let RefreshDynamicTools discover the view
 	s := &ClickHouseJWEServer{
 		Config: config.Config{
 			ClickHouse: *chConfig,
@@ -1673,12 +1673,8 @@ func TestOpenAPIHandler_DynamicTool_WithJWE(t *testing.T) {
 				},
 			},
 		},
-		Version: "test",
-		dynamicTools: map[string]map[string]dynamicToolMeta{
-			connKey: {
-				"custom_default_v_api2": {ToolName: "custom_default_v_api2", Database: "default", Table: "v_api2", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
-			},
-		},
+		Version:      "test",
+		dynamicTools: make(map[string]map[string]dynamicToolMeta),
 	}
 
 	body := strings.NewReader(`{"id":1}`)
