@@ -1891,10 +1891,15 @@ func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	s.ServeOpenAPISchema(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	// Verify dynamic tools map is populated
+	// Get connection key
+	connKey := GetConnectionKey(*chConfig)
+
+	// Verify dynamic tools map is populated for this connection
 	s.dynamicToolsMu.RLock()
 	require.Len(t, s.dynamicTools, 1)
-	_, ok := s.dynamicTools["lazy_default_v_lazy"]
+	tools, ok := s.dynamicTools[connKey]
+	require.True(t, ok)
+	_, ok = tools["lazy_default_v_lazy"]
 	require.True(t, ok)
 	s.dynamicToolsMu.RUnlock()
 
