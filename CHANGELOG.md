@@ -1,3 +1,9 @@
+# v1.4.0
+FEATURES
+- dynamic tools are now refreshed on every schema request (OpenAPI) or tools/list (MCP) call
+- dynamic tools are now per-connection: different ClickHouse connections (user@host:port/database) have independent tool sets
+- views deleted from ClickHouse are automatically removed from the tool list on next refresh
+
 # v1.3.3
 IMPROVEMENTS
 - change dynamic tools JSON comment format to `{"name":"tool_name", "description":"tool description", "params": {"param1":"param1 description","param2":"description"}}`
