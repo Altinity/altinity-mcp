@@ -148,6 +148,11 @@ func (c *Client) connect() error {
 	return nil
 }
 
+// GetConfig returns the ClickHouse configuration used by this client
+func (c *Client) GetConfig() config.ClickHouseConfig {
+	return c.config
+}
+
 // Close closes the ClickHouse connection
 func (c *Client) Close() error {
 	c.cancelFunc()

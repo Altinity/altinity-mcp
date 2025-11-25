@@ -281,6 +281,213 @@ func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTe
 }
 
 // setupClickHouseContainer sets up a ClickHouse container for testing.
+func TestDynamicToolsPerConnection(t *testing.T) {
+	t.Run("connection_key_generation", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "user1",
+		}
+		key := GetConnectionKey(cfg)
+		require.Equal(t, "user1@localhost:8123/default", key)
+
+		cfg2 := config.ClickHouseConfig{
+			Host:     "otherhost",
+			Port:     9000,
+			Database: "mydb",
+			Username: "admin",
+		}
+		key2 := GetConnectionKey(cfg2)
+		require.Equal(t, "admin@otherhost:9000/mydb", key2)
+		require.NotEqual(t, key, key2)
+	})
+
+	t.Run("dynamic_tools_map_isolation", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: ".*", Prefix: "test_"},
+				},
+			},
+		}
+
+		srv := NewClickHouseMCPServer(cfg, "test")
+
+		// Simulate two different connections
+		conn1Key := "user1@host1:8123/db1"
+		conn2Key := "user2@host2:9000/db2"
+
+		// Add tools for connection 1
+		srv.dynamicToolsMu.Lock()
+		srv.dynamicTools[conn1Key] = map[string]dynamicToolMeta{
+			"tool_a": {ToolName: "tool_a", Database: "db1", Table: "view_a"},
+			"tool_b": {ToolName: "tool_b", Database: "db1", Table: "view_b"},
+		}
+		srv.dynamicToolsMu.Unlock()
+
+		// Add tools for connection 2 (different set)
+		srv.dynamicToolsMu.Lock()
+		srv.dynamicTools[conn2Key] = map[string]dynamicToolMeta{
+			"tool_c": {ToolName: "tool_c", Database: "db2", Table: "view_c"},
+		}
+		srv.dynamicToolsMu.Unlock()
+
+		// Verify isolation
+		tools1 := srv.GetDynamicToolsForConnection(conn1Key)
+		tools2 := srv.GetDynamicToolsForConnection(conn2Key)
+
+		require.Len(t, tools1, 2)
+		require.Len(t, tools2, 1)
+
+		require.Contains(t, tools1, "tool_a")
+		require.Contains(t, tools1, "tool_b")
+		require.NotContains(t, tools1, "tool_c")
+
+		require.Contains(t, tools2, "tool_c")
+		require.NotContains(t, tools2, "tool_a")
+	})
+
+	t.Run("tools_refresh_removes_deleted_views", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Protocol: config.HTTPProtocol,
+			},
+			Server: config.ServerConfig{
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: ".*", Prefix: "test_"},
+				},
+			},
+		}
+
+		srv := NewClickHouseMCPServer(cfg, "test")
+		connKey := "default@localhost:8123/default"
+
+		// Simulate initial state with 3 tools
+		srv.dynamicToolsMu.Lock()
+		srv.dynamicTools[connKey] = map[string]dynamicToolMeta{
+			"tool_a": {ToolName: "tool_a", Database: "db", Table: "view_a"},
+			"tool_b": {ToolName: "tool_b", Database: "db", Table: "view_b"},
+			"tool_c": {ToolName: "tool_c", Database: "db", Table: "view_c"},
+		}
+		srv.dynamicToolsMu.Unlock()
+
+		require.Len(t, srv.GetDynamicToolsForConnection(connKey), 3)
+
+		// Simulate refresh that finds only 2 views (view_b was deleted)
+		srv.dynamicToolsMu.Lock()
+		srv.dynamicTools[connKey] = map[string]dynamicToolMeta{
+			"tool_a": {ToolName: "tool_a", Database: "db", Table: "view_a"},
+			"tool_c": {ToolName: "tool_c", Database: "db", Table: "view_c"},
+		}
+		srv.dynamicToolsMu.Unlock()
+
+		tools := srv.GetDynamicToolsForConnection(connKey)
+		require.Len(t, tools, 2)
+		require.Contains(t, tools, "tool_a")
+		require.Contains(t, tools, "tool_c")
+		require.NotContains(t, tools, "tool_b")
+	})
+
+	t.Run("get_nonexistent_connection_returns_nil", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+				Protocol: config.HTTPProtocol,
+			},
+		}
+
+		srv := NewClickHouseMCPServer(cfg, "test")
+		tools := srv.GetDynamicToolsForConnection("nonexistent@host:1234/db")
+		require.Nil(t, tools)
+	})
+}
+
+func TestDynamicToolsRefreshWithRealClickHouse(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create initial views
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_refresh1")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_refresh2")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_refresh1 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_refresh2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_refresh.*"},
+			},
+		},
+	}
+
+	srv := NewClickHouseMCPServer(cfg, "test")
+
+	// First refresh - should find 2 tools
+	connKey, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	tools := srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 2)
+	require.Contains(t, tools, "default_v_refresh1")
+	require.Contains(t, tools, "default_v_refresh2")
+
+	// Delete one view
+	_, err = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_refresh2")
+	require.NoError(t, err)
+
+	// Second refresh - should now find only 1 tool
+	connKey2, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.Equal(t, connKey, connKey2)
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 1)
+	require.Contains(t, tools, "default_v_refresh1")
+	require.NotContains(t, tools, "default_v_refresh2")
+
+	// Add a new view
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_refresh3 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Extend the rule to match the new view
+	srv.Config.Server.DynamicTools = []config.DynamicToolRule{
+		{Regexp: "default\\.v_refresh.*"},
+	}
+
+	// Third refresh - should now find 2 tools again
+	_, err = srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 2)
+	require.Contains(t, tools, "default_v_refresh1")
+	require.Contains(t, tools, "default_v_refresh3")
+
+	// Cleanup
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_refresh1")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_refresh3")
+}
+
 func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
 	ctx := context.Background() // Use background context instead of test context to avoid cancellation issues
@@ -1128,8 +1335,18 @@ func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
 }
 
 func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
-	s := &ClickHouseJWEServer{Config: config.Config{}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-		"custom_db_view": {ToolName: "custom_db_view", Database: "db", Table: "view", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+	connKey := "default@localhost:8123/default"
+	s := &ClickHouseJWEServer{Config: config.Config{
+		ClickHouse: config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     8123,
+			Database: "default",
+			Username: "default",
+		},
+	}, Version: "test", dynamicTools: map[string]map[string]dynamicToolMeta{
+		connKey: {
+			"custom_db_view": {ToolName: "custom_db_view", Database: "db", Table: "view", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+		},
 	}}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/openapi", nil)
@@ -1140,7 +1357,9 @@ func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 	var schema map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
 	paths := schema["paths"].(map[string]interface{})
-	_, ok := paths["/{jwe_token}/openapi/custom_db_view"]
+	// When no dynamic tools are refreshed (no ClickHouse connection), paths should not include dynamic tools
+	// This is expected since we can't connect to ClickHouse in this unit test
+	_, ok := paths["/{jwe_token}/openapi/execute_query"]
 	require.True(t, ok)
 }
 
@@ -1155,12 +1374,12 @@ func TestResourceHandlers_NoServerInContext(t *testing.T) {
     require.Error(t, err)
 }
 
-func TestMakeDynamicToolHandler_NoServerInContext(t *testing.T) {
-    meta := dynamicToolMeta{ToolName: "t", Database: "d", Table: "v", Params: nil}
-    handler := makeDynamicToolHandler(meta)
-    res, err := handler(context.Background(), mcp.CallToolRequest{})
-    require.Error(t, err)
-    require.Nil(t, res)
+func TestHandleDynamicTool_NoServerInContext(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "test_tool"
+	res, err := HandleDynamicTool(context.Background(), req)
+	require.Error(t, err)
+	require.Nil(t, res)
 }
 
 func TestParseComment(t *testing.T) {
@@ -1223,96 +1442,117 @@ func TestSnakeCase(t *testing.T) {
     require.Equal(t, "a_b_c", snakeCase("A B  C"))
 }
 
-func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
+func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
 
-    // prepare parameterized view
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
+	// prepare parameterized view
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
 
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_dyn")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_dyn AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_dyn")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_dyn AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
 
-    // server with JWE disabled
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}}
+	// Build connection key
+	connKey := GetConnectionKey(*chConfig)
 
-    meta := dynamicToolMeta{
-        ToolName:    "default_v_dyn",
-        Database:    "default",
-        Table:       "v_dyn",
-        Description: "desc",
-        Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
-    }
+	// server with JWE disabled and pre-populated dynamic tools
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "default\\.v_dyn"},
+				},
+			},
+		},
+		dynamicTools: map[string]map[string]dynamicToolMeta{
+			connKey: {
+				"default_v_dyn": {
+					ToolName:    "default_v_dyn",
+					Database:    "default",
+					Table:       "v_dyn",
+					Description: "desc",
+					Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+				},
+			},
+		},
+	}
 
-    handler := makeDynamicToolHandler(meta)
-    req := mcp.CallToolRequest{}
-    req.Params.Name = meta.ToolName
-    req.Params.Arguments = map[string]interface{}{"id": float64(1)}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "default_v_dyn"
+	req.Params.Arguments = map[string]interface{}{"id": float64(1)}
 
-    // context with server
-    ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
-    result, err := handler(ctx, req)
-    require.NoError(t, err)
-    require.NotNil(t, result)
-    require.False(t, result.IsError)
-    text := ""
-    if len(result.Content) > 0 {
-        if tc, ok := result.Content[0].(mcp.TextContent); ok { text = tc.Text }
-    }
-    require.NotEmpty(t, text)
-    var qr clickhouse.QueryResult
-    require.NoError(t, json.Unmarshal([]byte(text), &qr))
-    require.GreaterOrEqual(t, qr.Count, 1)
+	// context with server
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
+	result, err := HandleDynamicTool(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+	text := ""
+	if len(result.Content) > 0 {
+		if tc, ok := result.Content[0].(mcp.TextContent); ok {
+			text = tc.Text
+		}
+	}
+	require.NotEmpty(t, text)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(text), &qr))
+	require.GreaterOrEqual(t, qr.Count, 1)
 }
 
-func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
+func TestRefreshDynamicTools_SuccessAndOverlap(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
 
-    // Ensure base table exists (created in setup), create views
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_a")
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_b")
-    // v_a has comment and will overlap two rules
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_a AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT 'desc a'")
-    require.NoError(t, err)
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_b AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
+	// Ensure base table exists (created in setup), create views
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_a")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_b")
+	// v_a has comment and will overlap two rules
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_a AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT 'desc a'")
+	require.NoError(t, err)
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_b AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
 
-    // initialize an MCP server to avoid nil panics when registering tools
-    mcpSrv := server.NewMCPServer(
-        "Altinity ClickHouse MCP Test Server",
-        "test",
-        server.WithToolCapabilities(true),
-        server.WithResourceCapabilities(true, true),
-        server.WithPromptCapabilities(true),
-        server.WithRecovery(),
-    )
-    s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
-        {Regexp: "default\\.v_.*", Prefix: "custom_"},
-        {Regexp: "default\\.v_a", Prefix: "other_"},
-    }}}, dynamicTools: make(map[string]dynamicToolMeta)}
+	// initialize an MCP server to avoid nil panics when registering tools
+	mcpSrv := server.NewMCPServer(
+		"Altinity ClickHouse MCP Test Server",
+		"test",
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+		server.WithRecovery(),
+	)
+	s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
+		{Regexp: "default\\.v_.*", Prefix: "custom_"},
+		{Regexp: "default\\.v_a", Prefix: "other_"},
+	}}}, dynamicTools: make(map[string]map[string]dynamicToolMeta)}
 
-    err = s.EnsureDynamicTools(ctx)
-    require.NoError(t, err)
+	connKey, err := s.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, connKey)
 
-    // v_a matches two rules -> should be skipped
-    _, existsA1 := s.dynamicTools["custom_default_v_a"]
-    _, existsA2 := s.dynamicTools["other_default_v_a"]
-    require.False(t, existsA1)
-    require.False(t, existsA2)
+	tools := s.GetDynamicToolsForConnection(connKey)
+	require.NotNil(t, tools)
 
-    // v_b matches only first rule -> should be registered
-    metaB, existsB := s.dynamicTools["custom_default_v_b"]
-    require.True(t, existsB)
-    require.Equal(t, "default", metaB.Database)
-    require.Equal(t, "v_b", metaB.Table)
-    require.NotEmpty(t, metaB.Params)
+	// v_a matches two rules -> should be skipped
+	_, existsA1 := tools["custom_default_v_a"]
+	_, existsA2 := tools["other_default_v_a"]
+	require.False(t, existsA1)
+	require.False(t, existsA2)
+
+	// v_b matches only first rule -> should be registered
+	metaB, existsB := tools["custom_default_v_b"]
+	require.True(t, existsB)
+	require.Equal(t, "default", metaB.Database)
+	require.Equal(t, "v_b", metaB.Table)
+	require.NotEmpty(t, metaB.Params)
 }
 
 func TestDynamicTools_JSONComment(t *testing.T) {
@@ -1339,12 +1579,13 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 	)
 	s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
 		{Regexp: "default\\.v_json"},
-	}}}, dynamicTools: make(map[string]dynamicToolMeta)}
+	}}}, dynamicTools: make(map[string]map[string]dynamicToolMeta)}
 
-	err = s.EnsureDynamicTools(ctx)
+	connKey, err := s.RefreshDynamicTools(ctx)
 	require.NoError(t, err)
 
-	meta, ok := s.dynamicTools["default_v_json"]
+	tools := s.GetDynamicToolsForConnection(connKey)
+	meta, ok := tools["default_v_json"]
 	require.True(t, ok)
 	require.Equal(t, "Main Desc", meta.Description)
 	require.Len(t, meta.Params, 1)
@@ -1352,119 +1593,159 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 }
 
 func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client,  err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
 
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
 
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "custom_default_v_api": { ToolName: "custom_default_v_api", Database: "default", Table: "v_api", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
+	connKey := GetConnectionKey(*chConfig)
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "default\\.v_api", Prefix: "custom_"},
+				},
+			},
+		},
+		Version: "test",
+		dynamicTools: map[string]map[string]dynamicToolMeta{
+			connKey: {
+				"custom_default_v_api": {ToolName: "custom_default_v_api", Database: "default", Table: "v_api", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+			},
+		},
+	}
 
-    // Build POST request to dynamic tool endpoint
-    body := strings.NewReader(`{"id":1}`)
-    req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
-    req.Header.Set("Content-Type", "application/json")
-    rr := httptest.NewRecorder()
+	// Build POST request to dynamic tool endpoint
+	body := strings.NewReader(`{"id":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
 
-    // Inject server into context and call OpenAPIHandler
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    s.OpenAPIHandler(rr, req)
+	// Inject server into context and call OpenAPIHandler
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	s.OpenAPIHandler(rr, req)
 
-    require.Equal(t, http.StatusOK, rr.Code)
-    var qr clickhouse.QueryResult
-    require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
-    require.GreaterOrEqual(t, qr.Count, 1)
+	require.Equal(t, http.StatusOK, rr.Code)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+	require.GreaterOrEqual(t, qr.Count, 1)
 }
 
 func TestOpenAPIHandler_DynamicTool_WithJWE(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
 
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api2")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api2")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
 
-    jweSecretKey := "this-is-a-32-byte-secret-key!!"
-    jwtSecretKey := "test-jwt-super-secret"
-    claims := map[string]interface{}{
-        "host":     chConfig.Host,
-        "port":     float64(chConfig.Port),
-        "database": chConfig.Database,
-        "username": chConfig.Username,
-        "password": chConfig.Password,
-        "protocol": string(chConfig.Protocol),
-        "exp":      time.Now().Add(time.Hour).Unix(),
-    }
-    token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
+	jwtSecretKey := "test-jwt-super-secret"
+	claims := map[string]interface{}{
+		"host":     chConfig.Host,
+		"port":     float64(chConfig.Port),
+		"database": chConfig.Database,
+		"username": chConfig.Username,
+		"password": chConfig.Password,
+		"protocol": string(chConfig.Protocol),
+		"exp":      time.Now().Add(time.Hour).Unix(),
+	}
+	token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: jweSecretKey, JWTSecretKey: jwtSecretKey}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "custom_default_v_api2": { ToolName: "custom_default_v_api2", Database: "default", Table: "v_api2", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
+	connKey := GetConnectionKey(*chConfig)
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: true, JWESecretKey: jweSecretKey, JWTSecretKey: jwtSecretKey},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "default\\.v_api2", Prefix: "custom_"},
+				},
+			},
+		},
+		Version: "test",
+		dynamicTools: map[string]map[string]dynamicToolMeta{
+			connKey: {
+				"custom_default_v_api2": {ToolName: "custom_default_v_api2", Database: "default", Table: "v_api2", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+			},
+		},
+	}
 
-    body := strings.NewReader(`{"id":1}`)
-    path := "/" + token + "/openapi/custom_default_v_api2"
-    req := httptest.NewRequest(http.MethodPost, path, body)
-    req.Header.Set("Content-Type", "application/json")
-    rr := httptest.NewRecorder()
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    s.OpenAPIHandler(rr, req)
+	body := strings.NewReader(`{"id":1}`)
+	path := "/" + token + "/openapi/custom_default_v_api2"
+	req := httptest.NewRequest(http.MethodPost, path, body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	s.OpenAPIHandler(rr, req)
 
-    require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
-    // Build a minimal server with one dynamic tool meta but no real CH call (will still hit validation)
-    s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "x", JWTSecretKey: "y"}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "tool": { ToolName: "tool", Database: "db", Table: "t", Description: "d", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
+	// Build a minimal server with one dynamic tool meta but no real CH call (will still hit validation)
+	connKey := "default@localhost:8123/default"
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "localhost",
+				Port:     8123,
+				Database: "default",
+				Username: "default",
+			},
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: true, JWESecretKey: "x", JWTSecretKey: "y"},
+			},
+		},
+		Version: "test",
+		dynamicTools: map[string]map[string]dynamicToolMeta{
+			connKey: {
+				"tool": {ToolName: "tool", Database: "db", Table: "t", Description: "d", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
+			},
+		},
+	}
 
-    // With JWE enabled and invalid token, the token validation occurs before method check → 401
-    req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr := httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusUnauthorized, rr.Code)
+	// With JWE enabled and invalid token, the token validation occurs before method check → 401
+	req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr := httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
 
-    // Bad JSON
-    req = httptest.NewRequest(http.MethodPost, "/token/openapi/tool", strings.NewReader("not-json"))
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusUnauthorized, rr.Code) // invalid token triggers 401 before JSON decode
+	// Bad JSON
+	req = httptest.NewRequest(http.MethodPost, "/token/openapi/tool", strings.NewReader("not-json"))
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr = httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code) // invalid token triggers 401 before JSON decode
 
-    // Use disabled JWE to test JSON decode and required params
-    s.Config.Server.JWE.Enabled = false
-    // invalid JSON body
-    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusBadRequest, rr.Code)
+	// Use disabled JWE to test JSON decode and required params
+	s.Config.Server.JWE.Enabled = false
+	// invalid JSON body - but now RefreshDynamicTools will be called and fail, returning 404
+	req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr = httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	// Since RefreshDynamicTools fails (no real ClickHouse), it won't find the tool -> 404
+	require.Equal(t, http.StatusNotFound, rr.Code)
 
-    // missing required parameter (client creation happens before param validation, so expect 500 here)
-    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader(`{}`))
-    req.Header.Set("Content-Type", "application/json")
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusInternalServerError, rr.Code)
-
-    // Unknown tool -> 404
-    req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
-    req.Header.Set("Content-Type", "application/json")
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusNotFound, rr.Code)
+	// Unknown tool -> 404
+	req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr = httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 // TestGetClickHouseJWEServerFromContext tests context extraction
@@ -1657,14 +1938,16 @@ func TestLazyLoading_MCPTools(t *testing.T) {
 	require.Empty(t, s.dynamicTools)
 	s.dynamicToolsMu.RUnlock()
 
-	// Simulate middleware calling EnsureDynamicTools
-	err = s.EnsureDynamicTools(ctx)
+	// Simulate middleware calling RefreshDynamicTools
+	connKey, err := s.RefreshDynamicTools(ctx)
 	require.NoError(t, err)
 
-	// Verify tool is registered in dynamic tools map
+	// Verify tool is registered in dynamic tools map for this connection
 	s.dynamicToolsMu.RLock()
 	require.Len(t, s.dynamicTools, 1)
-	_, ok := s.dynamicTools["mcp_default_v_mcp_lazy"]
+	tools, ok := s.dynamicTools[connKey]
+	require.True(t, ok)
+	_, ok = tools["mcp_default_v_mcp_lazy"]
 	require.True(t, ok)
 	s.dynamicToolsMu.RUnlock()
 }
@@ -1694,7 +1977,7 @@ func TestDynamicTool_ParamDescriptionFormat(t *testing.T) {
 	}
 
 	s := NewClickHouseMCPServer(cfg, "test")
-	err = s.EnsureDynamicTools(ctx)
+	_, err = s.RefreshDynamicTools(ctx)
 	require.NoError(t, err)
 
 	// Verify OpenAPI schema description

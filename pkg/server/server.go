@@ -26,9 +26,10 @@ type ClickHouseJWEServer struct {
 	Config  config.Config
 	Version string
 	// dynamic tools metadata for OpenAPI routing and schema
-	dynamicTools     map[string]dynamicToolMeta
-	dynamicToolsMu   sync.RWMutex
-	dynamicToolsInit bool
+	// map[connectionKey]map[toolName]dynamicToolMeta
+	// connectionKey is "user@host:port/database"
+	dynamicTools   map[string]map[string]dynamicToolMeta
+	dynamicToolsMu sync.RWMutex
 }
 
 type dynamicToolParam struct {
@@ -74,12 +75,12 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		MCPServer:    srv,
 		Config:       cfg,
 		Version:      version,
-		dynamicTools: make(map[string]dynamicToolMeta),
+		dynamicTools: make(map[string]map[string]dynamicToolMeta),
 	}
 
 	// Register tools, resources, and prompts
 	RegisterTools(chJweServer)
-	// dynamic tools registered lazily via EnsureDynamicTools
+	// dynamic tools are refreshed per-connection via RefreshDynamicTools
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
 
@@ -417,18 +418,31 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
 }
 
-// EnsureDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools
-func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
-	s.dynamicToolsMu.Lock()
-	defer s.dynamicToolsMu.Unlock()
+// GetConnectionKey returns a unique key for ClickHouse connection based on config
+func GetConnectionKey(cfg config.ClickHouseConfig) string {
+	return fmt.Sprintf("%s@%s:%d/%s", cfg.Username, cfg.Host, cfg.Port, cfg.Database)
+}
 
-	if s.dynamicToolsInit {
-		return nil
+// GetDynamicToolsForConnection returns dynamic tools for a specific connection
+func (s *ClickHouseJWEServer) GetDynamicToolsForConnection(connKey string) map[string]dynamicToolMeta {
+	s.dynamicToolsMu.RLock()
+	defer s.dynamicToolsMu.RUnlock()
+	if tools, ok := s.dynamicTools[connKey]; ok {
+		// Return a copy to avoid race conditions
+		result := make(map[string]dynamicToolMeta, len(tools))
+		for k, v := range tools {
+			result[k] = v
+		}
+		return result
 	}
+	return nil
+}
 
+// RefreshDynamicTools discovers ClickHouse views and updates dynamic tools for the connection
+// This is called on every schema request or tools/list to ensure tools are up-to-date
+func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, error) {
 	if len(s.Config.Server.DynamicTools) == 0 {
-		s.dynamicToolsInit = true
-		return nil
+		return "", nil
 	}
 
 	// Check if we have a valid client/token to proceed
@@ -436,9 +450,8 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
-		// If we can't get a client (e.g. missing token when JWE enabled), we can't register dynamic tools yet
-		// Return error so we retry later
-		return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		// If we can't get a client (e.g. missing token when JWE enabled), we can't register dynamic tools
+		return "", fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
@@ -446,11 +459,14 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		}
 	}()
 
+	// Build connection key from the actual config used
+	connKey := GetConnectionKey(chClient.GetConfig())
+
 	// fetch views
 	q := "SELECT database, name, create_table_query, comment FROM system.tables WHERE engine='View'"
 	result, err := chClient.ExecuteQuery(ctx, q)
 	if err != nil {
-		return fmt.Errorf("dynamic_tools: failed to list views: %w", err)
+		return connKey, fmt.Errorf("dynamic_tools: failed to list views: %w", err)
 	}
 
 	// compile regex rules
@@ -471,6 +487,9 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		}
 		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix, name: rule.Name})
 	}
+
+	// Build new tools map for this connection
+	newTools := make(map[string]dynamicToolMeta)
 
 	// detect overlaps: map view -> matched rule indexes
 	overlaps := false
@@ -542,26 +561,7 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 			Description: toolDesc,
 			Params:      params,
 		}
-		s.dynamicTools[toolName] = meta
-
-		// create MCP tool with parameters
-		opts := []mcp.ToolOption{mcp.WithDescription(meta.Description)}
-		for _, p := range meta.Params {
-			desc := p.CHType
-			if p.Description != "" {
-				desc = fmt.Sprintf("%s, %s", p.CHType, p.Description)
-			}
-			switch p.JSONType {
-			case "boolean":
-				opts = append(opts, mcp.WithBoolean(p.Name, mcp.Description(desc)))
-			case "number":
-				opts = append(opts, mcp.WithNumber(p.Name, mcp.Description(desc)))
-			default:
-				opts = append(opts, mcp.WithString(p.Name, mcp.Description(desc)))
-			}
-		}
-		tool := mcp.NewTool(toolName, opts...)
-		s.AddTool(tool, makeDynamicToolHandler(meta))
+		newTools[toolName] = meta
 		dynamicCount++
 	}
 
@@ -578,58 +578,92 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 	if overlaps {
 		log.Error().Msg("dynamic_tools: overlaps detected; conflicting views were skipped as per policy 'error on overlap'")
 	}
-	log.Info().Int("tool_count", dynamicCount).Msg("Dynamic ClickHouse view tools registered")
 
-	s.dynamicToolsInit = true
-	return nil
+	// Update the tools map for this connection
+	s.dynamicToolsMu.Lock()
+	s.dynamicTools[connKey] = newTools
+	s.dynamicToolsMu.Unlock()
+
+	log.Debug().
+		Str("connection", connKey).
+		Int("tool_count", dynamicCount).
+		Msg("Dynamic ClickHouse view tools refreshed")
+
+	return connKey, nil
 }
 
-func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		chJweServer := GetClickHouseJWEServerFromContext(ctx)
-		if chJweServer == nil {
-			return nil, fmt.Errorf("can't get JWEServer from context")
-		}
-		// Extract token
-		token := chJweServer.ExtractTokenFromCtx(ctx)
-		// Client
-		chClient, err := chJweServer.GetClickHouseClient(ctx, token)
-		if err != nil {
-			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
-			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
-		}
-		defer func() {
-			if closeErr := chClient.Close(); closeErr != nil {
-				log.Error().Err(closeErr).Str("tool", meta.ToolName).Msg("dynamic_tools: close client failed")
-			}
-		}()
+// EnsureDynamicTools is kept for backward compatibility but now calls RefreshDynamicTools
+func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
+	_, err := s.RefreshDynamicTools(ctx)
+	return err
+}
 
-		// build param list
-		args := make([]string, 0, len(meta.Params))
-		for _, p := range meta.Params {
-			if v, ok := req.GetArguments()[p.Name]; ok {
-				// encode to SQL literal based on expected type
-				literal := sqlLiteral(p.JSONType, v)
-				args = append(args, fmt.Sprintf("%s=%s", p.Name, literal))
-			}
-		}
-		fn := meta.Table
-		if len(args) > 0 {
-			fn = fmt.Sprintf("%s(%s)", meta.Table, strings.Join(args, ", "))
-		}
-		query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
+// HandleDynamicTool is a generic handler for dynamic tools
+func HandleDynamicTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	toolName := req.Params.Name
 
-		result, err := chClient.ExecuteQuery(ctx, query)
-		if err != nil {
-			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
-		}
-		jsonData, err := json.MarshalIndent(result, "", "  ")
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: string(jsonData)}}}, nil
+	chJweServer := GetClickHouseJWEServerFromContext(ctx)
+	if chJweServer == nil {
+		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
+
+	// Extract token
+	token := chJweServer.ExtractTokenFromCtx(ctx)
+
+	// Client
+	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+	if err != nil {
+		log.Error().Err(err).Str("tool", toolName).Msg("dynamic_tools: GetClickHouseClient failed")
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+	}
+	defer func() {
+		if closeErr := chClient.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Str("tool", toolName).Msg("dynamic_tools: close client failed")
+		}
+	}()
+
+	// Refresh dynamic tools to ensure we have the latest
+	connKey, refreshErr := chJweServer.RefreshDynamicTools(ctx)
+	if refreshErr != nil {
+		log.Warn().Err(refreshErr).Str("tool", toolName).Msg("dynamic_tools: failed to refresh tools")
+		// Use connection key from client config as fallback
+		connKey = GetConnectionKey(chClient.GetConfig())
+	}
+
+	tools := chJweServer.GetDynamicToolsForConnection(connKey)
+	if tools == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("No dynamic tools found for connection %s", connKey)), nil
+	}
+	meta, ok := tools[toolName]
+	if !ok {
+		return mcp.NewToolResultError(fmt.Sprintf("Tool %s not found for connection %s", toolName, connKey)), nil
+	}
+
+	// build param list
+	args := make([]string, 0, len(meta.Params))
+	for _, p := range meta.Params {
+		if v, ok := req.GetArguments()[p.Name]; ok {
+			// encode to SQL literal based on expected type
+			literal := sqlLiteral(p.JSONType, v)
+			args = append(args, fmt.Sprintf("%s=%s", p.Name, literal))
+		}
+	}
+	fn := meta.Table
+	if len(args) > 0 {
+		fn = fmt.Sprintf("%s(%s)", meta.Table, strings.Join(args, ", "))
+	}
+	query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
+
+	result, err := chClient.ExecuteQuery(ctx, query)
+	if err != nil {
+		log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
+		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+	}
+	jsonData, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: string(jsonData)}}}, nil
 }
 
 func parseComment(comment, db, table string) (string, map[string]string) {
@@ -893,9 +927,10 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
-		// Ensure dynamic tools are loaded
-		if err := s.EnsureDynamicTools(r.Context()); err != nil {
-			log.Warn().Err(err).Msg("Failed to ensure dynamic tools in OpenAPI handler")
+		// Refresh dynamic tools for this connection
+		connKey, err := s.RefreshDynamicTools(r.Context())
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to refresh dynamic tools in OpenAPI handler")
 		}
 
 		// dynamic tool endpoint: /openapi/{tool}
@@ -903,13 +938,12 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		if len(parts) == 2 {
 			tool := strings.Trim(parts[1], "/")
 
-			s.dynamicToolsMu.RLock()
-			meta, ok := s.dynamicTools[tool]
-			s.dynamicToolsMu.RUnlock()
-
-			if ok {
-				s.handleDynamicToolOpenAPI(w, r, token, meta)
-				return
+			if connKey != "" {
+				tools := s.GetDynamicToolsForConnection(connKey)
+				if meta, ok := tools[tool]; ok {
+					s.handleDynamicToolOpenAPI(w, r, token, meta)
+					return
+				}
 			}
 		}
 		http.NotFound(w, r)
@@ -920,9 +954,10 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.Request) {
-	// Ensure dynamic tools are loaded
-	if err := s.EnsureDynamicTools(r.Context()); err != nil {
-		log.Warn().Err(err).Msg("Failed to ensure dynamic tools in ServeOpenAPISchema")
+	// Refresh dynamic tools for this connection
+	connKey, err := s.RefreshDynamicTools(r.Context())
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to refresh dynamic tools in ServeOpenAPISchema")
 	}
 
 	// Get host URL based on OpenAPI TLS configuration
@@ -1015,10 +1050,13 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	// add dynamic tool paths (POST)
 	paths := schema["paths"].(map[string]interface{})
 
-	s.dynamicToolsMu.RLock()
-	defer s.dynamicToolsMu.RUnlock()
+	// Get dynamic tools for this connection
+	var dynamicToolsForConn map[string]dynamicToolMeta
+	if connKey != "" {
+		dynamicToolsForConn = s.GetDynamicToolsForConnection(connKey)
+	}
 
-	for toolName, meta := range s.dynamicTools {
+	for toolName, meta := range dynamicToolsForConn {
 		path := "/{jwe_token}/openapi/" + toolName
 		// request body schema
 		props := map[string]interface{}{}
