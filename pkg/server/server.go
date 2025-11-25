@@ -922,13 +922,17 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Inject token into context for RefreshDynamicTools to use
+	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	r = r.WithContext(ctx)
+
 	// Route to appropriate handler based on path suffix
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r, token)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
 		// Refresh dynamic tools for this connection
-		connKey, err := s.RefreshDynamicTools(r.Context())
+		connKey, err := s.RefreshDynamicTools(ctx)
 		if err != nil {
 			log.Warn().Err(err).Msg("Failed to refresh dynamic tools in OpenAPI handler")
 		}
@@ -954,8 +958,17 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.Request) {
+	// Extract token from request and inject into context if not already present
+	ctx := r.Context()
+	if ctx.Value("jwe_token") == nil {
+		token := s.ExtractTokenFromRequest(r)
+		if token != "" {
+			ctx = context.WithValue(ctx, "jwe_token", token)
+		}
+	}
+
 	// Refresh dynamic tools for this connection
-	connKey, err := s.RefreshDynamicTools(r.Context())
+	connKey, err := s.RefreshDynamicTools(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to refresh dynamic tools in ServeOpenAPISchema")
 	}
