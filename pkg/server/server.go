@@ -597,6 +597,12 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 
 // registerDynamicToolsWithMCP registers the dynamic tools with the MCP server
 func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynamicToolMeta) {
+	// Safety check: if MCPServer is nil, skip registration
+	if s.MCPServer == nil {
+		log.Debug().Msg("MCPServer is nil, skipping dynamic tool registration")
+		return
+	}
+
 	for _, meta := range tools {
 		// Build tool options for parameters
 		toolOpts := []mcp.ToolOption{
