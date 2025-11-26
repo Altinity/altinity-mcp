@@ -584,12 +584,60 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 	s.dynamicTools[connKey] = newTools
 	s.dynamicToolsMu.Unlock()
 
+	// Register dynamic tools with the MCP server
+	s.registerDynamicToolsWithMCP(newTools)
+
 	log.Debug().
 		Str("connection", connKey).
 		Int("tool_count", dynamicCount).
 		Msg("Dynamic ClickHouse view tools refreshed")
 
 	return connKey, nil
+}
+
+// registerDynamicToolsWithMCP registers the dynamic tools with the MCP server
+func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynamicToolMeta) {
+	for _, meta := range tools {
+		// Build tool options for parameters
+		toolOpts := []mcp.ToolOption{
+			mcp.WithDescription(meta.Description),
+		}
+
+		// Add parameters as tool options
+		for _, p := range meta.Params {
+			var paramOpts []mcp.PropertyOption
+			if p.Required {
+				paramOpts = append(paramOpts, mcp.Required())
+			}
+			// Build description with type info
+			desc := p.CHType
+			if p.Description != "" {
+				desc = fmt.Sprintf("%s, %s", p.CHType, p.Description)
+			}
+			paramOpts = append(paramOpts, mcp.Description(desc))
+
+			switch p.JSONType {
+			case "integer":
+				toolOpts = append(toolOpts, mcp.WithNumber(p.Name, paramOpts...))
+			case "number":
+				toolOpts = append(toolOpts, mcp.WithNumber(p.Name, paramOpts...))
+			case "boolean":
+				toolOpts = append(toolOpts, mcp.WithBoolean(p.Name, paramOpts...))
+			default:
+				toolOpts = append(toolOpts, mcp.WithString(p.Name, paramOpts...))
+			}
+		}
+
+		tool := mcp.NewTool(meta.ToolName, toolOpts...)
+		s.MCPServer.AddTool(tool, HandleDynamicTool)
+
+		log.Debug().
+			Str("tool", meta.ToolName).
+			Str("database", meta.Database).
+			Str("table", meta.Table).
+			Int("param_count", len(meta.Params)).
+			Msg("Registered dynamic tool with MCP server")
+	}
 }
 
 // EnsureDynamicTools is kept for backward compatibility but now calls RefreshDynamicTools
