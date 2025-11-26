@@ -2166,6 +2166,142 @@ func TestLazyLoading_MCPTools(t *testing.T) {
 	s.dynamicToolsMu.RUnlock()
 }
 
+func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create ClickHouse client for setup
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	// Cleanup any existing views
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_1")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_2")
+
+	// Create initial view
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_tools_list_1 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Create server with dynamic tools config
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_tools_list_.*", Prefix: "tl_"},
+			},
+		},
+	}
+	srv := NewClickHouseMCPServer(cfg, "test")
+
+	// First refresh - should find 1 tool
+	connKey, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, connKey)
+
+	tools := srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 1, "Expected 1 tool after initial refresh")
+	require.Contains(t, tools, "tl_default_v_tools_list_1")
+
+	// Verify tool is registered in MCP server
+	srv.registeredMCPToolsMu.RLock()
+	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Tool should be registered in MCP server")
+	srv.registeredMCPToolsMu.RUnlock()
+
+	// Add a new view (simulating a change in ClickHouse)
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_tools_list_2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Simulate tools/list request by calling RefreshDynamicTools again
+	// (this is what happens when OnBeforeListTools hook is triggered)
+	connKey2, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.Equal(t, connKey, connKey2)
+
+	// Should now find 2 tools
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 2, "Expected 2 tools after second refresh (simulating tools/list)")
+	require.Contains(t, tools, "tl_default_v_tools_list_1")
+	require.Contains(t, tools, "tl_default_v_tools_list_2")
+
+	// Verify both tools are registered in MCP server
+	srv.registeredMCPToolsMu.RLock()
+	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Tool 1 should be registered in MCP server")
+	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_2"], "Tool 2 should be registered in MCP server")
+	srv.registeredMCPToolsMu.RUnlock()
+
+	// Delete one view
+	_, err = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_1")
+	require.NoError(t, err)
+
+	// Simulate another tools/list request
+	_, err = srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+
+	// Should now find only 1 tool
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 1, "Expected 1 tool after third refresh (simulating tools/list after delete)")
+	require.NotContains(t, tools, "tl_default_v_tools_list_1", "Deleted tool should be removed")
+	require.Contains(t, tools, "tl_default_v_tools_list_2")
+
+	// Verify only the remaining tool is registered in MCP server
+	srv.registeredMCPToolsMu.RLock()
+	require.False(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Deleted tool should be removed from MCP server")
+	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_2"], "Remaining tool should still be registered")
+	srv.registeredMCPToolsMu.RUnlock()
+
+	// Cleanup
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_2")
+}
+
+func TestDynamicToolsHookIntegration(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create ClickHouse client for setup
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	// Cleanup any existing views
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_hook_test")
+
+	// Create server with dynamic tools config but WITHOUT initial refresh
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_hook_test", Prefix: "hook_"},
+			},
+		},
+	}
+	srv := NewClickHouseMCPServer(cfg, "test")
+
+	// Initially, no dynamic tools should be registered (not refreshed yet)
+	connKey := GetConnectionKey(*chConfig)
+	tools := srv.GetDynamicToolsForConnection(connKey)
+	require.Nil(t, tools, "No tools should be registered initially")
+
+	// Create a view
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_hook_test AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Now simulate a tools/list request by triggering the hook manually
+	// In real usage, this happens automatically when MCP client calls tools/list
+	_, err = srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+
+	// Tool should now be discovered and registered
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 1, "Tool should be discovered after simulated tools/list")
+	require.Contains(t, tools, "hook_default_v_hook_test")
+
+	// Cleanup
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_hook_test")
+}
+
 func TestDynamicTool_ParamDescriptionFormat(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
