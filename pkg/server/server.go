@@ -601,11 +601,42 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 }
 
 // registerDynamicToolsWithMCP registers the dynamic tools with the MCP server
+// and removes tools that no longer exist
 func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynamicToolMeta) {
 	// Safety check: if MCPServer is nil, skip registration
 	if s.MCPServer == nil {
 		log.Debug().Msg("MCPServer is nil, skipping dynamic tool registration")
 		return
+	}
+
+	// Safety check: ensure registeredMCPTools map is initialized
+	if s.registeredMCPTools == nil {
+		s.registeredMCPToolsMu.Lock()
+		s.registeredMCPTools = make(map[string]bool)
+		s.registeredMCPToolsMu.Unlock()
+	}
+
+	// Find tools to remove (registered but no longer in the new tools map)
+	s.registeredMCPToolsMu.RLock()
+	toolsToRemove := make([]string, 0)
+	for toolName := range s.registeredMCPTools {
+		if _, exists := tools[toolName]; !exists {
+			toolsToRemove = append(toolsToRemove, toolName)
+		}
+	}
+	s.registeredMCPToolsMu.RUnlock()
+
+	// Remove deleted tools from MCP server
+	if len(toolsToRemove) > 0 {
+		s.MCPServer.DeleteTools(toolsToRemove...)
+		s.registeredMCPToolsMu.Lock()
+		for _, toolName := range toolsToRemove {
+			delete(s.registeredMCPTools, toolName)
+			log.Debug().
+				Str("tool", toolName).
+				Msg("Removed dynamic tool from MCP server")
+		}
+		s.registeredMCPToolsMu.Unlock()
 	}
 
 	for _, meta := range tools {
