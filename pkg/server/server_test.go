@@ -1720,10 +1720,21 @@ func TestRefreshDynamicTools_SuccessAndOverlap(t *testing.T) {
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
 	)
-	s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
-		{Regexp: "default\\.v_.*", Prefix: "custom_"},
-		{Regexp: "default\\.v_a", Prefix: "other_"},
-	}}}, dynamicTools: make(map[string]map[string]dynamicToolMeta)}
+	s := &ClickHouseJWEServer{
+		MCPServer: mcpSrv,
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "default\\.v_.*", Prefix: "custom_"},
+					{Regexp: "default\\.v_a", Prefix: "other_"},
+				},
+			},
+		},
+		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
+		registeredMCPTools: make(map[string]bool),
+	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
 	require.NoError(t, err)
@@ -1768,9 +1779,20 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
 	)
-	s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
-		{Regexp: "default\\.v_json"},
-	}}}, dynamicTools: make(map[string]map[string]dynamicToolMeta)}
+	s := &ClickHouseJWEServer{
+		MCPServer: mcpSrv,
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "default\\.v_json"},
+				},
+			},
+		},
+		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
+		registeredMCPTools: make(map[string]bool),
+	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
 	require.NoError(t, err)
