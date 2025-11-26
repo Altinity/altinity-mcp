@@ -65,6 +65,14 @@ type AltinityMCPServer interface {
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
 func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWEServer {
+	// Create a placeholder for the server - we need it for the hook
+	chJweServer := &ClickHouseJWEServer{
+		Config:             cfg,
+		Version:            version,
+		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
+		registeredMCPTools: make(map[string]bool),
+	}
+
 	// Create MCP server with comprehensive configuration
 	srv := server.NewMCPServer(
 		"Altinity ClickHouse MCP Server",
@@ -73,15 +81,20 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
+		// Add hook to refresh dynamic tools on every tools/list request
+		server.WithHooks(server.Hooks{
+			OnBeforeListTools: []server.OnBeforeListToolsFunc{
+				func(ctx context.Context, id any, message *mcp.ListToolsRequest) {
+					// Refresh dynamic tools on every tools/list request
+					if _, err := chJweServer.RefreshDynamicTools(ctx); err != nil {
+						log.Warn().Err(err).Msg("Failed to refresh dynamic tools on tools/list")
+					}
+				},
+			},
+		}),
 	)
 
-	chJweServer := &ClickHouseJWEServer{
-		MCPServer:          srv,
-		Config:             cfg,
-		Version:            version,
-		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]bool),
-	}
+	chJweServer.MCPServer = srv
 
 	// Register tools, resources, and prompts
 	RegisterTools(chJweServer)
