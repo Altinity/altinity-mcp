@@ -51,6 +51,7 @@ type dynamicToolMeta struct {
 	Table       string
 	Description string
 	Params      []dynamicToolParam
+	Signature   string // create_table_query + comment for change detection
 }
 
 type AltinityMCPServer interface {
@@ -578,6 +579,7 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 			Table:       name,
 			Description: toolDesc,
 			Params:      params,
+			Signature:   create + "/* " + comment + "*/",
 		}
 		newTools[toolName] = meta
 		dynamicCount++
@@ -613,38 +615,6 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 	return connKey, nil
 }
 
-// computeToolSignature computes a signature hash for a dynamic tool metadata
-// to detect changes in tool definition
-func computeToolSignature(meta dynamicToolMeta) string {
-	// Build a string that represents the tool's signature
-	var sb strings.Builder
-	sb.WriteString(meta.ToolName)
-	sb.WriteString("|")
-	sb.WriteString(meta.Database)
-	sb.WriteString("|")
-	sb.WriteString(meta.Table)
-	sb.WriteString("|")
-	sb.WriteString(meta.Description)
-	sb.WriteString("|params:")
-	for _, p := range meta.Params {
-		sb.WriteString(p.Name)
-		sb.WriteString(":")
-		sb.WriteString(p.CHType)
-		sb.WriteString(":")
-		sb.WriteString(p.JSONType)
-		sb.WriteString(":")
-		sb.WriteString(p.JSONFormat)
-		sb.WriteString(":")
-		if p.Required {
-			sb.WriteString("req")
-		}
-		sb.WriteString(":")
-		sb.WriteString(p.Description)
-		sb.WriteString(";")
-	}
-	return sb.String()
-}
-
 // registerDynamicToolsWithMCP registers the dynamic tools with the MCP server
 // and removes tools that no longer exist or updates tools whose signature changed
 func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynamicToolMeta) {
@@ -671,9 +641,8 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 			// Tool no longer exists
 			toolsToRemove = append(toolsToRemove, toolName)
 		} else {
-			// Check if signature changed
-			newSignature := computeToolSignature(newMeta)
-			if oldSignature != newSignature {
+			// Check if signature changed (using create_table_query + comment)
+			if oldSignature != newMeta.Signature {
 				toolsToUpdate = append(toolsToUpdate, toolName)
 			}
 		}
@@ -707,15 +676,12 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 	}
 
 	for _, meta := range tools {
-		// Compute signature for this tool
-		signature := computeToolSignature(meta)
-
 		// Check if this tool is already registered with the same signature
 		s.registeredMCPToolsMu.RLock()
 		existingSignature, alreadyRegistered := s.registeredMCPTools[meta.ToolName]
 		s.registeredMCPToolsMu.RUnlock()
 
-		if alreadyRegistered && existingSignature == signature {
+		if alreadyRegistered && existingSignature == meta.Signature {
 			// Tool already registered with same signature, skip
 			continue
 		}
@@ -753,9 +719,9 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 		tool := mcp.NewTool(meta.ToolName, toolOpts...)
 		s.MCPServer.AddTool(tool, HandleDynamicTool)
 
-		// Mark as registered with signature
+		// Mark as registered with signature (create_table_query + comment)
 		s.registeredMCPToolsMu.Lock()
-		s.registeredMCPTools[meta.ToolName] = signature
+		s.registeredMCPTools[meta.ToolName] = meta.Signature
 		s.registeredMCPToolsMu.Unlock()
 
 		if alreadyRegistered {
