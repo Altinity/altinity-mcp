@@ -646,10 +646,15 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 	}
 }
 
-// EnsureDynamicTools is kept for backward compatibility but now calls RefreshDynamicTools
+// EnsureDynamicTools refreshes dynamic tools if not already loaded for the connection
+// This is a no-op for HTTP/SSE transports as tools are refreshed on-demand
 func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
-	_, err := s.RefreshDynamicTools(ctx)
-	return err
+	// For HTTP/SSE transports, we don't want to refresh on every request
+	// as it can cause issues with the response writer.
+	// Instead, tools are refreshed when:
+	// 1. A dynamic tool is called (HandleDynamicTool)
+	// 2. OpenAPI schema is requested (ServeOpenAPISchema)
+	return nil
 }
 
 // HandleDynamicTool is a generic handler for dynamic tools
