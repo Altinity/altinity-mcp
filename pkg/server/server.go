@@ -25,15 +25,11 @@ type ClickHouseJWEServer struct {
 	*server.MCPServer
 	Config  config.Config
 	Version string
-	// dynamic tools metadata for OpenAPI routing and schema
+	// dynamic tools metadata for OpenAPI routing, schema, and MCP registration
 	// map[connectionKey]map[toolName]dynamicToolMeta
 	// connectionKey is "user@host:port/database"
 	dynamicTools   map[string]map[string]dynamicToolMeta
 	dynamicToolsMu sync.RWMutex
-	// registeredMCPTools tracks which tools have been registered with the MCP server
-	// stores signature hash to detect changes and update tools when signature changes
-	registeredMCPTools   map[string]string // toolName -> signature hash
-	registeredMCPToolsMu sync.RWMutex
 }
 
 type dynamicToolParam struct {
@@ -68,10 +64,9 @@ type AltinityMCPServer interface {
 func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWEServer {
 	// Create a placeholder for the server - we need it for the hook
 	chJweServer := &ClickHouseJWEServer{
-		Config:             cfg,
-		Version:            version,
-		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]string),
+		Config:       cfg,
+		Version:      version,
+		dynamicTools: make(map[string]map[string]dynamicToolMeta),
 	}
 
 	// Create MCP server with comprehensive configuration
@@ -599,13 +594,18 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 		log.Error().Msg("dynamic_tools: overlaps detected; conflicting views were skipped as per policy 'error on overlap'")
 	}
 
+	// Get existing tools for this connection to detect changes
+	s.dynamicToolsMu.RLock()
+	existingTools := s.dynamicTools[connKey]
+	s.dynamicToolsMu.RUnlock()
+
+	// Register dynamic tools with the MCP server (handles add/update/delete)
+	s.registerDynamicToolsWithMCP(existingTools, newTools)
+
 	// Update the tools map for this connection
 	s.dynamicToolsMu.Lock()
 	s.dynamicTools[connKey] = newTools
 	s.dynamicToolsMu.Unlock()
-
-	// Register dynamic tools with the MCP server
-	s.registerDynamicToolsWithMCP(newTools)
 
 	log.Debug().
 		Str("connection", connKey).
@@ -617,71 +617,54 @@ func (s *ClickHouseJWEServer) RefreshDynamicTools(ctx context.Context) (string, 
 
 // registerDynamicToolsWithMCP registers the dynamic tools with the MCP server
 // and removes tools that no longer exist or updates tools whose signature changed
-func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynamicToolMeta) {
+func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(existingTools, newTools map[string]dynamicToolMeta) {
 	// Safety check: if MCPServer is nil, skip registration
 	if s.MCPServer == nil {
 		log.Debug().Msg("MCPServer is nil, skipping dynamic tool registration")
 		return
 	}
 
-	// Safety check: ensure registeredMCPTools map is initialized
-	if s.registeredMCPTools == nil {
-		s.registeredMCPToolsMu.Lock()
-		s.registeredMCPTools = make(map[string]string)
-		s.registeredMCPToolsMu.Unlock()
+	// Find tools to remove (existed before but not in new tools)
+	toolsToRemove := make([]string, 0)
+	for toolName := range existingTools {
+		if _, exists := newTools[toolName]; !exists {
+			toolsToRemove = append(toolsToRemove, toolName)
+		}
 	}
 
-	// Find tools to remove (registered but no longer in the new tools map)
-	// and tools to update (signature changed)
-	s.registeredMCPToolsMu.RLock()
-	toolsToRemove := make([]string, 0)
+	// Find tools to update (signature changed)
 	toolsToUpdate := make([]string, 0)
-	for toolName, oldSignature := range s.registeredMCPTools {
-		if newMeta, exists := tools[toolName]; !exists {
-			// Tool no longer exists
-			toolsToRemove = append(toolsToRemove, toolName)
-		} else {
-			// Check if signature changed (using create_table_query + comment)
-			if oldSignature != newMeta.Signature {
+	for toolName, newMeta := range newTools {
+		if oldMeta, exists := existingTools[toolName]; exists {
+			if oldMeta.Signature != newMeta.Signature {
 				toolsToUpdate = append(toolsToUpdate, toolName)
 			}
 		}
 	}
-	s.registeredMCPToolsMu.RUnlock()
 
 	// Remove deleted tools from MCP server
 	if len(toolsToRemove) > 0 {
 		s.MCPServer.DeleteTools(toolsToRemove...)
-		s.registeredMCPToolsMu.Lock()
 		for _, toolName := range toolsToRemove {
-			delete(s.registeredMCPTools, toolName)
 			log.Debug().
 				Str("tool", toolName).
 				Msg("Removed dynamic tool from MCP server")
 		}
-		s.registeredMCPToolsMu.Unlock()
 	}
 
 	// Remove tools that need to be updated (will be re-added below)
 	if len(toolsToUpdate) > 0 {
 		s.MCPServer.DeleteTools(toolsToUpdate...)
-		s.registeredMCPToolsMu.Lock()
 		for _, toolName := range toolsToUpdate {
-			delete(s.registeredMCPTools, toolName)
 			log.Debug().
 				Str("tool", toolName).
 				Msg("Removed dynamic tool from MCP server for update")
 		}
-		s.registeredMCPToolsMu.Unlock()
 	}
 
-	for _, meta := range tools {
-		// Check if this tool is already registered with the same signature
-		s.registeredMCPToolsMu.RLock()
-		existingSignature, alreadyRegistered := s.registeredMCPTools[meta.ToolName]
-		s.registeredMCPToolsMu.RUnlock()
-
-		if alreadyRegistered && existingSignature == meta.Signature {
+	for _, meta := range newTools {
+		// Check if this tool already exists with the same signature
+		if oldMeta, exists := existingTools[meta.ToolName]; exists && oldMeta.Signature == meta.Signature {
 			// Tool already registered with same signature, skip
 			continue
 		}
@@ -719,12 +702,9 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 		tool := mcp.NewTool(meta.ToolName, toolOpts...)
 		s.MCPServer.AddTool(tool, HandleDynamicTool)
 
-		// Mark as registered with signature (create_table_query + comment)
-		s.registeredMCPToolsMu.Lock()
-		s.registeredMCPTools[meta.ToolName] = meta.Signature
-		s.registeredMCPToolsMu.Unlock()
-
-		if alreadyRegistered {
+		// Determine if this was an update or new registration
+		_, wasUpdate := existingTools[meta.ToolName]
+		if wasUpdate {
 			log.Debug().
 				Str("tool", meta.ToolName).
 				Str("database", meta.Database).
