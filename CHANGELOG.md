@@ -1,4 +1,4 @@
-# v1.4.0
+# v1.3.4
 FEATURES
 - dynamic tools are now refreshed on every schema request (OpenAPI) or tools/list (MCP) call
 - dynamic tools are now per-connection: different ClickHouse connections (user@host:port/database) have independent tool sets
