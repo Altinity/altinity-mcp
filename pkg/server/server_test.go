@@ -1491,6 +1491,7 @@ func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
 				},
 			},
 		},
+		registeredMCPTools: make(map[string]bool),
 	}
 
 	req := mcp.CallToolRequest{}

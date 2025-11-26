@@ -30,6 +30,10 @@ type ClickHouseJWEServer struct {
 	// connectionKey is "user@host:port/database"
 	dynamicTools   map[string]map[string]dynamicToolMeta
 	dynamicToolsMu sync.RWMutex
+	// registeredMCPTools tracks which tools have been registered with the MCP server
+	// to avoid duplicate registrations that cause panics
+	registeredMCPTools   map[string]bool
+	registeredMCPToolsMu sync.RWMutex
 }
 
 type dynamicToolParam struct {
@@ -72,10 +76,11 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	)
 
 	chJweServer := &ClickHouseJWEServer{
-		MCPServer:    srv,
-		Config:       cfg,
-		Version:      version,
-		dynamicTools: make(map[string]map[string]dynamicToolMeta),
+		MCPServer:          srv,
+		Config:             cfg,
+		Version:            version,
+		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
+		registeredMCPTools: make(map[string]bool),
 	}
 
 	// Register tools, resources, and prompts
@@ -604,6 +609,18 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 	}
 
 	for _, meta := range tools {
+		// Check if this tool is already registered to avoid duplicate registration
+		s.registeredMCPToolsMu.RLock()
+		alreadyRegistered := s.registeredMCPTools[meta.ToolName]
+		s.registeredMCPToolsMu.RUnlock()
+
+		if alreadyRegistered {
+			log.Debug().
+				Str("tool", meta.ToolName).
+				Msg("Dynamic tool already registered with MCP server, skipping")
+			continue
+		}
+
 		// Build tool options for parameters
 		toolOpts := []mcp.ToolOption{
 			mcp.WithDescription(meta.Description),
@@ -636,6 +653,11 @@ func (s *ClickHouseJWEServer) registerDynamicToolsWithMCP(tools map[string]dynam
 
 		tool := mcp.NewTool(meta.ToolName, toolOpts...)
 		s.MCPServer.AddTool(tool, HandleDynamicTool)
+
+		// Mark as registered
+		s.registeredMCPToolsMu.Lock()
+		s.registeredMCPTools[meta.ToolName] = true
+		s.registeredMCPToolsMu.Unlock()
 
 		log.Debug().
 			Str("tool", meta.ToolName).
