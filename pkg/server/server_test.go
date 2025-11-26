@@ -1491,7 +1491,7 @@ func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
 				},
 			},
 		},
-		registeredMCPTools: make(map[string]bool),
+		registeredMCPTools: make(map[string]string),
 	}
 
 	req := mcp.CallToolRequest{}
@@ -2206,7 +2206,8 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 
 	// Verify tool is registered in MCP server
 	srv.registeredMCPToolsMu.RLock()
-	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Tool should be registered in MCP server")
+	_, registered := srv.registeredMCPTools["tl_default_v_tools_list_1"]
+	require.True(t, registered, "Tool should be registered in MCP server")
 	srv.registeredMCPToolsMu.RUnlock()
 
 	// Add a new view (simulating a change in ClickHouse)
@@ -2227,8 +2228,10 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 
 	// Verify both tools are registered in MCP server
 	srv.registeredMCPToolsMu.RLock()
-	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Tool 1 should be registered in MCP server")
-	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_2"], "Tool 2 should be registered in MCP server")
+	_, registered1 := srv.registeredMCPTools["tl_default_v_tools_list_1"]
+	_, registered2 := srv.registeredMCPTools["tl_default_v_tools_list_2"]
+	require.True(t, registered1, "Tool 1 should be registered in MCP server")
+	require.True(t, registered2, "Tool 2 should be registered in M server")
 	srv.registeredMCPToolsMu.RUnlock()
 
 	// Delete one view
@@ -2247,8 +2250,10 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 
 	// Verify only the remaining tool is registered in MCP server
 	srv.registeredMCPToolsMu.RLock()
-	require.False(t, srv.registeredMCPTools["tl_default_v_tools_list_1"], "Deleted tool should be removed from MCP server")
-	require.True(t, srv.registeredMCPTools["tl_default_v_tools_list_2"], "Remaining tool should still be registered")
+	_, stillRegistered1 := srv.registeredMCPTools["tl_default_v_tools_list_1"]
+	_, stillRegistered2 := srv.registeredMCPTools["tl_default_v_tools_list_2"]
+	require.False(t, stillRegistered1, "Deleted tool should be removed from MCP server")
+	require.True(t, stillRegistered2, "Remaining tool should still be registered")
 	srv.registeredMCPToolsMu.RUnlock()
 
 	// Cleanup
