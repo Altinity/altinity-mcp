@@ -1491,7 +1491,6 @@ func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
 				},
 			},
 		},
-		registeredMCPTools: make(map[string]string),
 	}
 
 	req := mcp.CallToolRequest{}
@@ -1732,8 +1731,7 @@ func TestRefreshDynamicTools_SuccessAndOverlap(t *testing.T) {
 				},
 			},
 		},
-		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]string),
+		dynamicTools: make(map[string]map[string]dynamicToolMeta),
 	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
@@ -1790,8 +1788,7 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 				},
 			},
 		},
-		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]string),
+		dynamicTools: make(map[string]map[string]dynamicToolMeta),
 	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
@@ -2204,11 +2201,11 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 	require.Len(t, tools, 1, "Expected 1 tool after initial refresh")
 	require.Contains(t, tools, "tl_default_v_tools_list_1")
 
-	// Verify tool is registered in MCP server
-	srv.registeredMCPToolsMu.RLock()
-	_, registered := srv.registeredMCPTools["tl_default_v_tools_list_1"]
-	require.True(t, registered, "Tool should be registered in MCP server")
-	srv.registeredMCPToolsMu.RUnlock()
+	// Verify tool is in dynamicTools map
+	srv.dynamicToolsMu.RLock()
+	_, exists := srv.dynamicTools[connKey]["tl_default_v_tools_list_1"]
+	srv.dynamicToolsMu.RUnlock()
+	require.True(t, exists, "Tool should be in dynamicTools map")
 
 	// Add a new view (simulating a change in ClickHouse)
 	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_tools_list_2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
@@ -2226,13 +2223,13 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 	require.Contains(t, tools, "tl_default_v_tools_list_1")
 	require.Contains(t, tools, "tl_default_v_tools_list_2")
 
-	// Verify both tools are registered in MCP server
-	srv.registeredMCPToolsMu.RLock()
-	_, registered1 := srv.registeredMCPTools["tl_default_v_tools_list_1"]
-	_, registered2 := srv.registeredMCPTools["tl_default_v_tools_list_2"]
-	require.True(t, registered1, "Tool 1 should be registered in MCP server")
-	require.True(t, registered2, "Tool 2 should be registered in M server")
-	srv.registeredMCPToolsMu.RUnlock()
+	// Verify both tools are in dynamicTools map
+	srv.dynamicToolsMu.RLock()
+	_, exists1 := srv.dynamicTools[connKey]["tl_default_v_tools_list_1"]
+	_, exists2 := srv.dynamicTools[connKey]["tl_default_v_tools_list_2"]
+	srv.dynamicToolsMu.RUnlock()
+	require.True(t, exists1, "Tool 1 should be in dynamicTools map")
+	require.True(t, exists2, "Tool 2 should be in dynamicTools map")
 
 	// Delete one view
 	_, err = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_1")
@@ -2248,13 +2245,13 @@ func TestDynamicToolsRefreshOnToolsList(t *testing.T) {
 	require.NotContains(t, tools, "tl_default_v_tools_list_1", "Deleted tool should be removed")
 	require.Contains(t, tools, "tl_default_v_tools_list_2")
 
-	// Verify only the remaining tool is registered in MCP server
-	srv.registeredMCPToolsMu.RLock()
-	_, stillRegistered1 := srv.registeredMCPTools["tl_default_v_tools_list_1"]
-	_, stillRegistered2 := srv.registeredMCPTools["tl_default_v_tools_list_2"]
-	require.False(t, stillRegistered1, "Deleted tool should be removed from MCP server")
-	require.True(t, stillRegistered2, "Remaining tool should still be registered")
-	srv.registeredMCPToolsMu.RUnlock()
+	// Verify only the remaining tool is in dynamicTools map
+	srv.dynamicToolsMu.RLock()
+	_, stillExists1 := srv.dynamicTools[connKey]["tl_default_v_tools_list_1"]
+	_, stillExists2 := srv.dynamicTools[connKey]["tl_default_v_tools_list_2"]
+	srv.dynamicToolsMu.RUnlock()
+	require.False(t, stillExists1, "Deleted tool should be removed from dynamicTools map")
+	require.True(t, stillExists2, "Remaining tool should still be in dynamicTools map")
 
 	// Cleanup
 	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_tools_list_2")
