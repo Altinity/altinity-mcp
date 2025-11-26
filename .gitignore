@@ -2,6 +2,7 @@
 CLAUDE.md
 CRUSH.md
 AGENTS.md
+.codemachine/
 *.pcap
 *.log
 *.exe
