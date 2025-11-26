@@ -82,7 +82,7 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
 		// Add hook to refresh dynamic tools on every tools/list request
-		server.WithHooks(server.Hooks{
+		server.WithHooks(&server.Hooks{
 			OnBeforeListTools: []server.OnBeforeListToolsFunc{
 				func(ctx context.Context, id any, message *mcp.ListToolsRequest) {
 					// Refresh dynamic tools on every tools/list request
