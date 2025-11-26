@@ -1733,7 +1733,7 @@ func TestRefreshDynamicTools_SuccessAndOverlap(t *testing.T) {
 			},
 		},
 		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]bool),
+		registeredMCPTools: make(map[string]string),
 	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
@@ -1791,7 +1791,7 @@ func TestDynamicTools_JSONComment(t *testing.T) {
 			},
 		},
 		dynamicTools:       make(map[string]map[string]dynamicToolMeta),
-		registeredMCPTools: make(map[string]bool),
+		registeredMCPTools: make(map[string]string),
 	}
 
 	connKey, err := s.RefreshDynamicTools(ctx)
