@@ -1458,8 +1458,19 @@ func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
 	// Build connection key
 	connKey := GetConnectionKey(*chConfig)
 
+	// Create a proper MCP server to avoid nil pointer dereference
+	mcpSrv := server.NewMCPServer(
+		"Test MCP Server",
+		"test",
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true),
+		server.WithPromptCapabilities(true),
+		server.WithRecovery(),
+	)
+
 	// server with JWE disabled and pre-populated dynamic tools
 	s := &ClickHouseJWEServer{
+		MCPServer: mcpSrv,
 		Config: config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
@@ -1502,6 +1513,185 @@ func TestHandleDynamicTool_WithClickHouse(t *testing.T) {
 	var qr clickhouse.QueryResult
 	require.NoError(t, json.Unmarshal([]byte(text), &qr))
 	require.GreaterOrEqual(t, qr.Count, 1)
+}
+
+func TestDynamicToolsAdditionAndDeletion(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// Create ClickHouse client for setup
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	// Cleanup any existing views
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_1")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_2")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_3")
+
+	// Create initial views
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_add_del_1 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_add_del_2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Create server with dynamic tools config
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_add_del_.*", Prefix: "dyn_"},
+			},
+		},
+	}
+	srv := NewClickHouseMCPServer(cfg, "test")
+
+	// First refresh - should find 2 tools
+	connKey, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, connKey)
+
+	tools := srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 2, "Expected 2 tools after initial refresh")
+	require.Contains(t, tools, "dyn_default_v_add_del_1")
+	require.Contains(t, tools, "dyn_default_v_add_del_2")
+
+	// Test MCP handler for initial tool
+	t.Run("MCP_call_initial_tool", func(t *testing.T) {
+		req := mcp.CallToolRequest{}
+		req.Params.Name = "dyn_default_v_add_del_1"
+		req.Params.Arguments = map[string]interface{}{"id": float64(1)}
+
+		ctxWithServer := context.WithValue(ctx, "clickhouse_jwe_server", srv)
+		result, err := HandleDynamicTool(ctxWithServer, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call should succeed")
+	})
+
+	// Test OpenAPI endpoint for initial tool
+	t.Run("OpenAPI_call_initial_tool", func(t *testing.T) {
+		body := strings.NewReader(`{"id":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/dyn_default_v_add_del_1", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code, "OpenAPI call should succeed")
+	})
+
+	// Add a new view
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_add_del_3 AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// Second refresh - should now find 3 tools
+	connKey2, err := srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+	require.Equal(t, connKey, connKey2, "Connection key should remain the same")
+
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 3, "Expected 3 tools after adding a view")
+	require.Contains(t, tools, "dyn_default_v_add_del_1")
+	require.Contains(t, tools, "dyn_default_v_add_del_2")
+	require.Contains(t, tools, "dyn_default_v_add_del_3")
+
+	// Test MCP handler for newly added tool
+	t.Run("MCP_call_new_tool", func(t *testing.T) {
+		req := mcp.CallToolRequest{}
+		req.Params.Name = "dyn_default_v_add_del_3"
+		req.Params.Arguments = map[string]interface{}{"id": float64(2)}
+
+		ctxWithServer := context.WithValue(ctx, "clickhouse_jwe_server", srv)
+		result, err := HandleDynamicTool(ctxWithServer, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError, "Tool call for new tool should succeed")
+	})
+
+	// Test OpenAPI endpoint for newly added tool
+	t.Run("OpenAPI_call_new_tool", func(t *testing.T) {
+		body := strings.NewReader(`{"id":2}`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/dyn_default_v_add_del_3", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code, "OpenAPI call for new tool should succeed")
+	})
+
+	// Delete a view
+	_, err = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_2")
+	require.NoError(t, err)
+
+	// Third refresh - should now find 2 tools (v_add_del_2 removed)
+	_, err = srv.RefreshDynamicTools(ctx)
+	require.NoError(t, err)
+
+	tools = srv.GetDynamicToolsForConnection(connKey)
+	require.Len(t, tools, 2, "Expected 2 tools after deleting a view")
+	require.Contains(t, tools, "dyn_default_v_add_del_1")
+	require.NotContains(t, tools, "dyn_default_v_add_del_2", "Deleted view should be removed from tools")
+	require.Contains(t, tools, "dyn_default_v_add_del_3")
+
+	// Test MCP handler for deleted tool - should fail
+	t.Run("MCP_call_deleted_tool", func(t *testing.T) {
+		req := mcp.CallToolRequest{}
+		req.Params.Name = "dyn_default_v_add_del_2"
+		req.Params.Arguments = map[string]interface{}{"id": float64(1)}
+
+		ctxWithServer := context.WithValue(ctx, "clickhouse_jwe_server", srv)
+		result, err := HandleDynamicTool(ctxWithServer, req)
+		require.NoError(t, err) // No error from handler itself
+		require.NotNil(t, result)
+		require.True(t, result.IsError, "Tool call for deleted tool should return error result")
+	})
+
+	// Test OpenAPI endpoint for deleted tool - should return 404
+	t.Run("OpenAPI_call_deleted_tool", func(t *testing.T) {
+		body := strings.NewReader(`{"id":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/dyn_default_v_add_del_2", body)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusNotFound, rr.Code, "OpenAPI call for deleted tool should return 404")
+	})
+
+	// Verify OpenAPI schema reflects current state
+	t.Run("OpenAPI_schema_reflects_current_tools", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
+		rr := httptest.NewRecorder()
+
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		srv.ServeOpenAPISchema(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var schema map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+
+		paths := schema["paths"].(map[string]interface{})
+		// Check that existing tools are in the schema
+		_, ok1 := paths["/{jwe_token}/openapi/dyn_default_v_add_del_1"]
+		_, ok3 := paths["/{jwe_token}/openapi/dyn_default_v_add_del_3"]
+		require.True(t, ok1, "Tool 1 should be in OpenAPI schema")
+		require.True(t, ok3, "Tool 3 should be in OpenAPI schema")
+
+		// Check that deleted tool is NOT in the schema
+		_, ok2 := paths["/{jwe_token}/openapi/dyn_default_v_add_del_2"]
+		require.False(t, ok2, "Deleted tool 2 should NOT be in OpenAPI schema")
+	})
+
+	// Cleanup
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_1")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_add_del_3")
 }
 
 func TestRefreshDynamicTools_SuccessAndOverlap(t *testing.T) {
