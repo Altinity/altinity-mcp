@@ -5,7 +5,7 @@ go 1.25.3
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.41.0
 	github.com/go-jose/go-jose/v4 v4.1.3
-	github.com/mark3labs/mcp-go v0.43.1
+	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.40.0
