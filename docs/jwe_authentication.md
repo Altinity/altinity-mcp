@@ -100,7 +100,7 @@ To use this endpoint, you must have JWE authentication enabled on the server.
 
 **Request Body:** A JSON object with the desired claims for the token. The claims are the same as the parameters for the CLI generator.
 
-**Example Request:**
+**Example Request for HTTP:**
 ```bash
 curl -X POST http://localhost:8080/jwe-token-generator \
 -H "Content-Type: application/json" \
@@ -111,6 +111,25 @@ curl -X POST http://localhost:8080/jwe-token-generator \
     "username": "my_user",
     "password": "my_password",
     "protocol": "http",
+    "expiry": 3600
+}'
+```
+**Example Request for HTTPS/TLS:**
+
+Protocol is always http but with TLS enabled we need to add a couple of tls params:
+
+```bash
+curl -X POST http://localhost:8080/jwe-token-generator \
+-H "Content-Type: application/json" \
+-d '{
+    "host": "clickhouse.example.com",
+    "port": 8443,
+    "database": "my_database",
+    "username": "my_user",
+    "password": "my_password",
+    "protocol": "http",
+    "tls_enabled": true,
+    "tls_insecure_skip_verify": false,
     "expiry": 3600
 }'
 ```
