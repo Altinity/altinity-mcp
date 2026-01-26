@@ -235,6 +235,8 @@ Provides complete schema information for the ClickHouse® database in JSON forma
 ### `clickhouse://table/{database}/{table}`
 Provides detailed information about a specific table including schema, sample data, and statistics.
 
+## Available Prompts
+No prompts currently available
 
 ## OpenAI GPTs Integration
 
@@ -286,7 +288,8 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
           {
             "name": "query",
             "in": "query",
-            "required": true
+            "required": true,
+            "schema": {"type": "string"}
           },
           {
             "name": "limit",
