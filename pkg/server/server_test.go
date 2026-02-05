@@ -132,6 +132,39 @@ func TestOpenAPIHandlers(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
+	t.Run("execute_query_with_limit", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20*%20FROM%20default.test&limit=1", nil)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+		require.Equal(t, 1, qr.Count)
+	})
+
+	t.Run("execute_query_missing_param", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
 	t.Run("jwe_required_but_missing", func(t *testing.T) {
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
@@ -151,6 +184,94 @@ func TestOpenAPIHandlers(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+
+	t.Run("dynamic_tool_execution", func(t *testing.T) {
+		// Create view
+		ctx := context.Background()
+		client, err := clickhouse.NewClient(ctx, *chConfig)
+		require.NoError(t, err)
+		defer client.Close()
+
+		_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
+		_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
+		require.NoError(t, err)
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				ClickHouse: *chConfig,
+				Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+			},
+			Version: "test",
+			dynamicTools: map[string]dynamicToolMeta{
+				"custom_default_v_api": {
+					ToolName:    "custom_default_v_api",
+					Database:    "default",
+					Table:       "v_api",
+					Description: "desc",
+					Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+				},
+			},
+		}
+
+		body := strings.NewReader(`{"id":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+		require.GreaterOrEqual(t, qr.Count, 1)
+	})
+
+	t.Run("dynamic_tool_not_found", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				ClickHouse: *chConfig,
+				Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+			},
+			Version:      "test",
+			dynamicTools: map[string]dynamicToolMeta{},
+		}
+
+		body := strings.NewReader(`{"id":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", body)
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusNotFound, rr.Code)
+	})
+
+	t.Run("dynamic_tool_invalid_json", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				ClickHouse: *chConfig,
+				Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+			},
+			Version: "test",
+			dynamicTools: map[string]dynamicToolMeta{
+				"tool": {
+					ToolName: "tool",
+					Params:   []dynamicToolParam{},
+				},
+			},
+		}
+
+		body := strings.NewReader(`not json`)
+		req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 }
 
