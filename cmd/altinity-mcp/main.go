@@ -19,7 +19,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -29,6 +29,9 @@ var (
 	version = "dev"
 	commit  = "unknown"
 	date    = "unknown"
+
+	// loggingMutex protects global zerolog state during setupLogging calls
+	loggingMutex sync.Mutex
 )
 
 func main() {
@@ -271,6 +274,9 @@ func run(args []string) error {
 
 // setupLogging configures the global logger
 func setupLogging(level string) error {
+	loggingMutex.Lock()
+	defer loggingMutex.Unlock()
+
 	// Configure zerolog
 	zerolog.TimeFieldFormat = time.RFC3339
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
@@ -476,9 +482,8 @@ func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport 
 }
 
 // startSTDIOServer starts the STDIO transport server
-func (a *application) startSTDIOServer(mcpServer *server.MCPServer) error {
+func (a *application) startSTDIOServer(mcpServer *mcp.Server) error {
 	log.Info().Msg("Starting MCP server with STDIO transport")
-	s := server.NewStdioServer(mcpServer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = context.WithValue(ctx, "clickhouse_jwe_server", a.mcpServer)
@@ -493,15 +498,16 @@ func (a *application) startSTDIOServer(mcpServer *server.MCPServer) error {
 		cancel()
 	}()
 
-	if err := s.Listen(ctx, os.Stdin, os.Stdout); err != nil {
-		log.Error().Err(err).Msg("STDIO listen failed")
+	transport := &mcp.StdioTransport{}
+	if err := mcpServer.Run(ctx, transport); err != nil {
+		log.Error().Err(err).Msg("STDIO server failed")
 		return err
 	}
 	return nil
 }
 
 // startHTTPServer starts the HTTP transport server
-func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPServer) error {
+func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
 	log.Info().
 		Str("address", addr).
@@ -547,18 +553,20 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 
 		tokenInjector := a.createTokenInjector()
 		dtInjector := a.dynamicToolsInjector
-		httpServer := server.NewStreamableHTTPServer(mcpServer)
+		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			return mcpServer
+		}, nil)
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
 		mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
-        if cfg.Server.OpenAPI.Enabled {
-            mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-            mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
+		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
+			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -566,16 +574,18 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
-		httpServer := server.NewStreamableHTTPServer(mcpServer)
+		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			return mcpServer
+		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
 		mux.Handle("/http", serverInjector(dtInjector(httpServer)))
-        if cfg.Server.OpenAPI.Enabled {
-            mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -583,16 +593,17 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *server.MCPSe
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
-	a.httpSrv = &http.Server{
+	a.setHTTPServer(&http.Server{
 		Addr:    addr,
 		Handler: httpHandler,
-	}
+	})
 
 	return a.startHTTPServerWithTLS(cfg, addr, "http")
 }
 
 // startSSEServer starts the SSE transport server
-func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPServer) error {
+// Note: The official go-sdk has a dedicated SSEHandler for the legacy SSE transport
+func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
 	log.Info().
 		Str("address", addr).
@@ -629,14 +640,11 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		})
 	}
 
-	protocol := "http"
-	if cfg.Server.TLS.Enabled {
-		protocol = "https"
-	}
 	openAPIProtocol := "http"
 	if cfg.Server.OpenAPI.TLS {
 		openAPIProtocol = "https"
 	}
+
 	var sseHandler http.Handler
 	if cfg.Server.JWE.Enabled {
 		log.Info().Msg("Using dynamic base path for JWE authentication")
@@ -644,48 +652,39 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		tokenInjector := a.createTokenInjector()
 		dtInjector := a.dynamicToolsInjector
 
-		sseServer := server.NewSSEServer(
-			mcpServer,
-			server.WithDynamicBasePath(func(r *http.Request, sessionID string) string {
-				// Extract token from URL and use it as path component
-				token := r.PathValue("token")
-				if token != "" {
-					return "/" + token
-				}
-				return "/"
-			}),
-			server.WithBaseURL(fmt.Sprintf("%s://%s:%d", protocol, cfg.Server.Address, cfg.Server.Port)),
-			server.WithUseFullURLForMessageEndpoint(false),
-		)
+		// Use SSEHandler for legacy SSE transport
+		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+			return mcpServer
+		}, nil)
 
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer.SSEHandler()))))
-		mux.Handle("/{token}/message", serverInjector(tokenInjector(dtInjector(sseServer.MessageHandler()))))
-        if cfg.Server.OpenAPI.Enabled {
-            mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-            mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-            mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
+		mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer))))
+		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
+			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
-		// Use standard SSE server without dynamic paths
-		sseServer := server.NewSSEServer(mcpServer)
+		// Use SSEHandler for legacy SSE transport
+		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+			return mcpServer
+		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
 		mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
-		mux.Handle("/message", serverInjector(dtInjector(sseServer.MessageHandler())))
-        if cfg.Server.OpenAPI.Enabled {
-            mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-            mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+		if cfg.Server.OpenAPI.Enabled {
+			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
+			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -693,10 +692,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *server.MCPSer
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
-	a.httpSrv = &http.Server{
+	a.setHTTPServer(&http.Server{
 		Addr:    addr,
 		Handler: sseHandler,
-	}
+	})
 
 	return a.startHTTPServerWithTLS(cfg, addr, "sse")
 }
@@ -1085,9 +1084,24 @@ type application struct {
 	config           config.Config
 	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
+	httpSrvMutex     sync.RWMutex
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
+}
+
+// setHTTPServer sets the HTTP server with proper synchronization
+func (a *application) setHTTPServer(srv *http.Server) {
+	a.httpSrvMutex.Lock()
+	defer a.httpSrvMutex.Unlock()
+	a.httpSrv = srv
+}
+
+// getHTTPServer gets the HTTP server with proper synchronization
+func (a *application) getHTTPServer() *http.Server {
+	a.httpSrvMutex.RLock()
+	defer a.httpSrvMutex.RUnlock()
+	return a.httpSrv
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
