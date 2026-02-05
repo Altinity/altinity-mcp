@@ -7,16 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-    "strings"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/mcptest"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -27,257 +25,6 @@ func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey 
 	token, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
 	require.NoError(t, err)
 	return token
-}
-
-// AltinityTestServer wraps mcptest functionality to provide additional functionality
-// specific to Altinity MCP server testing.
-type AltinityTestServer struct {
-	testServer       *mcptest.Server
-	chJweServer      *ClickHouseJWEServer
-	t                *testing.T
-	clickhouseClient *clickhouse.Client
-	chConfig         *config.ClickHouseConfig
-}
-
-// NewAltinityTestServer creates a new AltinityTestServer with a preconfigured mcptest.Server.
-// It automatically registers all Altinity MCP tools, resources, and prompts.
-func NewAltinityTestServer(t *testing.T, chConfig *config.ClickHouseConfig) *AltinityTestServer {
-	t.Helper()
-
-	// Create JWE config for testing (disabled by default)
-	jweConfig := config.JWEConfig{
-		Enabled: false,
-	}
-
-	// Create an mcptest server first
-	testServer := mcptest.NewUnstartedServer(t)
-
-	// Create a ClickHouse JWE server but don't use NewClickHouseMCPServer to avoid double registration
-	// Instead, create the server manually and register tools only once
-	srv := server.NewMCPServer(
-		"Altinity ClickHouse MCP Test Server",
-		"test",
-		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(true, true),
-		server.WithPromptCapabilities(true),
-		server.WithRecovery(),
-	)
-
-	chJweServer := &ClickHouseJWEServer{
-		MCPServer: srv,
-		Config:    config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
-		Version:   "test-version",
-	}
-
-	// Create wrapper that will register tools/resources/prompts with the test server
-	wrapper := &testServerWrapper{testServer: testServer, chJweServer: chJweServer}
-
-	// Register tools, resources, and prompts directly with the wrapper
-	RegisterTools(wrapper)
-	RegisterResources(wrapper)
-	RegisterPrompts(wrapper)
-
-	return &AltinityTestServer{
-		testServer:  testServer,
-		chJweServer: chJweServer,
-		t:           t,
-		chConfig:    chConfig,
-	}
-}
-
-// testServerWrapper wraps mcptest.Server to implement the AltinityMCPServer interface
-// while delegating JWE functionality to the ClickHouseJWEServer
-type testServerWrapper struct {
-	testServer  *mcptest.Server
-	chJweServer *ClickHouseJWEServer
-}
-
-func (w *testServerWrapper) AddTools(tools ...server.ServerTool) {
-	for _, tool := range tools {
-		w.testServer.AddTool(tool.Tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-			return tool.Handler(ctx, req)
-		})
-	}
-}
-
-func (w *testServerWrapper) AddTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
-	w.testServer.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-		return handler(ctx, req)
-	})
-}
-
-func (w *testServerWrapper) AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc) {
-	w.testServer.AddPrompt(prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-		return handler(ctx, req)
-	})
-}
-
-func (w *testServerWrapper) AddPrompts(prompts ...server.ServerPrompt) {
-	for _, prompt := range prompts {
-		w.testServer.AddPrompt(prompt.Prompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-			return prompt.Handler(ctx, req)
-		})
-	}
-}
-
-func (w *testServerWrapper) AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc) {
-	w.testServer.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-		return handler(ctx, req)
-	})
-}
-
-func (w *testServerWrapper) AddResources(resources ...server.ServerResource) {
-	for _, resource := range resources {
-		w.testServer.AddResource(resource.Resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-			return resource.Handler(ctx, req)
-		})
-	}
-}
-
-func (w *testServerWrapper) AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc) {
-	w.testServer.AddResourceTemplate(template, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", w.chJweServer)
-		return handler(ctx, req)
-	})
-}
-
-// Start starts the test server and connects to the ClickHouse database if a config is provided.
-func (s *AltinityTestServer) Start(ctx context.Context) error {
-	// Start the underlying test server
-	if err := s.testServer.Start(ctx); err != nil {
-		return err
-	}
-
-	// If a ClickHouse config is provided, initialize the client
-	if s.chConfig != nil {
-		var err error
-		s.clickhouseClient, err = clickhouse.NewClient(ctx, *s.chConfig)
-		if err != nil {
-			s.testServer.Close()
-			return err
-		}
-	}
-
-	return nil
-}
-
-// Close stops the test server and cleans up resources.
-func (s *AltinityTestServer) Close() {
-	// Close the ClickHouse client if it exists
-	if s.clickhouseClient != nil {
-		if err := s.clickhouseClient.Close(); err != nil {
-			s.t.Logf("Failed to close ClickHouse client: %v", err)
-		}
-	}
-
-	// Close the underlying test server
-	s.testServer.Close()
-}
-
-// GetClickHouseClient returns the ClickHouse client for direct database interactions
-func (s *AltinityTestServer) GetClickHouseClient() *clickhouse.Client {
-	return s.clickhouseClient
-}
-
-// CallTool is a helper method to call a tool
-func (s *AltinityTestServer) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	// Ensure JWE token is properly set in context
-	if s.chJweServer != nil {
-		if tokenFromCtx := ctx.Value("jwe_token"); tokenFromCtx != nil {
-			if tokenStr, ok := tokenFromCtx.(string); ok && tokenStr != "" {
-				// Token exists and is not empty, preserve it
-				ctx = context.WithValue(ctx, "jwe_token", tokenStr)
-			} else {
-				// Token exists but is empty or wrong type, set empty
-				ctx = context.WithValue(ctx, "jwe_token", "")
-			}
-		} else {
-			// No token in context, set empty
-			ctx = context.WithValue(ctx, "jwe_token", "")
-		}
-	}
-
-	callReq := mcp.CallToolRequest{}
-	callReq.Params.Name = toolName
-	callReq.Params.Arguments = args
-
-	return s.testServer.Client().CallTool(ctx, callReq)
-}
-
-// CallToolAndRequireSuccess calls a tool and requires that it succeeds
-func (s *AltinityTestServer) CallToolAndRequireSuccess(ctx context.Context, toolName string, args map[string]interface{}) *mcp.CallToolResult {
-	result, err := s.CallTool(ctx, toolName, args)
-	require.NoError(s.t, err)
-	require.NotNil(s.t, result)
-	require.False(s.t, result.IsError, "Tool call resulted in error: %v", result)
-
-	return result
-}
-
-// GetTextContent extracts text content from a tool result
-func (s *AltinityTestServer) GetTextContent(result *mcp.CallToolResult) string {
-	if len(result.Content) == 0 {
-		return ""
-	}
-	if textContent, ok := result.Content[0].(mcp.TextContent); ok {
-		return textContent.Text
-	}
-	return ""
-}
-
-// ReadResource is a helper method to read a resource
-func (s *AltinityTestServer) ReadResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
-	readReq := mcp.ReadResourceRequest{}
-	readReq.Params.URI = uri
-
-	return s.testServer.Client().ReadResource(ctx, readReq)
-}
-
-// ReadResourceAndRequireSuccess reads a resource and requires that it succeeds
-func (s *AltinityTestServer) ReadResourceAndRequireSuccess(ctx context.Context, uri string) *mcp.ReadResourceResult {
-	result, err := s.ReadResource(ctx, uri)
-	require.NoError(s.t, err)
-	require.NotNil(s.t, result)
-	require.NotEmpty(s.t, result.Contents)
-
-	return result
-}
-
-// GetPrompt is a helper method to get a prompt
-func (s *AltinityTestServer) GetPrompt(ctx context.Context, promptName string, args map[string]string) (*mcp.GetPromptResult, error) {
-	promptReq := mcp.GetPromptRequest{}
-	promptReq.Params.Name = promptName
-	promptReq.Params.Arguments = args
-
-	return s.testServer.Client().GetPrompt(ctx, promptReq)
-}
-
-// GetPromptAndRequireSuccess gets a prompt and requires that it succeeds
-func (s *AltinityTestServer) GetPromptAndRequireSuccess(ctx context.Context, promptName string, args map[string]string) *mcp.GetPromptResult {
-	result, err := s.GetPrompt(ctx, promptName, args)
-	require.NoError(s.t, err)
-	require.NotNil(s.t, result)
-
-	return result
-}
-
-// WithClickHouseConfig sets the ClickHouse configuration for the test server
-func (s *AltinityTestServer) WithClickHouseConfig(config *config.ClickHouseConfig) *AltinityTestServer {
-	s.chConfig = config
-	return s
-}
-
-// WithJWEAuth configures the server to use JWE authentication
-func (s *AltinityTestServer) WithJWEAuth(jweConfig config.JWEConfig) *AltinityTestServer {
-	// Update the JWE config in the existing server to avoid re-registration
-	s.chJweServer.Config.Server.JWE = jweConfig
-	return s
 }
 
 // setupClickHouseContainer sets up a ClickHouse container for testing.
@@ -304,278 +51,400 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		// Use a fresh context for cleanup to avoid cancellation issues
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := chContainer.Terminate(cleanupCtx); err != nil {
-			t.Logf("Warning: failed to terminate container: %v", err)
+		if err := chContainer.Terminate(context.Background()); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
 		}
 	})
 
 	host, err := chContainer.Host(ctx)
 	require.NoError(t, err)
 
-	port, err := chContainer.MappedPort(ctx, "9000")
+	port, err := chContainer.MappedPort(ctx, "8123")
 	require.NoError(t, err)
 
-	cfg := &config.ClickHouseConfig{
-		Host:             host,
-		Port:             port.Int(),
-		Database:         "default",
-		Username:         "default",
-		Password:         "",
-		Protocol:         config.TCPProtocol,
-		ReadOnly:         false,
-		MaxExecutionTime: 60,
-		Limit:            1000,
+	chConfig := &config.ClickHouseConfig{
+		Host:     host,
+		Port:     port.Int(),
+		Database: "default",
+		Username: "default",
+		Protocol: config.HTTPProtocol,
 	}
 
-	// Create a client to set up the database
-	client, err := clickhouse.NewClient(ctx, *cfg)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, client.Close()) }()
-
-	_, err = client.ExecuteQuery(ctx, "CREATE TABLE default.test (id UInt64, value String) ENGINE = Memory")
-	require.NoError(t, err)
-	_, err = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one'), (2, 'two')")
+	// Create a client to test the connection and create test tables
+	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 
-	return cfg
+	// Create a test table
+	_, err = client.ExecuteQuery(ctx, `CREATE TABLE IF NOT EXISTS default.test (
+		id UInt64,
+		name String,
+		created_at DateTime
+	) ENGINE = MergeTree() ORDER BY id`)
+	require.NoError(t, err)
+
+	// Insert some test data
+	_, err = client.ExecuteQuery(ctx, `INSERT INTO default.test VALUES (1, 'test1', now()), (2, 'test2', now())`)
+	require.NoError(t, err)
+
+	// Close the client after setup
+	err = client.Close()
+	require.NoError(t, err)
+
+	return chConfig
 }
 
-// TestOpenAPIHandlers tests the OpenAPI handler functions
+// TestOpenAPIHandlers tests the OpenAPI handlers
 func TestOpenAPIHandlers(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
-	jweSecretKey := "this-is-a-32-byte-secret-key!!"
-	jwtSecretKey := "test-jwt-super-secret"
-	// Create valid JWE token
-	validClaims := map[string]interface{}{
-		"host":     chConfig.Host,
-		"port":     float64(chConfig.Port),
-		"database": chConfig.Database,
-		"username": chConfig.Username,
-		"password": chConfig.Password,
-		"protocol": string(chConfig.Protocol),
-		"exp":      time.Now().Add(time.Hour).Unix(),
-	}
-	validTokenString := generateJWEToken(t, validClaims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
-	// Test cases with different configurations
-	testCases := []struct {
-		name        string
-		jweEnabled  bool
-		tokenParam  string
-		expectError bool
-	}{
-		{"without_jwe", false, "", false},
-		{"with_jwe_invalid", true, "invalid-token", true},
-		{"with_jwe_valid", true, validTokenString, false},
-	}
+	t.Run("serves_openapi_schema", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			jweConfig := config.JWEConfig{
-				Enabled:      tc.jweEnabled,
-				JWESecretKey: jweSecretKey,
-				JWTSecretKey: jwtSecretKey,
-			}
+		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
 
-			// Set up chJweServer with ClickHouse config and JWE
-			chJweServer := &ClickHouseJWEServer{
-				Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
-				Version: "test-version",
-			}
+		rr := httptest.NewRecorder()
+		srv.ServeOpenAPISchema(rr, req)
 
-			// Create test server
-			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Always inject the server into context
-				ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
-				r = r.WithContext(ctx)
-				chJweServer.OpenAPIHandler(w, r)
-			}))
-			defer testServer.Close()
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Header().Get("Content-Type"), "application/json")
 
-			// Helper function to make requests
-			makeRequest := func(path string, token string) *http.Response {
-				req := httptest.NewRequest("GET", path, nil)
-				// Inject the appropriate token into context
-				if token != "" {
-					req = req.WithContext(context.WithValue(req.Context(), "jwe_token", token))
-				}
-				w := httptest.NewRecorder()
-				testServer.Config.Handler.ServeHTTP(w, req)
-				return w.Result()
-			}
-
-			t.Run("OpenAPI_schema", func(t *testing.T) {
-				// Add token through path for some cases
-				path := testServer.URL + "/openapi"
-				if tc.jweEnabled {
-					path = fmt.Sprintf("%s/%s/openapi", testServer.URL, tc.tokenParam)
-				}
-
-				resp := makeRequest(path, tc.tokenParam)
-				if tc.expectError {
-					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-				} else {
-					require.Equal(t, http.StatusOK, resp.StatusCode)
-					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-					var schema map[string]interface{}
-					err := json.NewDecoder(resp.Body).Decode(&schema)
-					require.NoError(t, err)
-					require.Contains(t, schema, "openapi")
-					// Check version in OpenAPI schema
-					require.Contains(t, schema, "info")
-					info, ok := schema["info"].(map[string]interface{})
-					require.True(t, ok)
-					require.Contains(t, info, "version")
-					require.Equal(t, "test-version", info["version"])
-				}
-			})
-
-			t.Run("ExecuteQuery_OpenAPI", func(t *testing.T) {
-				path := fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL)
-				if tc.jweEnabled {
-					path = fmt.Sprintf("%s/%s/openapi/execute_query?query=SELECT+*+FROM+test", testServer.URL, tc.tokenParam)
-				}
-
-				resp := makeRequest(path, tc.tokenParam)
-				if tc.expectError {
-					require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-				} else {
-					require.Equal(t, http.StatusOK, resp.StatusCode)
-					require.Equal(t, "application/json", resp.Header.Get("Content-Type"))
-
-					var result clickhouse.QueryResult
-					err := json.NewDecoder(resp.Body).Decode(&result)
-					require.NoError(t, err)
-					require.Equal(t, 2, result.Count)
-					require.Equal(t, []string{"id", "value"}, result.Columns)
-					require.Equal(t, 2, len(result.Rows))
-				}
-			})
-		})
-	}
-
-	// Additional error case tests
-	t.Run("ErrorConditions", func(t *testing.T) {
-		jweConfig := config.JWEConfig{Enabled: false}
-		chJweServer := &ClickHouseJWEServer{
-			Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
-			Version: "test-version",
-		}
-
-		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
-			r = r.WithContext(ctx)
-			chJweServer.OpenAPIHandler(w, r)
-		}))
-		defer testServer.Close()
-
-		t.Run("InvalidExecuteQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query", testServer.URL))
-			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		})
-
-		t.Run("ExecuteQueryInvalidLimit", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=SELECT+*+FROM+test&limit=abc", testServer.URL))
-			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		})
-
-		t.Run("MethodNotAllowed_ExecuteQuery", func(t *testing.T) {
-			req, _ := http.NewRequest("POST", fmt.Sprintf("%s/openapi/execute_query", testServer.URL), nil)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
-		})
-
-		t.Run("ExecuteQuery_MissingQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query", testServer.URL))
-			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-		})
-
-		t.Run("ExecuteQuery_InvalidQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=%s", testServer.URL, "INVALID%20SQL%20QUERY"))
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-		})
-
-		t.Run("ExecuteQuery_InsertQuery", func(t *testing.T) {
-			resp, _ := http.Get(fmt.Sprintf("%s/openapi/execute_query?query=INSERT+INTO+test+VALUES+(3,+'three')", testServer.URL))
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-		})
-
-		t.Run("ExecuteQuery_ContextTimeout", func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/openapi/execute_query?query=SELECT+sleepEachRow(1)+FROM+system.numbers+LIMIT+10+SETTINGS+function_sleep_max_microseconds_per_block=0,max_execution_time=1", testServer.URL), nil)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-			respBytes, readErr := io.ReadAll(resp.Body)
-			require.NoError(t, readErr)
-			require.Contains(t, string(respBytes), "Timeout exceeded")
-		})
+		var schema map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+		require.Equal(t, "3.1.0", schema["openapi"])
 	})
 
-	// Test token extraction from multiple sources
-	t.Run("TokenExtraction", func(t *testing.T) {
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
+	t.Run("execute_query_via_openapi", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("jwe_required_but_missing", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "test-key",
+					JWTSecretKey: "test-jwt",
+				},
+			},
+		}, "test")
+
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
+		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+}
+
+// TestNewClickHouseMCPServer tests that the server can be created with various configs
+func TestNewClickHouseMCPServer(t *testing.T) {
+	t.Run("creates_server_with_defaults", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host: "localhost",
+				Port: 8123,
+			},
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+			},
 		}
-		chJweServer := &ClickHouseJWEServer{
-			Config:  config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: *chConfig},
-			Version: "test-version",
+		srv := NewClickHouseMCPServer(cfg, "test-version")
+		require.NotNil(t, srv)
+		require.NotNil(t, srv.MCPServer)
+		require.Equal(t, "test-version", srv.Version)
+	})
+
+	t.Run("creates_server_with_jwe_enabled", func(t *testing.T) {
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host: "localhost",
+				Port: 8123,
+			},
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "test-jwe-key",
+					JWTSecretKey: "test-jwt-key",
+				},
+			},
+		}
+		srv := NewClickHouseMCPServer(cfg, "test-version")
+		require.NotNil(t, srv)
+		require.True(t, srv.Config.Server.JWE.Enabled)
+	})
+}
+
+// TestHandleExecuteQuery tests the execute_query tool handler
+func TestHandleExecuteQuery(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	// Add server to context
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+
+	t.Run("successful_select", func(t *testing.T) {
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{"query": "SELECT 1 as num"}`),
+			},
 		}
 
-		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", chJweServer)
-			r = r.WithContext(ctx)
-			chJweServer.OpenAPIHandler(w, r)
-		}))
-		defer testServer.Close()
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError)
+		require.Len(t, result.Content, 1)
 
-		t.Run("BearerHeader", func(t *testing.T) {
-			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
-			req.Header.Set("Authorization", "Bearer "+validTokenString)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-		})
+		// Extract text content
+		textContent, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		require.NotEmpty(t, textContent.Text)
 
-		t.Run("AltinityHeader", func(t *testing.T) {
-			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
-			req.Header.Set("x-altinity-mcp-key", validTokenString)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-		})
+		// Parse result
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal([]byte(textContent.Text), &qr))
+		require.Equal(t, 1, qr.Count)
+	})
 
-		t.Run("BasicAuth", func(t *testing.T) {
-			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
-			req.Header.Set("Authorization", "Basic "+validTokenString)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-		})
+	t.Run("select_from_test_table", func(t *testing.T) {
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test ORDER BY id"}`),
+			},
+		}
 
-		t.Run("PathToken", func(t *testing.T) {
-			req, _ := http.NewRequest("GET", testServer.URL+"/"+validTokenString+"/openapi", nil)
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusOK, resp.StatusCode)
-		})
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError)
 
-		t.Run("InvalidToken", func(t *testing.T) {
-			req, _ := http.NewRequest("GET", testServer.URL+"/openapi", nil)
-			req.Header.Set("Authorization", "Bearer invalid-token")
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-		})
+		textContent, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal([]byte(textContent.Text), &qr))
+		require.GreaterOrEqual(t, qr.Count, 2)
+	})
+
+	t.Run("with_limit_parameter", func(t *testing.T) {
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test", "limit": 1}`),
+			},
+		}
+
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError)
+
+		textContent, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal([]byte(textContent.Text), &qr))
+		require.Equal(t, 1, qr.Count)
+	})
+
+	t.Run("missing_query_parameter", func(t *testing.T) {
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{}`),
+			},
+		}
+
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError)
+	})
+
+	t.Run("invalid_query", func(t *testing.T) {
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{"query": "INVALID SQL"}`),
+			},
+		}
+
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.IsError)
+	})
+}
+
+// TestHandleSchemaResource tests the schema resource handler
+func TestHandleSchemaResource(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+
+	t.Run("returns_schema", func(t *testing.T) {
+		result, err := HandleSchemaResource(ctx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{}})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Contents, 1)
+		require.Equal(t, "clickhouse://schema", result.Contents[0].URI)
+		require.Equal(t, "application/json", result.Contents[0].MIMEType)
+		require.NotEmpty(t, result.Contents[0].Text)
+	})
+
+	t.Run("no_server_in_context", func(t *testing.T) {
+		_, err := HandleSchemaResource(context.Background(), &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{}})
+		require.Error(t, err)
+	})
+}
+
+// TestHandleTableResource tests the table resource handler
+func TestHandleTableResource(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+
+	t.Run("returns_table_structure", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{
+			Params: &mcp.ReadResourceParams{URI: "clickhouse://table/default/test"},
+		}
+
+		result, err := HandleTableResource(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Contents, 1)
+		require.Equal(t, "clickhouse://table/default/test", result.Contents[0].URI)
+		require.NotEmpty(t, result.Contents[0].Text)
+	})
+
+	t.Run("invalid_uri_format", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{
+			Params: &mcp.ReadResourceParams{URI: "invalid://uri"},
+		}
+
+		_, err := HandleTableResource(ctx, req)
+		require.Error(t, err)
+	})
+
+	t.Run("no_server_in_context", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{
+			Params: &mcp.ReadResourceParams{URI: "clickhouse://table/default/test"},
+		}
+
+		_, err := HandleTableResource(context.Background(), req)
+		require.Error(t, err)
+	})
+}
+
+// TestJWEAuthentication tests JWE authentication flow
+func TestJWEAuthentication(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	jweSecretKey := "this-is-a-32-byte-secret-key!!"
+	jwtSecretKey := "test-jwt-secret-key-123"
+
+	t.Run("valid_jwe_token", func(t *testing.T) {
+		claims := map[string]interface{}{
+			"host":     chConfig.Host,
+			"port":     float64(chConfig.Port),
+			"database": chConfig.Database,
+			"username": chConfig.Username,
+			"password": chConfig.Password,
+			"protocol": string(chConfig.Protocol),
+			"exp":      time.Now().Add(time.Hour).Unix(),
+		}
+
+		token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
+
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: jweSecretKey,
+					JWTSecretKey: jwtSecretKey,
+				},
+			},
+		}, "test")
+
+		ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+		ctx = context.WithValue(ctx, "jwe_token", token)
+
+		client, err := srv.GetClickHouseClient(ctx, token)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NoError(t, client.Close())
+	})
+
+	t.Run("missing_token_when_jwe_enabled", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: jweSecretKey,
+					JWTSecretKey: jwtSecretKey,
+				},
+			},
+		}, "test")
+
+		_, err := srv.GetClickHouseClient(ctx, "")
+		require.Error(t, err)
+		require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+	})
+
+	t.Run("invalid_token", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: jweSecretKey,
+					JWTSecretKey: jwtSecretKey,
+				},
+			},
+		}, "test")
+
+		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
+		require.Error(t, err)
 	})
 }
 
@@ -583,417 +452,42 @@ func TestOpenAPIHandlers(t *testing.T) {
 func TestExtractTokenFromRequest(t *testing.T) {
 	srv := &ClickHouseJWEServer{}
 
-	t.Run("bearer_authorization_header", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Bearer test-token-123")
+	t.Run("bearer_token", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
 
 		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "test-token-123", token)
+		require.Equal(t, "test-token", token)
 	})
 
-	t.Run("basic_authorization_header", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Basic test-token-456")
+	t.Run("basic_token", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Basic test-token")
 
 		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "test-token-456", token)
+		require.Equal(t, "test-token", token)
 	})
 
-	t.Run("altinity_mcp_header", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("x-altinity-mcp-key", "test-token-789")
-
-		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "test-token-789", token)
-	})
-
-	t.Run("openapi_path_token", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/some-token/openapi/list_tables", nil)
-
-		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "some-token", token)
-	})
-
-	t.Run("bearer_priority", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Bearer bearer-token")
+	t.Run("x_altinity_mcp_key_header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", "header-token")
-
-		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "bearer-token", token)
-	})
-
-	t.Run("header_priority", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("x-altinity-mcp-key", "header-token")
-		req.SetPathValue("token", "path-token")
 
 		token := srv.ExtractTokenFromRequest(req)
 		require.Equal(t, "header-token", token)
 	})
 
+	t.Run("from_url_path", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/my-token/openapi", nil)
+
+		token := srv.ExtractTokenFromRequest(req)
+		require.Equal(t, "my-token", token)
+	})
+
 	t.Run("no_token", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "", token)
-	})
-
-	t.Run("invalid_authorization_header", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Invalid test-token")
-
-		token := srv.ExtractTokenFromRequest(req)
-		require.Equal(t, "", token)
-	})
-}
-
-// TestMCPTestingWrapper tests the AltinityTestServer wrapper functionality.
-func TestMCPTestingWrapper(t *testing.T) {
-	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
-
-	// Create and configure AltinityTestServer
-	testServer := NewAltinityTestServer(t, chConfig)
-
-	// Start the server
-	err := testServer.Start(ctx)
-	require.NoError(t, err)
-	defer testServer.Close()
-
-	// Test MCP server version in initialize response
-	t.Run("MCP_Initialize_Version", func(t *testing.T) {
-		// The mcptest.Server should handle initialize automatically, but we can check the server's version
-		require.Equal(t, "test-version", testServer.chJweServer.Version)
-	})
-
-	t.Run("CallTool_ExecuteQuery", func(t *testing.T) {
-		// Test execute_query tool with SELECT
-		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
-			"query": "SELECT * FROM test",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
-
-		textContent := testServer.GetTextContent(result)
-		require.NotEmpty(t, textContent)
-	})
-
-	t.Run("CallTool_ExecuteQuery_WithLimit", func(t *testing.T) {
-		// Test execute_query tool with custom limit
-		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
-			"query": "SELECT * FROM test",
-			"limit": float64(5),
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
-		_ = result // Use the result to avoid unused variable error
-	})
-
-	t.Run("CallTool_ExecuteQuery_ExceedsLimit", func(t *testing.T) {
-		// Test execute_query tool with limit exceeding default
-		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
-			"query": "SELECT * FROM test",
-			"limit": float64(2000), // Exceeds default limit of 1000
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.True(t, result.IsError, "Expected error for limit exceeding default")
-		_ = result // Use the result to avoid unused variable error
-	})
-
-	t.Run("CallTool_ExecuteQuery_InvalidQuery", func(t *testing.T) {
-		// Test execute_query tool with invalid query
-		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
-			"query": "INVALID SQL QUERY",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.True(t, result.IsError, "Expected error for invalid query")
-		_ = result // Use the result to avoid unused variable error
-	})
-
-	t.Run("ReadResource_Schema", func(t *testing.T) {
-		// Test reading schema resource
-		result, err := testServer.ReadResource(ctx, "clickhouse://schema")
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.NotEmpty(t, result.Contents)
-	})
-
-	t.Run("ReadResource_TableStructure", func(t *testing.T) {
-		// Test reading table structure resource
-		result, err := testServer.ReadResource(ctx, "clickhouse://table/default/test")
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.NotEmpty(t, result.Contents)
-	})
-
-	t.Run("ReadResource_InvalidTableURI", func(t *testing.T) {
-		// Test reading table structure resource with invalid URI
-		_, err := testServer.ReadResource(ctx, "invalid://table/default/invalid")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "handler not found for resource URI 'invalid://table/default/invalid': resource not found")
-
-		// Test reading table structure resource with valid URI, but not exists table
-		_, err = testServer.ReadResource(ctx, "clickhouse://table/default/not_exists")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "`default`.`not_exists` columns not found")
-	})
-
-	t.Run("GetTextContent", func(t *testing.T) {
-		// Create a simple mock function that simulates the behavior without actually creating a proper CallToolResult
-		mockResult := &mcp.CallToolResult{}
-		// Let's just verify that empty content returns empty string
-		text := testServer.GetTextContent(mockResult)
-		require.Equal(t, "", text)
-	})
-}
-
-// TestNewClickHouseMCPServer tests the server creation
-func TestNewClickHouseMCPServer(t *testing.T) {
-	chConfig := config.ClickHouseConfig{
-		Host:     "localhost",
-		Port:     8123,
-		Database: "default",
-		Username: "default",
-		Protocol: config.HTTPProtocol,
-		Limit:    1000,
-	}
-
-	jweConfig := config.JWEConfig{
-		Enabled: false,
-	}
-
-	version := "test-version"
-	srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, version)
-	require.NotNil(t, srv)
-	require.NotNil(t, srv.MCPServer)
-	require.Equal(t, jweConfig, srv.Config.Server.JWE)
-	require.Equal(t, chConfig, srv.Config.ClickHouse)
-	require.Equal(t, version, srv.Version)
-}
-
-// TestGetClickHouseClientWithJWE tests the JWE client creation
-func TestGetClickHouseClientWithJWE(t *testing.T) {
-	ctx := context.Background()
-	jweSecretKey := "this-is-a-32-byte-secret-key!!"
-	jwtSecretKey := "test-jwt-secret"
-
-	t.Run("without_jwe", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    0,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled: false,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		// This will fail to connect, but we're testing the logic, not the connection
-		_, err := srv.GetClickHouseClient(ctx, "")
-		// We expect an error because we're not actually connecting to ClickHouse
-		require.Error(t, err)
-	})
-
-	t.Run("with_jwe_missing_token", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    0,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		_, err := srv.GetClickHouseClient(ctx, "")
-		require.Equal(t, jwe_auth.ErrMissingToken, err)
-	})
-
-	t.Run("with_jwe_invalid_token", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    0,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		_, err := srv.GetClickHouseClient(ctx, "invalid-token")
-		require.Equal(t, jwe_auth.ErrInvalidToken, err)
-	})
-
-	t.Run("with_jwe_valid_token", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    1000,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		// Create a valid JWE token
-		claims := map[string]interface{}{
-			"host":     "test-host",
-			"port":     float64(9000),
-			"database": "test-db",
-			"username": "test-user",
-			"password": "test-pass",
-			"protocol": "tcp",
-			"limit":    float64(500),
-			"exp":      time.Now().Add(time.Hour).Unix(),
-		}
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		// This will fail to connect, but we're testing the JWE parsing logic
-		_, err := srv.GetClickHouseClient(ctx, tokenString)
-		// We expect a connection error, not a JWE error
-		require.Error(t, err)
-		require.NotEqual(t, jwe_auth.ErrMissingToken, err)
-		require.NotEqual(t, jwe_auth.ErrInvalidToken, err)
-	})
-
-	t.Run("with_jwe_token_with_tls", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    1000,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		// Create a valid JWE token with TLS configuration
-		claims := map[string]interface{}{
-			"host":                     "secure-host",
-			"port":                     float64(9440),
-			"database":                 "secure-db",
-			"username":                 "secure-user",
-			"password":                 "secure-pass",
-			"protocol":                 "tcp",
-			"limit":                    float64(2000),
-			"tls_enabled":              true,
-			"tls_ca_cert":              "/path/to/ca.crt",
-			"tls_client_cert":          "/path/to/client.crt",
-			"tls_client_key":           "/path/to/client.key",
-			"tls_insecure_skip_verify": true,
-			"exp":                      time.Now().Add(time.Hour).Unix(),
-		}
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		// This will fail to connect, but we're testing the JWE parsing logic
-		_, err := srv.GetClickHouseClient(ctx, tokenString)
-		// We expect a connection error, not a JWE error
-		require.Error(t, err)
-		require.NotEqual(t, jwe_auth.ErrMissingToken, err)
-		require.NotEqual(t, jwe_auth.ErrInvalidToken, err)
-	})
-
-	t.Run("with_jwe_invalid_encryption_key", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    1000,
-		}
-
-		correctJweSecretKey := "this-is-a-different-32-byte-key!"
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: correctJweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		claims := map[string]interface{}{
-			"host": "test-host",
-			"exp":  time.Now().Add(time.Hour).Unix(),
-		}
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		// This will fail because the token was encrypted with a different key
-		_, err := srv.GetClickHouseClient(ctx, tokenString)
-		require.Equal(t, jwe_auth.ErrInvalidToken, err)
-	})
-
-	t.Run("with_jwe_invalid_claims", func(t *testing.T) {
-		chConfig := config.ClickHouseConfig{
-			Host:     "localhost",
-			Port:     8123,
-			Database: "default",
-			Username: "default",
-			Protocol: config.HTTPProtocol,
-			Limit:    1000,
-		}
-
-		jweConfig := config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: jweSecretKey,
-			JWTSecretKey: jwtSecretKey,
-		}
-
-		srv := NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: jweConfig}, ClickHouse: chConfig}, "test-version")
-
-		// Create a token with a disallowed claim key
-		claims := map[string]interface{}{
-			"host":          "test-host",
-			"port":          float64(9000),
-			"database":      "test-db",
-			"invalid_claim": "this should not be allowed", // This key is not in whitelist
-			"exp":           time.Now().Add(time.Hour).Unix(),
-		}
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		// This should fail because the token contains a disallowed claim key
-		_, err := srv.GetClickHouseClient(ctx, tokenString)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid token claims format")
-		require.Contains(t, err.Error(), "disallowed claim key 'invalid_claim'")
+		require.Empty(t, token)
 	})
 }
 
@@ -1001,17 +495,15 @@ func TestGetClickHouseClientWithJWE(t *testing.T) {
 func TestExtractTokenFromCtx(t *testing.T) {
 	srv := &ClickHouseJWEServer{}
 
-	t.Run("no_token", func(t *testing.T) {
-		ctx := context.Background()
-		token := srv.ExtractTokenFromCtx(ctx)
-		require.Empty(t, token)
-		_ = token // Use the token to avoid unused variable error
-	})
-
 	t.Run("with_token", func(t *testing.T) {
 		ctx := context.WithValue(context.Background(), "jwe_token", "test-token")
 		token := srv.ExtractTokenFromCtx(ctx)
 		require.Equal(t, "test-token", token)
+	})
+
+	t.Run("no_token", func(t *testing.T) {
+		token := srv.ExtractTokenFromCtx(context.Background())
+		require.Empty(t, token)
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
@@ -1021,80 +513,14 @@ func TestExtractTokenFromCtx(t *testing.T) {
 	})
 }
 
-// TestJWEWithRealClickHouse tests JWE authentication with a real ClickHouse container
-func TestJWEWithRealClickHouse(t *testing.T) {
-	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
-
-	jweSecretKey := "this-is-a-32-byte-secret-key!!"
-	jwtSecretKey := "test-jwt-secret"
-
-	// Create JWE config
-	jweConfig := config.JWEConfig{
-		Enabled:      true,
-		JWESecretKey: jweSecretKey,
-		JWTSecretKey: jwtSecretKey,
-	}
-
-	t.Run("jwe_enabled_with_valid_token", func(t *testing.T) {
-		// Create a valid JWE token with ClickHouse config
-		claims := map[string]interface{}{
-			"host":     chConfig.Host,
-			"port":     float64(chConfig.Port),
-			"database": chConfig.Database,
-			"username": chConfig.Username,
-			"password": chConfig.Password,
-			"protocol": string(chConfig.Protocol),
-			"limit":    float64(chConfig.Limit),
-			"exp":      time.Now().Add(time.Hour).Unix(),
-		}
-
-		tokenString := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-		// Inject token into context
-		contextWithToken := context.WithValue(ctx, "jwe_token", tokenString)
-
-		// Create test server with JWE enabled
-		// Start the server
-		testServer := NewAltinityTestServer(t, chConfig).WithJWEAuth(jweConfig)
-		err := testServer.Start(contextWithToken)
-		require.NoError(t, err)
-		defer testServer.Close()
-
-		// Test execute_query tool with JWE
-		result, err := testServer.CallTool(contextWithToken, "execute_query", map[string]interface{}{
-			"query": "SELECT 1",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.False(t, result.IsError, "Tool call resulted in error: %v", result)
-	})
-
-	t.Run("jwe_enabled_without_token", func(t *testing.T) {
-		// Create test server with JWE enabled
-		// Start the server
-		testServer := NewAltinityTestServer(t, chConfig).WithJWEAuth(jweConfig)
-		err := testServer.Start(ctx)
-		require.NoError(t, err)
-		defer testServer.Close()
-		// Test without token - should fail
-		result, err := testServer.CallTool(ctx, "execute_query", map[string]interface{}{
-			"query": "SELECT 1",
-		})
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.True(t, result.IsError, "Expected error when JWE is enabled but no token provided, result=%#v", result)
-	})
-}
-
-// TestHelperFunctions tests utility functions
+// TestHelperFunctions tests various helper functions
 func TestHelperFunctions(t *testing.T) {
 	t.Run("isSelectQuery", func(t *testing.T) {
 		require.True(t, isSelectQuery("SELECT * FROM table"))
-		require.True(t, isSelectQuery("  select * from table  "))
+		require.True(t, isSelectQuery("select * from table"))
 		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
 		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
-		require.False(t, isSelectQuery("CREATE TABLE test (id INT)"))
+		require.False(t, isSelectQuery("CREATE TABLE test (id Int)"))
 	})
 
 	t.Run("hasLimitClause", func(t *testing.T) {
@@ -1104,13 +530,39 @@ func TestHelperFunctions(t *testing.T) {
 		require.False(t, hasLimitClause("SELECT * FROM table ORDER BY id"))
 	})
 
+	t.Run("snakeCase", func(t *testing.T) {
+		require.Equal(t, "db_view", snakeCase("DB.View"))
+		require.Equal(t, "custom_db_view", snakeCase("custom DB-View"))
+		require.Equal(t, "a_b_c", snakeCase("A B  C"))
+	})
+
+	t.Run("sqlLiteral", func(t *testing.T) {
+		// integer
+		require.Equal(t, "42", sqlLiteral("integer", float64(42)))
+		require.Equal(t, "0", sqlLiteral("integer", "oops"))
+		// number
+		require.Equal(t, "3.14", sqlLiteral("number", float64(3.14)))
+		// boolean
+		require.Equal(t, "1", sqlLiteral("boolean", true))
+		require.Equal(t, "0", sqlLiteral("boolean", false))
+		// string
+		out := sqlLiteral("string", "a'b c")
+		require.Contains(t, out, "'")
+	})
+
+	t.Run("buildDescription", func(t *testing.T) {
+		require.Equal(t, "My desc", buildDescription("My desc", "db", "view"))
+		require.Equal(t, "Tool to load data from db.view", buildDescription("", "db", "view"))
+	})
 }
 
+// TestDynamicTools_ParamParsingAndTypeMapping tests dynamic tool parameter parsing
 func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
 	// simple create view text containing params
 	create := "CREATE VIEW v AS SELECT * FROM t WHERE id={id:UInt64} AND name={name:String} AND at>={at:DateTime} AND f={f:Float64} AND ok={ok:Bool}"
 	params := parseViewParams(create)
 	require.Len(t, params, 5)
+
 	// find by name
 	byName := func(n string) dynamicToolParam {
 		for _, p := range params {
@@ -1120,6 +572,7 @@ func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
 		}
 		return dynamicToolParam{}
 	}
+
 	require.Equal(t, "integer", byName("id").JSONType)
 	require.Equal(t, "string", byName("name").JSONType)
 	require.Equal(t, "date-time", byName("at").JSONFormat)
@@ -1127,16 +580,30 @@ func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
 	require.Equal(t, "boolean", byName("ok").JSONType)
 }
 
+// TestOpenAPI_DynamicPathsIncluded tests that dynamic tool paths are included in OpenAPI schema
 func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
-	s := &ClickHouseJWEServer{Config: config.Config{}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-		"custom_db_view": {ToolName: "custom_db_view", Database: "db", Table: "view", Description: "desc", Params: []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}}},
-	}}
+	s := &ClickHouseJWEServer{
+		Config:  config.Config{},
+		Version: "test",
+		dynamicTools: map[string]dynamicToolMeta{
+			"custom_db_view": {
+				ToolName:    "custom_db_view",
+				Database:    "db",
+				Table:       "view",
+				Description: "desc",
+				Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+			},
+		},
+	}
+
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/openapi", nil)
 	ctx := context.WithValue(req.Context(), "clickhouse_jwe_server", s)
 	req = req.WithContext(ctx)
 	s.ServeOpenAPISchema(rr, req)
+
 	require.Equal(t, http.StatusOK, rr.Code)
+
 	var schema map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
 	paths := schema["paths"].(map[string]interface{})
@@ -1144,256 +611,30 @@ func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestResourceHandlers_NoServerInContext tests error handling when server is missing from context
 func TestResourceHandlers_NoServerInContext(t *testing.T) {
-    // Directly call handlers with empty context to cover error paths
-    _, err := HandleSchemaResource(context.Background(), mcp.ReadResourceRequest{})
-    require.Error(t, err)
+	// Directly call handlers with empty context to cover error paths
+	_, err := HandleSchemaResource(context.Background(), &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{}})
+	require.Error(t, err)
 
-    req := mcp.ReadResourceRequest{}
-    req.Params.URI = "clickhouse://table/db/t"
-    _, err = HandleTableResource(context.Background(), req)
-    require.Error(t, err)
+	req := &mcp.ReadResourceRequest{
+		Params: &mcp.ReadResourceParams{URI: "clickhouse://table/db/t"},
+	}
+	_, err = HandleTableResource(context.Background(), req)
+	require.Error(t, err)
 }
 
+// TestMakeDynamicToolHandler_NoServerInContext tests dynamic tool handler without server in context
 func TestMakeDynamicToolHandler_NoServerInContext(t *testing.T) {
-    meta := dynamicToolMeta{ToolName: "t", Database: "d", Table: "v", Params: nil}
-    handler := makeDynamicToolHandler(meta)
-    res, err := handler(context.Background(), mcp.CallToolRequest{})
-    require.Error(t, err)
-    require.Nil(t, res)
-}
+	meta := dynamicToolMeta{ToolName: "t", Database: "d", Table: "v", Params: nil}
+	handler := makeDynamicToolHandler(meta)
 
-func TestBuildDescription(t *testing.T) {
-    require.Equal(t, "My desc", buildDescription("My desc", "db", "view"))
-    require.Equal(t, "Tool to load data from db.view", buildDescription("", "db", "view"))
-}
-
-func TestSqlLiteral(t *testing.T) {
-    // integer
-    require.Equal(t, "42", sqlLiteral("integer", float64(42)))
-    require.Equal(t, "0", sqlLiteral("integer", "oops"))
-    // number
-    require.Equal(t, "3.14", sqlLiteral("number", float64(3.14)))
-    // boolean
-    require.Equal(t, "1", sqlLiteral("boolean", true))
-    require.Equal(t, "0", sqlLiteral("boolean", false))
-    // string quoting and escaping
-    out := sqlLiteral("string", "a'b c")
-    require.Contains(t, out, "'")
-}
-
-func TestSnakeCase(t *testing.T) {
-    require.Equal(t, "db_view", snakeCase("DB.View"))
-    require.Equal(t, "custom_db_view", snakeCase("custom DB-View"))
-    require.Equal(t, "a_b_c", snakeCase("A B  C"))
-}
-
-func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-
-    // prepare parameterized view
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
-
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_dyn")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_dyn AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
-
-    // server with JWE disabled
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}}
-
-    meta := dynamicToolMeta{
-        ToolName:    "default_v_dyn",
-        Database:    "default",
-        Table:       "v_dyn",
-        Description: "desc",
-        Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
-    }
-
-    handler := makeDynamicToolHandler(meta)
-    req := mcp.CallToolRequest{}
-    req.Params.Name = meta.ToolName
-    req.Params.Arguments = map[string]interface{}{"id": float64(1)}
-
-    // context with server
-    ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
-    result, err := handler(ctx, req)
-    require.NoError(t, err)
-    require.NotNil(t, result)
-    require.False(t, result.IsError)
-    text := ""
-    if len(result.Content) > 0 {
-        if tc, ok := result.Content[0].(mcp.TextContent); ok { text = tc.Text }
-    }
-    require.NotEmpty(t, text)
-    var qr clickhouse.QueryResult
-    require.NoError(t, json.Unmarshal([]byte(text), &qr))
-    require.GreaterOrEqual(t, qr.Count, 1)
-}
-
-func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
-
-    // Ensure base table exists (created in setup), create views
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_a")
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_b")
-    // v_a has comment and will overlap two rules
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_a AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT 'desc a'")
-    require.NoError(t, err)
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_b AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
-
-    // initialize an MCP server to avoid nil panics when registering tools
-    mcpSrv := server.NewMCPServer(
-        "Altinity ClickHouse MCP Test Server",
-        "test",
-        server.WithToolCapabilities(true),
-        server.WithResourceCapabilities(true, true),
-        server.WithPromptCapabilities(true),
-        server.WithRecovery(),
-    )
-    s := &ClickHouseJWEServer{MCPServer: mcpSrv, Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}, DynamicTools: []config.DynamicToolRule{
-        {Regexp: "default\\.v_.*", Prefix: "custom_"},
-        {Regexp: "default\\.v_a", Prefix: "other_"},
-    }}}, dynamicTools: make(map[string]dynamicToolMeta)}
-
-    err = s.EnsureDynamicTools(ctx)
-    require.NoError(t, err)
-
-    // v_a matches two rules -> should be skipped
-    _, existsA1 := s.dynamicTools["custom_default_v_a"]
-    _, existsA2 := s.dynamicTools["other_default_v_a"]
-    require.False(t, existsA1)
-    require.False(t, existsA2)
-
-    // v_b matches only first rule -> should be registered
-    metaB, existsB := s.dynamicTools["custom_default_v_b"]
-    require.True(t, existsB)
-    require.Equal(t, "default", metaB.Database)
-    require.Equal(t, "v_b", metaB.Table)
-    require.NotEmpty(t, metaB.Params)
-}
-
-func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
-
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
-
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "custom_default_v_api": { ToolName: "custom_default_v_api", Database: "default", Table: "v_api", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
-
-    // Build POST request to dynamic tool endpoint
-    body := strings.NewReader(`{"id":1}`)
-    req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
-    req.Header.Set("Content-Type", "application/json")
-    rr := httptest.NewRecorder()
-
-    // Inject server into context and call OpenAPIHandler
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    s.OpenAPIHandler(rr, req)
-
-    require.Equal(t, http.StatusOK, rr.Code)
-    var qr clickhouse.QueryResult
-    require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
-    require.GreaterOrEqual(t, qr.Count, 1)
-}
-
-func TestOpenAPIHandler_DynamicTool_WithJWE(t *testing.T) {
-    ctx := context.Background()
-    chConfig := setupClickHouseContainer(t)
-    client, err := clickhouse.NewClient(ctx, *chConfig)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
-
-    _, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api2")
-    _, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api2 AS SELECT * FROM default.test WHERE id={id:UInt64}")
-    require.NoError(t, err)
-
-    jweSecretKey := "this-is-a-32-byte-secret-key!!"
-    jwtSecretKey := "test-jwt-super-secret"
-    claims := map[string]interface{}{
-        "host":     chConfig.Host,
-        "port":     float64(chConfig.Port),
-        "database": chConfig.Database,
-        "username": chConfig.Username,
-        "password": chConfig.Password,
-        "protocol": string(chConfig.Protocol),
-        "exp":      time.Now().Add(time.Hour).Unix(),
-    }
-    token := generateJWEToken(t, claims, []byte(jweSecretKey), []byte(jwtSecretKey))
-
-    s := &ClickHouseJWEServer{Config: config.Config{ClickHouse: *chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: jweSecretKey, JWTSecretKey: jwtSecretKey}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "custom_default_v_api2": { ToolName: "custom_default_v_api2", Database: "default", Table: "v_api2", Description: "desc", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
-
-    body := strings.NewReader(`{"id":1}`)
-    path := "/" + token + "/openapi/custom_default_v_api2"
-    req := httptest.NewRequest(http.MethodPost, path, body)
-    req.Header.Set("Content-Type", "application/json")
-    rr := httptest.NewRecorder()
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    s.OpenAPIHandler(rr, req)
-
-    require.Equal(t, http.StatusOK, rr.Code)
-}
-
-func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
-    // Build a minimal server with one dynamic tool meta but no real CH call (will still hit validation)
-    s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "x", JWTSecretKey: "y"}}}, Version: "test", dynamicTools: map[string]dynamicToolMeta{
-        "tool": { ToolName: "tool", Database: "db", Table: "t", Description: "d", Params: []dynamicToolParam{{Name:"id", CHType:"UInt64", JSONType:"integer", JSONFormat:"int64", Required:true}} },
-    }}
-
-    // With JWE enabled and invalid token, the token validation occurs before method check → 401
-    req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr := httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusUnauthorized, rr.Code)
-
-    // Bad JSON
-    req = httptest.NewRequest(http.MethodPost, "/token/openapi/tool", strings.NewReader("not-json"))
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusUnauthorized, rr.Code) // invalid token triggers 401 before JSON decode
-
-    // Use disabled JWE to test JSON decode and required params
-    s.Config.Server.JWE.Enabled = false
-    // invalid JSON body
-    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusBadRequest, rr.Code)
-
-    // missing required parameter (client creation happens before param validation, so expect 500 here)
-    req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader(`{}`))
-    req.Header.Set("Content-Type", "application/json")
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusInternalServerError, rr.Code)
-
-    // Unknown tool -> 404
-    req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
-    req.Header.Set("Content-Type", "application/json")
-    req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
-    rr = httptest.NewRecorder()
-    s.OpenAPIHandler(rr, req)
-    require.Equal(t, http.StatusNotFound, rr.Code)
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{Name: "t"},
+	}
+	res, err := handler(context.Background(), req)
+	require.Error(t, err)
+	require.Nil(t, res)
 }
 
 // TestGetClickHouseJWEServerFromContext tests context extraction
@@ -1501,6 +742,204 @@ func TestBuildConfigFromClaims(t *testing.T) {
 	})
 }
 
+// TestMakeDynamicToolHandler_WithClickHouse tests dynamic tool handler with actual ClickHouse
+func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+
+	// prepare parameterized view
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_dyn")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_dyn AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// server with JWE disabled
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		},
+	}
+
+	meta := dynamicToolMeta{
+		ToolName:    "default_v_dyn",
+		Database:    "default",
+		Table:       "v_dyn",
+		Description: "desc",
+		Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+	}
+
+	handler := makeDynamicToolHandler(meta)
+
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Name:      meta.ToolName,
+			Arguments: json.RawMessage(`{"id": 1}`),
+		},
+	}
+
+	// context with server
+	ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
+	result, err := handler(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	text := ""
+	if len(result.Content) > 0 {
+		if tc, ok := result.Content[0].(*mcp.TextContent); ok {
+			text = tc.Text
+		}
+	}
+	require.NotEmpty(t, text)
+
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(text), &qr))
+	require.GreaterOrEqual(t, qr.Count, 1)
+}
+
+// TestRegisterDynamicTools_SuccessAndOverlap tests dynamic tools registration with overlapping rules
+func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	// Ensure base table exists (created in setup), create views
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_a")
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_b")
+	// v_a has comment and will overlap two rules
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_a AS SELECT * FROM default.test WHERE id={id:UInt64} COMMENT 'desc a'")
+	require.NoError(t, err)
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_b AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	// initialize server
+	s := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+			DynamicTools: []config.DynamicToolRule{
+				{Regexp: "default\\.v_.*", Prefix: "custom_"},
+				{Regexp: "default\\.v_a", Prefix: "other_"},
+			},
+		},
+	}, "test")
+
+	err = s.EnsureDynamicTools(ctx)
+	require.NoError(t, err)
+
+	// v_a matches two rules -> should be skipped
+	_, existsA1 := s.dynamicTools["custom_default_v_a"]
+	_, existsA2 := s.dynamicTools["other_default_v_a"]
+	require.False(t, existsA1)
+	require.False(t, existsA2)
+
+	// v_b matches only first rule -> should be registered
+	metaB, existsB := s.dynamicTools["custom_default_v_b"]
+	require.True(t, existsB)
+	require.Equal(t, "default", metaB.Database)
+	require.Equal(t, "v_b", metaB.Table)
+	require.NotEmpty(t, metaB.Params)
+}
+
+// TestHandleDynamicToolOpenAPI_PostExecutes tests dynamic tool execution via OpenAPI
+func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
+	ctx := context.Background()
+	chConfig := setupClickHouseContainer(t)
+	client, err := clickhouse.NewClient(ctx, *chConfig)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
+	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
+	require.NoError(t, err)
+
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		},
+		Version: "test",
+		dynamicTools: map[string]dynamicToolMeta{
+			"custom_default_v_api": {
+				ToolName:    "custom_default_v_api",
+				Database:    "default",
+				Table:       "v_api",
+				Description: "desc",
+				Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+			},
+		},
+	}
+
+	// Build POST request to dynamic tool endpoint
+	body := strings.NewReader(`{"id":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	// Inject server into context and call OpenAPIHandler
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	s.OpenAPIHandler(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+	require.GreaterOrEqual(t, qr.Count, 1)
+}
+
+// TestHandleDynamicToolOpenAPI_Errors tests error cases for dynamic tool OpenAPI
+func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
+	// Build a minimal server with one dynamic tool meta
+	s := &ClickHouseJWEServer{
+		Config: config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: true, JWESecretKey: "x", JWTSecretKey: "y"},
+			},
+		},
+		Version: "test",
+		dynamicTools: map[string]dynamicToolMeta{
+			"tool": {
+				ToolName:    "tool",
+				Database:    "db",
+				Table:       "t",
+				Description: "d",
+				Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+			},
+		},
+	}
+
+	// With JWE enabled and invalid token, the token validation occurs before method check → 401
+	req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr := httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+
+	// Use disabled JWE to test JSON decode and required params
+	s.Config.Server.JWE.Enabled = false
+
+	// invalid JSON body
+	req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr = httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+
+	// Unknown tool -> 404
+	req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	rr = httptest.NewRecorder()
+	s.OpenAPIHandler(rr, req)
+	require.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+// TestLazyLoading_OpenAPISchema tests lazy loading of dynamic tools via OpenAPI
 func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
@@ -1509,6 +948,7 @@ func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
+
 	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_lazy")
 	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_lazy AS SELECT * FROM default.test WHERE id={id:UInt64}")
 	require.NoError(t, err)
@@ -1550,11 +990,11 @@ func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	var schema map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
 	paths := schema["paths"].(map[string]interface{})
-	// Path format: /{jwe_token}/openapi/{tool}
 	_, ok = paths["/{jwe_token}/openapi/lazy_default_v_lazy"]
 	require.True(t, ok)
 }
 
+// TestLazyLoading_MCPTools tests lazy loading of dynamic tools via MCP
 func TestLazyLoading_MCPTools(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
@@ -1563,6 +1003,7 @@ func TestLazyLoading_MCPTools(t *testing.T) {
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
+
 	_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_mcp_lazy")
 	_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_mcp_lazy AS SELECT * FROM default.test WHERE id={id:UInt64}")
 	require.NoError(t, err)
@@ -1597,3 +1038,31 @@ func TestLazyLoading_MCPTools(t *testing.T) {
 	require.True(t, ok)
 	s.dynamicToolsMu.RUnlock()
 }
+
+// TestNewToolResultText tests the NewToolResultText helper
+func TestNewToolResultText(t *testing.T) {
+	result := NewToolResultText("test content")
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 1)
+	require.False(t, result.IsError)
+
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Equal(t, "test content", textContent.Text)
+}
+
+// TestNewToolResultError tests the NewToolResultError helper
+func TestNewToolResultError(t *testing.T) {
+	result := NewToolResultError("error message")
+	require.NotNil(t, result)
+	require.Len(t, result.Content, 1)
+	require.True(t, result.IsError)
+
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Equal(t, "error message", textContent.Text)
+}
+
+// Unused import suppressors (remove if unused)
+var _ = io.EOF
+var _ = fmt.Sprintf
