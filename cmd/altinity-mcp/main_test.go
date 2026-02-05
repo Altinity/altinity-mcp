@@ -1930,10 +1930,11 @@ func TestCORSSupport(t *testing.T) {
 			// Give server time to start
 			time.Sleep(100 * time.Millisecond)
 
-			// Get the actual server port
+			// Get the actual server port (thread-safe)
 			var serverPort string
-			if app.httpSrv != nil && app.httpSrv.Addr != "" {
-				_, port, _ := net.SplitHostPort(app.httpSrv.Addr)
+			httpSrv := app.getHTTPServer()
+			if httpSrv != nil && httpSrv.Addr != "" {
+				_, port, _ := net.SplitHostPort(httpSrv.Addr)
 				serverPort = port
 			}
 
@@ -1954,9 +1955,9 @@ func TestCORSSupport(t *testing.T) {
 				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
 			}
 
-			// Clean up
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			// Clean up (thread-safe)
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 			}
 			select {
 			case <-done:
@@ -2116,8 +2117,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2161,8 +2162,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2210,8 +2211,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2259,8 +2260,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2308,8 +2309,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2357,8 +2358,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}
@@ -2454,8 +2455,8 @@ func TestApplicationStart(t *testing.T) {
 			require.Error(t, err)
 		default:
 			// If it's still running, that's expected - stop it
-			if app.httpSrv != nil {
-				_ = app.httpSrv.Close()
+			if httpSrv := app.getHTTPServer(); httpSrv != nil {
+				_ = httpSrv.Close()
 				<-done // Wait for it to finish
 			}
 		}

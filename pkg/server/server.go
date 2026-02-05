@@ -15,16 +15,15 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 )
 
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
 type ClickHouseJWEServer struct {
-	*server.MCPServer
-	Config  config.Config
-	Version string
+	MCPServer *mcp.Server
+	Config    config.Config
+	Version   string
 	// dynamic tools metadata for OpenAPI routing and schema
 	dynamicTools     map[string]dynamicToolMeta
 	dynamicToolsMu   sync.RWMutex
@@ -47,27 +46,37 @@ type dynamicToolMeta struct {
 	Params      []dynamicToolParam
 }
 
+// ToolHandlerFunc is a function type for tool handlers
+type ToolHandlerFunc func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error)
+
+// ResourceHandlerFunc is a function type for resource handlers
+type ResourceHandlerFunc func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error)
+
+// PromptHandlerFunc is a function type for prompt handlers
+type PromptHandlerFunc func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error)
+
+// AltinityMCPServer interface for registering tools, resources and prompts
 type AltinityMCPServer interface {
-	AddTools(tools ...server.ServerTool)
-	AddTool(tool mcp.Tool, handler server.ToolHandlerFunc)
-	AddPrompt(prompt mcp.Prompt, handler server.PromptHandlerFunc)
-	AddPrompts(prompts ...server.ServerPrompt)
-	AddResource(resource mcp.Resource, handler server.ResourceHandlerFunc)
-	AddResources(resources ...server.ServerResource)
-	AddResourceTemplate(template mcp.ResourceTemplate, handler server.ResourceTemplateHandlerFunc)
+	AddTool(tool *mcp.Tool, handler ToolHandlerFunc)
+	AddResource(resource *mcp.Resource, handler ResourceHandlerFunc)
+	AddResourceTemplate(template *mcp.ResourceTemplate, handler ResourceHandlerFunc)
+	AddPrompt(prompt *mcp.Prompt, handler PromptHandlerFunc)
 }
 
 // NewClickHouseMCPServer creates a new MCP server with ClickHouse integration
 func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWEServer {
 	// Create MCP server with comprehensive configuration
-	srv := server.NewMCPServer(
-		"Altinity ClickHouse MCP Server",
-		version,
-		server.WithToolCapabilities(true),
-		server.WithResourceCapabilities(true, true),
-		server.WithPromptCapabilities(true),
-		server.WithRecovery(),
-	)
+	opts := &mcp.ServerOptions{
+		Instructions: "Altinity ClickHouse MCP Server - A Model Context Protocol server for interacting with ClickHouse databases",
+		HasTools:     true,
+		HasResources: true,
+		HasPrompts:   true,
+	}
+
+	srv := mcp.NewServer(&mcp.Implementation{
+		Name:    "Altinity ClickHouse MCP Server",
+		Version: version,
+	}, opts)
 
 	chJweServer := &ClickHouseJWEServer{
 		MCPServer:    srv,
@@ -90,6 +99,34 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
 	return chJweServer
+}
+
+// AddTool registers a tool with the MCP server
+func (s *ClickHouseJWEServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
+	s.MCPServer.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+// AddResource registers a resource with the MCP server
+func (s *ClickHouseJWEServer) AddResource(resource *mcp.Resource, handler ResourceHandlerFunc) {
+	s.MCPServer.AddResource(resource, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+// AddResourceTemplate registers a resource template with the MCP server
+func (s *ClickHouseJWEServer) AddResourceTemplate(template *mcp.ResourceTemplate, handler ResourceHandlerFunc) {
+	s.MCPServer.AddResourceTemplate(template, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+// AddPrompt registers a prompt with the MCP server
+func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandlerFunc) {
+	s.MCPServer.AddPrompt(prompt, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return handler(ctx, req)
+	})
 }
 
 // GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config
@@ -244,18 +281,25 @@ var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer) {
-	// Execute Query Tool
-	executeQueryTool := mcp.NewTool(
-		"execute_query",
-		mcp.WithDescription("Executes a SQL query against ClickHouse and returns the results"),
-		mcp.WithString("query",
-			mcp.Required(),
-			mcp.Description("SQL query to execute (SELECT, INSERT, CREATE, etc.)"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of rows to return (default: 100000)"),
-		),
-	)
+	// Execute Query Tool - InputSchema must be type "object" per MCP spec
+	executeQueryTool := &mcp.Tool{
+		Name:        "execute_query",
+		Description: "Executes a SQL query against ClickHouse and returns the results",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "SQL query to execute (SELECT, INSERT, CREATE, etc.)",
+				},
+				"limit": map[string]any{
+					"type":        "number",
+					"description": "Maximum number of rows to return (default: 100000)",
+				},
+			},
+			"required": []string{"query"},
+		},
+	}
 
 	srv.AddTool(executeQueryTool, HandleExecuteQuery)
 
@@ -265,22 +309,22 @@ func RegisterTools(srv AltinityMCPServer) {
 // RegisterResources adds ClickHouse resources to the MCP server
 func RegisterResources(srv AltinityMCPServer) {
 	// Database Schema Resource
-	schemaResource := mcp.NewResource(
-		"clickhouse://schema",
-		"Database Schema",
-		mcp.WithResourceDescription("Complete schema information for the ClickHouse database"),
-		mcp.WithMIMEType("application/json"),
-	)
+	schemaResource := &mcp.Resource{
+		URI:         "clickhouse://schema",
+		Name:        "Database Schema",
+		Description: "Complete schema information for the ClickHouse database",
+		MIMEType:    "application/json",
+	}
 
 	srv.AddResource(schemaResource, HandleSchemaResource)
 
 	// Table Structure Template Resource
-	tableTemplate := mcp.NewResourceTemplate(
-		"clickhouse://table/{database}/{table_name}",
-		"Table Structure",
-		mcp.WithTemplateDescription("Detailed structure information for a specific table"),
-		mcp.WithTemplateMIMEType("application/json"),
-	)
+	tableTemplate := &mcp.ResourceTemplate{
+		URITemplate: "clickhouse://table/{database}/{table_name}",
+		Name:        "Table Structure",
+		Description: "Detailed structure information for a specific table",
+		MIMEType:    "application/json",
+	}
 
 	srv.AddResourceTemplate(tableTemplate, HandleTableResource)
 
@@ -288,7 +332,7 @@ func RegisterResources(srv AltinityMCPServer) {
 }
 
 // HandleSchemaResource handles the schema resource
-func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+func HandleSchemaResource(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	log.Debug().Msg("Reading database schema resource")
 
 	// Get the ClickHouse JWE server from context
@@ -334,17 +378,19 @@ func HandleSchemaResource(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp
 		return nil, fmt.Errorf("failed to marshal schema: %w", err)
 	}
 
-	return []mcp.ResourceContents{
-		mcp.TextResourceContents{
-			URI:      "clickhouse://schema",
-			MIMEType: "application/json",
-			Text:     string(jsonData),
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{
+			{
+				URI:      "clickhouse://schema",
+				MIMEType: "application/json",
+				Text:     string(jsonData),
+			},
 		},
 	}, nil
 }
 
 // HandleTableResource handles the table resource
-func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 	// Extract database and table name from URI
 	uri := req.Params.URI
 	parts := strings.Split(uri, "/")
@@ -401,11 +447,13 @@ func HandleTableResource(ctx context.Context, req mcp.ReadResourceRequest) ([]mc
 		return nil, fmt.Errorf("failed to marshal table structure: %w", err)
 	}
 
-	return []mcp.ResourceContents{
-		mcp.TextResourceContents{
-			URI:      uri,
-			MIMEType: "application/json",
-			Text:     string(jsonData),
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{
+			{
+				URI:      uri,
+				MIMEType: "application/json",
+				Text:     string(jsonData),
+			},
 		},
 	}, nil
 }
@@ -535,19 +583,24 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		}
 		s.dynamicTools[toolName] = meta
 
-		// create MCP tool with parameters
-		opts := []mcp.ToolOption{mcp.WithDescription(meta.Description)}
+		// create MCP tool with parameters using map[string]any for InputSchema
+		props := make(map[string]any)
 		for _, p := range meta.Params {
-			switch p.JSONType {
-			case "boolean":
-				opts = append(opts, mcp.WithBoolean(p.Name, mcp.Description(p.CHType)))
-			case "number":
-				opts = append(opts, mcp.WithNumber(p.Name, mcp.Description(p.CHType)))
-			default:
-				opts = append(opts, mcp.WithString(p.Name, mcp.Description(p.CHType)))
+			prop := map[string]any{
+				"type":        p.JSONType,
+				"description": p.CHType,
 			}
+			props[p.Name] = prop
 		}
-		tool := mcp.NewTool(toolName, opts...)
+
+		tool := &mcp.Tool{
+			Name:        toolName,
+			Description: meta.Description,
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": props,
+			},
+		}
 		s.AddTool(tool, makeDynamicToolHandler(meta))
 		dynamicCount++
 	}
@@ -571,8 +624,8 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 	return nil
 }
 
-func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		chJweServer := GetClickHouseJWEServerFromContext(ctx)
 		if chJweServer == nil {
 			return nil, fmt.Errorf("can't get JWEServer from context")
@@ -583,7 +636,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
 		chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
-			return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+			return NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
 		}
 		defer func() {
 			if closeErr := chClient.Close(); closeErr != nil {
@@ -591,10 +644,13 @@ func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
 			}
 		}()
 
+		// Get arguments from request
+		arguments := getArgumentsMap(req)
+
 		// build param list
 		args := make([]string, 0, len(meta.Params))
 		for _, p := range meta.Params {
-			if v, ok := req.GetArguments()[p.Name]; ok {
+			if v, ok := arguments[p.Name]; ok {
 				// encode to SQL literal based on expected type
 				literal := sqlLiteral(p.JSONType, v)
 				args = append(args, fmt.Sprintf("%s=%s", p.Name, literal))
@@ -609,14 +665,28 @@ func makeDynamicToolHandler(meta dynamicToolMeta) server.ToolHandlerFunc {
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
 		}
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return NewToolResultError(err.Error()), nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{mcp.TextContent{Type: "text", Text: string(jsonData)}}}, nil
+		return NewToolResultText(string(jsonData)), nil
 	}
+}
+
+// getArgumentsMap extracts arguments from a CallToolRequest as a map
+func getArgumentsMap(req *mcp.CallToolRequest) map[string]any {
+	if req.Params.Arguments == nil {
+		return make(map[string]any)
+	}
+
+	// Arguments is json.RawMessage, unmarshal it
+	var args map[string]any
+	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+		return make(map[string]any)
+	}
+	return args
 }
 
 func buildDescription(comment, db, table string) string {
@@ -727,13 +797,41 @@ func snakeCase(s string) string {
 	return out
 }
 
-// HandleListTables implements the list_tables tool handler
+// NewToolResultText creates a tool result with text content
+func NewToolResultText(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{
+				Text: text,
+			},
+		},
+	}
+}
+
+// NewToolResultError creates a tool result with an error
+func NewToolResultError(errMsg string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{
+				Text: errMsg,
+			},
+		},
+		IsError: true,
+	}
+}
 
 // HandleExecuteQuery implements the execute_query tool handler
-func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	query, err := req.RequireString("query")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Get arguments from request
+	arguments := getArgumentsMap(req)
+
+	queryArg, ok := arguments["query"]
+	if !ok {
+		return NewToolResultError("query parameter is required"), nil
+	}
+	query, ok := queryArg.(string)
+	if !ok || query == "" {
+		return NewToolResultError("query parameter must be a non-empty string"), nil
 	}
 
 	// Get the ClickHouse JWE server from context
@@ -745,13 +843,13 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	// Get optional limit parameter
 	var limit float64
 	hasLimit := false
-	if limitVal, exists := req.GetArguments()["limit"]; exists {
+	if limitVal, exists := arguments["limit"]; exists {
 		if l, ok := limitVal.(float64); ok && l > 0 {
 			limit = l
 			hasLimit = true
 			// Check against configured max limit if one is set
 			if chJweServer.Config.ClickHouse.Limit > 0 && int(l) > chJweServer.Config.ClickHouse.Limit {
-				return mcp.NewToolResultError(fmt.Sprintf("Limit cannot exceed %d rows", chJweServer.Config.ClickHouse.Limit)), nil
+				return NewToolResultError(fmt.Sprintf("Limit cannot exceed %d rows", chJweServer.Config.ClickHouse.Limit)), nil
 			}
 		}
 	}
@@ -774,7 +872,7 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
 	}
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
@@ -792,18 +890,16 @@ func HandleExecuteQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return mcp.NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
 	}
 
-	return mcp.NewToolResultText(string(jsonData)), nil
+	return NewToolResultText(string(jsonData)), nil
 }
-
-// HandleDescribeTable implements the describe_table tool handler
 
 // GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context
 func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer {
