@@ -260,6 +260,22 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 		overrideWithCLIFlags(cfg, cmd)
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
 	})
+
+	t.Run("oauth_clear_clickhouse_credentials_override", func(t *testing.T) {
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"oauth-clear-clickhouse-credentials": true,
+			},
+			setFlags: map[string]bool{
+				"oauth-clear-clickhouse-credentials": true,
+			},
+			stringMaps: make(map[string]map[string]string),
+		}
+
+		cfg := &config.Config{}
+		overrideWithCLIFlags(cfg, cmd)
+		require.True(t, cfg.Server.OAuth.ClearClickHouseCredentials)
+	})
 }
 
 // mockCommand implements CommandInterface for testing

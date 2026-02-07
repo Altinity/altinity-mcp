@@ -1,0 +1,49 @@
+# Example values for altinity-mcp with OAuth + Azure AD (Entra ID)
+# ClickHouse must be configured with token_processors for Azure:
+#
+#   <token_processors>
+#     <azure_ad>
+#       <type>azure</type>
+#       <token_cache_lifetime>60</token_cache_lifetime>
+#     </azure_ad>
+#   </token_processors>
+#   <user_directories>
+#     <token>
+#       <processor>azure_ad</processor>
+#       <common_roles><default_role /></common_roles>
+#     </token>
+#   </user_directories>
+
+image:
+  tag: "main"
+  pullPolicy: Always
+
+config:
+  clickhouse:
+    host: "clickhouse.default.svc.cluster.local"
+    port: 8123
+    protocol: "http"
+    username: "default"
+    password: ""
+    read_only: true
+
+  server:
+    transport: "http"
+    oauth:
+      enabled: true
+      issuer: "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
+      audience: "<APPLICATION_CLIENT_ID>"
+      client_id: "<APPLICATION_CLIENT_ID>"
+      client_secret: "<APPLICATION_CLIENT_SECRET>"
+      token_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token"
+      auth_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/authorize"
+      scopes:
+        - "openid"
+        - "profile"
+        - "email"
+      forward_to_clickhouse: true
+      forward_access_token: true
+      clear_clickhouse_credentials: true
+
+  logging:
+    level: "info"

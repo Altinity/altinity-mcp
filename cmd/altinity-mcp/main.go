@@ -237,6 +237,13 @@ func run(args []string) error {
 				Value:   "*",
 				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
 			},
+			// OAuth configuration flags
+			&cli.BoolFlag{
+				Name:    "oauth-clear-clickhouse-credentials",
+				Usage:   "Clear ClickHouse credentials when forwarding OAuth token",
+				Value:   false,
+				Sources: cli.EnvVars("OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -976,6 +983,11 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.CORSOrigin = cmd.String("cors-origin")
 	} else if cfg.Server.CORSOrigin == "" {
 		cfg.Server.CORSOrigin = "*"
+	}
+
+	// Override OAuth config with CLI flags
+	if cmd.IsSet("oauth-clear-clickhouse-credentials") {
+		cfg.Server.OAuth.ClearClickHouseCredentials = cmd.Bool("oauth-clear-clickhouse-credentials")
 	}
 
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {
