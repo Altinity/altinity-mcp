@@ -7,6 +7,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 ## Features
 
 - **Multiple Transport Options**: Support for STDIO, HTTP, and Server-Sent Events (SSE) transports
+- **OAuth 2.0 Authorization**: Forward Bearer tokens to ClickHouse for token-based authentication via OIDC providers (see [OAuth 2.0 Documentation](docs/oauth_authorization.md))
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
 - **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
 - **Comprehensive Tools**: Built-in tools for listing tables, describing schemas, and executing queries
@@ -25,6 +26,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - [Available Resources](#available-resources)
 - [Available Prompts](#available-prompts)
 - [OpenAI GPTs Integration](#openai-gpts-integration)
+- [OAuth 2.0 Authorization](#oauth-20-authorization)
 - [JWE Authentication](#jwe-authentication)
 - [TLS Configuration](#tls-configuration)
 - [Testing](#testing)
@@ -304,6 +306,12 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 ```
 
 > **Note**: For Altinity Cloud deployments, use the provided endpoint URL with your organization-specific token.
+
+## OAuth 2.0 Authorization
+
+The MCP server supports OAuth 2.0 / OpenID Connect authentication with token forwarding to ClickHouse. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and have their Bearer tokens forwarded to ClickHouse for token-based authentication via `token_processors`.
+
+For full setup instructions, provider-specific guides, and ClickHouse configuration, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
 
 ## JWE Authentication
 

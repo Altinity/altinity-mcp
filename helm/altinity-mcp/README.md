@@ -29,6 +29,22 @@ A Helm chart for Altinity MCP Server
 | config.clickhouse.username | string | `"default"` |  |
 | config.logging.level | string | `"info"` |  |
 | config.server.address | string | `"0.0.0.0"` |  |
+| config.server.dynamic_tools | list | `[]` | Dynamic tools generated from ClickHouse views |
+| config.server.oauth.audience | string | `""` | Expected audience claim in the token |
+| config.server.oauth.auth_url | string | `""` | OAuth authorization endpoint URL |
+| config.server.oauth.claims_to_headers | object | `{}` | Map OAuth token claims to ClickHouse HTTP headers |
+| config.server.oauth.clear_clickhouse_credentials | bool | `false` | Clear ClickHouse username/password when forwarding OAuth token |
+| config.server.oauth.clickhouse_header_name | string | `""` | Header name for forwarding OAuth token to ClickHouse |
+| config.server.oauth.client_id | string | `""` | OAuth client ID |
+| config.server.oauth.client_secret | string | `""` | OAuth client secret |
+| config.server.oauth.enabled | bool | `false` | Enable OAuth 2.0 authentication |
+| config.server.oauth.forward_access_token | bool | `false` | Forward raw access token to ClickHouse |
+| config.server.oauth.forward_to_clickhouse | bool | `false` | Forward OAuth token to ClickHouse via HTTP headers |
+| config.server.oauth.issuer | string | `""` | OAuth token issuer URL for validation |
+| config.server.oauth.jwks_url | string | `""` | URL to fetch JSON Web Key Set for token validation |
+| config.server.oauth.required_scopes | list | `[]` | Required scopes for access (token must have all of these) |
+| config.server.oauth.scopes | list | `[]` | OAuth scopes to request |
+| config.server.oauth.token_url | string | `""` | OAuth token endpoint URL |
 | config.server.jwe.enabled | bool | `false` |  |
 | config.server.jwe.jwe_secret_key | string | `""` |  |
 | config.server.jwe.jwt_secret_key | string | `""` |  |
