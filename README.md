@@ -424,7 +424,7 @@ go test -v ./cmd/altinity-mcp/...
 - `--clickhouse-username`: Username
 - `--clickhouse-password`: Password
 - `--clickhouse-protocol`: Protocol (http/tcp)
-- `--read-only`: Read-only mode
+- `--read-only`: Read-only mode (prevents non-read SQL and avoids setting session variables)
 - `--clickhouse-max-execution-time`: Query timeout in seconds
 - `--clickhouse-http-headers`: HTTP headers for ClickHouse requests (key=value pairs)
 
