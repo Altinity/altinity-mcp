@@ -317,6 +317,9 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 // ExecuteQuery executes a SQL query and returns results
 // For non-SELECT queries (DDL, DML) will return single row with `OK`
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
+	if c.config.ReadOnly && !isSelectQuery(query) {
+		return nil, fmt.Errorf("query rejected: read-only mode allows only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN statements")
+	}
 	if isSelectQuery(query) {
 		return c.executeSelect(ctx, query, args...)
 	}
