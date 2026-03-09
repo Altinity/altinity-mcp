@@ -111,10 +111,10 @@ helm install altinity-mcp ./helm/altinity-mcp \
   --set config.server.port=8080
 ```
 
-From a branch-published GHCR image
+From a tag-published GHCR image
 ```bash
 helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
-  --set image.tag=<branch-or-sha-tag> \
+  --set image.tag=<tag-or-sha-tag> \
   --set config.clickhouse.host=clickhouse.example.com \
   --set config.clickhouse.database=default
 ```
