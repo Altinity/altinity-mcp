@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -40,10 +41,24 @@ type dynamicToolParam struct {
 
 type dynamicToolMeta struct {
 	ToolName    string
+	Title       string
 	Database    string
 	Table       string
 	Description string
+	Annotations *mcp.ToolAnnotations
 	Params      []dynamicToolParam
+}
+
+type dynamicToolCommentMetadata struct {
+	Title       string                         `json:"title"`
+	Description string                         `json:"description"`
+	Annotations *dynamicToolCommentAnnotations `json:"annotations"`
+}
+
+type dynamicToolCommentAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint"`
+	DestructiveHint *bool `json:"destructiveHint"`
+	OpenWorldHint   *bool `json:"openWorldHint"`
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -86,7 +101,7 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	}
 
 	// Register tools, resources, and prompts
-	RegisterTools(chJweServer)
+	RegisterTools(chJweServer, cfg)
 	// dynamic tools registered lazily via EnsureDynamicTools
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
@@ -280,11 +295,13 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
 // RegisterTools adds the ClickHouse tools to the MCP server
-func RegisterTools(srv AltinityMCPServer) {
+func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
 	// Execute Query Tool - InputSchema must be type "object" per MCP spec
 	executeQueryTool := &mcp.Tool{
 		Name:        "execute_query",
+		Title:       "Execute SQL Query",
 		Description: "Executes a SQL query against ClickHouse and returns the results",
+		Annotations: makeExecuteQueryAnnotations(cfg.ClickHouse.ReadOnly),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -574,13 +591,7 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		}
 
 		params := parseViewParams(create)
-		meta := dynamicToolMeta{
-			ToolName:    toolName,
-			Database:    db,
-			Table:       name,
-			Description: buildDescription(comment, db, name),
-			Params:      params,
-		}
+		meta := buildDynamicToolMeta(toolName, db, name, comment, params)
 		s.dynamicTools[toolName] = meta
 
 		// create MCP tool with parameters using map[string]any for InputSchema
@@ -595,7 +606,9 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 
 		tool := &mcp.Tool{
 			Name:        toolName,
+			Title:       meta.Title,
 			Description: meta.Description,
+			Annotations: meta.Annotations,
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": props,
@@ -689,11 +702,129 @@ func getArgumentsMap(req *mcp.CallToolRequest) map[string]any {
 	return args
 }
 
+func buildDynamicToolMeta(toolName, db, table, comment string, params []dynamicToolParam) dynamicToolMeta {
+	title, description, annotations := buildToolPresentation(toolName, db, table, comment)
+
+	return dynamicToolMeta{
+		ToolName:    toolName,
+		Title:       title,
+		Database:    db,
+		Table:       table,
+		Description: description,
+		Annotations: annotations,
+		Params:      params,
+	}
+}
+
+func buildToolPresentation(toolName, db, table, comment string) (string, string, *mcp.ToolAnnotations) {
+	metadata, hasStructuredMetadata := parseDynamicToolComment(comment)
+	title := buildTitle(toolName, metadata.Title)
+	description := buildDynamicToolDescription(comment, db, table, metadata.Description, hasStructuredMetadata)
+	annotations := buildDynamicToolAnnotations(metadata.Annotations)
+	return title, description, annotations
+}
+
+func parseDynamicToolComment(comment string) (dynamicToolCommentMetadata, bool) {
+	trimmed := strings.TrimSpace(comment)
+	if trimmed == "" {
+		return dynamicToolCommentMetadata{}, false
+	}
+	if !strings.HasPrefix(trimmed, "{") {
+		return dynamicToolCommentMetadata{}, false
+	}
+
+	var metadata dynamicToolCommentMetadata
+	if err := json.Unmarshal([]byte(trimmed), &metadata); err != nil {
+		return dynamicToolCommentMetadata{}, false
+	}
+	return metadata, true
+}
+
+func buildTitle(toolName, title string) string {
+	if strings.TrimSpace(title) != "" {
+		return strings.TrimSpace(title)
+	}
+	return humanizeToolName(toolName)
+}
+
 func buildDescription(comment, db, table string) string {
+	return buildDynamicToolDescription(comment, db, table, "", false)
+}
+
+func buildDynamicToolDescription(comment, db, table, metadataDescription string, hasStructuredMetadata bool) string {
+	if strings.TrimSpace(metadataDescription) != "" {
+		return strings.TrimSpace(metadataDescription)
+	}
 	if strings.TrimSpace(comment) != "" {
+		if hasStructuredMetadata {
+			return fmt.Sprintf("Read-only tool to query data from %s.%s", db, table)
+		}
 		return comment
 	}
-	return fmt.Sprintf("Tool to load data from %s.%s", db, table)
+	return fmt.Sprintf("Read-only tool to query data from %s.%s", db, table)
+}
+
+func buildDynamicToolAnnotations(commentAnnotations *dynamicToolCommentAnnotations) *mcp.ToolAnnotations {
+	annotations := &mcp.ToolAnnotations{
+		ReadOnlyHint:    true,
+		DestructiveHint: boolPtr(false),
+		OpenWorldHint:   boolPtr(false),
+	}
+	if commentAnnotations != nil {
+		if commentAnnotations.ReadOnlyHint != nil {
+			annotations.ReadOnlyHint = *commentAnnotations.ReadOnlyHint
+		}
+		if commentAnnotations.DestructiveHint != nil {
+			annotations.DestructiveHint = boolPtr(*commentAnnotations.DestructiveHint)
+		}
+		if commentAnnotations.OpenWorldHint != nil {
+			annotations.OpenWorldHint = boolPtr(*commentAnnotations.OpenWorldHint)
+		}
+	}
+
+	annotations.ReadOnlyHint = true
+	annotations.DestructiveHint = boolPtr(false)
+	annotations.OpenWorldHint = boolPtr(false)
+	return annotations
+}
+
+func makeExecuteQueryAnnotations(readOnly bool) *mcp.ToolAnnotations {
+	if readOnly {
+		return &mcp.ToolAnnotations{
+			ReadOnlyHint:    true,
+			DestructiveHint: boolPtr(false),
+			OpenWorldHint:   boolPtr(false),
+		}
+	}
+
+	return &mcp.ToolAnnotations{
+		ReadOnlyHint:    false,
+		DestructiveHint: boolPtr(true),
+		OpenWorldHint:   boolPtr(false),
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func humanizeToolName(toolName string) string {
+	parts := strings.FieldsFunc(toolName, func(r rune) bool {
+		return !(unicode.IsLetter(r) || unicode.IsNumber(r))
+	})
+	for i, part := range parts {
+		parts[i] = capitalize(part)
+	}
+	return strings.Join(parts, " ")
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(strings.ToLower(s))
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 var paramRe = regexp.MustCompile(`\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)\}`)
