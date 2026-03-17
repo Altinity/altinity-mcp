@@ -149,34 +149,45 @@ func TestClientOperations(t *testing.T) {
 }
 
 func TestClientErrorPaths(t *testing.T) {
-    t.Run("ping_failure", func(t *testing.T) {
-        cfg := &config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}
-        ctx := context.Background()
-        client, err := NewClient(ctx, *cfg)
-        require.Error(t, err)
-        require.Nil(t, client)
-    })
+	t.Run("ping_failure", func(t *testing.T) {
+		cfg := &config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}
+		ctx := context.Background()
+		client, err := NewClient(ctx, *cfg)
+		require.Error(t, err)
+		require.Nil(t, client)
+	})
 
-    t.Run("describe_table_not_exists", func(t *testing.T) {
-        cfg := setupClickHouseContainer(t)
-        ctx := context.Background()
-        client, err := NewClient(ctx, *cfg)
-        require.NoError(t, err)
-        defer func() { _ = client.Close() }()
-        _, err = client.DescribeTable(ctx, cfg.Database, "not_exists")
-        require.Error(t, err)
-        require.Contains(t, err.Error(), "columns not found")
-    })
+	t.Run("describe_table_not_exists", func(t *testing.T) {
+		cfg := setupClickHouseContainer(t)
+		ctx := context.Background()
+		client, err := NewClient(ctx, *cfg)
+		require.NoError(t, err)
+		defer func() { _ = client.Close() }()
+		_, err = client.DescribeTable(ctx, cfg.Database, "not_exists")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "columns not found")
+	})
 
-    t.Run("non_select_error", func(t *testing.T) {
-        cfg := setupClickHouseContainer(t)
-        ctx := context.Background()
-        client, err := NewClient(ctx, *cfg)
-        require.NoError(t, err)
-        defer func() { _ = client.Close() }()
-        _, err = client.ExecuteQuery(ctx, "CREATE TABLE broken ENGINE = Memory")
-        require.Error(t, err)
-    })
+	t.Run("non_select_error", func(t *testing.T) {
+		cfg := setupClickHouseContainer(t)
+		ctx := context.Background()
+		client, err := NewClient(ctx, *cfg)
+		require.NoError(t, err)
+		defer func() { _ = client.Close() }()
+		_, err = client.ExecuteQuery(ctx, "CREATE TABLE broken ENGINE = Memory")
+		require.Error(t, err)
+	})
+
+	t.Run("read_only_blocks_non_select", func(t *testing.T) {
+		client := &Client{
+			config: config.ClickHouseConfig{
+				ReadOnly: true,
+			},
+		}
+		_, err := client.ExecuteQuery(context.Background(), "INSERT INTO t VALUES (1)")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "read-only mode allows only")
+	})
 }
 
 // TestUtilityFunctions tests utility functions
