@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -159,33 +160,49 @@ func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandle
 	})
 }
 
-// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config
+// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config.
+// Also forwards any HTTP headers stored in context by the middleware.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
+	return s.GetClickHouseClientWithHeaders(ctx, tokenParam, ForwardedHeadersFromContext(ctx))
+}
+
+// GetClickHouseClientWithHeaders creates a ClickHouse client, merging optional per-request
+// HTTP headers (e.g. X-Tenant-Id) into the config before connecting to ClickHouse.
+func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context, tokenParam string, extraHeaders map[string]string) (*clickhouse.Client, error) {
+	var chConfig config.ClickHouseConfig
+
 	if !s.Config.Server.JWE.Enabled {
-		// If JWE auth is disabled, use the default config
-		client, err := clickhouse.NewClient(ctx, s.Config.ClickHouse)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+		chConfig = s.Config.ClickHouse
+	} else {
+		if tokenParam == "" {
+			// JWE auth is enabled but no token provided
+			return nil, jwe_auth.ErrMissingToken
 		}
-		return client, nil
+
+		// Parse and validate JWE token
+		claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+		if err != nil {
+			log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
+			return nil, err
+		}
+
+		var buildErr error
+		// Create ClickHouse config from JWE claims
+		chConfig, buildErr = s.buildConfigFromClaims(claims)
+		if buildErr != nil {
+			return nil, buildErr
+		}
 	}
 
-	if tokenParam == "" {
-		// JWE auth is enabled but no token provided
-		return nil, jwe_auth.ErrMissingToken
-	}
-
-	// Parse and validate JWE token
-	claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
-		return nil, err
-	}
-
-	// Create ClickHouse config from JWE claims
-	chConfig, err := s.buildConfigFromClaims(claims)
-	if err != nil {
-		return nil, err
+	if len(extraHeaders) > 0 {
+		merged := make(map[string]string)
+		for k, v := range chConfig.HttpHeaders {
+			merged[k] = v
+		}
+		for k, v := range extraHeaders {
+			merged[k] = v
+		}
+		chConfig.HttpHeaders = merged
 	}
 
 	// Create client with the configured parameters
@@ -1642,4 +1659,102 @@ func isSelectQuery(query string) bool {
 func hasLimitClause(query string) bool {
 	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
 	return hasLimit
+}
+
+// contextKey avoids collisions with other packages using context.WithValue.
+type contextKey string
+
+const forwardedHeadersKey contextKey = "forwarded_http_headers"
+
+// DefaultForwardHTTPHeaders is used when no explicit config is provided.
+// Empty by default — no headers are forwarded unless explicitly configured.
+var DefaultForwardHTTPHeaders []string
+
+// ContextWithForwardedHeaders extracts headers matching the given patterns
+// from the incoming HTTP request and stores them in context. This makes
+// forwarded headers available to every handler path (OpenAPI, MCP JSON-RPC,
+// dynamic tools) without coupling to *http.Request.
+func ContextWithForwardedHeaders(ctx context.Context, r *http.Request, patterns []string) context.Context {
+	if headers := extractForwardHeaders(r, patterns); headers != nil {
+		return context.WithValue(ctx, forwardedHeadersKey, headers)
+	}
+	return ctx
+}
+
+// ForwardedHeadersFromContext retrieves forwarded HTTP headers previously
+// stored by ContextWithForwardedHeaders. Returns nil when no headers are
+// available (e.g. STDIO transport).
+func ForwardedHeadersFromContext(ctx context.Context) map[string]string {
+	if headers, ok := ctx.Value(forwardedHeadersKey).(map[string]string); ok {
+		return headers
+	}
+	return nil
+}
+
+// extractForwardHeaders returns headers matching any of the given patterns.
+// Patterns support trailing * wildcard (e.g. "X-*" matches all X-prefixed
+// headers) and exact matches (e.g. "X-Tenant-Id"). Matching is
+// case-insensitive. ClickHouse's allow_get_client_http_header provides a
+// second security gate on the ClickHouse side.
+func extractForwardHeaders(r *http.Request, patterns []string) map[string]string {
+	if r == nil || len(patterns) == 0 {
+		return nil
+	}
+	headers := make(map[string]string)
+	for name := range r.Header {
+		canonical := http.CanonicalHeaderKey(name)
+		if matchesAnyPattern(canonical, patterns) {
+			headers[canonical] = r.Header.Get(name)
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(headers))
+	for k := range headers {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(headers)).Strs("header_names", names).Msg("forwarding HTTP headers to ClickHouse")
+	return headers
+}
+
+// CORSAllowHeaders builds the Access-Control-Allow-Headers value by combining
+// a base set of standard headers with the configured forward patterns. Wildcard
+// patterns (e.g. "X-*") are expanded to the CORS spec wildcard "*" since
+// browsers don't support prefix wildcards in Access-Control-Allow-Headers.
+func CORSAllowHeaders(forwardPatterns []string) string {
+	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
+	for _, p := range forwardPatterns {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(p, "*") {
+			return base + ", *"
+		}
+		base += ", " + p
+	}
+	return base
+}
+
+// matchesAnyPattern returns true if header matches at least one pattern.
+// Supports trailing * wildcard (e.g. "X-*", "X-Tenant-*") and exact match.
+// Comparison is case-insensitive.
+func matchesAnyPattern(header string, patterns []string) bool {
+	lower := strings.ToLower(header)
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(p, "*") {
+			if strings.HasPrefix(lower, p[:len(p)-1]) {
+				return true
+			}
+		} else if lower == p {
+			return true
+		}
+	}
+	return false
 }
