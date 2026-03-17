@@ -135,6 +135,7 @@ type ServerConfig struct {
 	OAuth      OAuthConfig     `json:"oauth" yaml:"oauth"`
 	OpenAPI    OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
 	CORSOrigin string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ForwardHTTPHeaders []string  `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }

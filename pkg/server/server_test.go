@@ -1983,6 +1983,47 @@ func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	require.False(t, result.IsError)
 }
 
+func TestExtractForwardHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Custom-Header", "value_a")
+	req.Header.Set("X-Request-Id", "abc-123")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "session=abc")
+
+	t.Run("wildcard pattern forwards matching, excludes non-matching", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"X-*"})
+		require.Len(t, headers, 2)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+		require.Equal(t, "abc-123", headers["X-Request-Id"])
+	})
+
+	t.Run("exact pattern restricts to named header only", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"X-Custom-Header"})
+		require.Len(t, headers, 1)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+	})
+
+	t.Run("empty patterns forwards nothing", func(t *testing.T) {
+		require.Nil(t, extractForwardHeaders(req, nil))
+	})
+}
+
+func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Y-Custom-Header", "value_a")
+	req.Header.Set("X-Request-Id", "req-42")
+	req.Header.Set("Authorization", "Bearer secret")
+
+	ctx := ContextWithForwardedHeaders(context.Background(), req, []string{"*"})
+	headers := ForwardedHeadersFromContext(ctx)
+
+	require.Len(t, headers, 3)
+	require.Equal(t, "value_a", headers["Y-Custom-Header"])
+	require.Equal(t, "req-42", headers["X-Request-Id"])
+	require.Equal(t, "Bearer secret", headers["Authorization"])
+	require.Nil(t, ForwardedHeadersFromContext(context.Background()))
+}
+
 // Unused import suppressors (remove if unused)
 var _ = io.EOF
 var _ = fmt.Sprintf
