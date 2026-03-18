@@ -2024,6 +2024,58 @@ func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
 	require.Nil(t, ForwardedHeadersFromContext(context.Background()))
 }
 
+func TestCORSAllowHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   []string
+		expected string
+	}{
+		{"empty", nil, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"},
+		{"single", []string{"X-Custom-Header"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
+		{"multiple", []string{"X-Custom-Header", "X-Other"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, X-Other"},
+		{"wildcard", []string{"X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, *"},
+		{"mixed", []string{"X-Custom-Header", "X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, *"},
+		{"spaces", []string{" X-Custom-Header "}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			actual := CORSAllowHeaders(c.input)
+			require.Equal(t, c.expected, actual)
+		})
+	}
+}
+
+// TestGetClickHouseClientWithHeaders_MergesExtraHeaders tests that extraHeaders are merged
+// into the ClickHouse config used for the connection (extras override base headers).
+func TestGetClickHouseClientWithHeaders_MergesExtraHeaders(t *testing.T) {
+	chConfig := config.ClickHouseConfig{
+		Host:        "localhost",
+		Port:        8123,
+		Database:    "default",
+		Username:    "default",
+		Protocol:    config.HTTPProtocol,
+		HttpHeaders: map[string]string{"X-Base": "base"},
+	}
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{ClickHouse: chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}},
+	}
+
+	extra := map[string]string{"X-Extra": "extra", "X-Base": "override"}
+	ctx := context.Background()
+
+	client, err := srv.GetClickHouseClientWithHeaders(ctx, "", extra)
+	if client != nil {
+		_ = client.Close()
+	}
+	require.NoError(t, err)
+
+	// The original srv.Config should NOT be mutated (chConfig is a value copy).
+	// Base headers remain untouched on the server config.
+	require.Equal(t, "base", srv.Config.ClickHouse.HttpHeaders["X-Base"])
+	require.Empty(t, srv.Config.ClickHouse.HttpHeaders["X-Extra"])
+}
+
 // Unused import suppressors (remove if unused)
 var _ = io.EOF
 var _ = fmt.Sprintf

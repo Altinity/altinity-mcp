@@ -1012,9 +1012,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 			cfg.Server.ForwardHTTPHeaders = nil
 		}
 	}
-	if len(cfg.Server.ForwardHTTPHeaders) == 0 && !cmd.IsSet("forward-http-headers") {
-		cfg.Server.ForwardHTTPHeaders = altinitymcp.DefaultForwardHTTPHeaders
-	}
 
 	// Override OAuth config with CLI flags
 	if cmd.IsSet("oauth-clear-clickhouse-credentials") {
