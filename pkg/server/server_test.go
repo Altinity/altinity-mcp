@@ -2006,6 +2006,21 @@ func TestExtractForwardHeaders(t *testing.T) {
 	t.Run("empty patterns forwards nothing", func(t *testing.T) {
 		require.Nil(t, extractForwardHeaders(req, nil))
 	})
+
+	t.Run("wildcard excludes sensitive headers", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"*"})
+		require.NotNil(t, headers)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+		require.Equal(t, "abc-123", headers["X-Request-Id"])
+		require.Empty(t, headers["Authorization"], "Authorization must be blocked by wildcard")
+		require.Empty(t, headers["Cookie"], "Cookie must be blocked by wildcard")
+	})
+
+	t.Run("explicit pattern forwards sensitive header", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"Authorization"})
+		require.Len(t, headers, 1)
+		require.Equal(t, "Bearer secret", headers["Authorization"])
+	})
 }
 
 func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
@@ -2017,17 +2032,16 @@ func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
 	ctx := ContextWithForwardedHeaders(context.Background(), req, []string{"*"})
 	headers := ForwardedHeadersFromContext(ctx)
 
-	require.Len(t, headers, 3)
 	require.Equal(t, "value_a", headers["Y-Custom-Header"])
 	require.Equal(t, "req-42", headers["X-Request-Id"])
-	require.Equal(t, "Bearer secret", headers["Authorization"])
+	require.Empty(t, headers["Authorization"], "wildcard must not forward sensitive headers")
 	require.Nil(t, ForwardedHeadersFromContext(context.Background()))
 }
 
 func TestCORSAllowHeaders(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   []string
+		name     string
+		input    []string
 		expected string
 	}{
 		{"empty", nil, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"},
@@ -2045,35 +2059,28 @@ func TestCORSAllowHeaders(t *testing.T) {
 	}
 }
 
-// TestGetClickHouseClientWithHeaders_MergesExtraHeaders tests that extraHeaders are merged
-// into the ClickHouse config used for the connection (extras override base headers).
-func TestGetClickHouseClientWithHeaders_MergesExtraHeaders(t *testing.T) {
-	chConfig := config.ClickHouseConfig{
-		Host:        "localhost",
-		Port:        8123,
-		Database:    "default",
-		Username:    "default",
-		Protocol:    config.HTTPProtocol,
-		HttpHeaders: map[string]string{"X-Base": "base"},
-	}
+// TestMergeHTTPHeaders verifies that mergeHTTPHeaders produces a correct union
+// where extra values override base values, and neither input map is mutated.
+func TestMergeHTTPHeaders(t *testing.T) {
+	base := map[string]string{"X-Base": "base", "X-Shared": "from-base"}
+	extra := map[string]string{"X-Extra": "extra", "X-Shared": "from-extra"}
 
-	srv := &ClickHouseJWEServer{
-		Config: config.Config{ClickHouse: chConfig, Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}},
-	}
+	merged := mergeHTTPHeaders(base, extra)
 
-	extra := map[string]string{"X-Extra": "extra", "X-Base": "override"}
-	ctx := context.Background()
+	require.Equal(t, "base", merged["X-Base"])
+	require.Equal(t, "extra", merged["X-Extra"])
+	require.Equal(t, "from-extra", merged["X-Shared"])
 
-	client, err := srv.GetClickHouseClientWithHeaders(ctx, "", extra)
-	if client != nil {
-		_ = client.Close()
-	}
-	require.NoError(t, err)
+	require.Equal(t, "from-base", base["X-Shared"], "base map must not be mutated")
+	require.Empty(t, base["X-Extra"], "base map must not be mutated")
+}
 
-	// The original srv.Config should NOT be mutated (chConfig is a value copy).
-	// Base headers remain untouched on the server config.
-	require.Equal(t, "base", srv.Config.ClickHouse.HttpHeaders["X-Base"])
-	require.Empty(t, srv.Config.ClickHouse.HttpHeaders["X-Extra"])
+// TestMergeHTTPHeaders_NilBase verifies merging into a nil base map works.
+func TestMergeHTTPHeaders_NilBase(t *testing.T) {
+	extra := map[string]string{"X-Extra": "extra"}
+	merged := mergeHTTPHeaders(nil, extra)
+	require.Equal(t, "extra", merged["X-Extra"])
+	require.Len(t, merged, 1)
 }
 
 // Unused import suppressors (remove if unused)

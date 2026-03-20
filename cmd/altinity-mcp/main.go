@@ -244,7 +244,7 @@ func run(args []string) error {
 				Value:   false,
 				Sources: cli.EnvVars("OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS"),
 			},
-            &cli.StringFlag{
+			&cli.StringFlag{
 				Name:    "forward-http-headers",
 				Usage:   "Comma-separated header name patterns forwarded from incoming requests to ClickHouse (supports * wildcard, e.g. X-*,X-Custom-Header)",
 				Value:   "",
@@ -532,6 +532,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
@@ -628,6 +629,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Inject the ClickHouseJWEServer into the context
@@ -1012,6 +1014,7 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 			cfg.Server.ForwardHTTPHeaders = nil
 		}
 	}
+
 
 	// Override OAuth config with CLI flags
 	if cmd.IsSet("oauth-clear-clickhouse-credentials") {

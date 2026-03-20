@@ -195,20 +195,13 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context
 	}
 
 	if len(extraHeaders) > 0 {
-		merged := make(map[string]string)
-		for k, v := range chConfig.HttpHeaders {
-			merged[k] = v
-		}
-		for k, v := range extraHeaders {
-			merged[k] = v
-		}
-		chConfig.HttpHeaders = merged
+		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
 	}
 
 	// Create client with the configured parameters
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ClickHouse client from JWE: %w", err)
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 
 	return client, nil
@@ -1666,9 +1659,28 @@ type contextKey string
 
 const forwardedHeadersKey contextKey = "forwarded_http_headers"
 
-// DefaultForwardHTTPHeaders is used when no explicit config is provided.
-// Empty by default — no headers are forwarded unless explicitly configured.
-var DefaultForwardHTTPHeaders []string
+// sensitiveHeaders are excluded from wildcard pattern matching to prevent
+// accidental credential leakage. A user can still forward these by naming
+// them explicitly (e.g. --forward-http-headers "Authorization").
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+	"Host":                true,
+	"Proxy-Authorization": true,
+}
+
+// WarnOnCatchAllPattern logs a warning if any pattern is a bare "*",
+// which would forward all non-sensitive headers to ClickHouse. Call
+// once at startup after parsing the config.
+func WarnOnCatchAllPattern(patterns []string) {
+	for _, p := range patterns {
+		if strings.TrimSpace(p) == "*" {
+			log.Warn().Msg("forward-http-headers contains \"*\": all headers (except Authorization, Cookie, Host, Set-Cookie, Proxy-Authorization) will be forwarded to ClickHouse; sensitive headers require an explicit pattern")
+			return
+		}
+	}
+}
 
 // ContextWithForwardedHeaders extracts headers matching the given patterns
 // from the incoming HTTP request and stores them in context. This makes
@@ -1694,8 +1706,9 @@ func ForwardedHeadersFromContext(ctx context.Context) map[string]string {
 // extractForwardHeaders returns headers matching any of the given patterns.
 // Patterns support trailing * wildcard (e.g. "X-*" matches all X-prefixed
 // headers) and exact matches (e.g. "X-Tenant-Id"). Matching is
-// case-insensitive. ClickHouse's allow_get_client_http_header provides a
-// second security gate on the ClickHouse side.
+// case-insensitive. Sensitive headers (Authorization, Cookie, …) are
+// excluded from wildcard matches but can be forwarded via an explicit
+// exact-match pattern.
 func extractForwardHeaders(r *http.Request, patterns []string) map[string]string {
 	if r == nil || len(patterns) == 0 {
 		return nil
@@ -1719,6 +1732,19 @@ func extractForwardHeaders(r *http.Request, patterns []string) map[string]string
 	return headers
 }
 
+// mergeHTTPHeaders merges extra per-request headers into a base header map,
+// returning a new map without mutating either input.
+func mergeHTTPHeaders(base, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return merged
+}
+
 // CORSAllowHeaders builds the Access-Control-Allow-Headers value by combining
 // a base set of standard headers with the configured forward patterns. Wildcard
 // patterns (e.g. "X-*") are expanded to the CORS spec wildcard "*" since
@@ -1740,7 +1766,8 @@ func CORSAllowHeaders(forwardPatterns []string) string {
 
 // matchesAnyPattern returns true if header matches at least one pattern.
 // Supports trailing * wildcard (e.g. "X-*", "X-Tenant-*") and exact match.
-// Comparison is case-insensitive.
+// Comparison is case-insensitive. Wildcard patterns skip sensitive headers;
+// only an explicit exact-match pattern can forward them.
 func matchesAnyPattern(header string, patterns []string) bool {
 	lower := strings.ToLower(header)
 	for _, p := range patterns {
@@ -1749,6 +1776,9 @@ func matchesAnyPattern(header string, patterns []string) bool {
 			continue
 		}
 		if strings.HasSuffix(p, "*") {
+			if sensitiveHeaders[http.CanonicalHeaderKey(header)] {
+				continue
+			}
 			if strings.HasPrefix(lower, p[:len(p)-1]) {
 				return true
 			}
