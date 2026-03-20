@@ -1983,6 +1983,106 @@ func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	require.False(t, result.IsError)
 }
 
+func TestExtractForwardHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Custom-Header", "value_a")
+	req.Header.Set("X-Request-Id", "abc-123")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "session=abc")
+
+	t.Run("wildcard pattern forwards matching, excludes non-matching", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"X-*"})
+		require.Len(t, headers, 2)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+		require.Equal(t, "abc-123", headers["X-Request-Id"])
+	})
+
+	t.Run("exact pattern restricts to named header only", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"X-Custom-Header"})
+		require.Len(t, headers, 1)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+	})
+
+	t.Run("empty patterns forwards nothing", func(t *testing.T) {
+		require.Nil(t, extractForwardHeaders(req, nil))
+	})
+
+	t.Run("wildcard excludes sensitive headers", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"*"})
+		require.NotNil(t, headers)
+		require.Equal(t, "value_a", headers["X-Custom-Header"])
+		require.Equal(t, "abc-123", headers["X-Request-Id"])
+		require.Empty(t, headers["Authorization"], "Authorization must be blocked by wildcard")
+		require.Empty(t, headers["Cookie"], "Cookie must be blocked by wildcard")
+	})
+
+	t.Run("explicit pattern forwards sensitive header", func(t *testing.T) {
+		headers := extractForwardHeaders(req, []string{"Authorization"})
+		require.Len(t, headers, 1)
+		require.Equal(t, "Bearer secret", headers["Authorization"])
+	})
+}
+
+func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Y-Custom-Header", "value_a")
+	req.Header.Set("X-Request-Id", "req-42")
+	req.Header.Set("Authorization", "Bearer secret")
+
+	ctx := ContextWithForwardedHeaders(context.Background(), req, []string{"*"})
+	headers := ForwardedHeadersFromContext(ctx)
+
+	require.Equal(t, "value_a", headers["Y-Custom-Header"])
+	require.Equal(t, "req-42", headers["X-Request-Id"])
+	require.Empty(t, headers["Authorization"], "wildcard must not forward sensitive headers")
+	require.Nil(t, ForwardedHeadersFromContext(context.Background()))
+}
+
+func TestCORSAllowHeaders(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    []string
+		expected string
+	}{
+		{"empty", nil, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"},
+		{"single", []string{"X-Custom-Header"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
+		{"multiple", []string{"X-Custom-Header", "X-Other"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, X-Other"},
+		{"wildcard", []string{"X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, *"},
+		{"mixed", []string{"X-Custom-Header", "X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, *"},
+		{"spaces", []string{" X-Custom-Header "}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			actual := CORSAllowHeaders(c.input)
+			require.Equal(t, c.expected, actual)
+		})
+	}
+}
+
+// TestMergeHTTPHeaders verifies that mergeHTTPHeaders produces a correct union
+// where extra values override base values, and neither input map is mutated.
+func TestMergeHTTPHeaders(t *testing.T) {
+	base := map[string]string{"X-Base": "base", "X-Shared": "from-base"}
+	extra := map[string]string{"X-Extra": "extra", "X-Shared": "from-extra"}
+
+	merged := mergeHTTPHeaders(base, extra)
+
+	require.Equal(t, "base", merged["X-Base"])
+	require.Equal(t, "extra", merged["X-Extra"])
+	require.Equal(t, "from-extra", merged["X-Shared"])
+
+	require.Equal(t, "from-base", base["X-Shared"], "base map must not be mutated")
+	require.Empty(t, base["X-Extra"], "base map must not be mutated")
+}
+
+// TestMergeHTTPHeaders_NilBase verifies merging into a nil base map works.
+func TestMergeHTTPHeaders_NilBase(t *testing.T) {
+	extra := map[string]string{"X-Extra": "extra"}
+	merged := mergeHTTPHeaders(nil, extra)
+	require.Equal(t, "extra", merged["X-Extra"])
+	require.Len(t, merged, 1)
+}
+
 // Unused import suppressors (remove if unused)
 var _ = io.EOF
 var _ = fmt.Sprintf
