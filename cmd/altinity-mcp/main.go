@@ -244,6 +244,12 @@ func run(args []string) error {
 				Value:   false,
 				Sources: cli.EnvVars("OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS"),
 			},
+			&cli.StringFlag{
+				Name:    "forward-http-headers",
+				Usage:   "Comma-separated header name patterns forwarded from incoming requests to ClickHouse (supports * wildcard, e.g. X-*,X-Custom-Header)",
+				Value:   "",
+				Sources: cli.EnvVars("FORWARD_HTTP_HEADERS"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -525,23 +531,28 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 	}
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
+	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
+	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight requests
@@ -617,24 +628,29 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		Msg("Starting MCP server with SSE transport")
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
+	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Inject the ClickHouseJWEServer into the context
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
+	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
 
 			// Handle preflight requests
@@ -984,6 +1000,21 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	} else if cfg.Server.CORSOrigin == "" {
 		cfg.Server.CORSOrigin = "*"
 	}
+
+	// Override forward-http-headers with CLI flags
+	if cmd.IsSet("forward-http-headers") {
+		raw := cmd.String("forward-http-headers")
+		if raw != "" {
+			patterns := strings.Split(raw, ",")
+			for i := range patterns {
+				patterns[i] = strings.TrimSpace(patterns[i])
+			}
+			cfg.Server.ForwardHTTPHeaders = patterns
+		} else {
+			cfg.Server.ForwardHTTPHeaders = nil
+		}
+	}
+
 
 	// Override OAuth config with CLI flags
 	if cmd.IsSet("oauth-clear-clickhouse-credentials") {

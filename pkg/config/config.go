@@ -127,14 +127,15 @@ type OAuthConfig struct {
 
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport  MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address    string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port       int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS        ServerTLSConfig `json:"tls" yaml:"tls"`
-	JWE        JWEConfig       `json:"jwe" yaml:"jwe"`
-	OAuth      OAuthConfig     `json:"oauth" yaml:"oauth"`
-	OpenAPI    OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	Transport          MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address            string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port               int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS                ServerTLSConfig `json:"tls" yaml:"tls"`
+	JWE                JWEConfig       `json:"jwe" yaml:"jwe"`
+	OAuth              OAuthConfig     `json:"oauth" yaml:"oauth"`
+	OpenAPI            OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin         string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ForwardHTTPHeaders []string        `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }
@@ -147,9 +148,9 @@ type OpenAPIConfig struct {
 
 // DynamicToolRule describes a rule to create dynamic tools from views
 type DynamicToolRule struct {
-    Name   string `json:"name" yaml:"name"`
-    Regexp string `json:"regexp" yaml:"regexp"`
-    Prefix string `json:"prefix" yaml:"prefix"`
+	Name   string `json:"name" yaml:"name"`
+	Regexp string `json:"regexp" yaml:"regexp"`
+	Prefix string `json:"prefix" yaml:"prefix"`
 }
 
 // LogLevel defines the logging level
