@@ -2039,22 +2039,29 @@ func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
 }
 
 func TestCORSAllowHeaders(t *testing.T) {
+	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
 	cases := []struct {
-		name     string
-		input    []string
-		expected string
+		name             string
+		patterns         []string
+		headerToSettings map[string]string
+		contains         []string
+		hasWildcard      bool
 	}{
-		{"empty", nil, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"},
-		{"single", []string{"X-Custom-Header"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
-		{"multiple", []string{"X-Custom-Header", "X-Other"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, X-Other"},
-		{"wildcard", []string{"X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, *"},
-		{"mixed", []string{"X-Custom-Header", "X-*"}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header, *"},
-		{"spaces", []string{" X-Custom-Header "}, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent, X-Custom-Header"},
+		{"empty", nil, nil, []string{base}, false},
+		{"single_fwd", []string{"X-Custom-Header"}, nil, []string{base, "X-Custom-Header"}, false},
+		{"wildcard", []string{"X-*"}, nil, []string{base, "*"}, true},
+		{"h2s_only", nil, map[string]string{"X-Tenant-Id": "custom_tenant_id"}, []string{base, "X-Tenant-Id"}, false},
+		{"fwd_and_h2s", []string{"X-Req-Id"}, map[string]string{"X-Tenant-Id": "custom_tenant_id"}, []string{base, "X-Req-Id", "X-Tenant-Id"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			actual := CORSAllowHeaders(c.input)
-			require.Equal(t, c.expected, actual)
+			actual := CORSAllowHeaders(c.patterns, c.headerToSettings)
+			for _, s := range c.contains {
+				require.Contains(t, actual, s)
+			}
+			if c.hasWildcard {
+				require.Contains(t, actual, "*")
+			}
 		})
 	}
 }
@@ -2081,6 +2088,130 @@ func TestMergeHTTPHeaders_NilBase(t *testing.T) {
 	merged := mergeHTTPHeaders(nil, extra)
 	require.Equal(t, "extra", merged["X-Extra"])
 	require.Len(t, merged, 1)
+}
+
+// ---------------------------------------------------------------------------
+// header_to_settings tests
+// ---------------------------------------------------------------------------
+
+func TestValidateHeaderToSettings(t *testing.T) {
+	t.Run("valid_custom_prefix", func(t *testing.T) {
+		err := ValidateHeaderToSettings(map[string]string{
+			"X-Tenant-Id": "custom_tenant_id",
+			"X-User-Id":   "custom_user_id",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("blocked_setting_rejected", func(t *testing.T) {
+		err := ValidateHeaderToSettings(map[string]string{
+			"X-Tenant-Id": "readonly",
+		})
+		require.ErrorContains(t, err, "blocked ClickHouse setting")
+	})
+
+	t.Run("blocked_max_execution_time", func(t *testing.T) {
+		err := ValidateHeaderToSettings(map[string]string{
+			"X-Time": "max_execution_time",
+		})
+		require.ErrorContains(t, err, "blocked ClickHouse setting")
+	})
+
+	t.Run("sensitive_source_header_rejected", func(t *testing.T) {
+		err := ValidateHeaderToSettings(map[string]string{
+			"Authorization": "custom_auth",
+		})
+		require.ErrorContains(t, err, "sensitive header")
+	})
+
+	t.Run("sensitive_cookie_header_rejected", func(t *testing.T) {
+		err := ValidateHeaderToSettings(map[string]string{
+			"Cookie": "custom_cookie",
+		})
+		require.ErrorContains(t, err, "sensitive header")
+	})
+
+	t.Run("empty_mapping_is_valid", func(t *testing.T) {
+		require.NoError(t, ValidateHeaderToSettings(nil))
+		require.NoError(t, ValidateHeaderToSettings(map[string]string{}))
+	})
+}
+
+func TestExtractHeaderSettings(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Tenant-Id", "tenant_a")
+	req.Header.Set("X-User-Id", "user_42")
+
+	t.Run("maps_present_headers", func(t *testing.T) {
+		mapping := map[string]string{
+			"X-Tenant-Id": "custom_tenant_id",
+			"X-User-Id":   "custom_user_id",
+		}
+		settings := extractHeaderSettings(req, mapping)
+		require.Len(t, settings, 2)
+		require.Equal(t, "tenant_a", settings["custom_tenant_id"])
+		require.Equal(t, "user_42", settings["custom_user_id"])
+	})
+
+	t.Run("skips_absent_header", func(t *testing.T) {
+		mapping := map[string]string{
+			"X-Tenant-Id": "custom_tenant_id",
+			"X-Missing":   "custom_missing",
+		}
+		settings := extractHeaderSettings(req, mapping)
+		require.Len(t, settings, 1)
+		require.Equal(t, "tenant_a", settings["custom_tenant_id"])
+		require.Empty(t, settings["custom_missing"])
+	})
+
+	t.Run("nil_request_returns_nil", func(t *testing.T) {
+		require.Nil(t, extractHeaderSettings(nil, map[string]string{"X-Tenant-Id": "custom_tenant_id"}))
+	})
+
+	t.Run("empty_mapping_returns_nil", func(t *testing.T) {
+		require.Nil(t, extractHeaderSettings(req, nil))
+		require.Nil(t, extractHeaderSettings(req, map[string]string{}))
+	})
+
+	t.Run("all_headers_absent_returns_nil", func(t *testing.T) {
+		mapping := map[string]string{"X-Nonexistent": "custom_none"}
+		require.Nil(t, extractHeaderSettings(req, mapping))
+	})
+}
+
+func TestContextHeaderSettings_RoundTrip(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Tenant-Id", "tenant_b")
+
+	mapping := map[string]string{"X-Tenant-Id": "custom_tenant_id"}
+	ctx := ContextWithHeaderSettings(context.Background(), req, mapping)
+	settings := HeaderSettingsFromContext(ctx)
+
+	require.Equal(t, "tenant_b", settings["custom_tenant_id"])
+	require.Nil(t, HeaderSettingsFromContext(context.Background()))
+}
+
+func TestMergeExtraSettings(t *testing.T) {
+	base := config.ClickHouseConfig{
+		ExtraSettings: map[string]string{"custom_existing": "old"},
+	}
+	extra := map[string]string{"custom_tenant_id": "tenant_a", "custom_existing": "new"}
+
+	result := mergeExtraSettings(base, extra)
+
+	require.Equal(t, "tenant_a", result.ExtraSettings["custom_tenant_id"])
+	require.Equal(t, "new", result.ExtraSettings["custom_existing"])
+	require.Equal(t, "old", base.ExtraSettings["custom_existing"], "base must not be mutated")
+}
+
+func TestMergeExtraSettings_NilBase(t *testing.T) {
+	base := config.ClickHouseConfig{}
+	extra := map[string]string{"custom_tenant_id": "tenant_a"}
+
+	result := mergeExtraSettings(base, extra)
+
+	require.Equal(t, "tenant_a", result.ExtraSettings["custom_tenant_id"])
+	require.Len(t, result.ExtraSettings, 1)
 }
 
 // Unused import suppressors (remove if unused)

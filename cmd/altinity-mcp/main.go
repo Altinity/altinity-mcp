@@ -250,6 +250,12 @@ func run(args []string) error {
 				Value:   "",
 				Sources: cli.EnvVars("FORWARD_HTTP_HEADERS"),
 			},
+			&cli.StringFlag{
+				Name:    "header-to-settings",
+				Usage:   "Comma-separated header=setting pairs mapping HTTP headers to ClickHouse settings (e.g. X-User-Id=custom_user_id)",
+				Value:   "",
+				Sources: cli.EnvVars("HEADER_TO_SETTINGS"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -532,22 +538,25 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
-	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns)
+	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
@@ -629,23 +638,25 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 
 	// Create a middleware to inject the ClickHouseJWEServer into context
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
+	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Inject the ClickHouseJWEServer into the context
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
-	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns)
+	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
@@ -1015,6 +1026,29 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		}
 	}
 
+	// Override header-to-settings with CLI flags
+	if cmd.IsSet("header-to-settings") {
+		raw := cmd.String("header-to-settings")
+		if raw != "" {
+			mapping := make(map[string]string)
+			for _, pair := range strings.Split(raw, ",") {
+				pair = strings.TrimSpace(pair)
+				if k, v, ok := strings.Cut(pair, "="); ok {
+					mapping[strings.TrimSpace(k)] = strings.TrimSpace(v)
+				}
+			}
+			cfg.Server.HeaderToSettings = mapping
+		} else {
+			cfg.Server.HeaderToSettings = nil
+		}
+	}
+
+	// Validate header_to_settings at startup
+	if len(cfg.Server.HeaderToSettings) > 0 {
+		if err := altinitymcp.ValidateHeaderToSettings(cfg.Server.HeaderToSettings); err != nil {
+			log.Fatal().Err(err).Msg("invalid header_to_settings configuration")
+		}
+	}
 
 	// Override OAuth config with CLI flags
 	if cmd.IsSet("oauth-clear-clickhouse-credentials") {
