@@ -1810,23 +1810,32 @@ const headerSettingsKey contextKey = "header_to_settings"
 // target setting does not start with "custom_" (requires custom_settings_prefixes
 // on the ClickHouse server).
 func ValidateHeaderToSettings(mapping map[string]string) error {
+	warnings, err := validateHeaderToSettings(mapping)
+	for _, w := range warnings {
+		log.Warn().Msg(w)
+	}
+	return err
+}
+
+// validateHeaderToSettings is the testable core: returns (warnings, error).
+func validateHeaderToSettings(mapping map[string]string) (warnings []string, err error) {
 	for header, setting := range mapping {
 		lower := strings.ToLower(setting)
 		if blockedSettings[lower] {
-			return fmt.Errorf("header_to_settings: header %q maps to blocked ClickHouse setting %q", header, setting)
+			return nil, fmt.Errorf("header_to_settings: header %q maps to blocked ClickHouse setting %q", header, setting)
 		}
 		canonical := http.CanonicalHeaderKey(header)
 		if sensitiveHeaders[canonical] {
-			return fmt.Errorf("header_to_settings: sensitive header %q cannot be used as a source", header)
+			return nil, fmt.Errorf("header_to_settings: sensitive header %q cannot be used as a source", header)
 		}
 		if !strings.HasPrefix(lower, "custom_") {
-			log.Warn().
-				Str("header", header).
-				Str("setting", setting).
-				Msg("header_to_settings: target setting does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse")
+			warnings = append(warnings, fmt.Sprintf(
+				"header_to_settings: header %q maps to setting %q which does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				header, setting,
+			))
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 // ContextWithHeaderSettings extracts headers listed in the mapping from the
