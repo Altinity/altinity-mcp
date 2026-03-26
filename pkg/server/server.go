@@ -665,6 +665,16 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		}
 	}
 
+    // Merge forwarded HTTP headers from context (forward_http_headers)
+	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
+		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
+	}
+
+	// Merge header-to-settings from context (header_to_settings)
+	if extraSettings := HeaderSettingsFromContext(ctx); len(extraSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, extraSettings)
+	}
+
 	// Create client
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
