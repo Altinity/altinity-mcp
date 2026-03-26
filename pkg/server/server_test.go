@@ -2095,45 +2095,60 @@ func TestMergeHTTPHeaders_NilBase(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateHeaderToSettings(t *testing.T) {
-	t.Run("valid_custom_prefix", func(t *testing.T) {
-		err := ValidateHeaderToSettings(map[string]string{
-			"X-Tenant-Id": "custom_tenant_id",
-			"X-User-Id":   "custom_user_id",
-		})
-		require.NoError(t, err)
-	})
+	cases := []struct {
+		name         string
+		mapping      map[string]string
+		wantErr      string // substring expected in error, empty = no error
+		wantWarnings int    // expected warning count
+		warnContains string // substring expected in first warning
+	}{
+		// valid mappings — no errors, no warnings
+		{"valid_custom_prefix", map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-User-Id": "custom_user_id"}, "", 0, ""},
+		{"case_insensitive_custom_prefix", map[string]string{"X-Tenant-Id": "Custom_Tenant"}, "", 0, ""},
+		{"empty_nil", nil, "", 0, ""},
+		{"empty_map", map[string]string{}, "", 0, ""},
 
-	t.Run("blocked_setting_rejected", func(t *testing.T) {
-		err := ValidateHeaderToSettings(map[string]string{
-			"X-Tenant-Id": "readonly",
-		})
-		require.ErrorContains(t, err, "blocked ClickHouse setting")
-	})
+		// blocked target settings
+		{"blocked_readonly", map[string]string{"X-A": "readonly"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_READONLY_case", map[string]string{"X-A": "READONLY"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_max_execution_time", map[string]string{"X-A": "max_execution_time"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_allow_ddl", map[string]string{"X-A": "allow_ddl"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_password", map[string]string{"X-A": "password"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_database", map[string]string{"X-A": "database"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_max_memory_usage", map[string]string{"X-A": "max_memory_usage"}, "blocked ClickHouse setting", 0, ""},
+		{"blocked_user", map[string]string{"X-A": "user"}, "blocked ClickHouse setting", 0, ""},
 
-	t.Run("blocked_max_execution_time", func(t *testing.T) {
-		err := ValidateHeaderToSettings(map[string]string{
-			"X-Time": "max_execution_time",
-		})
-		require.ErrorContains(t, err, "blocked ClickHouse setting")
-	})
+		// sensitive source headers
+		{"sensitive_authorization", map[string]string{"Authorization": "custom_auth"}, "sensitive header", 0, ""},
+		{"sensitive_cookie", map[string]string{"Cookie": "custom_cookie"}, "sensitive header", 0, ""},
+		{"sensitive_proxy_auth", map[string]string{"Proxy-Authorization": "custom_proxy"}, "sensitive header", 0, ""},
+		{"sensitive_host", map[string]string{"Host": "custom_host"}, "sensitive header", 0, ""},
+		{"sensitive_set_cookie", map[string]string{"Set-Cookie": "custom_sc"}, "sensitive header", 0, ""},
 
-	t.Run("sensitive_source_header_rejected", func(t *testing.T) {
-		err := ValidateHeaderToSettings(map[string]string{
-			"Authorization": "custom_auth",
-		})
-		require.ErrorContains(t, err, "sensitive header")
-	})
+		// non-custom_ prefix warnings
+		{"warn_non_custom_prefix", map[string]string{"X-Tenant-Id": "my_tenant_id"}, "", 1, "does not start with 'custom_'"},
+		{"warn_mixed_custom_and_non", map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-Region": "region_code"}, "", 1, "region_code"},
+		{"warn_multiple_non_custom", map[string]string{"X-Env": "env_name", "X-Region": "region_code"}, "", 2, ""},
+	}
 
-	t.Run("sensitive_cookie_header_rejected", func(t *testing.T) {
-		err := ValidateHeaderToSettings(map[string]string{
-			"Cookie": "custom_cookie",
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings, err := validateHeaderToSettings(tc.mapping)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, warnings, tc.wantWarnings)
+			if tc.warnContains != "" && len(warnings) > 0 {
+				require.Contains(t, warnings[0], tc.warnContains)
+			}
 		})
-		require.ErrorContains(t, err, "sensitive header")
-	})
+	}
 
-	t.Run("empty_mapping_is_valid", func(t *testing.T) {
-		require.NoError(t, ValidateHeaderToSettings(nil))
-		require.NoError(t, ValidateHeaderToSettings(map[string]string{}))
+	t.Run("public_api_delegates_correctly", func(t *testing.T) {
+		require.NoError(t, ValidateHeaderToSettings(map[string]string{"X-Tenant-Id": "custom_tenant_id"}))
+		require.Error(t, ValidateHeaderToSettings(map[string]string{"X-Bad": "readonly"}))
 	})
 }
 
