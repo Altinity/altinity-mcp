@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -17,13 +18,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-    "time"
-    "path/filepath"
+	"time"
 
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-    "github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/stretchr/testify/require"
@@ -378,170 +379,173 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
 
 // setupClickHouseContainerMain is a local helper for this package's tests
 func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
-    t.Helper()
-    ctx := context.Background()
+	t.Helper()
+	ctx := context.Background()
 
-    req := testcontainers.ContainerRequest{
-        Image:        "clickhouse/clickhouse-server:latest",
-        ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-        Env: map[string]string{
-            "CLICKHOUSE_SKIP_USER_SETUP":           "1",
-            "CLICKHOUSE_DB":                        "default",
-            "CLICKHOUSE_USER":                      "default",
-            "CLICKHOUSE_PASSWORD":                  "",
-            "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-        },
-        WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
-    }
-    chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: req, Started: true})
-    require.NoError(t, err)
+	req := testcontainers.ContainerRequest{
+		Image:        "clickhouse/clickhouse-server:latest",
+		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
+		Env: map[string]string{
+			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
+			"CLICKHOUSE_DB":                        "default",
+			"CLICKHOUSE_USER":                      "default",
+			"CLICKHOUSE_PASSWORD":                  "",
+			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
+		},
+		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
+	}
+	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: req, Started: true})
+	require.NoError(t, err)
 
-    t.Cleanup(func() {
-        cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-        defer cancel()
-        _ = chContainer.Terminate(cleanupCtx)
-    })
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = chContainer.Terminate(cleanupCtx)
+	})
 
-    host, err := chContainer.Host(ctx)
-    require.NoError(t, err)
-    port, err := chContainer.MappedPort(ctx, "9000")
-    require.NoError(t, err)
+	host, err := chContainer.Host(ctx)
+	require.NoError(t, err)
+	port, err := chContainer.MappedPort(ctx, "9000")
+	require.NoError(t, err)
 
-    cfg := &config.ClickHouseConfig{
-        Host:             host,
-        Port:             port.Int(),
-        Database:         "default",
-        Username:         "default",
-        Password:         "",
-        Protocol:         config.TCPProtocol,
-        ReadOnly:         false,
-        MaxExecutionTime: 60,
-        Limit:            1000,
-    }
+	cfg := &config.ClickHouseConfig{
+		Host:             host,
+		Port:             port.Int(),
+		Database:         "default",
+		Username:         "default",
+		Password:         "",
+		Protocol:         config.TCPProtocol,
+		ReadOnly:         false,
+		MaxExecutionTime: 60,
+		Limit:            1000,
+	}
 
-    // create base table
-    client, err := clickhouse.NewClient(ctx, *cfg)
-    require.NoError(t, err)
-    defer func() { _ = client.Close() }()
-    _, _ = client.ExecuteQuery(ctx, "CREATE TABLE IF NOT EXISTS default.test (id UInt64, value String) ENGINE = Memory")
-    _, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
-    return cfg
+	// create base table
+	client, err := clickhouse.NewClient(ctx, *cfg)
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	_, _ = client.ExecuteQuery(ctx, "CREATE TABLE IF NOT EXISTS default.test (id UInt64, value String) ENGINE = Memory")
+	_, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
+	return cfg
 }
 
 // Health handler tests
 func TestHealthHandler_Additions(t *testing.T) {
-    // JWE enabled -> should return 200 and auth=jwe_enabled
-    t.Run("jwe_enabled", func(t *testing.T) {
-        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
-        rr := httptest.NewRecorder()
-        req := httptest.NewRequest(http.MethodGet, "/health", nil)
-        app.healthHandler(rr, req)
-        require.Equal(t, http.StatusOK, rr.Code)
-        var body map[string]interface{}
-        require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-        require.Equal(t, "jwe_enabled", body["auth"])
-    })
+	// JWE enabled -> should return 200 and auth=jwe_enabled
+	t.Run("jwe_enabled", func(t *testing.T) {
+		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "jwe_enabled", body["auth"])
+	})
 
-    // JWE disabled with invalid CH -> 503
-    t.Run("clickhouse_unhealthy", func(t *testing.T) {
-        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}}}
-        rr := httptest.NewRecorder()
-        req := httptest.NewRequest(http.MethodGet, "/health", nil)
-        app.healthHandler(rr, req)
-        require.Equal(t, http.StatusServiceUnavailable, rr.Code)
-    })
+	// JWE disabled with invalid CH -> 503
+	t.Run("clickhouse_unhealthy", func(t *testing.T) {
+		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}}}
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	})
 
-    // JWE disabled with real CH -> 200
-    t.Run("clickhouse_healthy", func(t *testing.T) {
-        // spin container
-        ctx := context.Background()
-        cfg := setupClickHouseContainerMain(t)
-        app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: *cfg}}
-        rr := httptest.NewRecorder()
-        req := httptest.NewRequest(http.MethodGet, "/health", nil)
-        app.healthHandler(rr, req)
-        require.Equal(t, http.StatusOK, rr.Code)
-        var body map[string]interface{}
-        require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-        require.Equal(t, "connected", body["clickhouse"])
-        _ = ctx
-    })
+	// JWE disabled with real CH -> 200
+	t.Run("clickhouse_healthy", func(t *testing.T) {
+		// spin container
+		ctx := context.Background()
+		cfg := setupClickHouseContainerMain(t)
+		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: *cfg}}
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "connected", body["clickhouse"])
+		_ = ctx
+	})
 
-    // Method not allowed
-    t.Run("method_not_allowed", func(t *testing.T) {
-        app := &application{config: config.Config{}}
-        rr := httptest.NewRecorder()
-        req := httptest.NewRequest(http.MethodPost, "/health", nil)
-        app.healthHandler(rr, req)
-        require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
-    })
+	// Method not allowed
+	t.Run("method_not_allowed", func(t *testing.T) {
+		app := &application{config: config.Config{}}
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/health", nil)
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
 }
 
 // testConnection tests
 func TestTestConnection_Additions(t *testing.T) {
-    t.Run("success", func(t *testing.T) {
-        cfg := setupClickHouseContainerMain(t)
-        ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-        defer cancel()
-        err := testConnection(ctx, *cfg)
-        require.NoError(t, err)
-    })
+	t.Run("success", func(t *testing.T) {
+		cfg := setupClickHouseContainerMain(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err := testConnection(ctx, *cfg)
+		require.NoError(t, err)
+	})
 
-    t.Run("failure", func(t *testing.T) {
-        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
-        bad := config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}
-        err := testConnection(ctx, bad)
-        require.Error(t, err)
-    })
+	t.Run("failure", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		bad := config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}
+		err := testConnection(ctx, bad)
+		require.Error(t, err)
+	})
 }
 
 func TestNewApplication_ErrorPaths(t *testing.T) {
-    ctx := context.Background()
-    t.Run("jwe_enabled_missing_key", func(t *testing.T) {
-        cfg := config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}
-        _, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
-        require.Error(t, err)
-        require.Contains(t, err.Error(), "JWE encryption is enabled")
-    })
+	ctx := context.Background()
+	t.Run("jwe_enabled_missing_key", func(t *testing.T) {
+		cfg := config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}
+		_, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "JWE encryption is enabled")
+	})
 
-    t.Run("clickhouse_ping_fail", func(t *testing.T) {
-        cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}}
-        _, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
-        require.Error(t, err)
-    })
+	t.Run("clickhouse_ping_fail", func(t *testing.T) {
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}}
+		_, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
+		require.Error(t, err)
+	})
 }
 
 func TestConfigReloadLoop_ErrorAndStop(t *testing.T) {
-    // Create temp invalid config file to trigger reload error
-    dir := t.TempDir()
-    cfgPath := filepath.Join(dir, "config.yaml")
-    require.NoError(t, os.WriteFile(cfgPath, []byte("invalid: : yaml"), 0o600))
+	// Create temp invalid config file to trigger reload error
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("invalid: : yaml"), 0o600))
 
-    cfg := config.Config{ReloadTime: 1}
-    app := &application{config: cfg, configFile: cfgPath, stopConfigReload: make(chan struct{}), mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{}, "test")}
+	cfg := config.Config{ReloadTime: 1}
+	app := &application{config: cfg, configFile: cfgPath, stopConfigReload: make(chan struct{}), mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{}, "test")}
 
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-    done := make(chan struct{})
-    go func() { app.configReloadLoop(ctx, &mockCommand{flags: map[string]interface{}{}, setFlags: map[string]bool{}, stringMaps: map[string]map[string]string{}}); close(done) }()
-    time.Sleep(1500 * time.Millisecond)
-    close(app.stopConfigReload)
-    <-done
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		app.configReloadLoop(ctx, &mockCommand{flags: map[string]interface{}{}, setFlags: map[string]bool{}, stringMaps: map[string]map[string]string{}})
+		close(done)
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	close(app.stopConfigReload)
+	<-done
 }
 
 // ClickHouse client Ping/DescribeTable extra coverage
 func TestClickHouseClient_PingAndDescribeTable(t *testing.T) {
-    cfg := setupClickHouseContainerMain(t)
-    ctx := context.Background()
-    client, err := clickhouse.NewClient(ctx, *cfg)
-    require.NoError(t, err)
-    defer func() { require.NoError(t, client.Close()) }()
+	cfg := setupClickHouseContainerMain(t)
+	ctx := context.Background()
+	client, err := clickhouse.NewClient(ctx, *cfg)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
 
-    require.NoError(t, client.Ping(ctx))
-    cols, err := client.DescribeTable(ctx, cfg.Database, "test")
-    require.NoError(t, err)
-    require.NotEmpty(t, cols)
+	require.NoError(t, client.Ping(ctx))
+	cols, err := client.DescribeTable(ctx, cfg.Database, "test")
+	require.NoError(t, err)
+	require.NotEmpty(t, cols)
 }
 
 // TestHealthHandler tests the health check endpoint
@@ -1943,7 +1947,7 @@ func TestHeaderToSettingsCLIFlag(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name: "not_set_preserves_config_file_value",
+			name:    "not_set_preserves_config_file_value",
 			flagSet: false, initMap: map[string]string{"X-Tenant-Id": "custom_tenant_id"},
 			wantLen:  1,
 			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id"},
@@ -1982,12 +1986,12 @@ func TestHeaderToSettingsCLIFlag(t *testing.T) {
 
 func TestHeaderToSettingsConfigFile(t *testing.T) {
 	cases := []struct {
-		name      string
-		yaml      string
+		name       string
+		yaml       string
 		cliFlagH2S string // if non-empty, also set header-to-settings CLI flag
-		wantLen   int
-		wantPair  map[string]string
-		wantEmpty bool // when expecting nil/empty map
+		wantLen    int
+		wantPair   map[string]string
+		wantEmpty  bool // when expecting nil/empty map
 	}{
 		{
 			name: "parses_yaml_mapping",
@@ -3346,6 +3350,183 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		require.NotContains(t, parsedClaims, "tls_client_cert")
 		require.NotContains(t, parsedClaims, "tls_client_key")
 	})
+}
+
+func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:      true,
+					Issuer:       "https://mcp.example.com/oauth",
+					Audience:     "https://mcp.example.com/http",
+					Scopes:       []string{"openid", "email"},
+					AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
+					TokenURL:     "https://oauth2.googleapis.com/token",
+					ClientID:     "google-client-id",
+					ClientSecret: "google-client-secret",
+				},
+			},
+		},
+		oauthState: newOAuthStateStore(),
+	}
+
+	t.Run("protected_resource_metadata", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-protected-resource", nil)
+		req.Header.Set("X-Forwarded-Prefix", "/http")
+		req.Header.Set("X-Forwarded-OAuth-Prefix", "/oauth")
+		rr := httptest.NewRecorder()
+		app.handleOAuthProtectedResource(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "https://mcp.example.com/http", body["resource"])
+		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
+	})
+
+	t.Run("authorization_server_metadata", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
+		req.Header.Set("X-Forwarded-OAuth-Prefix", "/oauth")
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorizationServerMetadata(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "\"authorization_endpoint\":\"https://mcp.example.com/oauth/oauth/authorize\"")
+		require.Contains(t, rr.Body.String(), "\"registration_endpoint\":\"https://mcp.example.com/oauth/oauth/register\"")
+	})
+
+	t.Run("openid_configuration_aliases", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/openid-configuration/http", nil)
+		rr := httptest.NewRecorder()
+		app.handleOAuthOpenIDConfiguration(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://mcp.example.com/oauth\"")
+		require.Contains(t, rr.Body.String(), "\"token_endpoint\":\"https://mcp.example.com/oauth/oauth/token\"")
+	})
+
+	t.Run("dynamic_client_registration", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"],"token_endpoint_auth_method":"none"}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+		rr := httptest.NewRecorder()
+		app.handleOAuthRegister(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code)
+		require.Contains(t, rr.Body.String(), "\"client_id\"")
+		require.Contains(t, rr.Body.String(), "\"token_endpoint_auth_method\":\"none\"")
+	})
+}
+
+func TestOAuthMCPAuthInjector(t *testing.T) {
+	token, err := generateOAuthTokenForApp(map[string]interface{}{
+		"sub":   "user123",
+		"iss":   "https://mcp.example.com",
+		"aud":   "https://mcp.example.com",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"scope": "openid email",
+		"email": "user@example.com",
+	})
+	require.NoError(t, err)
+
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "this-is-a-32-byte-secret-key!!",
+					JWTSecretKey: "jwt-secret",
+				},
+				OAuth: config.OAuthConfig{
+					Enabled:  true,
+					Issuer:   "https://mcp.example.com",
+					Audience: "https://mcp.example.com",
+				},
+			},
+		},
+		mcpServer:  altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{Enabled: true, Issuer: "https://mcp.example.com", Audience: "https://mcp.example.com"}}}, "test"),
+		oauthState: newOAuthStateStore(),
+	}
+
+	jweToken, err := jwe_auth.GenerateJWEToken(map[string]interface{}{"host": "localhost", "port": 8123, "exp": time.Now().Add(time.Hour).Unix()}, []byte("this-is-a-32-byte-secret-key!!"), []byte("jwt-secret"))
+	require.NoError(t, err)
+
+	t.Run("missing_oauth_gets_challenge", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
+		req.SetPathValue("token", jweToken)
+		rr := httptest.NewRecorder()
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "resource_metadata=")
+	})
+
+	t.Run("valid_oauth_sets_context", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
+		req.SetPathValue("token", jweToken)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			require.Equal(t, jweToken, r.Context().Value("jwe_token"))
+			require.Equal(t, token, r.Context().Value("oauth_token"))
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.True(t, called)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
+func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:  true,
+					Issuer:   "https://mcp.example.com/oauth",
+					Audience: "https://mcp.example.com/http",
+					Scopes:   []string{"openid", "email"},
+				},
+			},
+		},
+		oauthState: newOAuthStateStore(),
+	}
+
+	mux := http.NewServeMux()
+	app.registerOAuthHTTPRoutes(mux)
+
+	for _, path := range []string{
+		"/.well-known/oauth-protected-resource/http",
+		"/http/.well-known/oauth-protected-resource",
+		"/.well-known/oauth-authorization-server/http",
+		"/http/.well-known/oauth-authorization-server",
+		"/.well-known/oauth-authorization-server/oauth",
+		"/oauth/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration/http",
+		"/http/.well-known/openid-configuration",
+		"/.well-known/openid-configuration/oauth",
+		"/oauth/.well-known/openid-configuration",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com"+path, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		require.Equalf(t, http.StatusOK, rr.Code, "expected alias %s to resolve", path)
+	}
+}
+
+func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
+	header, err := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(header) + "." +
+		base64.RawURLEncoding.EncodeToString(payload) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("sig")), nil
 }
 
 // TestMainFunctionality tests various main function scenarios

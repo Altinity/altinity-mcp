@@ -540,6 +540,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
 	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
+	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
@@ -586,7 +587,11 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 
 		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
+		if cfg.Server.OAuth.Enabled {
+			mux.Handle("/{token}/http", serverInjector(authInjector(dtInjector(httpServer))))
+		} else {
+			mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
+		}
 		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
@@ -598,6 +603,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
@@ -606,7 +612,11 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/http", serverInjector(dtInjector(httpServer)))
+		if cfg.Server.OAuth.Enabled {
+			mux.Handle("/http", serverInjector(authInjector(dtInjector(httpServer))))
+		} else {
+			mux.Handle("/http", serverInjector(dtInjector(httpServer)))
+		}
 		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
@@ -617,6 +627,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
@@ -640,6 +651,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
 	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
+	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
@@ -692,7 +704,11 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer))))
+		if cfg.Server.OAuth.Enabled {
+			mux.Handle("/{token}/sse", serverInjector(authInjector(dtInjector(sseServer))))
+		} else {
+			mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer))))
+		}
 		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
 			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
@@ -704,6 +720,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use SSEHandler for legacy SSE transport
@@ -712,7 +729,11 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
+		if cfg.Server.OAuth.Enabled {
+			mux.Handle("/sse", serverInjector(authInjector(dtInjector(sseServer))))
+		} else {
+			mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
+		}
 		if cfg.Server.OpenAPI.Enabled {
 			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
 			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
@@ -723,6 +744,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
@@ -1162,6 +1184,7 @@ type application struct {
 	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
 	httpSrvMutex     sync.RWMutex
+	oauthState       *oauthStateStore
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
@@ -1228,6 +1251,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	app := &application{
 		config:           cfg,
 		mcpServer:        mcpServer,
+		oauthState:       newOAuthStateStore(),
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
 	}

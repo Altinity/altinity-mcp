@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 	"time"
+	"unicode"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -284,6 +284,11 @@ func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
 // ExtractTokenFromRequest extracts a token from an HTTP request
 func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
 	var token string
+
+	// Prefer explicit path token when available to avoid conflicting with OAuth bearer auth.
+	if pathToken := r.PathValue("token"); pathToken != "" {
+		return pathToken
+	}
 
 	// Try Authorization header (Bearer or Basic)
 	authHeader := r.Header.Get("Authorization")
@@ -678,7 +683,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		}
 	}
 
-    // Merge forwarded HTTP headers from context (forward_http_headers)
+	// Merge forwarded HTTP headers from context (forward_http_headers)
 	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
 		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
 	}

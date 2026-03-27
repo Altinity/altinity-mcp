@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET_HOST="${MCP_TARGET_HOST:-welcome.ru}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/aw-demo.config}"
+NAMESPACE="${NAMESPACE:-demo}"
+RELEASE_NAME="${RELEASE_NAME:-altinity-mcp-oauth}"
+JWE_KEY_FILE="${JWE_KEY_FILE:-$HOME/.mcp/$TARGET_HOST/jwe.key}"
+OAUTH_PREFIX="${MCP_PUBLIC_OAUTH_PREFIX:-/oauth}"
+
+: "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
+: "${GOOGLE_OAUTH_CLIENT_SECRET:?set GOOGLE_OAUTH_CLIENT_SECRET}"
+
+if [[ ! -s "${JWE_KEY_FILE}" ]]; then
+  echo "Missing JWE key: ${JWE_KEY_FILE}" >&2
+  exit 1
+fi
+
+KUBECONFIG="${KUBECONFIG_PATH}" helm upgrade --install "${RELEASE_NAME}" \
+  oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
+  --namespace "${NAMESPACE}" \
+  --create-namespace \
+  -f oauth/values.yaml \
+  --set-string config.server.jwe.jwe_secret_key="$(tr -d '\n' < "${JWE_KEY_FILE}")" \
+  --set-string config.server.oauth.issuer="https://${TARGET_HOST}${OAUTH_PREFIX}" \
+  --set-string config.server.oauth.audience="https://${TARGET_HOST}${OAUTH_PREFIX}" \
+  --set-string config.server.oauth.client_id="${GOOGLE_OAUTH_CLIENT_ID}" \
+  --set-string config.server.oauth.client_secret="${GOOGLE_OAUTH_CLIENT_SECRET}"

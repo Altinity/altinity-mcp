@@ -1,0 +1,49 @@
+image:
+  repository: ghcr.io/altinity/altinity-mcp
+  tag: "main"
+  pullPolicy: IfNotPresent
+
+service:
+  annotations:
+    edge-proxy.altinity.com/port-mapping: "443:tls-to-tcp:8080"
+    edge-proxy.altinity.com/tls-server-name: welcome.ru
+
+config:
+  clickhouse:
+    host: "clickhouse.example.com"
+    port: 8443
+    database: "default"
+    username: "default"
+    password: ""
+    protocol: "http"
+    limit: 0
+    read_only: true
+
+  server:
+    transport: "http"
+    openapi:
+      enabled: true
+      tls: true
+    jwe:
+      enabled: true
+      jwe_secret_key: ""
+      jwt_secret_key: ""
+  oauth:
+    enabled: true
+    issuer: "https://welcome.ru/oauth"
+    audience: "https://welcome.ru/http"
+      client_id: ""
+      client_secret: ""
+      token_url: "https://oauth2.googleapis.com/token"
+      auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
+      scopes:
+        - "openid"
+        - "email"
+      required_scopes:
+        - "openid"
+      forward_to_clickhouse: false
+      forward_access_token: false
+      clear_clickhouse_credentials: false
+
+  logging:
+    level: "debug"
