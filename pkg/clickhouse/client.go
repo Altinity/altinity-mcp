@@ -100,6 +100,9 @@ func (c *Client) connect() error {
 	if !c.config.ReadOnly {
 		settings["max_execution_time"] = c.config.MaxExecutionTime
 	}
+	for k, v := range c.config.ExtraSettings {
+		settings[k] = v
+	}
 
 	conn, openErr := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},

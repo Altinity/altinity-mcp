@@ -161,14 +161,14 @@ func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandle
 }
 
 // GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config.
-// Also forwards any HTTP headers stored in context by the middleware.
+// Also forwards any HTTP headers and header-to-settings stored in context by the middleware.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	return s.GetClickHouseClientWithHeaders(ctx, tokenParam, ForwardedHeadersFromContext(ctx))
+	return s.GetClickHouseClientWithHeaders(ctx, tokenParam, ForwardedHeadersFromContext(ctx), HeaderSettingsFromContext(ctx))
 }
 
 // GetClickHouseClientWithHeaders creates a ClickHouse client, merging optional per-request
-// HTTP headers (e.g. X-Tenant-Id) into the config before connecting to ClickHouse.
-func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context, tokenParam string, extraHeaders map[string]string) (*clickhouse.Client, error) {
+// HTTP headers (e.g. X-Tenant-Id) and ClickHouse settings into the config before connecting.
+func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context, tokenParam string, extraHeaders map[string]string, extraSettings map[string]string) (*clickhouse.Client, error) {
 	var chConfig config.ClickHouseConfig
 
 	if !s.Config.Server.JWE.Enabled {
@@ -196,6 +196,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context
 
 	if len(extraHeaders) > 0 {
 		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
+	}
+	if len(extraSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, extraSettings)
 	}
 
 	// Create client with the configured parameters
@@ -660,6 +663,16 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 			chConfig.Username = ""
 			chConfig.Password = ""
 		}
+	}
+
+    // Merge forwarded HTTP headers from context (forward_http_headers)
+	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
+		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
+	}
+
+	// Merge header-to-settings from context (header_to_settings)
+	if extraSettings := HeaderSettingsFromContext(ctx); len(extraSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, extraSettings)
 	}
 
 	// Create client
@@ -1746,22 +1759,143 @@ func mergeHTTPHeaders(base, extra map[string]string) map[string]string {
 }
 
 // CORSAllowHeaders builds the Access-Control-Allow-Headers value by combining
-// a base set of standard headers with the configured forward patterns. Wildcard
-// patterns (e.g. "X-*") are expanded to the CORS spec wildcard "*" since
-// browsers don't support prefix wildcards in Access-Control-Allow-Headers.
-func CORSAllowHeaders(forwardPatterns []string) string {
+// a base set of standard headers with the configured forward patterns and
+// header_to_settings source headers. Wildcard patterns (e.g. "X-*") are
+// expanded to the CORS spec wildcard "*" since browsers don't support prefix
+// wildcards in Access-Control-Allow-Headers.
+func CORSAllowHeaders(forwardPatterns []string, headerToSettings map[string]string) string {
 	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
+	hasWildcard := false
 	for _, p := range forwardPatterns {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
 		if strings.HasSuffix(p, "*") {
-			return base + ", *"
+			hasWildcard = true
+			continue
 		}
 		base += ", " + p
 	}
+	for header := range headerToSettings {
+		base += ", " + header
+	}
+	if hasWildcard {
+		base += ", *"
+	}
 	return base
+}
+
+// blockedSettings contains ClickHouse settings that must never be overridden
+// via header_to_settings to prevent privilege escalation or DoS.
+var blockedSettings = map[string]bool{
+	"readonly":                      true,
+	"allow_ddl":                     true,
+	"allow_introspection_functions": true,
+	"max_execution_time":            true,
+	"max_memory_usage":              true,
+	"max_result_rows":               true,
+	"max_result_bytes":              true,
+	"max_rows_to_read":              true,
+	"max_bytes_to_read":             true,
+	"password":                      true,
+	"user":                          true,
+	"database":                      true,
+}
+
+const headerSettingsKey contextKey = "header_to_settings"
+
+// ValidateHeaderToSettings checks the mapping at startup and returns an error
+// if any entry targets a blocked ClickHouse setting. Logs a warning when a
+// target setting does not start with "custom_" (requires custom_settings_prefixes
+// on the ClickHouse server).
+func ValidateHeaderToSettings(mapping map[string]string) error {
+	warnings, err := validateHeaderToSettings(mapping)
+	for _, w := range warnings {
+		log.Warn().Msg(w)
+	}
+	return err
+}
+
+// validateHeaderToSettings is the testable core: returns (warnings, error).
+func validateHeaderToSettings(mapping map[string]string) (warnings []string, err error) {
+	for header, setting := range mapping {
+		lower := strings.ToLower(setting)
+		if blockedSettings[lower] {
+			return nil, fmt.Errorf("header_to_settings: header %q maps to blocked ClickHouse setting %q", header, setting)
+		}
+		canonical := http.CanonicalHeaderKey(header)
+		if sensitiveHeaders[canonical] {
+			return nil, fmt.Errorf("header_to_settings: sensitive header %q cannot be used as a source", header)
+		}
+		if !strings.HasPrefix(lower, "custom_") {
+			warnings = append(warnings, fmt.Sprintf(
+				"header_to_settings: header %q maps to setting %q which does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				header, setting,
+			))
+		}
+	}
+	return warnings, nil
+}
+
+// ContextWithHeaderSettings extracts headers listed in the mapping from the
+// incoming HTTP request, converts them to ClickHouse settings, and stores the
+// result in context.
+func ContextWithHeaderSettings(ctx context.Context, r *http.Request, mapping map[string]string) context.Context {
+	if settings := extractHeaderSettings(r, mapping); settings != nil {
+		return context.WithValue(ctx, headerSettingsKey, settings)
+	}
+	return ctx
+}
+
+// HeaderSettingsFromContext retrieves per-request ClickHouse settings
+// previously stored by ContextWithHeaderSettings. Returns nil when no
+// settings are available (e.g. STDIO transport or no mapping configured).
+func HeaderSettingsFromContext(ctx context.Context) map[string]string {
+	if settings, ok := ctx.Value(headerSettingsKey).(map[string]string); ok {
+		return settings
+	}
+	return nil
+}
+
+// extractHeaderSettings reads headers according to the mapping and returns
+// the corresponding ClickHouse settings. Headers absent from the request are
+// silently skipped. Only header names are logged, never values.
+func extractHeaderSettings(r *http.Request, mapping map[string]string) map[string]string {
+	if r == nil || len(mapping) == 0 {
+		return nil
+	}
+	settings := make(map[string]string)
+	for header, setting := range mapping {
+		canonical := http.CanonicalHeaderKey(header)
+		if val := r.Header.Get(canonical); val != "" {
+			settings[setting] = val
+		}
+	}
+	if len(settings) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(settings))
+	for k := range settings {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("mapping HTTP headers to ClickHouse settings")
+	return settings
+}
+
+// mergeExtraSettings copies per-request settings into a ClickHouseConfig,
+// returning a shallow copy with ExtraSettings populated. Neither input is mutated.
+func mergeExtraSettings(cfg config.ClickHouseConfig, settings map[string]string) config.ClickHouseConfig {
+	merged := make(map[string]string, len(cfg.ExtraSettings)+len(settings))
+	for k, v := range cfg.ExtraSettings {
+		merged[k] = v
+	}
+	for k, v := range settings {
+		merged[k] = v
+	}
+	cfg.ExtraSettings = merged
+	return cfg
 }
 
 // matchesAnyPattern returns true if header matches at least one pattern.
