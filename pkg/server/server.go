@@ -699,7 +699,7 @@ func RegisterTools(srv AltinityMCPServer) {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "SQL query to execute (SELECT, INSERT, CREATE, etc.)",
+					"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
 				},
 				"limit": map[string]any{
 					"type":        "number",
@@ -1436,7 +1436,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 							"name":        "query",
 							"in":          "query",
 							"required":    true,
-							"description": "SQL to execute (SELECT, INSERT, etc.).",
+							"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
 							"schema":      map[string]interface{}{"type": "string"},
 						},
 						{
