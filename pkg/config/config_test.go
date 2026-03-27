@@ -417,4 +417,221 @@ func TestConfigStructs(t *testing.T) {
 
 		require.Equal(t, DebugLevel, cfg.Level)
 	})
+
+	t.Run("oauth_config", func(t *testing.T) {
+		cfg := OAuthConfig{
+			Enabled:                    true,
+			Issuer:                     "https://auth.example.com",
+			JWKSURL:                    "https://auth.example.com/.well-known/jwks.json",
+			Audience:                   "my-api",
+			ClientID:                   "client-123",
+			ClientSecret:               "secret-456",
+			TokenURL:                   "https://auth.example.com/oauth/token",
+			AuthURL:                    "https://auth.example.com/oauth/authorize",
+			Scopes:                     []string{"read", "write"},
+			RequiredScopes:             []string{"read"},
+			ForwardToClickHouse:        true,
+			ClickHouseHeaderName:       "X-Custom-Token",
+			ForwardAccessToken:         true,
+			ClearClickHouseCredentials: true,
+			ClaimsToHeaders:            map[string]string{"sub": "X-User", "email": "X-Email"},
+		}
+
+		require.True(t, cfg.Enabled)
+		require.Equal(t, "https://auth.example.com", cfg.Issuer)
+		require.Equal(t, "https://auth.example.com/.well-known/jwks.json", cfg.JWKSURL)
+		require.Equal(t, "my-api", cfg.Audience)
+		require.Equal(t, "client-123", cfg.ClientID)
+		require.Equal(t, "secret-456", cfg.ClientSecret)
+		require.Equal(t, "https://auth.example.com/oauth/token", cfg.TokenURL)
+		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.AuthURL)
+		require.Equal(t, []string{"read", "write"}, cfg.Scopes)
+		require.Equal(t, []string{"read"}, cfg.RequiredScopes)
+		require.True(t, cfg.ForwardToClickHouse)
+		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
+		require.True(t, cfg.ForwardAccessToken)
+		require.True(t, cfg.ClearClickHouseCredentials)
+		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
+		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
+	})
+}
+
+// TestLoadConfigWithOAuth tests OAuth configuration loading from files
+func TestLoadConfigWithOAuth(t *testing.T) {
+	t.Run("oauth_yaml_config", func(t *testing.T) {
+		yamlContent := `
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+  username: default
+  protocol: http
+server:
+  transport: http
+  address: 0.0.0.0
+  port: 8080
+  jwe:
+    enabled: true
+    jwe_secret_key: "jwe-secret"
+    jwt_secret_key: "jwt-secret"
+  oauth:
+    enabled: true
+    issuer: "https://auth.example.com"
+    jwks_url: "https://auth.example.com/.well-known/jwks.json"
+    audience: "my-api"
+    client_id: "client-123"
+    client_secret: "secret-456"
+    token_url: "https://auth.example.com/oauth/token"
+    auth_url: "https://auth.example.com/oauth/authorize"
+    scopes:
+      - read
+      - write
+    required_scopes:
+      - read
+    forward_to_clickhouse: true
+    clickhouse_header_name: "X-Custom-Token"
+    forward_access_token: true
+    claims_to_headers:
+      sub: "X-ClickHouse-User"
+      email: "X-ClickHouse-Email"
+logging:
+  level: info
+`
+		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
+		require.NoError(t, err)
+
+		cfg, err := LoadConfigFromFile(tmpFile)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		// Verify JWE config
+		require.True(t, cfg.Server.JWE.Enabled)
+		require.Equal(t, "jwe-secret", cfg.Server.JWE.JWESecretKey)
+		require.Equal(t, "jwt-secret", cfg.Server.JWE.JWTSecretKey)
+
+		// Verify OAuth config
+		require.True(t, cfg.Server.OAuth.Enabled)
+		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
+		require.Equal(t, "https://auth.example.com/.well-known/jwks.json", cfg.Server.OAuth.JWKSURL)
+		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
+		require.Equal(t, "client-123", cfg.Server.OAuth.ClientID)
+		require.Equal(t, "secret-456", cfg.Server.OAuth.ClientSecret)
+		require.Equal(t, "https://auth.example.com/oauth/token", cfg.Server.OAuth.TokenURL)
+		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.Server.OAuth.AuthURL)
+		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.Scopes)
+		require.Equal(t, []string{"read"}, cfg.Server.OAuth.RequiredScopes)
+		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
+		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
+		require.True(t, cfg.Server.OAuth.ForwardAccessToken)
+		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
+		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
+	})
+
+	t.Run("oauth_json_config", func(t *testing.T) {
+		jsonContent := `{
+  "clickhouse": {
+    "host": "localhost",
+    "port": 8123,
+    "database": "default",
+    "username": "default",
+    "protocol": "http"
+  },
+  "server": {
+    "transport": "http",
+    "address": "0.0.0.0",
+    "port": 8080,
+    "jwe": {
+      "enabled": true,
+      "jwe_secret_key": "jwe-secret",
+      "jwt_secret_key": "jwt-secret"
+    },
+    "oauth": {
+      "enabled": true,
+      "issuer": "https://auth.example.com",
+      "audience": "my-api",
+      "required_scopes": ["read", "write"],
+      "forward_to_clickhouse": true,
+      "forward_access_token": false,
+      "claims_to_headers": {
+        "sub": "X-User-ID",
+        "name": "X-User-Name"
+      }
+    }
+  },
+  "logging": {
+    "level": "info"
+  }
+}`
+		tmpFile := filepath.Join(t.TempDir(), "config.json")
+		err := os.WriteFile(tmpFile, []byte(jsonContent), 0644)
+		require.NoError(t, err)
+
+		cfg, err := LoadConfigFromFile(tmpFile)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		// Verify both JWE and OAuth are configured
+		require.True(t, cfg.Server.JWE.Enabled)
+		require.True(t, cfg.Server.OAuth.Enabled)
+		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
+		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
+		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.RequiredScopes)
+		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
+		require.False(t, cfg.Server.OAuth.ForwardAccessToken)
+		require.Equal(t, "X-User-ID", cfg.Server.OAuth.ClaimsToHeaders["sub"])
+		require.Equal(t, "X-User-Name", cfg.Server.OAuth.ClaimsToHeaders["name"])
+	})
+
+	t.Run("oauth_clear_credentials_yaml", func(t *testing.T) {
+		yamlContent := `
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+server:
+  oauth:
+    enabled: true
+    forward_to_clickhouse: true
+    forward_access_token: true
+    clear_clickhouse_credentials: true
+`
+		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
+		require.NoError(t, err)
+
+		cfg, err := LoadConfigFromFile(tmpFile)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		require.True(t, cfg.Server.OAuth.ClearClickHouseCredentials)
+		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
+		require.True(t, cfg.Server.OAuth.ForwardAccessToken)
+	})
+
+	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {
+		yamlContent := `
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+server:
+  jwe:
+    enabled: true
+    jwe_secret_key: "test-jwe-key"
+  oauth:
+    enabled: true
+    issuer: "https://auth.example.com"
+`
+		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
+		require.NoError(t, err)
+
+		cfg, err := LoadConfigFromFile(tmpFile)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		// Both should be enabled
+		require.True(t, cfg.Server.JWE.Enabled)
+		require.True(t, cfg.Server.OAuth.Enabled)
+	})
 }

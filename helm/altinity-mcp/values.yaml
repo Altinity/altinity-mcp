@@ -142,6 +142,47 @@ config:
       jwt_secret_key: ""
       jwe_secret_key: ""
       token_param: "token"
+    # -- OAuth 2.0 authentication configuration
+    # When enabled, MCP server validates incoming OAuth tokens and can forward them to ClickHouse
+    # For ClickHouse token-based authentication, use with ClickHouse Antalya build (25.8+)
+    # that supports token_processors in config
+    oauth:
+      # -- Enable OAuth 2.0 authentication
+      enabled: false
+      # -- OAuth token issuer URL for validation (e.g., "https://accounts.google.com")
+      issuer: ""
+      # -- URL to fetch JSON Web Key Set for token validation
+      # If empty, will be discovered from issuer's .well-known/openid-configuration
+      jwks_url: ""
+      # -- Expected audience claim in the token
+      audience: ""
+      # -- OAuth client ID
+      client_id: ""
+      # -- OAuth client secret
+      client_secret: ""
+      # -- OAuth token endpoint URL
+      token_url: ""
+      # -- OAuth authorization endpoint URL
+      auth_url: ""
+      # -- OAuth scopes to request
+      scopes: []
+      # -- Required scopes for access (token must have all of these)
+      required_scopes: []
+      # -- Forward OAuth token to ClickHouse via HTTP headers
+      forward_to_clickhouse: false
+      # -- Header name for forwarding OAuth token to ClickHouse
+      # Default: "Authorization" (sends as "Bearer {token}")
+      # Set to a custom header name to send raw token without "Bearer " prefix
+      clickhouse_header_name: ""
+      # -- Forward raw access token to ClickHouse
+      forward_access_token: false
+      # -- Clear ClickHouse username/password when forwarding OAuth token
+      # Required when ClickHouse authenticates via token_processors (JWT/OIDC)
+      # where user identity comes from the token's sub claim, not from basic auth
+      clear_clickhouse_credentials: false
+      # -- Map OAuth token claims to ClickHouse HTTP headers
+      # Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
+      claims_to_headers: {}
     # Dynamic tools generated from ClickHouse views
     dynamic_tools: []
     #  - regexp: "db\\..*"
