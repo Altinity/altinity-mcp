@@ -1,0 +1,45 @@
+# Example values for altinity-mcp with OAuth + Keycloak (OpenID Connect)
+# ClickHouse must be configured with token_processors for OpenID:
+#
+#   <token_processors>
+#     <keycloak>
+#       <type>OpenID</type>
+#       <userinfo_endpoint>http://keycloak:8080/realms/myrealm/protocol/openid-connect/userinfo</userinfo_endpoint>
+#       <jwks_uri>http://keycloak:8080/realms/myrealm/protocol/openid-connect/certs</jwks_uri>
+#       <token_cache_lifetime>60</token_cache_lifetime>
+#     </keycloak>
+#   </token_processors>
+#   <user_directories>
+#     <token>
+#       <processor>keycloak</processor>
+#       <common_roles><default_role /></common_roles>
+#     </token>
+#   </user_directories>
+
+image:
+  tag: "main"
+  pullPolicy: Always
+
+config:
+  clickhouse:
+    host: "clickhouse.default.svc.cluster.local"
+    port: 8123
+    protocol: "http"
+    # Credentials are cleared when OAuth token is forwarded,
+    # but we still need defaults for health checks
+    username: "default"
+    password: ""
+    read_only: true
+
+  server:
+    transport: "http"
+    oauth:
+      enabled: true
+      issuer: "http://keycloak:8080/realms/myrealm"
+      audience: "clickhouse-mcp"
+      forward_to_clickhouse: true
+      forward_access_token: true
+      clear_clickhouse_credentials: true
+
+  logging:
+    level: "info"

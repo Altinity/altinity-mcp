@@ -42,6 +42,7 @@ type ClickHouseConfig struct {
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Maximum limit for query results (0 means no limit)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
+	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by header_to_settings"`
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -71,17 +72,74 @@ type JWEConfig struct {
 	JWTSecretKey string `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" desc:"Secret key for JWT signature verification"`
 }
 
+// OAuthConfig defines configuration for OAuth 2.0 authentication
+type OAuthConfig struct {
+	// Enabled enables OAuth authentication
+	Enabled bool `json:"enabled" yaml:"enabled" flag:"oauth-enabled" desc:"Enable OAuth 2.0 authentication"`
+
+	// Issuer is the OAuth token issuer URL for token validation (e.g., "https://accounts.google.com")
+	Issuer string `json:"issuer" yaml:"issuer" flag:"oauth-issuer" desc:"OAuth token issuer URL for validation"`
+
+	// JWKSURL is the URL to fetch JSON Web Key Set for token validation
+	// If empty, will be discovered from issuer's .well-known/openid-configuration
+	JWKSURL string `json:"jwks_url" yaml:"jwks_url" flag:"oauth-jwks-url" desc:"URL to fetch JWKS for token validation"`
+
+	// Audience is the expected audience claim in the token
+	Audience string `json:"audience" yaml:"audience" flag:"oauth-audience" desc:"Expected audience claim in OAuth token"`
+
+	// ClientID is the OAuth client ID (used for client credentials flow or validation)
+	ClientID string `json:"client_id" yaml:"client_id" flag:"oauth-client-id" desc:"OAuth client ID"`
+
+	// ClientSecret is the OAuth client secret (used for client credentials flow)
+	ClientSecret string `json:"client_secret" yaml:"client_secret" flag:"oauth-client-secret" desc:"OAuth client secret"`
+
+	// TokenURL is the OAuth token endpoint URL (used for client credentials flow)
+	TokenURL string `json:"token_url" yaml:"token_url" flag:"oauth-token-url" desc:"OAuth token endpoint URL"`
+
+	// AuthURL is the OAuth authorization endpoint URL (used for authorization code flow)
+	AuthURL string `json:"auth_url" yaml:"auth_url" flag:"oauth-auth-url" desc:"OAuth authorization endpoint URL"`
+
+	// Scopes is the list of OAuth scopes to request
+	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
+
+	// RequiredScopes is the list of scopes required for access (token must have all of these)
+	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" desc:"Required OAuth scopes for access"`
+
+	// ForwardToClickHouse enables forwarding OAuth token to ClickHouse via HTTP headers
+	ForwardToClickHouse bool `json:"forward_to_clickhouse" yaml:"forward_to_clickhouse" flag:"oauth-forward-to-clickhouse" desc:"Forward OAuth token to ClickHouse via HTTP headers"`
+
+	// ClickHouseHeaderName is the header name to use when forwarding OAuth token to ClickHouse
+	// Default: "Authorization" (sends as "Bearer {token}")
+	// When set to a custom header, the raw token is sent without "Bearer " prefix
+	ClickHouseHeaderName string `json:"clickhouse_header_name" yaml:"clickhouse_header_name" flag:"oauth-clickhouse-header-name" desc:"Header name for forwarding OAuth token to ClickHouse"`
+
+	// ForwardAccessToken forwards the access token itself (vs. just claims)
+	ForwardAccessToken bool `json:"forward_access_token" yaml:"forward_access_token" flag:"oauth-forward-access-token" desc:"Forward raw access token to ClickHouse"`
+
+	// ClearClickHouseCredentials clears ClickHouse username/password when forwarding OAuth token
+	// This is needed when ClickHouse authenticates via token_processors (JWT/OIDC)
+	// where the user identity comes from the token's sub claim, not from basic auth
+	ClearClickHouseCredentials bool `json:"clear_clickhouse_credentials" yaml:"clear_clickhouse_credentials" flag:"oauth-clear-clickhouse-credentials" desc:"Clear ClickHouse credentials when forwarding OAuth token"`
+
+	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
+	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
+	ClaimsToHeaders map[string]string `json:"claims_to_headers" yaml:"claims_to_headers" desc:"Map OAuth claims to ClickHouse HTTP headers"`
+}
+
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport  MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address    string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port       int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS        ServerTLSConfig `json:"tls" yaml:"tls"`
-	JWE        JWEConfig       `json:"jwe" yaml:"jwe"`
-	OpenAPI    OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
-    // DynamicTools defines rules for generating tools from ClickHouse views
-    DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
+	Transport          MCPTransport      `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address            string            `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port               int               `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS                ServerTLSConfig   `json:"tls" yaml:"tls"`
+	JWE                JWEConfig         `json:"jwe" yaml:"jwe"`
+	OAuth              OAuthConfig       `json:"oauth" yaml:"oauth"`
+	OpenAPI            OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin         string            `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ForwardHTTPHeaders []string          `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
+	HeaderToSettings   map[string]string `json:"header_to_settings" yaml:"header_to_settings" desc:"Map incoming HTTP headers to ClickHouse settings"`
+	// DynamicTools defines rules for generating tools from ClickHouse views
+	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration
@@ -92,9 +150,9 @@ type OpenAPIConfig struct {
 
 // DynamicToolRule describes a rule to create dynamic tools from views
 type DynamicToolRule struct {
-    Name   string `json:"name" yaml:"name"`
-    Regexp string `json:"regexp" yaml:"regexp"`
-    Prefix string `json:"prefix" yaml:"prefix"`
+	Name   string `json:"name" yaml:"name"`
+	Regexp string `json:"regexp" yaml:"regexp"`
+	Prefix string `json:"prefix" yaml:"prefix"`
 }
 
 // LogLevel defines the logging level

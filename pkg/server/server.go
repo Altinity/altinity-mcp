@@ -2,16 +2,19 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"unicode"
+	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -19,6 +22,30 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 )
+
+var (
+	// ErrMissingOAuthToken is returned when OAuth token is missing
+	ErrMissingOAuthToken = errors.New("missing OAuth token")
+	// ErrInvalidOAuthToken is returned when OAuth token is invalid
+	ErrInvalidOAuthToken = errors.New("invalid OAuth token")
+	// ErrOAuthTokenExpired is returned when OAuth token has expired
+	ErrOAuthTokenExpired = errors.New("OAuth token expired")
+	// ErrOAuthInsufficientScopes is returned when token doesn't have required scopes
+	ErrOAuthInsufficientScopes = errors.New("insufficient OAuth scopes")
+)
+
+// OAuthClaims represents the claims from an OAuth token
+type OAuthClaims struct {
+	Subject   string   `json:"sub"`
+	Issuer    string   `json:"iss"`
+	Audience  []string `json:"aud"`
+	ExpiresAt int64    `json:"exp"`
+	IssuedAt  int64    `json:"iat"`
+	Scopes    []string `json:"scope"`
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Extra     map[string]interface{}
+}
 
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
 type ClickHouseJWEServer struct {
@@ -29,6 +56,10 @@ type ClickHouseJWEServer struct {
 	dynamicTools     map[string]dynamicToolMeta
 	dynamicToolsMu   sync.RWMutex
 	dynamicToolsInit bool
+	// JWKS cache for OAuth token validation
+	jwksCache     map[string]interface{}
+	jwksCacheMu   sync.RWMutex
+	jwksCacheTime time.Time
 }
 
 type dynamicToolParam struct {
@@ -142,39 +173,51 @@ func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandle
 	})
 }
 
-// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config
+// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config.
+// Also forwards any HTTP headers and header-to-settings stored in context by the middleware.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
+	return s.GetClickHouseClientWithHeaders(ctx, tokenParam, ForwardedHeadersFromContext(ctx), HeaderSettingsFromContext(ctx))
+}
+
+// GetClickHouseClientWithHeaders creates a ClickHouse client, merging optional per-request
+// HTTP headers (e.g. X-Tenant-Id) and ClickHouse settings into the config before connecting.
+func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context, tokenParam string, extraHeaders map[string]string, extraSettings map[string]string) (*clickhouse.Client, error) {
+	var chConfig config.ClickHouseConfig
+
 	if !s.Config.Server.JWE.Enabled {
-		// If JWE auth is disabled, use the default config
-		client, err := clickhouse.NewClient(ctx, s.Config.ClickHouse)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+		chConfig = s.Config.ClickHouse
+	} else {
+		if tokenParam == "" {
+			// JWE auth is enabled but no token provided
+			return nil, jwe_auth.ErrMissingToken
 		}
-		return client, nil
+
+		// Parse and validate JWE token
+		claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+		if err != nil {
+			log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
+			return nil, err
+		}
+
+		var buildErr error
+		// Create ClickHouse config from JWE claims
+		chConfig, buildErr = s.buildConfigFromClaims(claims)
+		if buildErr != nil {
+			return nil, buildErr
+		}
 	}
 
-	if tokenParam == "" {
-		// JWE auth is enabled but no token provided
-		return nil, jwe_auth.ErrMissingToken
+	if len(extraHeaders) > 0 {
+		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
 	}
-
-	// Parse and validate JWE token
-	claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
-	if err != nil {
-		log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
-		return nil, err
-	}
-
-	// Create ClickHouse config from JWE claims
-	chConfig, err := s.buildConfigFromClaims(claims)
-	if err != nil {
-		return nil, err
+	if len(extraSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, extraSettings)
 	}
 
 	// Create client with the configured parameters
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ClickHouse client from JWE: %w", err)
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 
 	return client, nil
@@ -288,6 +331,372 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 	return nil
 }
 
+// ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
+func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) string {
+	// Try Authorization header (Bearer token)
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+
+	// Try x-oauth-token header
+	if token := r.Header.Get("x-oauth-token"); token != "" {
+		return token
+	}
+
+	// Try x-altinity-oauth-token header
+	if token := r.Header.Get("x-altinity-oauth-token"); token != "" {
+		return token
+	}
+
+	return ""
+}
+
+// ExtractOAuthTokenFromCtx extracts an OAuth token from context
+func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) string {
+	if tokenFromCtx := ctx.Value("oauth_token"); tokenFromCtx != nil {
+		if tokenStr, ok := tokenFromCtx.(string); ok {
+			return tokenStr
+		}
+	}
+	return ""
+}
+
+// ValidateOAuthToken validates an OAuth token and returns claims
+func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, error) {
+	if !s.Config.Server.OAuth.Enabled {
+		return nil, nil
+	}
+
+	if token == "" {
+		return nil, ErrMissingOAuthToken
+	}
+
+	// Parse the JWT token (without verification first to get claims)
+	claims, err := s.parseOAuthToken(token)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to parse OAuth token")
+		return nil, ErrInvalidOAuthToken
+	}
+
+	// Validate issuer if configured
+	if s.Config.Server.OAuth.Issuer != "" && claims.Issuer != s.Config.Server.OAuth.Issuer {
+		log.Error().Str("expected", s.Config.Server.OAuth.Issuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
+		return nil, ErrInvalidOAuthToken
+	}
+
+	// Validate audience if configured
+	if s.Config.Server.OAuth.Audience != "" {
+		audienceValid := false
+		for _, aud := range claims.Audience {
+			if aud == s.Config.Server.OAuth.Audience {
+				audienceValid = true
+				break
+			}
+		}
+		if !audienceValid {
+			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Strs("got", claims.Audience).Msg("OAuth token audience mismatch")
+			return nil, ErrInvalidOAuthToken
+		}
+	}
+
+	// Validate expiration
+	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
+		log.Error().Int64("exp", claims.ExpiresAt).Msg("OAuth token expired")
+		return nil, ErrOAuthTokenExpired
+	}
+
+	// Validate required scopes
+	if len(s.Config.Server.OAuth.RequiredScopes) > 0 {
+		if !hasRequiredScopes(claims.Scopes, s.Config.Server.OAuth.RequiredScopes) {
+			log.Error().Strs("required", s.Config.Server.OAuth.RequiredScopes).Strs("got", claims.Scopes).Msg("OAuth token missing required scopes")
+			return nil, ErrOAuthInsufficientScopes
+		}
+	}
+
+	return claims, nil
+}
+
+// parseOAuthToken parses a JWT token and extracts claims
+func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error) {
+	// Split the JWT token
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format")
+	}
+
+	// Decode the payload (middle part)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse the payload as JSON
+	var rawClaims map[string]interface{}
+	if err := json.Unmarshal(payload, &rawClaims); err != nil {
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	claims := &OAuthClaims{
+		Extra: make(map[string]interface{}),
+	}
+
+	// Extract standard claims
+	if sub, ok := rawClaims["sub"].(string); ok {
+		claims.Subject = sub
+	}
+	if iss, ok := rawClaims["iss"].(string); ok {
+		claims.Issuer = iss
+	}
+	if exp, ok := rawClaims["exp"].(float64); ok {
+		claims.ExpiresAt = int64(exp)
+	}
+	if iat, ok := rawClaims["iat"].(float64); ok {
+		claims.IssuedAt = int64(iat)
+	}
+	if email, ok := rawClaims["email"].(string); ok {
+		claims.Email = email
+	}
+	if name, ok := rawClaims["name"].(string); ok {
+		claims.Name = name
+	}
+
+	// Handle audience (can be string or array)
+	switch aud := rawClaims["aud"].(type) {
+	case string:
+		claims.Audience = []string{aud}
+	case []interface{}:
+		for _, a := range aud {
+			if audStr, ok := a.(string); ok {
+				claims.Audience = append(claims.Audience, audStr)
+			}
+		}
+	}
+
+	// Handle scope (can be string or array)
+	switch scope := rawClaims["scope"].(type) {
+	case string:
+		claims.Scopes = strings.Fields(scope)
+	case []interface{}:
+		for _, s := range scope {
+			if scopeStr, ok := s.(string); ok {
+				claims.Scopes = append(claims.Scopes, scopeStr)
+			}
+		}
+	}
+
+	// Store extra claims
+	standardClaims := map[string]bool{"sub": true, "iss": true, "aud": true, "exp": true, "iat": true, "nbf": true, "jti": true, "scope": true, "email": true, "name": true}
+	for k, v := range rawClaims {
+		if !standardClaims[k] {
+			claims.Extra[k] = v
+		}
+	}
+
+	return claims, nil
+}
+
+// hasRequiredScopes checks if all required scopes are present
+func hasRequiredScopes(tokenScopes, requiredScopes []string) bool {
+	scopeSet := make(map[string]bool)
+	for _, s := range tokenScopes {
+		scopeSet[s] = true
+	}
+	for _, required := range requiredScopes {
+		if !scopeSet[required] {
+			return false
+		}
+	}
+	return true
+}
+
+// GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or OAuth tokens from context
+func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*clickhouse.Client, error) {
+	jweToken := s.ExtractTokenFromCtx(ctx)
+	oauthToken := s.ExtractOAuthTokenFromCtx(ctx)
+	oauthClaims := s.GetOAuthClaimsFromCtx(ctx)
+	return s.GetClickHouseClientWithOAuth(ctx, jweToken, oauthToken, oauthClaims)
+}
+
+// GetOAuthClaimsFromCtx extracts OAuth claims from context
+func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthClaims {
+	if claims := ctx.Value("oauth_claims"); claims != nil {
+		if oauthClaims, ok := claims.(*OAuthClaims); ok {
+			return oauthClaims
+		}
+	}
+	return nil
+}
+
+// BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config
+func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, claims *OAuthClaims) map[string]string {
+	if !s.Config.Server.OAuth.ForwardToClickHouse {
+		return nil
+	}
+
+	headers := make(map[string]string)
+
+	// Forward access token if configured
+	if s.Config.Server.OAuth.ForwardAccessToken {
+		headerName := s.Config.Server.OAuth.ClickHouseHeaderName
+		if headerName == "" {
+			headerName = "Authorization"
+		}
+		if headerName == "Authorization" {
+			headers[headerName] = "Bearer " + token
+		} else {
+			headers[headerName] = token
+		}
+	}
+
+	// Map claims to headers if configured
+	if len(s.Config.Server.OAuth.ClaimsToHeaders) > 0 && claims != nil {
+		for claimName, headerName := range s.Config.Server.OAuth.ClaimsToHeaders {
+			var value string
+			switch claimName {
+			case "sub":
+				value = claims.Subject
+			case "iss":
+				value = claims.Issuer
+			case "email":
+				value = claims.Email
+			case "name":
+				value = claims.Name
+			default:
+				// Check extra claims
+				if v, ok := claims.Extra[claimName]; ok {
+					if strVal, ok := v.(string); ok {
+						value = strVal
+					} else {
+						// Try to JSON encode non-string values
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							value = string(jsonBytes)
+						}
+					}
+				}
+			}
+			if value != "" {
+				headers[headerName] = value
+			}
+		}
+	}
+
+	return headers
+}
+
+// ValidateAuth validates authentication (supports both JWE and OAuth)
+// Returns nil error if at least one enabled auth method validates successfully
+func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oauthToken string, oauthClaims *OAuthClaims, err error) {
+	jweEnabled := s.Config.Server.JWE.Enabled
+	oauthEnabled := s.Config.Server.OAuth.Enabled
+
+	// If neither auth method is enabled, no validation needed
+	if !jweEnabled && !oauthEnabled {
+		return "", "", nil, nil
+	}
+
+	// Extract tokens
+	jweToken = s.ExtractTokenFromRequest(r)
+	oauthToken = s.ExtractOAuthTokenFromRequest(r)
+
+	var jweErr, oauthErr error
+
+	// Validate JWE if enabled
+	if jweEnabled && jweToken != "" {
+		jweErr = s.ValidateJWEToken(jweToken)
+	} else if jweEnabled {
+		jweErr = jwe_auth.ErrMissingToken
+	}
+
+	// Validate OAuth if enabled
+	if oauthEnabled && oauthToken != "" {
+		oauthClaims, oauthErr = s.ValidateOAuthToken(oauthToken)
+	} else if oauthEnabled {
+		oauthErr = ErrMissingOAuthToken
+	}
+
+	// If both are enabled, at least one must succeed
+	if jweEnabled && oauthEnabled {
+		if jweErr == nil || oauthErr == nil {
+			return jweToken, oauthToken, oauthClaims, nil
+		}
+		// Both failed, return the most relevant error
+		if jweToken != "" && oauthToken != "" {
+			return "", "", nil, fmt.Errorf("both JWE and OAuth validation failed")
+		}
+		if jweToken != "" {
+			return "", "", nil, jweErr
+		}
+		if oauthToken != "" {
+			return "", "", nil, oauthErr
+		}
+		return "", "", nil, errors.New("authentication required (JWE or OAuth)")
+	}
+
+	// Only JWE enabled
+	if jweEnabled {
+		return jweToken, "", nil, jweErr
+	}
+
+	// Only OAuth enabled
+	return "", oauthToken, oauthClaims, oauthErr
+}
+
+// GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
+func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
+	// Build base config
+	var chConfig config.ClickHouseConfig
+
+	// If JWE is enabled and token provided, use JWE config
+	if s.Config.Server.JWE.Enabled && jweToken != "" {
+		claims, err := jwe_auth.ParseAndDecryptJWE(jweToken, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse JWE token: %w", err)
+		}
+		chConfig, err = s.buildConfigFromClaims(claims)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		chConfig = s.Config.ClickHouse
+	}
+
+	// Add OAuth headers if forwarding is enabled
+	if s.Config.Server.OAuth.ForwardToClickHouse && oauthToken != "" {
+		oauthHeaders := s.BuildClickHouseHeadersFromOAuth(oauthToken, oauthClaims)
+		if len(oauthHeaders) > 0 {
+			if chConfig.HttpHeaders == nil {
+				chConfig.HttpHeaders = make(map[string]string)
+			}
+			for k, v := range oauthHeaders {
+				chConfig.HttpHeaders[k] = v
+			}
+		}
+		if s.Config.Server.OAuth.ClearClickHouseCredentials {
+			chConfig.Username = ""
+			chConfig.Password = ""
+		}
+	}
+
+    // Merge forwarded HTTP headers from context (forward_http_headers)
+	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
+		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
+	}
+
+	// Merge header-to-settings from context (header_to_settings)
+	if extraSettings := HeaderSettingsFromContext(ctx); len(extraSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, extraSettings)
+	}
+
+	// Create client
+	client, err := clickhouse.NewClient(ctx, chConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+	}
+
+	return client, nil
+}
+
 // ErrJSONEscaper replacing for resolve OpenAI MCP wrong handling single quote and backtick characters in error message
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
@@ -356,11 +765,8 @@ func HandleSchemaResource(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+	// Get ClickHouse client (handles both JWE and OAuth from context)
+	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -429,11 +835,8 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+	// Get ClickHouse client (handles both JWE and OAuth from context)
+	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return nil, fmt.Errorf("failed to get ClickHouse client: %w", err)
@@ -641,10 +1044,8 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		if chJweServer == nil {
 			return nil, fmt.Errorf("can't get JWEServer from context")
 		}
-		// Extract token
-		token := chJweServer.ExtractTokenFromCtx(ctx)
-		// Client
-		chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+		// Get ClickHouse client (handles both JWE and OAuth from context)
+		chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
 			return NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -984,11 +1385,8 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
-	// Extract token from context
-	token := chJweServer.ExtractTokenFromCtx(ctx)
-
-	// Get ClickHouse client
-	chClient, err := chJweServer.GetClickHouseClient(ctx, token)
+	// Get ClickHouse client (handles both JWE and OAuth from context)
+	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
 		return NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
@@ -1040,18 +1438,42 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Extract token from request
-	token := s.ExtractTokenFromRequest(r)
-
-	// Validate JWE token if auth is enabled
-	if err := s.ValidateJWEToken(token); err != nil {
-		if errors.Is(err, jwe_auth.ErrMissingToken) {
-			http.Error(w, "Missing JWE token", http.StatusUnauthorized)
+	// Validate authentication (JWE and/or OAuth)
+	jweToken, oauthToken, oauthClaims, err := s.ValidateAuth(r)
+	if err != nil {
+		if errors.Is(err, jwe_auth.ErrMissingToken) || errors.Is(err, ErrMissingOAuthToken) {
+			http.Error(w, "Missing authentication token", http.StatusUnauthorized)
 			return
 		}
-		http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
+		if errors.Is(err, ErrOAuthTokenExpired) {
+			http.Error(w, "OAuth token expired", http.StatusUnauthorized)
+			return
+		}
+		if errors.Is(err, ErrOAuthInsufficientScopes) {
+			http.Error(w, "Insufficient OAuth scopes", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, ErrInvalidOAuthToken) {
+			http.Error(w, "Invalid OAuth token", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, "Invalid authentication token", http.StatusUnauthorized)
 		return
 	}
+
+	// Use JWE token as primary token for backward compatibility
+	token := jweToken
+	if token == "" && oauthToken != "" {
+		token = oauthToken
+	}
+
+	// Store OAuth claims in context if available
+	ctx := r.Context()
+	if oauthClaims != nil {
+		ctx = context.WithValue(ctx, "oauth_claims", oauthClaims)
+		ctx = context.WithValue(ctx, "oauth_token", oauthToken)
+	}
+	r = r.WithContext(ctx)
 
 	// Route to appropriate handler based on path suffix
 	switch {
@@ -1272,8 +1694,8 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 
 	ctx := context.WithValue(r.Context(), "jwe_token", token)
 
-	// Get ClickHouse client
-	chClient, err := s.GetClickHouseClient(ctx, token)
+	// Get ClickHouse client (handles both JWE and OAuth from context)
+	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
 		return
@@ -1310,7 +1732,8 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 	}
 
 	ctx := context.WithValue(r.Context(), "jwe_token", token)
-	chClient, err := s.GetClickHouseClient(ctx, token)
+	// Get ClickHouse client (handles both JWE and OAuth from context)
+	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get ClickHouse client: %v", err), http.StatusInternalServerError)
 		return
@@ -1361,4 +1784,260 @@ func isSelectQuery(query string) bool {
 func hasLimitClause(query string) bool {
 	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
 	return hasLimit
+}
+
+// contextKey avoids collisions with other packages using context.WithValue.
+type contextKey string
+
+const forwardedHeadersKey contextKey = "forwarded_http_headers"
+
+// sensitiveHeaders are excluded from wildcard pattern matching to prevent
+// accidental credential leakage. A user can still forward these by naming
+// them explicitly (e.g. --forward-http-headers "Authorization").
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+	"Host":                true,
+	"Proxy-Authorization": true,
+}
+
+// WarnOnCatchAllPattern logs a warning if any pattern is a bare "*",
+// which would forward all non-sensitive headers to ClickHouse. Call
+// once at startup after parsing the config.
+func WarnOnCatchAllPattern(patterns []string) {
+	for _, p := range patterns {
+		if strings.TrimSpace(p) == "*" {
+			log.Warn().Msg("forward-http-headers contains \"*\": all headers (except Authorization, Cookie, Host, Set-Cookie, Proxy-Authorization) will be forwarded to ClickHouse; sensitive headers require an explicit pattern")
+			return
+		}
+	}
+}
+
+// ContextWithForwardedHeaders extracts headers matching the given patterns
+// from the incoming HTTP request and stores them in context. This makes
+// forwarded headers available to every handler path (OpenAPI, MCP JSON-RPC,
+// dynamic tools) without coupling to *http.Request.
+func ContextWithForwardedHeaders(ctx context.Context, r *http.Request, patterns []string) context.Context {
+	if headers := extractForwardHeaders(r, patterns); headers != nil {
+		return context.WithValue(ctx, forwardedHeadersKey, headers)
+	}
+	return ctx
+}
+
+// ForwardedHeadersFromContext retrieves forwarded HTTP headers previously
+// stored by ContextWithForwardedHeaders. Returns nil when no headers are
+// available (e.g. STDIO transport).
+func ForwardedHeadersFromContext(ctx context.Context) map[string]string {
+	if headers, ok := ctx.Value(forwardedHeadersKey).(map[string]string); ok {
+		return headers
+	}
+	return nil
+}
+
+// extractForwardHeaders returns headers matching any of the given patterns.
+// Patterns support trailing * wildcard (e.g. "X-*" matches all X-prefixed
+// headers) and exact matches (e.g. "X-Tenant-Id"). Matching is
+// case-insensitive. Sensitive headers (Authorization, Cookie, …) are
+// excluded from wildcard matches but can be forwarded via an explicit
+// exact-match pattern.
+func extractForwardHeaders(r *http.Request, patterns []string) map[string]string {
+	if r == nil || len(patterns) == 0 {
+		return nil
+	}
+	headers := make(map[string]string)
+	for name := range r.Header {
+		canonical := http.CanonicalHeaderKey(name)
+		if matchesAnyPattern(canonical, patterns) {
+			headers[canonical] = r.Header.Get(name)
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(headers))
+	for k := range headers {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(headers)).Strs("header_names", names).Msg("forwarding HTTP headers to ClickHouse")
+	return headers
+}
+
+// mergeHTTPHeaders merges extra per-request headers into a base header map,
+// returning a new map without mutating either input.
+func mergeHTTPHeaders(base, extra map[string]string) map[string]string {
+	merged := make(map[string]string, len(base)+len(extra))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	return merged
+}
+
+// CORSAllowHeaders builds the Access-Control-Allow-Headers value by combining
+// a base set of standard headers with the configured forward patterns and
+// header_to_settings source headers. Wildcard patterns (e.g. "X-*") are
+// expanded to the CORS spec wildcard "*" since browsers don't support prefix
+// wildcards in Access-Control-Allow-Headers.
+func CORSAllowHeaders(forwardPatterns []string, headerToSettings map[string]string) string {
+	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
+	hasWildcard := false
+	for _, p := range forwardPatterns {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(p, "*") {
+			hasWildcard = true
+			continue
+		}
+		base += ", " + p
+	}
+	for header := range headerToSettings {
+		base += ", " + header
+	}
+	if hasWildcard {
+		base += ", *"
+	}
+	return base
+}
+
+// blockedSettings contains ClickHouse settings that must never be overridden
+// via header_to_settings to prevent privilege escalation or DoS.
+var blockedSettings = map[string]bool{
+	"readonly":                      true,
+	"allow_ddl":                     true,
+	"allow_introspection_functions": true,
+	"max_execution_time":            true,
+	"max_memory_usage":              true,
+	"max_result_rows":               true,
+	"max_result_bytes":              true,
+	"max_rows_to_read":              true,
+	"max_bytes_to_read":             true,
+	"password":                      true,
+	"user":                          true,
+	"database":                      true,
+}
+
+const headerSettingsKey contextKey = "header_to_settings"
+
+// ValidateHeaderToSettings checks the mapping at startup and returns an error
+// if any entry targets a blocked ClickHouse setting. Logs a warning when a
+// target setting does not start with "custom_" (requires custom_settings_prefixes
+// on the ClickHouse server).
+func ValidateHeaderToSettings(mapping map[string]string) error {
+	warnings, err := validateHeaderToSettings(mapping)
+	for _, w := range warnings {
+		log.Warn().Msg(w)
+	}
+	return err
+}
+
+// validateHeaderToSettings is the testable core: returns (warnings, error).
+func validateHeaderToSettings(mapping map[string]string) (warnings []string, err error) {
+	for header, setting := range mapping {
+		lower := strings.ToLower(setting)
+		if blockedSettings[lower] {
+			return nil, fmt.Errorf("header_to_settings: header %q maps to blocked ClickHouse setting %q", header, setting)
+		}
+		canonical := http.CanonicalHeaderKey(header)
+		if sensitiveHeaders[canonical] {
+			return nil, fmt.Errorf("header_to_settings: sensitive header %q cannot be used as a source", header)
+		}
+		if !strings.HasPrefix(lower, "custom_") {
+			warnings = append(warnings, fmt.Sprintf(
+				"header_to_settings: header %q maps to setting %q which does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				header, setting,
+			))
+		}
+	}
+	return warnings, nil
+}
+
+// ContextWithHeaderSettings extracts headers listed in the mapping from the
+// incoming HTTP request, converts them to ClickHouse settings, and stores the
+// result in context.
+func ContextWithHeaderSettings(ctx context.Context, r *http.Request, mapping map[string]string) context.Context {
+	if settings := extractHeaderSettings(r, mapping); settings != nil {
+		return context.WithValue(ctx, headerSettingsKey, settings)
+	}
+	return ctx
+}
+
+// HeaderSettingsFromContext retrieves per-request ClickHouse settings
+// previously stored by ContextWithHeaderSettings. Returns nil when no
+// settings are available (e.g. STDIO transport or no mapping configured).
+func HeaderSettingsFromContext(ctx context.Context) map[string]string {
+	if settings, ok := ctx.Value(headerSettingsKey).(map[string]string); ok {
+		return settings
+	}
+	return nil
+}
+
+// extractHeaderSettings reads headers according to the mapping and returns
+// the corresponding ClickHouse settings. Headers absent from the request are
+// silently skipped. Only header names are logged, never values.
+func extractHeaderSettings(r *http.Request, mapping map[string]string) map[string]string {
+	if r == nil || len(mapping) == 0 {
+		return nil
+	}
+	settings := make(map[string]string)
+	for header, setting := range mapping {
+		canonical := http.CanonicalHeaderKey(header)
+		if val := r.Header.Get(canonical); val != "" {
+			settings[setting] = val
+		}
+	}
+	if len(settings) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(settings))
+	for k := range settings {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("mapping HTTP headers to ClickHouse settings")
+	return settings
+}
+
+// mergeExtraSettings copies per-request settings into a ClickHouseConfig,
+// returning a shallow copy with ExtraSettings populated. Neither input is mutated.
+func mergeExtraSettings(cfg config.ClickHouseConfig, settings map[string]string) config.ClickHouseConfig {
+	merged := make(map[string]string, len(cfg.ExtraSettings)+len(settings))
+	for k, v := range cfg.ExtraSettings {
+		merged[k] = v
+	}
+	for k, v := range settings {
+		merged[k] = v
+	}
+	cfg.ExtraSettings = merged
+	return cfg
+}
+
+// matchesAnyPattern returns true if header matches at least one pattern.
+// Supports trailing * wildcard (e.g. "X-*", "X-Tenant-*") and exact match.
+// Comparison is case-insensitive. Wildcard patterns skip sensitive headers;
+// only an explicit exact-match pattern can forward them.
+func matchesAnyPattern(header string, patterns []string) bool {
+	lower := strings.ToLower(header)
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if strings.HasSuffix(p, "*") {
+			if sensitiveHeaders[http.CanonicalHeaderKey(header)] {
+				continue
+			}
+			if strings.HasPrefix(lower, p[:len(p)-1]) {
+				return true
+			}
+		} else if lower == p {
+			return true
+		}
+	}
+	return false
 }
