@@ -56,9 +56,7 @@ type dynamicToolCommentMetadata struct {
 }
 
 type dynamicToolCommentAnnotations struct {
-	ReadOnlyHint    *bool `json:"readOnlyHint"`
-	DestructiveHint *bool `json:"destructiveHint"`
-	OpenWorldHint   *bool `json:"openWorldHint"`
+	OpenWorldHint *bool `json:"openWorldHint"`
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -771,20 +769,10 @@ func buildDynamicToolAnnotations(commentAnnotations *dynamicToolCommentAnnotatio
 		OpenWorldHint:   boolPtr(false),
 	}
 	if commentAnnotations != nil {
-		if commentAnnotations.ReadOnlyHint != nil {
-			annotations.ReadOnlyHint = *commentAnnotations.ReadOnlyHint
-		}
-		if commentAnnotations.DestructiveHint != nil {
-			annotations.DestructiveHint = boolPtr(*commentAnnotations.DestructiveHint)
-		}
 		if commentAnnotations.OpenWorldHint != nil {
 			annotations.OpenWorldHint = boolPtr(*commentAnnotations.OpenWorldHint)
 		}
 	}
-
-	annotations.ReadOnlyHint = true
-	annotations.DestructiveHint = boolPtr(false)
-	annotations.OpenWorldHint = boolPtr(false)
 	return annotations
 }
 

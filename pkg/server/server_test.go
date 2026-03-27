@@ -698,7 +698,7 @@ func TestHelperFunctions(t *testing.T) {
 
 func TestDynamicToolCommentMetadata(t *testing.T) {
 	t.Run("valid_json_comment", func(t *testing.T) {
-		comment := `{"title":"GitHub Search","description":"Returns matching issues.","annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}}`
+		comment := `{"title":"GitHub Search","description":"Returns matching issues.","annotations":{"openWorldHint":true}}`
 
 		meta := buildDynamicToolMeta("github_search", "mcp", "search", comment, nil)
 
@@ -709,7 +709,7 @@ func TestDynamicToolCommentMetadata(t *testing.T) {
 		require.NotNil(t, meta.Annotations.DestructiveHint)
 		require.False(t, *meta.Annotations.DestructiveHint)
 		require.NotNil(t, meta.Annotations.OpenWorldHint)
-		require.False(t, *meta.Annotations.OpenWorldHint)
+		require.True(t, *meta.Annotations.OpenWorldHint)
 	})
 
 	t.Run("invalid_json_falls_back_to_plain_description", func(t *testing.T) {
