@@ -100,8 +100,6 @@ Altinity MCP supports strict JSON metadata in a view `COMMENT` for these top-lev
 
 - `title`
 - `description`
-- `annotations.readOnlyHint`
-- `annotations.destructiveHint`
 - `annotations.openWorldHint`
 
 Example:
@@ -111,15 +109,15 @@ CREATE OR REPLACE VIEW mcp.search AS
 SELECT number, title
 FROM github_events
 WHERE title ILIKE '%' || {query: String} || '%'
-COMMENT '{"title":"GitHub Search","description":"Returns issues with matching titles.","annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}'
+COMMENT '{"title":"GitHub Search","description":"Returns issues with matching titles.","annotations":{"openWorldHint":true}}'
 ```
 
 Notes:
 
-- Dynamic view-backed tools are always normalized to read-only MCP annotations:
+- Dynamic view-backed tools are always exposed with:
   - `readOnlyHint=true`
   - `destructiveHint=false`
-  - `openWorldHint=false`
+- `annotations.openWorldHint` is optional and may be set to `true` when the tool interacts with arbitrary external targets.
 - If the `COMMENT` is not valid JSON, it is treated as a plain description string.
 - Parameter-level metadata is not supported in `COMMENT` yet.
 

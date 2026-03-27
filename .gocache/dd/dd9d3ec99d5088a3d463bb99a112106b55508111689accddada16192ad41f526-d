@@ -1,0 +1,7 @@
+./ascii.go
+./equal_fold.go
+./equal_fold_default.go
+./valid.go
+./valid_default.go
+./valid_print.go
+./valid_print_default.go

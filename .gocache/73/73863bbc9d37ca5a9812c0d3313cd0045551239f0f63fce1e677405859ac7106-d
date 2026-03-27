@@ -1,0 +1,9 @@
+./compare.go
+./cpuinfo.go
+./cpuinfo_other.go
+./database.go
+./defaults.go
+./defaults_darwin.go
+./errors.go
+./platforms.go
+./platforms_other.go

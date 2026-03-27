@@ -1,0 +1,7 @@
+./ascii.go
+./doc.go
+./proxy.go
+./term.go
+./term_unix.go
+./termios_bsd.go
+./termios_unix.go

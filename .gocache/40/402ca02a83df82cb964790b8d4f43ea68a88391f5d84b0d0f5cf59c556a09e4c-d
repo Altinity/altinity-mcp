@@ -1,0 +1,13 @@
+./bound.go
+./clone.go
+./define.go
+./equal.go
+./geometry.go
+./line_string.go
+./multi_line_string.go
+./multi_point.go
+./multi_polygon.go
+./point.go
+./polygon.go
+./ring.go
+./round.go

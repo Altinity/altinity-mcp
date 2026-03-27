@@ -1,0 +1,6 @@
+./emitter.go
+./m0.go
+./m4.go
+./matchfinder.go
+./pathfinder.go
+./textencoder.go
