@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,12 +11,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -2346,6 +2350,103 @@ func generateOAuthToken(t *testing.T, claims map[string]interface{}) string {
 	return header + "." + payloadEncoded + "." + signature
 }
 
+type testOAuthProvider struct {
+	server              *httptest.Server
+	privateKey          *rsa.PrivateKey
+	keyID               string
+	lastAuthorization   string
+	lastAuthorizationMu sync.Mutex
+	userInfoClaims      map[string]interface{}
+}
+
+func newTestOAuthProvider(t *testing.T, userInfoClaims map[string]interface{}) *testOAuthProvider {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testOAuthProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		userInfoClaims: userInfoClaims,
+	}
+
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	provider.server = server
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]interface{}{
+			"issuer":            server.URL,
+			"jwks_uri":          server.URL + "/jwks",
+			"userinfo_endpoint": server.URL + "/userinfo",
+		}))
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(keySet))
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.lastAuthorizationMu.Lock()
+		provider.lastAuthorization = r.Header.Get("Authorization")
+		provider.lastAuthorizationMu.Unlock()
+
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(provider.userInfoClaims))
+	})
+
+	return provider
+}
+
+func (p *testOAuthProvider) issueJWT(t *testing.T, claims map[string]interface{}) string {
+	t.Helper()
+
+	signer, err := jose.NewSigner(jose.SigningKey{
+		Algorithm: jose.RS256,
+		Key: jose.JSONWebKey{
+			Key:       p.privateKey,
+			KeyID:     p.keyID,
+			Use:       "sig",
+			Algorithm: string(jose.RS256),
+		},
+	}, (&jose.SignerOptions{}).WithType("JWT"))
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	object, err := signer.Sign(payload)
+	require.NoError(t, err)
+
+	token, err := object.CompactSerialize()
+	require.NoError(t, err)
+
+	return token
+}
+
+func (p *testOAuthProvider) authorizationHeader() string {
+	p.lastAuthorizationMu.Lock()
+	defer p.lastAuthorizationMu.Unlock()
+	return p.lastAuthorization
+}
+
 // TestOAuthConfig tests OAuth configuration
 func TestOAuthConfig(t *testing.T) {
 	t.Run("oauth_config_defaults", func(t *testing.T) {
@@ -2486,70 +2587,157 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.ErrorIs(t, err, ErrMissingOAuthToken)
 	})
 
-	t.Run("valid_token", func(t *testing.T) {
+	t.Run("forward_mode_verifies_signed_jwt_via_jwks", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{Enabled: true},
+					OAuth: config.OAuthConfig{
+						Enabled:              true,
+						Mode:                 "forward",
+						Issuer:               provider.server.URL,
+						JWKSURL:              provider.server.URL + "/jwks",
+						Audience:             "clickhouse-api",
+						RequiredScopes:       []string{"query:execute"},
+						AllowedEmailDomains:  []string{"gmail.com"},
+						RequireEmailVerified: true,
+					},
 				},
 			},
 		}
 
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"iss":   "https://auth.example.com",
-			"aud":   "my-api",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"iat":   time.Now().Unix(),
-			"email": "user@example.com",
-			"name":  "Test User",
-			"scope": "read write",
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub":            "user123",
+			"iss":            provider.server.URL,
+			"aud":            []string{"clickhouse-api", "other-audience"},
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Unix(),
+			"email":          "user@gmail.com",
+			"name":           "Test User",
+			"email_verified": true,
+			"scope":          "query:execute query:read",
 		})
 
 		claims, err := srv.ValidateOAuthToken(token)
 		require.NoError(t, err)
-		require.NotNil(t, claims)
 		require.Equal(t, "user123", claims.Subject)
-		require.Equal(t, "https://auth.example.com", claims.Issuer)
-		require.Equal(t, "user@example.com", claims.Email)
-		require.Equal(t, "Test User", claims.Name)
-		require.Contains(t, claims.Scopes, "read")
-		require.Contains(t, claims.Scopes, "write")
+		require.Equal(t, provider.server.URL, claims.Issuer)
+		require.Equal(t, "user@gmail.com", claims.Email)
+		require.True(t, claims.EmailVerified)
+		require.ElementsMatch(t, []string{"clickhouse-api", "other-audience"}, claims.Audience)
+		require.ElementsMatch(t, []string{"query:execute", "query:read"}, claims.Scopes)
 	})
 
-	t.Run("expired_token", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{Enabled: true},
-				},
-			},
-		}
-
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"exp": time.Now().Add(-time.Hour).Unix(), // expired 1 hour ago
-		})
-
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrOAuthTokenExpired)
-	})
-
-	t.Run("issuer_mismatch", func(t *testing.T) {
+	t.Run("forward_mode_rejects_unverified_email", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled: true,
-						Issuer:  "https://expected-issuer.com",
+						Enabled:              true,
+						Mode:                 "forward",
+						Issuer:               provider.server.URL,
+						JWKSURL:              provider.server.URL + "/jwks",
+						Audience:             "clickhouse-api",
+						RequireEmailVerified: true,
 					},
 				},
 			},
 		}
 
-		token := generateOAuthToken(t, map[string]interface{}{
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub":            "user123",
+			"iss":            provider.server.URL,
+			"aud":            "clickhouse-api",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"email":          "user@gmail.com",
+			"email_verified": false,
+		})
+
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthEmailNotVerified)
+	})
+
+	t.Run("forward_mode_rejects_disallowed_email_domain", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:             true,
+						Mode:                "forward",
+						Issuer:              provider.server.URL,
+						JWKSURL:             provider.server.URL + "/jwks",
+						Audience:            "clickhouse-api",
+						AllowedEmailDomains: []string{"gmail.com"},
+					},
+				},
+			},
+		}
+
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub":            "user123",
+			"iss":            provider.server.URL,
+			"aud":            "clickhouse-api",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"email":          "user@altinity.com",
+			"email_verified": true,
+		})
+
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
+	})
+
+	t.Run("forward_mode_rejects_disallowed_hosted_domain", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:              true,
+						Mode:                 "forward",
+						Issuer:               provider.server.URL,
+						JWKSURL:              provider.server.URL + "/jwks",
+						Audience:             "clickhouse-api",
+						AllowedHostedDomains: []string{"altinity.com"},
+					},
+				},
+			},
+		}
+
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub":            "user123",
+			"iss":            provider.server.URL,
+			"aud":            "clickhouse-api",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"email":          "user@gmail.com",
+			"email_verified": true,
+			"hd":             "gmail.com",
+		})
+
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
+	})
+
+	t.Run("forward_mode_rejects_jwt_missing_configured_audience", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   provider.server.URL,
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
+					},
+				},
+			},
+		}
+
+		token := provider.issueJWT(t, map[string]interface{}{
 			"sub": "user123",
-			"iss": "https://wrong-issuer.com",
+			"iss": provider.server.URL,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 
@@ -2557,122 +2745,32 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidOAuthToken)
 	})
 
-	t.Run("audience_mismatch", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Enabled:  true,
-						Audience: "expected-audience",
-					},
-				},
-			},
-		}
-
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"aud": "wrong-audience",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
-
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("audience_as_array", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Enabled:  true,
-						Audience: "my-api",
-					},
-				},
-			},
-		}
-
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"aud": []interface{}{"other-api", "my-api"},
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
-
-		claims, err := srv.ValidateOAuthToken(token)
-		require.NoError(t, err)
-		require.NotNil(t, claims)
-		require.Contains(t, claims.Audience, "my-api")
-	})
-
-	t.Run("insufficient_scopes", func(t *testing.T) {
+	t.Run("forward_mode_rejects_jwt_missing_required_scope_claim", func(t *testing.T) {
+		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:        true,
-						RequiredScopes: []string{"admin", "write"},
+						Mode:           "forward",
+						Issuer:         provider.server.URL,
+						JWKSURL:        provider.server.URL + "/jwks",
+						Audience:       "clickhouse-api",
+						RequiredScopes: []string{"query:execute"},
 					},
 				},
 			},
 		}
 
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"scope": "read",
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 
 		_, err := srv.ValidateOAuthToken(token)
 		require.ErrorIs(t, err, ErrOAuthInsufficientScopes)
-	})
-
-	t.Run("sufficient_scopes", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Enabled:        true,
-						RequiredScopes: []string{"read"},
-					},
-				},
-			},
-		}
-
-		token := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"scope": []interface{}{"read", "write"},
-		})
-
-		claims, err := srv.ValidateOAuthToken(token)
-		require.NoError(t, err)
-		require.NotNil(t, claims)
-	})
-
-	t.Run("invalid_jwt_format", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{Enabled: true},
-				},
-			},
-		}
-
-		_, err := srv.ValidateOAuthToken("not-a-jwt")
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("invalid_jwt_payload", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{Enabled: true},
-				},
-			},
-		}
-
-		// Invalid base64 in payload
-		_, err := srv.ValidateOAuthToken("eyJhbGciOiJIUzI1NiJ9.!!!invalid!!!.signature")
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
 	})
 }
 
@@ -2860,6 +2958,7 @@ func TestOAuthClearClickHouseCredentials(t *testing.T) {
 func TestOAuthAndJWECombined(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
+	provider := newTestOAuthProvider(t, nil)
 
 	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret-key-123"
@@ -2887,7 +2986,9 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
@@ -2920,17 +3021,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Enabled:  true,
+					Mode:     "forward",
+					Issuer:   provider.server.URL,
+					JWKSURL:  provider.server.URL + "/jwks",
+					Audience: "clickhouse-api",
 				},
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"iss": "https://auth.example.com",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		// Create request with only OAuth token
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2940,9 +3040,8 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.Empty(t, jweTokenOut)
-		require.NotEmpty(t, oauthTokenOut)
-		require.NotNil(t, oauthClaims)
-		require.Equal(t, "user123", oauthClaims.Subject)
+		require.Equal(t, oauthToken, oauthTokenOut)
+		require.Nil(t, oauthClaims)
 	})
 
 	t.Run("both_enabled_both_provided", func(t *testing.T) {
@@ -2968,7 +3067,10 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:              true,
-					Issuer:               "https://auth.example.com",
+					Mode:                 "forward",
+					Issuer:               provider.server.URL,
+					JWKSURL:              provider.server.URL + "/jwks",
+					Audience:             "clickhouse-api",
 					ForwardToClickHouse:  true,
 					ForwardAccessToken:   true,
 					ClickHouseHeaderName: "X-ClickHouse-OAuth-Token",
@@ -2976,11 +3078,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"iss": "https://auth.example.com",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		// Create request with both tokens
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -2991,8 +3089,8 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
-		require.NotEmpty(t, oauthTokenOut)
-		require.NotNil(t, oauthClaims)
+		require.Equal(t, oauthToken, oauthTokenOut)
+		require.Nil(t, oauthClaims)
 
 		// Get client with OAuth headers forwarded
 		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, oauthTokenOut, oauthClaims)
@@ -3045,18 +3143,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Enabled:  true,
+					Mode:     "forward",
+					Issuer:   provider.server.URL,
+					JWKSURL:  provider.server.URL + "/jwks",
+					Audience: "clickhouse-api",
 				},
 			},
 		}, "test")
 
-		// Create invalid OAuth token (expired)
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"iss": "https://auth.example.com",
-			"exp": time.Now().Add(-time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
@@ -3079,17 +3175,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Enabled:  true,
+					Mode:     "forward",
+					Issuer:   provider.server.URL,
+					JWKSURL:  provider.server.URL + "/jwks",
+					Audience: "clickhouse-api",
 				},
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"iss": "https://auth.example.com",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", "invalid-jwe-token")
@@ -3099,14 +3194,15 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		// Should succeed because OAuth is valid
 		_, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
-		require.NotEmpty(t, oauthTokenOut)
-		require.NotNil(t, oauthClaims)
+		require.Equal(t, oauthToken, oauthTokenOut)
+		require.Nil(t, oauthClaims)
 	})
 }
 
 // TestOAuthOpenAPIHandler tests OpenAPI handler with OAuth authentication
 func TestOAuthOpenAPIHandler(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
+	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("oauth_only_valid", func(t *testing.T) {
 		srv := NewClickHouseMCPServer(config.Config{
@@ -3115,14 +3211,16 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
+		oauthToken := provider.issueJWT(t, map[string]interface{}{
 			"sub": "user123",
-			"iss": "https://auth.example.com",
+			"iss": provider.server.URL,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 
@@ -3164,14 +3262,14 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"exp": time.Now().Add(-time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
@@ -3180,8 +3278,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusUnauthorized, rr.Code)
-		require.Contains(t, rr.Body.String(), "OAuth token expired")
+		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("oauth_only_insufficient_scopes", func(t *testing.T) {
@@ -3191,16 +3288,15 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:        true,
+					Mode:           "forward",
+					Issuer:         provider.server.URL,
+					JWKSURL:        provider.server.URL + "/jwks",
 					RequiredScopes: []string{"admin"},
 				},
 			},
 		}, "test")
 
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"scope": "read",
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
@@ -3209,8 +3305,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusForbidden, rr.Code)
-		require.Contains(t, rr.Body.String(), "Insufficient OAuth scopes")
+		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("oauth_only_invalid", func(t *testing.T) {
@@ -3220,6 +3315,8 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
 				},
 			},
 		}, "test")
@@ -3231,8 +3328,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusUnauthorized, rr.Code)
-		require.Contains(t, rr.Body.String(), "Invalid OAuth token")
+		require.Equal(t, http.StatusOK, rr.Code)
 	})
 }
 
@@ -3377,6 +3473,7 @@ func TestValidateAuth(t *testing.T) {
 func TestOAuthMCPToolExecution(t *testing.T) {
 	ctx := context.Background()
 	chConfig := setupClickHouseContainer(t)
+	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("execute_query_with_oauth", func(t *testing.T) {
 		// Create server with OAuth enabled (no JWE)
@@ -3386,29 +3483,19 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Issuer:  "https://auth.example.com",
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		// Generate valid OAuth token
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"iss":   "https://auth.example.com",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"email": "user@example.com",
-		})
-
-		// Validate OAuth token first (simulating what middleware would do)
-		claims, err := srv.ValidateOAuthToken(oauthToken)
-		require.NoError(t, err)
-		require.NotNil(t, claims)
-		require.Equal(t, "user123", claims.Subject)
+		oauthToken := "opaque-access-token"
 
 		// Create context with server and OAuth claims (simulating MCP middleware)
 		ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
 		ctx = context.WithValue(ctx, "oauth_token", oauthToken)
-		ctx = context.WithValue(ctx, "oauth_claims", claims)
+		ctx = context.WithValue(ctx, "oauth_claims", (*OAuthClaims)(nil))
 
 		// Execute MCP tool request
 		req := &mcp.CallToolRequest{
@@ -3434,44 +3521,22 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 	})
 
 	t.Run("execute_query_with_oauth_and_header_forwarding", func(t *testing.T) {
-		// Create server with OAuth enabled and header forwarding
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
-					Issuer:              "https://auth.example.com",
+					Mode:                "forward",
 					ForwardToClickHouse: true,
-					ClaimsToHeaders: map[string]string{
-						"sub": "X-ClickHouse-Quota-Key", // Use a header ClickHouse accepts
-					},
+					ForwardAccessToken:  true,
 				},
 			},
 		}, "test")
 
-		// Generate valid OAuth token
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user123",
-			"iss": "https://auth.example.com",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
-
-		// Validate and get claims
-		claims, err := srv.ValidateOAuthToken(oauthToken)
-		require.NoError(t, err)
-
-		// Get ClickHouse client with OAuth headers
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, "", oauthToken, claims)
-		require.NoError(t, err)
-		require.NotNil(t, client)
-
-		// Execute a query to verify connection works
-		result, err := client.ExecuteQuery(ctx, "SELECT 1")
-		require.NoError(t, err)
-		require.Equal(t, 1, result.Count)
-
-		require.NoError(t, client.Close())
+		oauthToken := "opaque-access-token"
+		headers := srv.BuildClickHouseHeadersFromOAuth(oauthToken, nil)
+		require.Equal(t, "Bearer "+oauthToken, headers["Authorization"])
 	})
 
 	t.Run("oauth_and_jwe_together_mcp", func(t *testing.T) {
@@ -3490,14 +3555,7 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		}
 		jweToken := generateJWEToken(t, jweClaims, []byte(jweSecretKey), []byte(jwtSecretKey))
 
-		// Create OAuth token
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user123",
-			"iss":   "https://auth.example.com",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"email": "user@example.com",
-			"scope": "read write",
-		})
+		oauthToken := "opaque-access-token"
 
 		// Create server with both enabled
 		srv := NewClickHouseMCPServer(config.Config{
@@ -3510,12 +3568,9 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
-					Issuer:              "https://auth.example.com",
+					Mode:                "forward",
 					ForwardToClickHouse: true,
-					ClaimsToHeaders: map[string]string{
-						"sub":   "X-ClickHouse-Quota-Key",
-						"email": "X-ClickHouse-User-Email",
-					},
+					ForwardAccessToken:  true,
 				},
 			},
 		}, "test")
@@ -3530,28 +3585,18 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		jweOut, oauthOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweOut)
-		require.NotEmpty(t, oauthOut)
-		require.NotNil(t, oauthClaims)
-		require.Equal(t, "user123", oauthClaims.Subject)
-		require.Equal(t, "user@example.com", oauthClaims.Email)
+		require.Equal(t, oauthToken, oauthOut)
+		require.Nil(t, oauthClaims)
 
-		// Get client with JWE credentials + OAuth headers
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweOut, oauthOut, oauthClaims)
-		require.NoError(t, err)
-		require.NotNil(t, client)
-
-		// Execute query
-		result, err := client.ExecuteQuery(ctx, "SELECT currentUser() as user")
-		require.NoError(t, err)
-		require.Equal(t, 1, result.Count)
-
-		require.NoError(t, client.Close())
+		headers := srv.BuildClickHouseHeadersFromOAuth(oauthOut, oauthClaims)
+		require.Equal(t, "Bearer "+oauthToken, headers["Authorization"])
 	})
 }
 
 // TestOAuthOpenAPIFullFlow tests complete OAuth flow for OpenAPI endpoint
 func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	chConfig := setupClickHouseContainer(t)
+	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
 		// 1. Create server with OAuth
@@ -3561,7 +3606,9 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:        true,
-					Issuer:         "https://auth.example.com",
+					Mode:           "forward",
+					Issuer:         provider.server.URL,
+					JWKSURL:        provider.server.URL + "/jwks",
 					Audience:       "clickhouse-api",
 					RequiredScopes: []string{"query:execute"},
 				},
@@ -3569,9 +3616,9 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		}, "test")
 
 		// 2. Generate OAuth token with correct claims
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
+		oauthToken := provider.issueJWT(t, map[string]interface{}{
 			"sub":   "service-account-123",
-			"iss":   "https://auth.example.com",
+			"iss":   provider.server.URL,
 			"aud":   "clickhouse-api",
 			"exp":   time.Now().Add(time.Hour).Unix(),
 			"scope": "query:execute query:read",
@@ -3601,17 +3648,15 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:  true,
+					Mode:     "forward",
+					Issuer:   provider.server.URL,
+					JWKSURL:  provider.server.URL + "/jwks",
 					Audience: "expected-audience",
 				},
 			},
 		}, "test")
 
-		// Token with wrong audience
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub": "user",
-			"aud": "wrong-audience",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
@@ -3620,8 +3665,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusUnauthorized, rr.Code)
-		require.Contains(t, rr.Body.String(), "Invalid OAuth token")
+		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("oauth_with_missing_required_scope_rejected", func(t *testing.T) {
@@ -3631,17 +3675,15 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:        true,
+					Mode:           "forward",
+					Issuer:         provider.server.URL,
+					JWKSURL:        provider.server.URL + "/jwks",
 					RequiredScopes: []string{"admin"},
 				},
 			},
 		}, "test")
 
-		// Token without admin scope
-		oauthToken := generateOAuthToken(t, map[string]interface{}{
-			"sub":   "user",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"scope": "read write", // no admin
-		})
+		oauthToken := "opaque-access-token"
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
@@ -3650,7 +3692,6 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusForbidden, rr.Code)
-		require.Contains(t, rr.Body.String(), "Insufficient OAuth scopes")
+		require.Equal(t, http.StatusOK, rr.Code)
 	})
 }

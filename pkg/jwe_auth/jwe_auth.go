@@ -209,6 +209,24 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"tls_client_cert":          true,
 		"tls_client_key":           true,
 		"tls_insecure_skip_verify": true,
+
+		// OAuth broker/client registration claims
+		"grant_type":                 true,
+		"redirect_uris":              true,
+		"token_endpoint_auth_method": true,
+		"client_id":                  true,
+		"redirect_uri":               true,
+		"scope":                      true,
+		"client_state":               true,
+		"code_challenge":             true,
+		"code_challenge_method":      true,
+		"upstream_bearer_token":      true,
+		"upstream_token_type":        true,
+		"access_token_exp":           true,
+		"email":                      true,
+		"name":                       true,
+		"hd":                         true,
+		"email_verified":             true,
 	}
 
 	// Check for any disallowed keys

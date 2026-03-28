@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,9 @@ import (
 func TestOAuthE2EWithKeycloak(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
+	}
+	if os.Getenv("RUN_OAUTH_E2E") == "" {
+		t.Skip("set RUN_OAUTH_E2E=1 to run Docker-based OAuth E2E test")
 	}
 
 	ctx := context.Background()
@@ -69,6 +73,8 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 	// Verify it looks like a JWT
 	parts := strings.Split(token, ".")
 	require.Equal(t, 3, len(parts), "Token should be a JWT with 3 parts")
+	tokenSubject := extractJWTStringClaim(t, token, "sub")
+	require.NotEmpty(t, tokenSubject, "access token should include a subject claim")
 
 	// ---------- Step 4: Test via MCP Client (InMemoryTransports) ----------
 	t.Run("MCP_Client", func(t *testing.T) {
@@ -138,6 +144,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			rows, ok := queryResult["rows"].([]interface{})
 			require.True(t, ok, "Result should have Rows")
 			require.Greater(t, len(rows), 0, "Should have at least one row")
+			require.Equal(t, tokenSubject, firstStringCell(t, rows))
 		})
 
 		// 4c. ListResources — verify clickhouse://schema is registered
@@ -199,6 +206,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			rows, ok := result["rows"].([]interface{})
 			require.True(t, ok, "Result should have Rows")
 			require.Greater(t, len(rows), 0, "Should have at least one row")
+			require.Equal(t, tokenSubject, firstStringCell(t, rows))
 			t.Logf("OpenAPI result: %s", rr.Body.String())
 		})
 
@@ -215,6 +223,40 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			require.Equal(t, http.StatusOK, rr.Code, "OpenAPI schema should return 200")
 			require.Contains(t, rr.Body.String(), "execute_query", "Schema should contain execute_query")
 			t.Logf("OpenAPI schema (first 200 chars): %.200s...", rr.Body.String())
+		})
+
+		t.Run("ExecuteQuery_MissingBearerToken", func(t *testing.T) {
+			query := url.QueryEscape("SELECT currentUser() AS user")
+			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
+			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			req = req.WithContext(reqCtx)
+
+			rr := httptest.NewRecorder()
+			srv.OpenAPIHandler(rr, req)
+
+			require.Equal(t, http.StatusUnauthorized, rr.Code, "missing token should be rejected before ClickHouse query execution")
+			require.Contains(t, rr.Body.String(), "Missing authentication token")
+		})
+
+		t.Run("ExecuteQuery_InvalidBearerTokenRejectedByClickHouse", func(t *testing.T) {
+			query := url.QueryEscape("SELECT currentUser() AS user")
+			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
+			req.Header.Set("Authorization", "Bearer "+generateUnsignedJWT(t, map[string]any{
+				"sub":   "forged-user",
+				"iss":   "http://forged-issuer.invalid",
+				"aud":   []string{"forged-client"},
+				"exp":   time.Now().Add(10 * time.Minute).Unix(),
+				"scope": "openid",
+			}))
+			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			req = req.WithContext(reqCtx)
+
+			rr := httptest.NewRecorder()
+			srv.OpenAPIHandler(rr, req)
+
+			require.Equal(t, http.StatusInternalServerError, rr.Code, "forged token should fail during ClickHouse authentication")
+			require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client")
+			require.Contains(t, rr.Body.String(), "AUTHENTICATION_FAILED")
 		})
 	})
 }
@@ -372,7 +414,7 @@ func startClickHouseContainer(
 	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
 
 	req := testcontainers.ContainerRequest{
-		Image:        "altinity/clickhouse-server:25.8.14.20001.altinityantalya",
+		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
 		Networks:     []string{networkName},
 		NetworkAliases: map[string][]string{
@@ -453,4 +495,56 @@ func getKeycloakToken(
 	require.NotEmpty(t, tokenResp.AccessToken, "Access token should not be empty")
 
 	return tokenResp.AccessToken
+}
+
+func extractJWTStringClaim(t *testing.T, token, claim string) string {
+	t.Helper()
+
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3, "token should have three JWT parts")
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+
+	var claims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &claims))
+
+	value, ok := claims[claim].(string)
+	require.True(t, ok, "token should include string %q claim", claim)
+
+	return value
+}
+
+func firstStringCell(t *testing.T, rows []interface{}) string {
+	t.Helper()
+
+	require.NotEmpty(t, rows, "expected at least one row")
+
+	row, ok := rows[0].([]interface{})
+	require.True(t, ok, "expected row to be an array")
+	require.NotEmpty(t, row, "expected row to have at least one column")
+
+	value, ok := row[0].(string)
+	require.True(t, ok, "expected first column to be a string")
+
+	return value
+}
+
+func generateUnsignedJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "none",
+		"typ": "JWT",
+	})
+	require.NoError(t, err)
+
+	payloadJSON, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	return fmt.Sprintf(
+		"%s.%s.",
+		base64.RawURLEncoding.EncodeToString(headerJSON),
+		base64.RawURLEncoding.EncodeToString(payloadJSON),
+	)
 }

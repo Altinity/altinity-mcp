@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -17,9 +16,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -3357,14 +3359,17 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		config: config.Config{
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:      true,
-					Issuer:       "https://mcp.example.com/oauth",
-					Audience:     "https://mcp.example.com/http",
-					Scopes:       []string{"openid", "email"},
-					AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
-					TokenURL:     "https://oauth2.googleapis.com/token",
-					ClientID:     "google-client-id",
-					ClientSecret: "google-client-secret",
+					Enabled:             true,
+					Issuer:              "https://mcp.example.com/oauth",
+					Audience:            "https://mcp.example.com/http",
+					PublicResourceURL:   "https://mcp.example.com/http",
+					PublicAuthServerURL: "https://mcp.example.com/oauth",
+					BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
+					Scopes:              []string{"openid", "email"},
+					AuthURL:             "https://accounts.google.com/o/oauth2/v2/auth",
+					TokenURL:            "https://oauth2.googleapis.com/token",
+					ClientID:            "google-client-id",
+					ClientSecret:        "google-client-secret",
 				},
 			},
 		},
@@ -3373,8 +3378,6 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 	t.Run("protected_resource_metadata", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-protected-resource", nil)
-		req.Header.Set("X-Forwarded-Prefix", "/http")
-		req.Header.Set("X-Forwarded-OAuth-Prefix", "/oauth")
 		rr := httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -3387,7 +3390,6 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 	t.Run("authorization_server_metadata", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
-		req.Header.Set("X-Forwarded-OAuth-Prefix", "/oauth")
 		rr := httptest.NewRecorder()
 		app.handleOAuthAuthorizationServerMetadata(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -3412,6 +3414,18 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Equal(t, http.StatusCreated, rr.Code)
 		require.Contains(t, rr.Body.String(), "\"client_id\"")
 		require.Contains(t, rr.Body.String(), "\"token_endpoint_auth_method\":\"none\"")
+
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+		clientID, ok := reg["client_id"].(string)
+		require.True(t, ok)
+		require.NotEmpty(t, clientID)
+
+		authReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+"&redirect_uri="+url.QueryEscape("http://127.0.0.1:3334/callback")+"&scope=openid+email&state=test-state&code_challenge=test-challenge&code_challenge_method=S256", nil)
+		authRR := httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code)
+		require.Contains(t, authRR.Header().Get("Location"), "https://accounts.google.com/o/oauth2/v2/auth")
 	})
 
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
@@ -3462,13 +3476,23 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 					JWTSecretKey: "jwt-secret",
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:  true,
-					Issuer:   "https://mcp.example.com",
-					Audience: "https://mcp.example.com",
+					Enabled:             true,
+					Mode:                "terminate",
+					Issuer:              "https://accounts.example.com",
+					PublicAuthServerURL: "https://mcp.example.com",
+					Audience:            "https://mcp.example.com",
+					BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
 				},
 			},
 		},
-		mcpServer:  altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{Enabled: true, Issuer: "https://mcp.example.com", Audience: "https://mcp.example.com"}}}, "test"),
+		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{
+			Enabled:             true,
+			Mode:                "terminate",
+			Issuer:              "https://accounts.example.com",
+			PublicAuthServerURL: "https://mcp.example.com",
+			Audience:            "https://mcp.example.com",
+			BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
+		}}}, "test"),
 		oauthState: newOAuthStateStore(),
 	}
 
@@ -3503,6 +3527,46 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 		require.True(t, called)
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
+}
+
+func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:         true,
+					Mode:            "forward",
+					BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+				},
+			},
+		},
+		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:         true,
+					Mode:            "forward",
+					BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+				},
+			},
+		}, "test"),
+		oauthState: newOAuthStateStore(),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/http", nil)
+	req.Header.Set("Authorization", "Bearer opaque-access-token")
+	rr := httptest.NewRecorder()
+	called := false
+
+	handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		require.Equal(t, "opaque-access-token", r.Context().Value("oauth_token"))
+		require.Nil(t, r.Context().Value("oauth_claims"))
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(rr, req)
+	require.True(t, called)
+	require.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
@@ -3572,18 +3636,359 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	}
 }
 
-func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
-	header, err := json.Marshal(map[string]string{"alg": "none", "typ": "JWT"})
-	if err != nil {
-		return "", err
+type testForwardModeOIDCProvider struct {
+	server *httptest.Server
+
+	privateKey *rsa.PrivateKey
+	keyID      string
+
+	tokenResponse    map[string]interface{}
+	userInfoClaims   map[string]interface{}
+	lastUserInfoAuth string
+	userInfoCalls    int
+	mu               sync.Mutex
+}
+
+func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]interface{}, userInfoClaims map[string]interface{}) *testForwardModeOIDCProvider {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testForwardModeOIDCProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		tokenResponse:  tokenResponse,
+		userInfoClaims: userInfoClaims,
 	}
+
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	provider.server = server
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(provider.tokenResponse))
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(keySet))
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.mu.Lock()
+		provider.userInfoCalls++
+		provider.lastUserInfoAuth = r.Header.Get("Authorization")
+		provider.mu.Unlock()
+
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(provider.userInfoClaims))
+	})
+
+	return provider
+}
+
+func (p *testForwardModeOIDCProvider) issueIDToken(t *testing.T, claims map[string]interface{}) string {
+	t.Helper()
+
+	signer, err := jose.NewSigner(jose.SigningKey{
+		Algorithm: jose.RS256,
+		Key: jose.JSONWebKey{
+			Key:       p.privateKey,
+			KeyID:     p.keyID,
+			Use:       "sig",
+			Algorithm: string(jose.RS256),
+		},
+	}, (&jose.SignerOptions{}).WithType("JWT"))
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	object, err := signer.Sign(payload)
+	require.NoError(t, err)
+
+	token, err := object.CompactSerialize()
+	require.NoError(t, err)
+
+	return token
+}
+
+func (p *testForwardModeOIDCProvider) userInfoRequest() (int, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.userInfoCalls, p.lastUserInfoAuth
+}
+
+func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *application {
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:         true,
+				Mode:            "forward",
+				Issuer:          provider.server.URL,
+				JWKSURL:         provider.server.URL + "/jwks",
+				AuthURL:         provider.server.URL + "/authorize",
+				TokenURL:        provider.server.URL + "/token",
+				UserInfoURL:     provider.server.URL + "/userinfo",
+				ClientID:        "upstream-client-id",
+				ClientSecret:    "upstream-client-secret",
+				Scopes:          []string{"openid", "email"},
+				BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+			},
+		},
+	}
+
+	return &application{
+		config:     cfg,
+		mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+		oauthState: newOAuthStateStore(),
+	}
+}
+
+func registerOAuthBrowserClient(t *testing.T, app *application, redirectURI string) string {
+	t.Helper()
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"redirect_uris":["%s"],"token_endpoint_auth_method":"none"}`, redirectURI))
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+	rr := httptest.NewRecorder()
+	app.handleOAuthRegister(rr, req)
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var reg map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+
+	clientID, ok := reg["client_id"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, clientID)
+	return clientID
+}
+
+func startOAuthBrowserLogin(t *testing.T, app *application, clientID, redirectURI, clientState, codeVerifier string) string {
+	t.Helper()
+
+	authReq := httptest.NewRequest(
+		http.MethodGet,
+		"https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+
+			"&redirect_uri="+url.QueryEscape(redirectURI)+
+			"&scope=openid+email&state="+url.QueryEscape(clientState)+
+			"&code_challenge="+url.QueryEscape(pkceChallenge(codeVerifier))+
+			"&code_challenge_method=S256",
+		nil,
+	)
+	authRR := httptest.NewRecorder()
+	app.handleOAuthAuthorize(authRR, authReq)
+	require.Equal(t, http.StatusFound, authRR.Code)
+
+	location, err := url.Parse(authRR.Header().Get("Location"))
+	require.NoError(t, err)
+
+	state := location.Query().Get("state")
+	require.NotEmpty(t, state)
+	return state
+}
+
+func exchangeOAuthBrowserCode(t *testing.T, app *application, clientID, code, redirectURI, codeVerifier string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", clientID)
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("code_verifier", codeVerifier)
+
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	app.handleOAuthToken(rr, req)
+	return rr
+}
+
+func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+		clientState  = "client-state"
+	)
+
+	t.Run("access_token_and_id_token_prefers_id_token", func(t *testing.T) {
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token": "upstream-access-token",
+			"token_type":   "Bearer",
+			"expires_in":   1800,
+			"scope":        "openid email profile",
+		}, nil)
+		provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+			"sub":            "user-1",
+			"iss":            provider.server.URL,
+			"aud":            "upstream-client-id",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Unix(),
+			"email":          "user@example.com",
+			"email_verified": true,
+		})
+
+		app := newForwardModeBrowserLoginTestApp(provider)
+		clientID := registerOAuthBrowserClient(t, app, redirectURI)
+		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, clientState, codeVerifier)
+
+		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+		callbackRR := httptest.NewRecorder()
+		app.handleOAuthCallback(callbackRR, callbackReq)
+		require.Equal(t, http.StatusFound, callbackRR.Code)
+
+		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		require.NoError(t, err)
+		require.Equal(t, clientState, redirectLocation.Query().Get("state"))
+
+		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, redirectLocation.Query().Get("code"), redirectURI, codeVerifier)
+		require.Equal(t, http.StatusOK, tokenRR.Code)
+
+		var tokenResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
+		require.NotEqual(t, "upstream-access-token", tokenResp["access_token"])
+		require.Equal(t, "Bearer", tokenResp["token_type"])
+		require.Equal(t, "openid email profile", tokenResp["scope"])
+		require.Greater(t, tokenResp["expires_in"].(float64), float64(0))
+		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(1800))
+
+		userInfoCalls, userInfoAuth := provider.userInfoRequest()
+		require.Equal(t, 0, userInfoCalls)
+		require.Empty(t, userInfoAuth)
+	})
+
+	t.Run("access_token_only_uses_userinfo_and_returns_access_token", func(t *testing.T) {
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token": "opaque-access-token",
+			"token_type":   "DPoP",
+			"expires_in":   900,
+			"scope":        "openid email",
+		}, map[string]interface{}{
+			"sub":            "user-2",
+			"iss":            "https://issuer.example.com",
+			"email":          "user2@example.com",
+			"email_verified": true,
+		})
+
+		app := newForwardModeBrowserLoginTestApp(provider)
+		clientID := registerOAuthBrowserClient(t, app, redirectURI)
+		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, clientState, codeVerifier)
+
+		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+		callbackRR := httptest.NewRecorder()
+		app.handleOAuthCallback(callbackRR, callbackReq)
+		require.Equal(t, http.StatusFound, callbackRR.Code)
+
+		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		require.NoError(t, err)
+
+		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, redirectLocation.Query().Get("code"), redirectURI, codeVerifier)
+		require.Equal(t, http.StatusOK, tokenRR.Code)
+
+		var tokenResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		require.Equal(t, "opaque-access-token", tokenResp["access_token"])
+		require.Equal(t, "DPoP", tokenResp["token_type"])
+		require.Equal(t, "openid email", tokenResp["scope"])
+		require.Greater(t, tokenResp["expires_in"].(float64), float64(0))
+		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(900))
+
+		userInfoCalls, userInfoAuth := provider.userInfoRequest()
+		require.Equal(t, 1, userInfoCalls)
+		require.Equal(t, "Bearer opaque-access-token", userInfoAuth)
+	})
+
+	t.Run("id_token_without_access_token_returns_id_token", func(t *testing.T) {
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"token_type": "Bearer",
+			"expires_in": 900,
+			"scope":      "openid email",
+		}, nil)
+		provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+			"sub":            "user-3",
+			"iss":            provider.server.URL,
+			"aud":            "upstream-client-id",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Unix(),
+			"email":          "user3@example.com",
+			"email_verified": true,
+		})
+
+		app := newForwardModeBrowserLoginTestApp(provider)
+		clientID := registerOAuthBrowserClient(t, app, redirectURI)
+		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, clientState, codeVerifier)
+
+		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+		callbackRR := httptest.NewRecorder()
+		app.handleOAuthCallback(callbackRR, callbackReq)
+		require.Equal(t, http.StatusFound, callbackRR.Code)
+
+		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		require.NoError(t, err)
+
+		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, redirectLocation.Query().Get("code"), redirectURI, codeVerifier)
+		require.Equal(t, http.StatusOK, tokenRR.Code)
+
+		var tokenResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
+		require.Equal(t, "Bearer", tokenResp["token_type"])
+		require.Equal(t, "openid email", tokenResp["scope"])
+
+		userInfoCalls, userInfoAuth := provider.userInfoRequest()
+		require.Equal(t, 0, userInfoCalls)
+		require.Empty(t, userInfoAuth)
+	})
+}
+
+func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(header) + "." +
-		base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString([]byte("sig")), nil
+	hashedSecret := jwe_auth.HashSHA256([]byte("test-broker-secret-32-byte-key!!"))
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return "", err
+	}
+	object, err := signer.Sign(payload)
+	if err != nil {
+		return "", err
+	}
+	return object.CompactSerialize()
+}
+
+func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {
+	token, err := encodeSelfIssuedAccessToken([]byte("short-secret"), map[string]interface{}{
+		"sub": "user-1",
+		"iss": "https://issuer.example.com",
+		"aud": "https://resource.example.com",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
 }
 
 // TestMainFunctionality tests various main function scenarios

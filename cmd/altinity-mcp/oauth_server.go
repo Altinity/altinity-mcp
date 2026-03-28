@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/rs/zerolog/log"
 )
 
@@ -76,6 +79,40 @@ type oauthRefreshSession struct {
 	ExpiresAt time.Time
 }
 
+type statelessRegisteredClient struct {
+	RedirectURIs            []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	GrantType               string   `json:"grant_type"`
+	ExpiresAt               int64    `json:"exp"`
+}
+
+type statelessBrokerState struct {
+	ClientID            string `json:"client_id"`
+	RedirectURI         string `json:"redirect_uri"`
+	Scope               string `json:"scope"`
+	ClientState         string `json:"client_state"`
+	CodeChallenge       string `json:"code_challenge"`
+	CodeChallengeMethod string `json:"code_challenge_method"`
+	ExpiresAt           int64  `json:"exp"`
+}
+
+type statelessBrokerCode struct {
+	ClientID            string `json:"client_id"`
+	RedirectURI         string `json:"redirect_uri"`
+	Scope               string `json:"scope"`
+	CodeChallenge       string `json:"code_challenge"`
+	CodeChallengeMethod string `json:"code_challenge_method"`
+	UpstreamBearerToken string `json:"upstream_bearer_token"`
+	UpstreamTokenType   string `json:"upstream_token_type"`
+	Subject             string `json:"sub"`
+	Email               string `json:"email"`
+	Name                string `json:"name"`
+	HostedDomain        string `json:"hd"`
+	EmailVerified       bool   `json:"email_verified"`
+	ExpiresAt           int64  `json:"exp"`
+	AccessTokenExpiry   int64  `json:"access_token_exp"`
+}
+
 type oauthStateStore struct {
 	mu            sync.Mutex
 	clients       map[string]oauthRegisteredClient
@@ -93,8 +130,46 @@ func newOAuthStateStore() *oauthStateStore {
 	}
 }
 
+func writeOAuthTokenError(w http.ResponseWriter, status int, code, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             code,
+		"error_description": description,
+	})
+}
+
 func (a *application) oauthEnabled() bool {
 	return a.GetCurrentConfig().Server.OAuth.Enabled
+}
+
+func (a *application) oauthMode() string {
+	return a.GetCurrentConfig().Server.OAuth.NormalizedMode()
+}
+
+func (a *application) oauthForwardMode() bool {
+	return a.oauthMode() == "forward"
+}
+
+func (a *application) oauthBrokerSecret() []byte {
+	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.BrokerSecretKey)
+	return []byte(secret)
+}
+
+func (a *application) mustBrokerSecret() ([]byte, error) {
+	secret := a.oauthBrokerSecret()
+	if len(secret) == 0 {
+		return nil, fmt.Errorf("oauth broker_secret_key is required for the stateless OAuth facade")
+	}
+	return secret, nil
+}
+
+func encodeBrokerArtifact(secret []byte, claims map[string]interface{}) (string, error) {
+	return jwe_auth.GenerateJWEToken(claims, secret, secret)
+}
+
+func decodeBrokerArtifact(secret []byte, token string) (map[string]interface{}, error) {
+	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
 }
 
 func normalizeURL(raw string) string {
@@ -163,8 +238,6 @@ func uniquePaths(paths ...string) []string {
 func (a *application) schemeAndHost(r *http.Request) string {
 	scheme := "http"
 	switch {
-	case r.Header.Get("X-Forwarded-Proto") != "":
-		scheme = strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
 	case r.TLS != nil:
 		scheme = "https"
 	case a.GetCurrentConfig().Server.OpenAPI.TLS || a.GetCurrentConfig().Server.TLS.Enabled:
@@ -177,17 +250,6 @@ func (a *application) schemeAndHost(r *http.Request) string {
 	}
 
 	return fmt.Sprintf("%s://%s", strings.ToLower(scheme), host)
-}
-
-func cleanedPathPrefix(prefix string) string {
-	prefix = strings.TrimSpace(strings.Split(prefix, ",")[0])
-	if prefix == "" {
-		return ""
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	return strings.TrimRight(prefix, "/")
 }
 
 func suffixPrefix(path string, markers ...string) string {
@@ -220,9 +282,6 @@ func pathFromConfiguredURL(raw string) string {
 
 func (a *application) resourcePrefix(r *http.Request) string {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if prefix := cleanedPathPrefix(r.Header.Get("X-Forwarded-Prefix")); prefix != "" {
-		return prefix
-	}
 	if prefix := suffixPrefix(
 		r.URL.Path,
 		"/.well-known/oauth-protected-resource",
@@ -239,17 +298,11 @@ func (a *application) resourcePrefix(r *http.Request) string {
 
 func (a *application) oauthPrefix(r *http.Request) string {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if prefix := cleanedPathPrefix(r.Header.Get("X-Forwarded-OAuth-Prefix")); prefix != "" {
-		return prefix
-	}
-	if prefix := cleanedPathPrefix(r.Header.Get("X-Forwarded-Prefix")); prefix == "/oauth" {
-		return prefix
-	}
 	if prefix := suffixPrefix(
 		r.URL.Path,
 		"/.well-known/oauth-authorization-server",
 		"/.well-known/openid-configuration",
-	); prefix == "/oauth" {
+	); prefix != "" {
 		return prefix
 	}
 	if prefix := pathFromConfiguredURL(cfg.PublicAuthServerURL); prefix != "" {
@@ -354,10 +407,18 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 
 			if cfg.Server.OAuth.Enabled {
 				oauthToken := a.mcpServer.ExtractOAuthTokenFromRequest(r)
-				claims, err := a.mcpServer.ValidateOAuthToken(oauthToken)
-				if err != nil {
-					a.writeOAuthError(w, r, err)
+				var claims *altinitymcp.OAuthClaims
+				if oauthToken == "" {
+					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
+				}
+				if cfg.Server.OAuth.NormalizedMode() != "forward" {
+					var err error
+					claims, err = a.mcpServer.ValidateOAuthToken(oauthToken)
+					if err != nil {
+						a.writeOAuthError(w, r, err)
+						return
+					}
 				}
 				ctx = context.WithValue(ctx, "oauth_token", oauthToken)
 				ctx = context.WithValue(ctx, "oauth_claims", claims)
@@ -390,6 +451,23 @@ func encodeUnsignedJWT(claims map[string]interface{}) (string, error) {
 		base64.RawURLEncoding.EncodeToString([]byte("altinity-mcp")), nil
 }
 
+func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
+	hashedSecret := jwe_auth.HashSHA256(secret)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	object, err := signer.Sign(payload)
+	if err != nil {
+		return "", err
+	}
+	return object.CompactSerialize()
+}
+
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
@@ -402,6 +480,241 @@ func containsString(list []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func decodeStringSlice(value interface{}) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string{}, typed...)
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if str, ok := item.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func sanitizeScope(scope string) string {
+	return strings.Join(strings.Fields(scope), " ")
+}
+
+func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRegisteredClient, error) {
+	client := &statelessRegisteredClient{
+		RedirectURIs: decodeStringSlice(claims["redirect_uris"]),
+	}
+	if authMethod, ok := claims["token_endpoint_auth_method"].(string); ok {
+		client.TokenEndpointAuthMethod = authMethod
+	}
+	if grantType, ok := claims["grant_type"].(string); ok {
+		client.GrantType = grantType
+	}
+	if exp, ok := claims["exp"].(float64); ok {
+		client.ExpiresAt = int64(exp)
+	}
+	if client.TokenEndpointAuthMethod == "" {
+		client.TokenEndpointAuthMethod = "none"
+	}
+	if len(client.RedirectURIs) == 0 {
+		return nil, fmt.Errorf("missing redirect URIs")
+	}
+	if client.GrantType == "" {
+		client.GrantType = "authorization_code"
+	}
+	return client, nil
+}
+
+func parseStatelessBrokerState(claims map[string]interface{}) (*statelessBrokerState, error) {
+	state := &statelessBrokerState{}
+	if clientID, ok := claims["client_id"].(string); ok {
+		state.ClientID = clientID
+	}
+	if redirectURI, ok := claims["redirect_uri"].(string); ok {
+		state.RedirectURI = redirectURI
+	}
+	if scope, ok := claims["scope"].(string); ok {
+		state.Scope = scope
+	}
+	if clientState, ok := claims["client_state"].(string); ok {
+		state.ClientState = clientState
+	}
+	if codeChallenge, ok := claims["code_challenge"].(string); ok {
+		state.CodeChallenge = codeChallenge
+	}
+	if codeChallengeMethod, ok := claims["code_challenge_method"].(string); ok {
+		state.CodeChallengeMethod = codeChallengeMethod
+	}
+	if exp, ok := claims["exp"].(float64); ok {
+		state.ExpiresAt = int64(exp)
+	}
+	if state.ClientID == "" || state.RedirectURI == "" {
+		return nil, fmt.Errorf("missing broker state fields")
+	}
+	return state, nil
+}
+
+func parseStatelessBrokerCode(claims map[string]interface{}) (*statelessBrokerCode, error) {
+	code := &statelessBrokerCode{}
+	if clientID, ok := claims["client_id"].(string); ok {
+		code.ClientID = clientID
+	}
+	if redirectURI, ok := claims["redirect_uri"].(string); ok {
+		code.RedirectURI = redirectURI
+	}
+	if scope, ok := claims["scope"].(string); ok {
+		code.Scope = scope
+	}
+	if codeChallenge, ok := claims["code_challenge"].(string); ok {
+		code.CodeChallenge = codeChallenge
+	}
+	if codeChallengeMethod, ok := claims["code_challenge_method"].(string); ok {
+		code.CodeChallengeMethod = codeChallengeMethod
+	}
+	if bearerToken, ok := claims["upstream_bearer_token"].(string); ok {
+		code.UpstreamBearerToken = bearerToken
+	}
+	if tokenType, ok := claims["upstream_token_type"].(string); ok {
+		code.UpstreamTokenType = tokenType
+	}
+	if subject, ok := claims["sub"].(string); ok {
+		code.Subject = subject
+	}
+	if email, ok := claims["email"].(string); ok {
+		code.Email = email
+	}
+	if name, ok := claims["name"].(string); ok {
+		code.Name = name
+	}
+	if hostedDomain, ok := claims["hd"].(string); ok {
+		code.HostedDomain = hostedDomain
+	}
+	if verified, ok := claims["email_verified"].(bool); ok {
+		code.EmailVerified = verified
+	} else if verifiedStr, ok := claims["email_verified"].(string); ok {
+		code.EmailVerified = strings.EqualFold(verifiedStr, "true")
+	}
+	if exp, ok := claims["exp"].(float64); ok {
+		code.ExpiresAt = int64(exp)
+	}
+	if accessTokenExp, ok := claims["access_token_exp"].(float64); ok {
+		code.AccessTokenExpiry = int64(accessTokenExp)
+	}
+	if code.ClientID == "" || code.RedirectURI == "" {
+		return nil, fmt.Errorf("missing broker code fields")
+	}
+	if code.UpstreamTokenType == "" {
+		code.UpstreamTokenType = "Bearer"
+	}
+	return code, nil
+}
+
+func oauthClaimsFromUserInfo(raw map[string]interface{}) *altinitymcp.OAuthClaims {
+	claims := &altinitymcp.OAuthClaims{Extra: make(map[string]interface{})}
+	if sub, ok := raw["sub"].(string); ok {
+		claims.Subject = sub
+	}
+	if iss, ok := raw["iss"].(string); ok {
+		claims.Issuer = iss
+	}
+	if email, ok := raw["email"].(string); ok {
+		claims.Email = email
+	}
+	if name, ok := raw["name"].(string); ok {
+		claims.Name = name
+	}
+	if hd, ok := raw["hd"].(string); ok {
+		claims.HostedDomain = hd
+	}
+	if verified, ok := raw["email_verified"].(bool); ok {
+		claims.EmailVerified = verified
+	}
+	if scope, ok := raw["scope"].(string); ok {
+		claims.Scopes = strings.Fields(scope)
+	}
+	for key, value := range raw {
+		switch key {
+		case "sub", "iss", "email", "name", "hd", "email_verified", "scope":
+		default:
+			claims.Extra[key] = value
+		}
+	}
+	return claims
+}
+
+func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaims, error) {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	userInfoURL := strings.TrimSpace(cfg.UserInfoURL)
+	if userInfoURL == "" {
+		if discovery, err := a.mcpServer.FetchOpenIDConfiguration(strings.TrimSpace(cfg.Issuer)); err == nil && discovery.UserInfoEndpoint != "" {
+			userInfoURL = discovery.UserInfoEndpoint
+		}
+	}
+	if userInfoURL == "" {
+		return nil, fmt.Errorf("userinfo endpoint is not configured or discoverable")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, userInfoURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("userinfo endpoint returned status %d", resp.StatusCode)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	claims := oauthClaimsFromUserInfo(raw)
+	if claims.Issuer == "" {
+		claims.Issuer = cfg.Issuer
+	}
+	return claims, a.mcpServer.ValidateOAuthIdentityPolicyClaims(claims)
+}
+
+func (a *application) resolveUpstreamAuthURL() (string, error) {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	if authURL := strings.TrimSpace(cfg.AuthURL); authURL != "" {
+		return authURL, nil
+	}
+	discovery, err := a.mcpServer.FetchOpenIDConfiguration(strings.TrimSpace(cfg.Issuer))
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(discovery.AuthorizationEndpoint) == "" {
+		return "", fmt.Errorf("authorization endpoint is not configured or discoverable")
+	}
+	return strings.TrimSpace(discovery.AuthorizationEndpoint), nil
+}
+
+func (a *application) resolveUpstreamTokenURL() (string, error) {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	if tokenURL := strings.TrimSpace(cfg.TokenURL); tokenURL != "" {
+		return tokenURL, nil
+	}
+	discovery, err := a.mcpServer.FetchOpenIDConfiguration(strings.TrimSpace(cfg.Issuer))
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(discovery.TokenEndpoint) == "" {
+		return "", fmt.Errorf("token endpoint is not configured or discoverable")
+	}
+	return strings.TrimSpace(discovery.TokenEndpoint), nil
 }
 
 func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
@@ -434,8 +747,8 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
+		"grant_types_supported":                 []string{"authorization_code"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -455,11 +768,13 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
+		"grant_types_supported":                 []string{"authorization_code"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
 		"code_challenge_methods_supported":      []string{"S256"},
-		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"none"},
+	}
+	if !a.oauthForwardMode() {
+		resp["subject_types_supported"] = []string{"public"}
+		resp["id_token_signing_alg_values_supported"] = []string{"HS256"}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -490,31 +805,35 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	if authMethod == "" {
 		authMethod = "none"
 	}
-	client := oauthRegisteredClient{
-		ID:                    randomToken("client_"),
-		Secret:                randomToken("secret_"),
-		RedirectURIs:          req.RedirectURIs,
-		TokenEndpointAuthMode: authMethod,
+	if authMethod != "none" {
+		http.Error(w, "Only public clients with PKCE are supported", http.StatusBadRequest)
+		return
 	}
-	a.oauthState.mu.Lock()
-	a.oauthState.clients[client.ID] = client
-	a.oauthState.mu.Unlock()
-
-	resp := map[string]interface{}{
-		"client_id":                  client.ID,
-		"redirect_uris":              client.RedirectURIs,
-		"grant_types":                []string{"authorization_code", "refresh_token"},
-		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": client.TokenEndpointAuthMode,
-		"client_id_issued_at":        time.Now().Unix(),
+	secret, err := a.mustBrokerSecret()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if client.TokenEndpointAuthMode != "none" {
-		resp["client_secret"] = client.Secret
-		resp["client_secret_expires_at"] = 0
+	clientID, err := encodeBrokerArtifact(secret, map[string]interface{}{
+		"redirect_uris":              req.RedirectURIs,
+		"token_endpoint_auth_method": "none",
+		"grant_type":                 "authorization_code",
+		"exp":                        time.Now().Add(30 * 24 * time.Hour).Unix(),
+	})
+	if err != nil {
+		http.Error(w, "Failed to create stateless client registration", http.StatusInternalServerError)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"client_id":                  clientID,
+		"redirect_uris":              req.RedirectURIs,
+		"grant_types":                []string{"authorization_code"},
+		"response_types":             []string{"code"},
+		"token_endpoint_auth_method": "none",
+		"client_id_issued_at":        time.Now().Unix(),
+	})
 }
 
 func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -533,28 +852,45 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Invalid authorization request", http.StatusBadRequest)
 		return
 	}
-
-	a.oauthState.mu.Lock()
-	client, ok := a.oauthState.clients[clientID]
-	a.oauthState.mu.Unlock()
-	if !ok || !containsString(client.RedirectURIs, redirectURI) {
+	secret, err := a.mustBrokerSecret()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	if err != nil {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
 	}
-
-	requestID := randomToken("req_")
-	a.oauthState.mu.Lock()
-	a.oauthState.pendingAuth[requestID] = oauthPendingAuth{
-		ClientID:            clientID,
-		RedirectURI:         redirectURI,
-		Scope:               q.Get("scope"),
-		State:               q.Get("state"),
-		CodeChallenge:       q.Get("code_challenge"),
-		CodeChallengeMethod: q.Get("code_challenge_method"),
+	client, err := parseStatelessRegisteredClient(clientClaims)
+	if err != nil || time.Now().Unix() > client.ExpiresAt || !containsString(client.RedirectURIs, redirectURI) {
+		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
+		return
 	}
-	a.oauthState.mu.Unlock()
+	if q.Get("code_challenge") == "" || q.Get("code_challenge_method") != "S256" {
+		http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
+		return
+	}
+	callbackState, err := encodeBrokerArtifact(secret, map[string]interface{}{
+		"client_id":             clientID,
+		"redirect_uri":          redirectURI,
+		"scope":                 sanitizeScope(q.Get("scope")),
+		"client_state":          q.Get("state"),
+		"code_challenge":        q.Get("code_challenge"),
+		"code_challenge_method": q.Get("code_challenge_method"),
+		"exp":                   time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second).Unix(),
+	})
+	if err != nil {
+		http.Error(w, "Failed to create broker state", http.StatusInternalServerError)
+		return
+	}
 
 	cfg := a.GetCurrentConfig()
+	authURL, err := a.resolveUpstreamAuthURL()
+	if err != nil {
+		http.Error(w, "Failed to resolve upstream authorization endpoint", http.StatusBadGateway)
+		return
+	}
 	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
 	upstream := url.Values{}
 	upstream.Set("client_id", cfg.Server.OAuth.ClientID)
@@ -565,8 +901,8 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		scope = "openid email"
 	}
 	upstream.Set("scope", scope)
-	upstream.Set("state", requestID)
-	http.Redirect(w, r, cfg.Server.OAuth.AuthURL+"?"+upstream.Encode(), http.StatusFound)
+	upstream.Set("state", callbackState)
+	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
 
 func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -581,13 +917,18 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	a.oauthState.mu.Lock()
-	pending, ok := a.oauthState.pendingAuth[requestID]
-	if ok {
-		delete(a.oauthState.pendingAuth, requestID)
+	secret, err := a.mustBrokerSecret()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	a.oauthState.mu.Unlock()
-	if !ok {
+	stateClaims, err := decodeBrokerArtifact(secret, requestID)
+	if err != nil {
+		http.Error(w, "Unknown OAuth request", http.StatusBadRequest)
+		return
+	}
+	pending, err := parseStatelessBrokerState(stateClaims)
+	if err != nil || time.Now().Unix() > pending.ExpiresAt {
 		http.Error(w, "Unknown OAuth request", http.StatusBadRequest)
 		return
 	}
@@ -601,53 +942,95 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
 	form.Set("redirect_uri", callbackURL)
 
-	resp, err := http.PostForm(cfg.Server.OAuth.TokenURL, form)
+	tokenURL, err := a.resolveUpstreamTokenURL()
 	if err != nil {
-		http.Error(w, "Failed to exchange Google auth code", http.StatusBadGateway)
+		http.Error(w, "Failed to resolve upstream token endpoint", http.StatusBadGateway)
+		return
+	}
+	resp, err := http.PostForm(tokenURL, form)
+	if err != nil {
+		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Google OAuth token exchange failed")
-		http.Error(w, "Failed to exchange Google auth code", http.StatusBadGateway)
+		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth token exchange failed")
+		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
 		return
 	}
 	var tokenResp struct {
-		IDToken string `json:"id_token"`
+		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+		Scope       string `json:"scope"`
 	}
-	if err := json.Unmarshal(body, &tokenResp); err != nil || tokenResp.IDToken == "" {
-		http.Error(w, "Missing Google ID token", http.StatusBadGateway)
-		return
-	}
-	claims, err := parseGoogleIdentityToken(tokenResp.IDToken)
-	if err != nil {
-		http.Error(w, "Failed to validate Google identity", http.StatusBadGateway)
-		return
-	}
-	allowedIssuers := cfg.Server.OAuth.UpstreamIssuerAllowlist
-	if len(allowedIssuers) == 0 {
-		allowedIssuers = []string{"accounts.google.com", "https://accounts.google.com"}
-	}
-	if !containsAnyString(allowedIssuers, claims.Issuer) {
-		http.Error(w, "Unexpected Google issuer", http.StatusBadGateway)
+	if err := json.Unmarshal(body, &tokenResp); err != nil || (tokenResp.AccessToken == "" && tokenResp.IDToken == "") {
+		http.Error(w, "Missing upstream token", http.StatusBadGateway)
 		return
 	}
 
-	authCode := randomToken("code_")
-	a.oauthState.mu.Lock()
-	a.oauthState.authCodes[authCode] = oauthIssuedCode{
-		ClientID:            pending.ClientID,
-		RedirectURI:         pending.RedirectURI,
-		Subject:             claims.Subject,
-		Email:               claims.Email,
-		Name:                claims.Name,
-		Scope:               pending.Scope,
-		CodeChallenge:       pending.CodeChallenge,
-		CodeChallengeMethod: pending.CodeChallengeMethod,
-		ExpiresAt:           time.Now().Add(time.Duration(ttlSeconds(cfg.Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second),
+	var identityClaims *altinitymcp.OAuthClaims
+	if tokenResp.IDToken != "" {
+		identityClaims, err = a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID)
+		if err != nil {
+			http.Error(w, "Failed to validate upstream identity token", http.StatusBadGateway)
+			return
+		}
+	} else if tokenResp.AccessToken != "" {
+		identityClaims, err = a.fetchUserInfo(tokenResp.AccessToken)
+		if err != nil {
+			http.Error(w, "Failed to validate upstream identity", http.StatusBadGateway)
+			return
+		}
+	} else {
+		http.Error(w, "Missing upstream token", http.StatusBadGateway)
+		return
 	}
-	a.oauthState.mu.Unlock()
+	if tokenResp.Scope == "" {
+		tokenResp.Scope = pending.Scope
+	}
+	if tokenResp.Scope == "" {
+		tokenResp.Scope = strings.Join(cfg.Server.OAuth.Scopes, " ")
+	}
+	tokenType := tokenResp.TokenType
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
+	accessTokenExpiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
+	if tokenResp.ExpiresIn <= 0 {
+		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
+	}
+	bearerToken := tokenResp.IDToken
+	if bearerToken == "" {
+		bearerToken = tokenResp.AccessToken
+	}
+
+	brokerClaims := map[string]interface{}{
+		"client_id":             pending.ClientID,
+		"redirect_uri":          pending.RedirectURI,
+		"scope":                 tokenResp.Scope,
+		"code_challenge":        pending.CodeChallenge,
+		"code_challenge_method": pending.CodeChallengeMethod,
+		"exp":                   time.Now().Add(time.Duration(ttlSeconds(cfg.Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second).Unix(),
+	}
+	if a.oauthForwardMode() {
+		brokerClaims["upstream_bearer_token"] = bearerToken
+		brokerClaims["upstream_token_type"] = tokenType
+		brokerClaims["access_token_exp"] = accessTokenExpiry
+	} else {
+		brokerClaims["sub"] = identityClaims.Subject
+		brokerClaims["email"] = identityClaims.Email
+		brokerClaims["name"] = identityClaims.Name
+		brokerClaims["hd"] = identityClaims.HostedDomain
+		brokerClaims["email_verified"] = identityClaims.EmailVerified
+	}
+	brokerCode, err := encodeBrokerArtifact(secret, brokerClaims)
+	if err != nil {
+		http.Error(w, "Failed to issue authorization code", http.StatusInternalServerError)
+		return
+	}
 
 	redirect, err := url.Parse(pending.RedirectURI)
 	if err != nil {
@@ -655,9 +1038,9 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	params := redirect.Query()
-	params.Set("code", authCode)
-	if pending.State != "" {
-		params.Set("state", pending.State)
+	params.Set("code", brokerCode)
+	if pending.ClientState != "" {
+		params.Set("state", pending.ClientState)
 	}
 	redirect.RawQuery = params.Encode()
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
@@ -669,69 +1052,87 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeOAuthTokenError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid token request", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid token request")
 		return
 	}
-
-	clientID, clientSecret := readClientCredentials(r)
-	if clientID == "" {
-		clientID = r.Form.Get("client_id")
-	}
-	a.oauthState.mu.Lock()
-	client, ok := a.oauthState.clients[clientID]
-	a.oauthState.mu.Unlock()
-	if !ok {
-		http.Error(w, "Unknown OAuth client", http.StatusUnauthorized)
+	if r.Form.Get("grant_type") != "authorization_code" {
+		log.Debug().
+			Str("grant_type", r.Form.Get("grant_type")).
+			Str("client_id_present", fmt.Sprintf("%t", r.Form.Get("client_id") != "")).
+			Msg("OAuth token request rejected: unsupported grant type")
+		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant type")
 		return
 	}
-	if client.TokenEndpointAuthMode != "none" && client.Secret != clientSecret {
-		http.Error(w, "Invalid client credentials", http.StatusUnauthorized)
+	secret, err := a.mustBrokerSecret()
+	if err != nil {
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-
-	var (
-		subject string
-		email   string
-		name    string
-		scope   string
-	)
-	switch r.Form.Get("grant_type") {
-	case "authorization_code":
-		code := r.Form.Get("code")
-		redirectURI := r.Form.Get("redirect_uri")
-		a.oauthState.mu.Lock()
-		issued, ok := a.oauthState.authCodes[code]
-		if ok {
-			delete(a.oauthState.authCodes, code)
-		}
-		a.oauthState.mu.Unlock()
-		if !ok || time.Now().After(issued.ExpiresAt) || issued.ClientID != clientID || issued.RedirectURI != redirectURI {
-			http.Error(w, "Invalid authorization code", http.StatusBadRequest)
+	clientID := r.Form.Get("client_id")
+	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	if err != nil {
+		log.Debug().Err(err).Msg("OAuth token request rejected: unknown client artifact")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	client, err := parseStatelessRegisteredClient(clientClaims)
+	if err != nil || time.Now().Unix() > client.ExpiresAt || client.TokenEndpointAuthMethod != "none" {
+		log.Debug().
+			Err(err).
+			Int64("client_expires_at", client.ExpiresAt).
+			Str("token_endpoint_auth_method", client.TokenEndpointAuthMethod).
+			Msg("OAuth token request rejected: invalid client metadata")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	codeClaims, err := decodeBrokerArtifact(secret, r.Form.Get("code"))
+	if err != nil {
+		log.Debug().Err(err).Msg("OAuth token request rejected: invalid authorization code artifact")
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")
+		return
+	}
+	issued, err := parseStatelessBrokerCode(codeClaims)
+	if err != nil || time.Now().Unix() > issued.ExpiresAt || issued.ClientID != clientID || issued.RedirectURI != r.Form.Get("redirect_uri") {
+		log.Debug().
+			Err(err).
+			Int64("code_expires_at", issued.ExpiresAt).
+			Str("issued_client_id", issued.ClientID).
+			Str("request_client_id", clientID).
+			Str("issued_redirect_uri", issued.RedirectURI).
+			Str("request_redirect_uri", r.Form.Get("redirect_uri")).
+			Msg("OAuth token request rejected: authorization code mismatch")
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")
+		return
+	}
+	if issued.CodeChallenge != "" {
+		if pkceChallenge(r.Form.Get("code_verifier")) != issued.CodeChallenge {
+			log.Debug().Msg("OAuth token request rejected: invalid PKCE verifier")
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid PKCE verifier")
 			return
 		}
-		if issued.CodeChallenge != "" {
-			if pkceChallenge(r.Form.Get("code_verifier")) != issued.CodeChallenge {
-				http.Error(w, "Invalid PKCE verifier", http.StatusBadRequest)
-				return
-			}
-		}
-		subject, email, name, scope = issued.Subject, issued.Email, issued.Name, issued.Scope
-	case "refresh_token":
-		refresh := r.Form.Get("refresh_token")
-		a.oauthState.mu.Lock()
-		session, ok := a.oauthState.refreshTokens[refresh]
-		a.oauthState.mu.Unlock()
-		if !ok || time.Now().After(session.ExpiresAt) || session.ClientID != clientID {
-			http.Error(w, "Invalid refresh token", http.StatusBadRequest)
+	}
+
+	if a.oauthForwardMode() {
+		bearerToken := issued.UpstreamBearerToken
+		if bearerToken == "" {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")
 			return
 		}
-		subject, email, name, scope = session.Subject, session.Email, session.Name, session.Scope
-	default:
-		http.Error(w, "Unsupported grant type", http.StatusBadRequest)
+		expiresIn := issued.AccessTokenExpiry - time.Now().Unix()
+		if expiresIn < 0 {
+			expiresIn = 0
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": bearerToken,
+			"token_type":   issued.UpstreamTokenType,
+			"expires_in":   expiresIn,
+			"scope":        issued.Scope,
+		})
 		return
 	}
 
@@ -740,43 +1141,35 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if audience == "" {
 		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")
 	}
+	scope := issued.Scope
 	if scope == "" {
 		scope = strings.Join(a.GetCurrentConfig().Server.OAuth.Scopes, " ")
 	}
-	accessToken, err := encodeUnsignedJWT(map[string]interface{}{
-		"sub":   subject,
-		"iss":   issuer,
-		"aud":   audience,
-		"exp":   time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)) * time.Second).Unix(),
-		"iat":   time.Now().Unix(),
-		"scope": scope,
-		"email": email,
-		"name":  name,
+	accessToken, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
+		"sub":            issued.Subject,
+		"iss":            issuer,
+		"aud":            audience,
+		"exp":            time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)) * time.Second).Unix(),
+		"iat":            time.Now().Unix(),
+		"scope":          scope,
+		"email":          issued.Email,
+		"name":           issued.Name,
+		"hd":             issued.HostedDomain,
+		"email_verified": issued.EmailVerified,
 	})
 	if err != nil {
-		http.Error(w, "Failed to mint access token", http.StatusInternalServerError)
+		log.Error().Err(err).Msg("Failed to mint self-issued access token")
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	refreshToken := randomToken("refresh_")
-	a.oauthState.mu.Lock()
-	a.oauthState.refreshTokens[refreshToken] = oauthRefreshSession{
-		ClientID:  clientID,
-		Subject:   subject,
-		Email:     email,
-		Name:      name,
-		Scope:     scope,
-		ExpiresAt: time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.RefreshTokenTTLSeconds, defaultRefreshTokenTTLSeconds)) * time.Second),
-	}
-	a.oauthState.mu.Unlock()
 
 	accessTokenTTL := ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"access_token":  accessToken,
-		"token_type":    "Bearer",
-		"expires_in":    accessTokenTTL,
-		"refresh_token": refreshToken,
-		"scope":         scope,
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_in":   accessTokenTTL,
+		"scope":        scope,
 	})
 }
 

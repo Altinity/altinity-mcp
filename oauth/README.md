@@ -1,25 +1,33 @@
-# OAuth MCP Development via `welcome.ru`
+# OAuth MCP Development via `PUBLIC_HOST.example.com`
 
-This harness is for local-first development of `altinity-mcp` OAuth support with Codex browser login.
+This harness is for local-first development of `altinity-mcp` OAuth support with Codex browser login in both runtime modes.
 
 ## What This Setup Does
 
-- Runs a freshly built `altinity-mcp` locally on `0.0.0.0:18080`
-- Exposes it publicly through nginx on `https://welcome.ru`
-- Serves the MCP endpoint under `https://welcome.ru/http`
-- Serves OAuth discovery and auth endpoints under `https://welcome.ru/oauth/`
-- Uses the local `demo` ClickHouse connection without JWE
+- Runs `altinity-mcp` locally on separate ports so both modes can stay up together:
+  - forward on `0.0.0.0:18080`
+  - terminate on `0.0.0.0:18081`
+- Exposes it publicly through nginx on `https://PUBLIC_HOST.example.com`
+- Serves the terminate MCP endpoint under `https://PUBLIC_HOST.example.com/http-t`
+- Serves the terminate OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-t/`
+- Serves the forward MCP endpoint under `https://PUBLIC_HOST.example.com/http-f`
+- Serves the forward OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-f/`
+- Supports two manual Google-provider flows:
+  - `forward`: local `altinity-mcp` plus Docker Antalya with token forwarding into ClickHouse
+  - `terminate`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
 - Uses Codex as the OAuth client via `codex mcp login`
 - Uses Google only as the upstream identity provider
-- Issues MCP access tokens from `altinity-mcp` itself so Codex can complete MCP OAuth
+- In `forward` mode, returns the upstream Google access token to Codex and validates it on inbound requests
+- In `terminate` mode, mints self-issued MCP access tokens after Google login
 
 ## Important URLs
 
-- Public MCP base: `https://welcome.ru/http`
-- Public OAuth base: `https://welcome.ru/oauth/`
-- OAuth callback for Google app: `https://welcome.ru/oauth/callback`
-- Protected resource metadata: `https://welcome.ru/http/.well-known/oauth-protected-resource`
-- Authorization server metadata: `https://welcome.ru/oauth/.well-known/oauth-authorization-server`
+- Terminate MCP base: `https://PUBLIC_HOST.example.com/http-t`
+- Terminate OAuth base: `https://PUBLIC_HOST.example.com/oauth-t/`
+- Forward MCP base: `https://PUBLIC_HOST.example.com/http-f`
+- Forward OAuth base: `https://PUBLIC_HOST.example.com/oauth-f/`
+- OAuth callback for terminate Google app: `https://PUBLIC_HOST.example.com/oauth-t/callback`
+- OAuth callback for forward Google app: `https://PUBLIC_HOST.example.com/oauth-f/callback`
 
 ## Google Project
 
@@ -34,16 +42,19 @@ gcloud projects create altinity-mcp-oauth-test \
 gcloud config set project altinity-mcp-oauth-test
 ```
 
-Create a Google Auth Platform web client with redirect URI:
+Create a Google Auth Platform web client with redirect URIs:
 
 ```bash
-https://welcome.ru/oauth/callback
+https://PUBLIC_HOST.example.com/oauth-t/callback
+https://PUBLIC_HOST.example.com/oauth-f/callback
 ```
 
 Keep these values available:
 
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
+
+Do not store a single shared `GOOGLE_OAUTH_REDIRECT_URI` in the local env file for this split-path setup. The harness derives the callback URL from the active mode's `public_auth_server_url` plus `callback_path`, so one static redirect URI is misleading for dual-mode testing.
 
 In Google Auth Platform console:
 
@@ -57,30 +68,44 @@ In Google Auth Platform console:
 Required environment variables for scripts:
 
 ```bash
-export GOOGLE_OAUTH_CLIENT_ID='...'
-export GOOGLE_OAUTH_CLIENT_SECRET='...'
+export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
+export MCP_PUBLIC_MCP_PREFIX='/http-t'
+export MCP_PUBLIC_OAUTH_PREFIX='/oauth-t'
+export MCP_LOCAL_PORT='18081'
+```
+
+The scripts load Google credentials from:
+
+- `~/.mcp/$MCP_TARGET_HOST/google-oauth.env`
+- `~/.mcp/$MCP_TARGET_HOST/oauth-broker-secret`
+
+`google-oauth.env` should contain only the Google client ID and secret for this harness.
+
+So the minimal local setup is usually just:
+
+```bash
+export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
+```
+
+Optional:
+
+```bash
 export CLICKHOUSE_HOST='...'
 export CLICKHOUSE_PORT='9440'
 export CLICKHOUSE_DATABASE='default'
 export CLICKHOUSE_USERNAME='...'
 export CLICKHOUSE_PASSWORD='...'
 export CLICKHOUSE_PROTOCOL='tcp'
-export MCP_TARGET_HOST='welcome.ru'
-export MCP_PUBLIC_MCP_PREFIX='/http'
-export MCP_PUBLIC_OAUTH_PREFIX='/oauth'
-```
-
-Optional:
-
-```bash
 export CLICKHOUSE_READ_ONLY='true'
-export JWT_SECRET_KEY=''
-export MCP_NAME='altinity_mcp_oauth'
+export CLICKHOUSE_TLS_ENABLED='true'
 ```
 
 ## nginx Requirements
 
-`welcome.ru` must reverse-proxy both `/http` and `/oauth/` to your local machine.
+`PUBLIC_HOST.example.com` must reverse-proxy both mode pairs to different local ports:
+
+- terminate: `/http-t` and `/oauth-t/` to `192.168.1.155:18081`
+- forward: `/http-f` and `/oauth-f/` to `192.168.1.155:18080`
 
 Minimum requirements:
 
@@ -94,11 +119,16 @@ Minimum requirements:
 
 For the current implementation, these public URLs must work exactly:
 
-- `https://welcome.ru/http`
-- `https://welcome.ru/http/.well-known/oauth-protected-resource`
-- `https://welcome.ru/oauth/.well-known/oauth-authorization-server`
-- `https://welcome.ru/oauth/.well-known/openid-configuration`
-- `https://welcome.ru/oauth/callback`
+- `https://PUBLIC_HOST.example.com/http-t`
+- `https://PUBLIC_HOST.example.com/http-t/.well-known/oauth-protected-resource`
+- `https://PUBLIC_HOST.example.com/oauth-t/.well-known/oauth-authorization-server`
+- `https://PUBLIC_HOST.example.com/oauth-t/.well-known/openid-configuration`
+- `https://PUBLIC_HOST.example.com/oauth-t/callback`
+- `https://PUBLIC_HOST.example.com/http-f`
+- `https://PUBLIC_HOST.example.com/http-f/.well-known/oauth-protected-resource`
+- `https://PUBLIC_HOST.example.com/oauth-f/.well-known/oauth-authorization-server`
+- `https://PUBLIC_HOST.example.com/oauth-f/.well-known/openid-configuration`
+- `https://PUBLIC_HOST.example.com/oauth-f/callback`
 
 If any frontend rewrites or normalizes these paths, Codex browser login will fail.
 
@@ -106,74 +136,140 @@ Example:
 
 ```nginx
 server {
-    server_name welcome.ru;
+    server_name PUBLIC_HOST.example.com;
 
-    location ^~ /http {
+    location ^~ /http-t {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Prefix /http;
-        proxy_set_header X-Forwarded-OAuth-Prefix /oauth;
+        proxy_set_header X-Forwarded-Prefix /http-t;
+        proxy_set_header X-Forwarded-OAuth-Prefix /oauth-t;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Authorization $http_authorization;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 3600;
         proxy_send_timeout 3600;
-        proxy_pass http://YOUR_LOCAL_IP:18080;
+        rewrite ^/http-t(.*)$ /http$1 break;
+        proxy_pass http://YOUR_LOCAL_IP:18081;
     }
 
-    location ^~ /oauth/ {
+    location ^~ /oauth-t/ {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Prefix /oauth;
+        proxy_set_header X-Forwarded-Prefix /oauth-t;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Authorization $http_authorization;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 3600;
         proxy_send_timeout 3600;
-        rewrite ^/oauth/(.*)$ /$1 break;
-        proxy_pass http://YOUR_LOCAL_IP:18080;
+        rewrite ^/oauth-t/(.*)$ /$1 break;
+        proxy_pass http://YOUR_LOCAL_IP:18081;
     }
 }
 ```
 
 Also add exact-location routes for the well-known aliases if your frontend does not naturally pass them through:
 
-- `/.well-known/oauth-protected-resource/http`
-- `/.well-known/oauth-authorization-server/http`
-- `/.well-known/openid-configuration/http`
-- `/.well-known/oauth-authorization-server/oauth`
-- `/.well-known/openid-configuration/oauth`
+- `/.well-known/oauth-protected-resource/http-t`
+- `/.well-known/oauth-authorization-server/http-t`
+- `/.well-known/openid-configuration/http-t`
+- `/.well-known/oauth-authorization-server/oauth-t`
+- `/.well-known/openid-configuration/oauth-t`
+- `/.well-known/oauth-protected-resource/http-f`
+- `/.well-known/oauth-authorization-server/http-f`
+- `/.well-known/openid-configuration/http-f`
+- `/.well-known/oauth-authorization-server/oauth-f`
+- `/.well-known/openid-configuration/oauth-f`
 
-The working nginx example for this repo is in [nginx-welcome.ru-split-paths.conf](/Users/bvt/work/altinity-mcp/oauth/nginx-welcome.ru-split-paths.conf).
+The working nginx example for this repo is in [nginx-PUBLIC_HOST.example.com-split-paths.conf](/Users/bvt/work/altinity-mcp/oauth/nginx-PUBLIC_HOST.example.com-split-paths.conf).
 
-## Local Development Workflow
+## Manual Google Test Flows
 
-1. Start local MCP:
+### Forward Mode
 
-```bash
-oauth/start-local.sh
-```
-
-2. Register the MCP server with Codex:
-
-```bash
-oauth/register-codex.sh
-```
-
-3. Login through the browser:
+This mode forwards the Google bearer token that ClickHouse expects to ClickHouse Antalya over HTTP.
+When the upstream provider returns both `id_token` and `access_token`, the browser-login callback returns `id_token` as the MCP bearer token and keeps `access_token` only for fallback or provider-specific use. If no `id_token` is available, the callback falls back to the upstream `access_token`.
+In forward mode, `altinity-mcp` only requires that a bearer token is present on incoming requests and forwards it unchanged to ClickHouse. Real token validation and user identity mapping are delegated to ClickHouse `token_processors`.
 
 ```bash
-oauth/test-codex.sh
+oauth/test-google-forward.sh
 ```
 
-This runs:
+Manual Codex flow:
 
-- `codex mcp login <name>`
-- `codex exec "select version()"`
+```bash
+export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
+codex mcp remove altinity_mcp_oauth_forward >/dev/null 2>&1 || true
+codex mcp add altinity_mcp_oauth_forward --url "https://${MCP_TARGET_HOST}/http-f"
+codex mcp login altinity_mcp_oauth_forward
+codex exec "Use the configured MCP server named altinity_mcp_oauth_forward. Execute SELECT currentUser(), version() and return only the SQL result."
+```
+
+What it does:
+
+- starts Docker ClickHouse Antalya with Google `token_processors`
+- starts local `altinity-mcp` in `mode: forward`
+- probes the public MCP and OAuth metadata URLs
+- registers the MCP server in Codex
+- runs `codex mcp login`
+- runs `SELECT currentUser(), version()`
+
+For a deterministic non-Codex validation path, use:
+
+```bash
+oauth/test-google-forward-direct.sh
+```
+
+What it verifies:
+
+- `gcloud auth print-identity-token` returns a Google-signed ID token for the active account
+- direct Antalya auth works with that token
+- local `altinity-mcp` forward mode passes that token through to ClickHouse
+- the public `https://PUBLIC_HOST.example.com/http-f/openapi/execute_query` path is probed separately so proxy issues are visible without blocking the core server validation
+
+### Terminate Mode
+
+This mode verifies the Google identity at `altinity-mcp`, limits access to verified `@altinity.com` emails, and then uses normal ClickHouse credentials.
+
+Default ClickHouse target:
+
+- `github.demo.altinity.cloud:9440`
+- username `demo`
+- password `demo`
+
+```bash
+oauth/test-google-terminate.sh
+```
+
+Manual Codex flow:
+
+```bash
+export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
+codex mcp remove altinity_mcp_oauth_terminate >/dev/null 2>&1 || true
+codex mcp add altinity_mcp_oauth_terminate --url "https://${MCP_TARGET_HOST}/http-t"
+codex mcp login altinity_mcp_oauth_terminate
+codex exec "Use the configured MCP server named altinity_mcp_oauth_terminate. Execute SELECT version() and return only the SQL result."
+```
+
+What it does:
+
+- starts local `altinity-mcp` in `mode: terminate`
+- connects to `github.demo.altinity.cloud:9440` with `demo/demo`
+- enforces `allowed_email_domains: [altinity.com]`
+- enforces `require_email_verified: true`
+- probes the public MCP and OAuth metadata URLs
+- registers the MCP server in Codex
+- runs `codex mcp login`
+- runs `SELECT version()`
+
+For terminate mode, sign in with a verified `@altinity.com` Google account.
+
+Terminate mode default local bind:
+
+- `0.0.0.0:18081`
 
 ## Helm Validation Later
 
@@ -190,14 +286,16 @@ This uses:
 
 ## OAuth Config
 
-The harness now uses explicit public URL and path settings instead of inferring everything from `issuer` and `audience`.
+The harness uses explicit public URL and path settings for both modes. `issuer` is the upstream OIDC issuer, not the public MCP OAuth base URL.
 
 Key fields:
 
 - `issuer`
-  The issuer claim to validate on inbound OAuth tokens. For the local Codex flow this should match the public auth server base, for example `https://welcome.ru/oauth`.
+  The upstream OIDC issuer claim to validate on inbound OAuth tokens. For Google use `https://accounts.google.com`.
 - `audience`
-  The audience claim to validate on inbound OAuth tokens and the default audience for minted MCP access tokens. For the local Codex flow this should match `https://welcome.ru/http`.
+  The audience claim to validate on inbound OAuth tokens when the upstream provider emits JWT access or identity tokens. For the public MCP resource this is typically `https://PUBLIC_HOST.example.com/http-t`.
+- `broker_secret_key`
+  Shared secret for stateless client registration, broker state, and broker codes used by the browser-login facade. This is required for `codex mcp login` in both modes.
 - `public_resource_url`
   The externally visible protected resource base URL advertised in `/.well-known/oauth-protected-resource`.
 - `public_auth_server_url`
@@ -219,23 +317,25 @@ Key fields:
 - `upstream_issuer_allowlist`
   Accepted upstream identity token issuers during Google callback exchange.
 - `auth_code_ttl_seconds`
-  Lifetime of internal authorization codes minted by `altinity-mcp`.
+  Lifetime of stateless broker authorization codes.
 - `access_token_ttl_seconds`
-  Lifetime of MCP access tokens minted by `altinity-mcp`.
+  Lifetime of self-issued access tokens in `terminate` mode only.
 - `refresh_token_ttl_seconds`
-  Lifetime of MCP refresh tokens minted by `altinity-mcp`.
+  Reserved for `terminate` mode only. `forward` mode does not mint refresh tokens.
 
-Minimal config for the current `welcome.ru` split-path setup:
+Minimal `forward` mode config for the current `PUBLIC_HOST.example.com` split-path setup:
 
 ```yaml
 server:
   transport: http
   oauth:
     enabled: true
-    issuer: "https://welcome.ru/oauth"
-    audience: "https://welcome.ru/http"
-    public_resource_url: "https://welcome.ru/http"
-    public_auth_server_url: "https://welcome.ru/oauth"
+    mode: "forward"
+    issuer: "https://accounts.google.com"
+    audience: ""
+    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    public_resource_url: "https://PUBLIC_HOST.example.com/http-f"
+    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-f"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
     authorization_server_metadata_path: "/.well-known/oauth-authorization-server"
     openid_configuration_path: "/.well-known/openid-configuration"
@@ -254,12 +354,27 @@ server:
     required_scopes: ["openid"]
     auth_code_ttl_seconds: 300
     access_token_ttl_seconds: 3600
-    refresh_token_ttl_seconds: 2592000
+```
+
+Minimal `terminate` mode differences:
+
+```yaml
+server:
+  oauth:
+    mode: "terminate"
+    issuer: "https://accounts.google.com"
+    audience: "https://PUBLIC_HOST.example.com/http-t"
+    allowed_email_domains: ["altinity.com"]
+    require_email_verified: true
+    forward_to_clickhouse: false
+    forward_access_token: false
+    clear_clickhouse_credentials: false
 ```
 
 ## Notes
 
-- This repo now exposes MCP OAuth discovery and a test-oriented auth server facade.
+- This repo exposes MCP OAuth discovery and a test-oriented auth server facade.
 - Google is only the upstream login provider.
-- MCP access tokens are minted by `altinity-mcp` for Codex after Google login.
+- In `forward` mode, Codex receives the upstream Google access token and `altinity-mcp` forwards it to ClickHouse.
+- In `terminate` mode, `altinity-mcp` mints and validates its own MCP access tokens after Google login.
 - This is for development/testing, not production security hardening.

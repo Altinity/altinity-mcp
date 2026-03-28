@@ -2,8 +2,8 @@
 
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server. It covers both:
 
-- bearer-token validation at the MCP layer
-- optional forwarding of bearer tokens to ClickHouse for `token_processors`-based authentication
+- local MCP token validation in `terminate` mode
+- thin bearer-token forwarding to ClickHouse for `token_processors`-based authentication in `forward` mode
 
 ## Overview
 
@@ -18,11 +18,11 @@ OAuth 2.0 authorization supports two related workflows.
 
 This mode works even when ClickHouse has no native OAuth support.
 
-### 2. OAuth plus ClickHouse token forwarding
+### 2. Thin forward mode plus ClickHouse token forwarding
 
 1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token
 2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header
-3. The MCP server validates the token claims
+3. The MCP server requires only that a bearer token is present
 4. The MCP server forwards the token to ClickHouse via HTTP headers
 5. ClickHouse validates the token using `token_processors` and authenticates the user
 
@@ -50,7 +50,7 @@ This mode works even when ClickHouse has no native OAuth support.
   - MCP-only OAuth gating works with both `http` and native `tcp`
   - OAuth token forwarding to ClickHouse requires `http`
 - **Identity Provider**: Any OAuth 2.0 / OIDC-compliant provider (Keycloak, Azure AD, Google, AWS Cognito, etc.)
-- **Frontend / reverse proxy**: If `altinity-mcp` is published behind nginx, ingress, xray, or another frontend, the proxy must preserve the public OAuth URLs and required forwarded headers. Browser-based MCP login will fail if the proxy rewrites callback or discovery URLs incorrectly.
+- **Frontend / reverse proxy**: If `altinity-mcp` is published behind nginx, ingress, xray, or another frontend, configure explicit `public_resource_url` and `public_auth_server_url`. Browser-based MCP login will fail if the proxy rewrites callback or metadata URLs incorrectly.
 
 ## Frontend / Reverse Proxy Requirements
 
@@ -58,23 +58,20 @@ For direct bearer-token use, a plain reverse proxy is usually enough.
 
 For browser-based MCP login, the frontend must expose two public URL spaces:
 
-- the protected resource, for example `https://welcome.ru/http`
-- the OAuth authorization server, for example `https://welcome.ru/oauth`
+- the protected resource, for example `https://PUBLIC_HOST.example.com/http-t`
+- the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth-t`
 
 The proxy must preserve these semantics:
 
-- `https://PUBLIC_HOST/http` must reach the MCP streamable HTTP endpoint
-- `https://PUBLIC_HOST/http/.well-known/oauth-protected-resource` must return protected-resource metadata
-- `https://PUBLIC_HOST/oauth/.well-known/oauth-authorization-server` and `https://PUBLIC_HOST/oauth/.well-known/openid-configuration` must return authorization-server metadata
-- `https://PUBLIC_HOST/oauth/callback` must round-trip exactly to the upstream IdP redirect URI you register
+- `https://PUBLIC_HOST/http-t` must reach the MCP streamable HTTP endpoint
+- `https://PUBLIC_HOST/http-t/.well-known/oauth-protected-resource` must return protected-resource metadata
+- `https://PUBLIC_HOST/oauth-t/.well-known/oauth-authorization-server` and `https://PUBLIC_HOST/oauth-t/.well-known/openid-configuration` must return authorization-server metadata
+- `https://PUBLIC_HOST/oauth-t/callback` must round-trip exactly to the upstream IdP redirect URI you register
 
-Required forwarded headers for the split-path setup implemented in this repo:
+Required proxy behavior for the split-path setup implemented in this repo:
 
 - `Host`
 - `Authorization`
-- `X-Forwarded-Proto`
-- `X-Forwarded-Prefix`
-- `X-Forwarded-OAuth-Prefix`
 
 Recommended proxy behavior:
 
@@ -82,16 +79,14 @@ Recommended proxy behavior:
 - disable request buffering for long-lived POSTs
 - keep long read/send timeouts
 - do not normalize or rewrite the configured callback or metadata paths
+- do not rely on forwarded-prefix headers; configure the public OAuth URLs explicitly in `altinity-mcp`
 
 Example nginx shape:
 
 ```nginx
-location ^~ /http {
+location ^~ /http-t {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Prefix /http;
-    proxy_set_header X-Forwarded-OAuth-Prefix /oauth;
     proxy_set_header Authorization $http_authorization;
     proxy_buffering off;
     proxy_request_buffering off;
@@ -100,25 +95,23 @@ location ^~ /http {
     proxy_pass http://ALTINITY_MCP_UPSTREAM;
 }
 
-location ^~ /oauth/ {
+location ^~ /oauth-t/ {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Prefix /oauth;
     proxy_set_header Authorization $http_authorization;
     proxy_buffering off;
     proxy_request_buffering off;
     proxy_read_timeout 3600;
     proxy_send_timeout 3600;
-    rewrite ^/oauth/(.*)$ /$1 break;
+    rewrite ^/oauth-t/(.*)$ /$1 break;
     proxy_pass http://ALTINITY_MCP_UPSTREAM;
 }
 ```
 
 Notes:
 
-- The server can now use explicit public URLs and endpoint paths from config instead of inferring everything from forwarded headers.
-- If `public_resource_url` and `public_auth_server_url` are omitted, the implementation still falls back to request host plus forwarded-prefix headers.
+- The server uses explicit public URLs and endpoint paths from config for OAuth metadata and callback generation.
+- Set both `public_resource_url` and `public_auth_server_url` whenever OAuth is published behind a frontend or proxy.
 - If Google or another IdP reports `redirect_uri_mismatch`, verify the public callback URL seen by the browser exactly matches the URI registered at the IdP.
 
 ## Command Line Options
@@ -143,10 +136,12 @@ Add the `oauth` section under `server` in your config file:
 server:
   oauth:
     enabled: true
-    issuer: "https://welcome.ru/oauth"
-    audience: "https://welcome.ru/http"
-    public_resource_url: "https://welcome.ru/http"
-    public_auth_server_url: "https://welcome.ru/oauth"
+    mode: "forward"
+    issuer: "https://accounts.google.com"
+    audience: "https://PUBLIC_HOST.example.com/http-t"
+    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    public_resource_url: "https://PUBLIC_HOST.example.com/http-t"
+    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-t"
     authorization_path: "/authorize"
     callback_path: "/callback"
     token_path: "/token"
@@ -163,29 +158,37 @@ server:
     # Enable OAuth 2.0 authentication
     enabled: false
 
-    # OAuth token issuer URL for validation
-    # Used to verify the "iss" claim in incoming tokens
+    # OAuth operating mode:
+    # - forward: thin proxy mode; require a bearer token and forward it unchanged to ClickHouse
+    # - terminate: limited built-in facade that issues signed MCP tokens
+    mode: "forward"
+
+    # Upstream OAuth/OIDC issuer URL used by the built-in browser-login facade
+    # and by terminate-mode validation
     issuer: ""
 
-    # URL to fetch JWKS for token signature validation
+    # URL to fetch JWKS for terminate-mode validation
     # If empty, discovered from issuer's .well-known/openid-configuration
     jwks_url: ""
 
-    # Expected audience claim in the token
+    # Expected audience claim for terminate-mode validation
     audience: ""
 
-    # Optional externally visible protected-resource base URL
-    # Used for protected-resource metadata and bearer challenges
+    # Shared secret for stateless browser-login artifacts (registration/state/code)
+    broker_secret_key: ""
+
+    # Externally visible protected-resource base URL
+    # Required when OAuth is published behind a frontend or reverse proxy
     public_resource_url: ""
 
-    # Optional externally visible authorization-server base URL
-    # Used for OAuth/OpenID metadata and browser-based login
+    # Externally visible authorization-server base URL
+    # Required when OAuth is published behind a frontend or reverse proxy
     public_auth_server_url: ""
 
-    # OAuth client ID (for client credentials flow or validation)
+    # Upstream OAuth client ID used by the built-in browser-login facade
     client_id: ""
 
-    # OAuth client secret (for client credentials flow)
+    # Upstream OAuth client secret used by the built-in browser-login facade
     client_secret: ""
 
     # OAuth token endpoint URL
@@ -204,16 +207,16 @@ server:
     openid_configuration_path: "/.well-known/openid-configuration"
 
     # Relative path under public_auth_server_url for dynamic client registration
-    registration_path: "/oauth/register"
+    registration_path: "/register"
 
     # Relative path under public_auth_server_url for authorization
-    authorization_path: "/oauth/authorize"
+    authorization_path: "/authorize"
 
     # Relative path under public_auth_server_url for upstream IdP callback
-    callback_path: "/oauth/callback"
+    callback_path: "/callback"
 
     # Relative path under public_auth_server_url for token exchange
-    token_path: "/oauth/token"
+    token_path: "/token"
 
     # OAuth scopes to request
     scopes:
@@ -221,7 +224,7 @@ server:
       - "profile"
       - "email"
 
-    # Required scopes - token must have ALL of these to be accepted
+    # Required scopes enforced by terminate mode
     required_scopes: []
 
     # Allowed upstream IdP issuers for the identity token returned by the upstream provider
@@ -249,7 +252,10 @@ server:
     # where user identity comes from the token's "sub" claim
     clear_clickhouse_credentials: true
 
-    # Map specific token claims to ClickHouse HTTP headers
+    # Map specific token claims to ClickHouse HTTP headers.
+    # In forward mode, MCP does not populate local claims, so this is useful
+    # only when terminate-mode validation is active or claims are provided by
+    # some other trusted auth layer.
     claims_to_headers:
       sub: "X-ClickHouse-User"
       email: "X-ClickHouse-Email"
@@ -259,6 +265,11 @@ server:
 
 | Option | Description |
 |--------|-------------|
+| `mode` | `forward` verifies external tokens; `terminate` issues limited self-signed MCP tokens |
+| `issuer` | Upstream IdP issuer used for verification and discovery |
+| `jwks_url` | Optional JWKS override for JWT verification |
+| `audience` | Required audience in incoming tokens when present |
+| `broker_secret_key` | Secret used for stateless browser-login artifacts |
 | `forward_to_clickhouse` | Enables token forwarding to ClickHouse |
 | `forward_access_token` | Sends the raw access token (not just claims) |
 | `clear_clickhouse_credentials` | Removes username/password from requests to ClickHouse. **Required** when ClickHouse uses `token_processors` because it must authenticate the user from the token, not from basic auth |
@@ -273,9 +284,9 @@ server:
 | `callback_path` | Relative path for the upstream IdP callback handler |
 | `token_path` | Relative path for the token endpoint |
 | `upstream_issuer_allowlist` | Allowed issuers for upstream identity tokens returned during callback exchange |
-| `auth_code_ttl_seconds` | Lifetime of internal authorization codes minted by `altinity-mcp` |
-| `access_token_ttl_seconds` | Lifetime of internal MCP access tokens minted by `altinity-mcp` |
-| `refresh_token_ttl_seconds` | Lifetime of internal MCP refresh tokens minted by `altinity-mcp` |
+| `auth_code_ttl_seconds` | Lifetime of stateless broker authorization codes |
+| `access_token_ttl_seconds` | Lifetime of self-issued MCP access tokens in `terminate` mode |
+| `refresh_token_ttl_seconds` | Reserved for `terminate` mode |
 
 ## Browser-Based MCP Login
 
@@ -285,14 +296,14 @@ When the server is published over HTTP/S behind a public frontend, `altinity-mcp
 - authorization-server metadata for OAuth-capable MCP clients
 - a small authorization facade that redirects to an upstream IdP and mints MCP access tokens after login
 
-For the current `welcome.ru` layout, the typical public URLs are:
+For the current `PUBLIC_HOST.example.com` layout, the typical public URLs are:
 
-- protected resource: `https://welcome.ru/http`
-- protected-resource metadata: `https://welcome.ru/http/.well-known/oauth-protected-resource`
-- authorization server: `https://welcome.ru/oauth`
-- authorization-server metadata: `https://welcome.ru/oauth/.well-known/oauth-authorization-server`
-- OpenID configuration: `https://welcome.ru/oauth/.well-known/openid-configuration`
-- callback registered at Google: `https://welcome.ru/oauth/callback`
+- protected resource: `https://PUBLIC_HOST.example.com/http-t`
+- protected-resource metadata: `https://PUBLIC_HOST.example.com/http-t/.well-known/oauth-protected-resource`
+- authorization server: `https://PUBLIC_HOST.example.com/oauth-t`
+- authorization-server metadata: `https://PUBLIC_HOST.example.com/oauth-t/.well-known/oauth-authorization-server`
+- OpenID configuration: `https://PUBLIC_HOST.example.com/oauth-t/.well-known/openid-configuration`
+- callback registered at Google: `https://PUBLIC_HOST.example.com/oauth-t/callback`
 
 Minimal config for that shape:
 
@@ -300,10 +311,12 @@ Minimal config for that shape:
 server:
   oauth:
     enabled: true
-    issuer: "https://welcome.ru/oauth"
-    audience: "https://welcome.ru/http"
-    public_resource_url: "https://welcome.ru/http"
-    public_auth_server_url: "https://welcome.ru/oauth"
+    mode: "forward"
+    issuer: "https://accounts.google.com"
+    audience: "https://PUBLIC_HOST.example.com/http-t"
+    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    public_resource_url: "https://PUBLIC_HOST.example.com/http-t"
+    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-t"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
     authorization_server_metadata_path: "/.well-known/oauth-authorization-server"
     openid_configuration_path: "/.well-known/openid-configuration"
@@ -322,7 +335,6 @@ server:
     required_scopes: ["openid"]
     auth_code_ttl_seconds: 300
     access_token_ttl_seconds: 3600
-    refresh_token_ttl_seconds: 2592000
     forward_to_clickhouse: false
     forward_access_token: false
     clear_clickhouse_credentials: false
@@ -442,6 +454,7 @@ In the Keycloak admin console:
 server:
   oauth:
     enabled: true
+    mode: "forward"
     issuer: "http://keycloak:8080/realms/mcp"
     audience: "clickhouse-mcp"
     forward_to_clickhouse: true
@@ -497,6 +510,7 @@ In the [Azure Portal](https://portal.azure.com):
 server:
   oauth:
     enabled: true
+    mode: "forward"
     issuer: "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
     audience: "<APPLICATION_CLIENT_ID>"
     client_id: "<APPLICATION_CLIENT_ID>"
@@ -544,6 +558,7 @@ In the [Google Cloud Console](https://console.cloud.google.com):
 server:
   oauth:
     enabled: true
+    mode: "forward"
     issuer: "https://accounts.google.com"
     audience: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
     client_id: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
@@ -607,6 +622,7 @@ In the [AWS Console](https://console.aws.amazon.com/cognito):
 server:
   oauth:
     enabled: true
+    mode: "forward"
     issuer: "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>"
     audience: "<APP_CLIENT_ID>"
     client_id: "<APP_CLIENT_ID>"
@@ -661,6 +677,9 @@ Any MCP-compatible client (AI agent, IDE plugin, CLI tool, etc.) can use OAuth t
 3. The MCP server validates the token and forwards it to ClickHouse
 4. ClickHouse authenticates the user via `token_processors`
 
+For forward-mode browser login, the broker returns the upstream bearer token that the downstream resource is expected to accept. When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
+Inbound OAuth validation on MCP/OpenAPI endpoints currently requires a signed JWT that can be validated via JWKS. Opaque bearer tokens are rejected unless token introspection support is added; `userinfo` is used only during browser-login identity lookup.
+
 
 ## Troubleshooting
 
@@ -686,3 +705,24 @@ GRANT SELECT ON *.* TO default_role;
 ### Token forwarding works but ClickHouse rejects the user
 
 Ensure `clear_clickhouse_credentials: true` is set. When ClickHouse receives both a username/password (basic auth) and a Bearer token, the basic auth may take precedence and fail.
+
+## Automated ClickHouse OAuth E2E Test
+
+The automated ClickHouse OAuth test suite uses:
+
+- Keycloak as the OIDC provider
+- `altinity/clickhouse-server:25.8.16.20001.altinityantalya`
+- real ClickHouse `token_processors` plus `user_directories` token auth
+- `altinity-mcp` with bearer-token forwarding enabled
+
+This is the canonical automated test path for ClickHouse OAuth in this repo. Google remains a manual provider example and is not part of the automated suite.
+
+The Antalya image is required because standard upstream ClickHouse images do not provide the `token_processors` support needed for bearer-token authentication.
+
+Run the E2E test explicitly:
+
+```bash
+RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
+```
+
+The test is skipped by default unless `RUN_OAUTH_E2E=1` is set, and it is also skipped in `go test -short`.
