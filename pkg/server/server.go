@@ -358,7 +358,7 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 
 	_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
 	if err != nil {
-		log.Error().Err(err).Str("token", token).Msg("JWE token validation failed")
+		log.Error().Err(err).Msg("JWE token validation failed")
 		return err
 	}
 

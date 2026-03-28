@@ -17,3 +17,4 @@ dist/
 coverage.out
 go-carpet*
 .mcp.json
+.gocache/
