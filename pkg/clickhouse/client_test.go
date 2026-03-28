@@ -274,3 +274,57 @@ func TestTLSConfig(t *testing.T) {
 		require.Contains(t, err.Error(), "failed to load client key pair")
 	})
 }
+
+func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
+	t.Run("http_tls_bearer_uses_jwt_hook", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"Authorization": "Bearer secret-token",
+				"X-Test":        "value",
+			},
+		}
+
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.NotNil(t, getJWT)
+		require.Equal(t, "value", headers["X-Test"])
+		_, hasAuth := headers["Authorization"]
+		require.False(t, hasAuth)
+
+		token, err := getJWT(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, "secret-token", token)
+	})
+
+	t.Run("non_tls_keeps_authorization_header", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			HttpHeaders: map[string]string{
+				"Authorization": "Bearer secret-token",
+			},
+		}
+
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, getJWT)
+		require.Equal(t, "Bearer secret-token", headers["Authorization"])
+	})
+
+	t.Run("custom_auth_scheme_kept_as_header", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"Authorization": "Basic abc",
+			},
+		}
+
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, getJWT)
+		require.Equal(t, "Basic abc", headers["Authorization"])
+	})
+}

@@ -104,6 +104,8 @@ func (c *Client) connect() error {
 		settings[k] = v
 	}
 
+	httpHeaders, getJWT := prepareHTTPAuthForClickHouse(c.config)
+
 	conn, openErr := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth: clickhouse.Auth{
@@ -114,7 +116,8 @@ func (c *Client) connect() error {
 		TLS:             tlsConfig,
 		Protocol:        protocol,
 		Settings:        settings,
-		HttpHeaders:     c.config.HttpHeaders,
+		HttpHeaders:     httpHeaders,
+		GetJWT:          getJWT,
 		DialTimeout:     time.Second * 10,
 		MaxOpenConns:    10,
 		MaxIdleConns:    5,
@@ -158,6 +161,39 @@ func (c *Client) connect() error {
 // DialTimeout for network-level bounds.
 func dialWithoutQueryDeadline(ctx context.Context, connID int, opt *clickhouse.Options, dial clickhouse.Dial) (clickhouse.DialResult, error) {
 	return clickhouse.DefaultDialStrategy(context.WithoutCancel(ctx), connID, opt, dial)
+}
+
+func prepareHTTPAuthForClickHouse(cfg config.ClickHouseConfig) (map[string]string, clickhouse.GetJWTFunc) {
+	if len(cfg.HttpHeaders) == 0 {
+		return nil, nil
+	}
+
+	headers := make(map[string]string, len(cfg.HttpHeaders))
+	for k, v := range cfg.HttpHeaders {
+		headers[k] = v
+	}
+
+	if cfg.Protocol != config.HTTPProtocol || !cfg.TLS.Enabled {
+		return headers, nil
+	}
+
+	for headerName, headerValue := range headers {
+		if !strings.EqualFold(headerName, "Authorization") {
+			continue
+		}
+
+		token, ok := strings.CutPrefix(strings.TrimSpace(headerValue), "Bearer ")
+		if !ok || token == "" {
+			return headers, nil
+		}
+
+		delete(headers, headerName)
+		return headers, func(context.Context) (string, error) {
+			return token, nil
+		}
+	}
+
+	return headers, nil
 }
 
 // Close closes the ClickHouse connection

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -302,7 +301,7 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 
 // ExtractTokenFromCtx extracts a token from context
 func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
-	if tokenFromCtx := ctx.Value("jwe_token"); tokenFromCtx != nil {
+	if tokenFromCtx := ctx.Value(JWETokenKey); tokenFromCtx != nil {
 		if tokenStr, ok := tokenFromCtx.(string); ok {
 			return tokenStr
 		}
@@ -388,7 +387,7 @@ func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) stri
 
 // ExtractOAuthTokenFromCtx extracts an OAuth token from context
 func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) string {
-	if tokenFromCtx := ctx.Value("oauth_token"); tokenFromCtx != nil {
+	if tokenFromCtx := ctx.Value(OAuthTokenKey); tokenFromCtx != nil {
 		if tokenStr, ok := tokenFromCtx.(string); ok {
 			return tokenStr
 		}
@@ -397,7 +396,7 @@ func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) stri
 }
 
 func (s *ClickHouseJWEServer) oauthRequiresLocalValidation() bool {
-	return s.Config.Server.OAuth.NormalizedMode() != "forward"
+	return s.Config.Server.OAuth.IsBrokerMode()
 }
 
 // ValidateOAuthToken validates an OAuth token and returns claims
@@ -430,7 +429,7 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 
 func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthClaims, error) {
 	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
-	if s.Config.Server.OAuth.IsTerminateMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
+	if s.Config.Server.OAuth.IsBrokerMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
 		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
 	}
 	// Validate issuer if configured
@@ -620,7 +619,7 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
 	secret := strings.TrimSpace(s.Config.Server.OAuth.BrokerSecretKey)
 	if secret == "" {
-		return nil, fmt.Errorf("oauth broker_secret_key is required in terminate mode")
+		return nil, fmt.Errorf("oauth broker_secret_key is required in broker mode")
 	}
 	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 
@@ -688,7 +687,7 @@ func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDCo
 		if err != nil {
 			continue
 		}
-		body, readErr := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if resp.StatusCode >= 300 || readErr != nil {
 			continue
@@ -728,7 +727,7 @@ func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKey
 		return nil, fmt.Errorf("failed to fetch jwks: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks response: %w", err)
 	}
@@ -750,28 +749,6 @@ func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKey
 	return &keySet, nil
 }
 
-// parseOAuthToken parses a JWT token and extracts claims
-func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error) {
-	// Split the JWT token
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format")
-	}
-
-	// Decode the payload (middle part)
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
-	}
-
-	// Parse the payload as JSON
-	var rawClaims map[string]interface{}
-	if err := json.Unmarshal(payload, &rawClaims); err != nil {
-		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
-	}
-
-	return oauthClaimsFromRawClaims(rawClaims), nil
-}
 
 func oauthClaimsFromRawClaims(rawClaims map[string]interface{}) *OAuthClaims {
 	claims := &OAuthClaims{
@@ -884,7 +861,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*
 
 // GetOAuthClaimsFromCtx extracts OAuth claims from context
 func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthClaims {
-	if claims := ctx.Value("oauth_claims"); claims != nil {
+	if claims := ctx.Value(OAuthClaimsKey); claims != nil {
 		if oauthClaims, ok := claims.(*OAuthClaims); ok {
 			return oauthClaims
 		}
@@ -1796,7 +1773,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 
 // GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context
 func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer {
-	if srv := ctx.Value("clickhouse_jwe_server"); srv != nil {
+	if srv := ctx.Value(CHJWEServerKey); srv != nil {
 		if chJweServer, ok := srv.(*ClickHouseJWEServer); ok {
 			return chJweServer
 		}
@@ -1846,8 +1823,8 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	// Store OAuth claims in context if available
 	ctx := r.Context()
 	if oauthClaims != nil {
-		ctx = context.WithValue(ctx, "oauth_claims", oauthClaims)
-		ctx = context.WithValue(ctx, "oauth_token", oauthToken)
+		ctx = context.WithValue(ctx, OAuthClaimsKey, oauthClaims)
+		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
 	}
 	r = r.WithContext(ctx)
 
@@ -2068,7 +2045,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	ctx := context.WithValue(r.Context(), JWETokenKey, token)
 
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
@@ -2107,7 +2084,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		return
 	}
 
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	ctx := context.WithValue(r.Context(), JWETokenKey, token)
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -2166,6 +2143,14 @@ func hasLimitClause(query string) bool {
 type contextKey string
 
 const forwardedHeadersKey contextKey = "forwarded_http_headers"
+
+// Auth context keys
+const (
+	JWETokenKey    contextKey = "jwe_token"
+	OAuthTokenKey  contextKey = "oauth_token"
+	OAuthClaimsKey contextKey = "oauth_claims"
+	CHJWEServerKey contextKey = "clickhouse_jwe_server"
+)
 
 // sensitiveHeaders are excluded from wildcard pattern matching to prevent
 // accidental credential leakage. A user can still forward these by naming

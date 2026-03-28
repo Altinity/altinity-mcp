@@ -344,7 +344,7 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 
 			// Inject token into request context if found
 			if token != "" {
-				ctx := context.WithValue(r.Context(), "jwe_token", token)
+				ctx := context.WithValue(r.Context(), altinitymcp.JWETokenKey, token)
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -505,7 +505,7 @@ func (a *application) startSTDIOServer(mcpServer *mcp.Server) error {
 	log.Info().Msg("Starting MCP server with STDIO transport")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", a.mcpServer)
+	ctx = context.WithValue(ctx, altinitymcp.CHJWEServerKey, a.mcpServer)
 	defer cancel()
 
 	// Set up signal handling
@@ -543,14 +543,14 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
@@ -654,14 +654,14 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
@@ -1185,6 +1185,7 @@ type application struct {
 	httpSrv          *http.Server
 	httpSrvMutex     sync.RWMutex
 	oauthState       *oauthStateStore
+	oauthStateMu     sync.Mutex
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
@@ -1204,7 +1205,20 @@ func (a *application) getHTTPServer() *http.Server {
 	return a.httpSrv
 }
 
+func (a *application) getOAuthStateStore() *oauthStateStore {
+	a.oauthStateMu.Lock()
+	defer a.oauthStateMu.Unlock()
+	if a.oauthState == nil {
+		a.oauthState = newOAuthStateStore()
+	}
+	return a.oauthState
+}
+
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
+	if err := validateOAuthRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	// Test connection to ClickHouse if JWE auth is not enabled
 	if !cfg.Server.JWE.Enabled {
 		log.Debug().Msg("Testing ClickHouse connection...")
@@ -1262,6 +1276,28 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	}
 
 	return app, nil
+}
+
+func validateOAuthRuntimeConfig(cfg config.Config) error {
+	if !cfg.Server.OAuth.Enabled {
+		return nil
+	}
+
+	switch cfg.Server.OAuth.NormalizedMode() {
+	case "forward", "broker":
+	default:
+		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
+	}
+
+	if cfg.Server.OAuth.IsBrokerMode() && strings.TrimSpace(cfg.Server.OAuth.BrokerSecretKey) == "" {
+		return fmt.Errorf("oauth broker_secret_key is required in broker mode")
+	}
+
+	if cfg.Server.OAuth.ForwardToClickHouse && cfg.ClickHouse.Protocol != config.HTTPProtocol {
+		return fmt.Errorf("oauth token forwarding to ClickHouse requires clickhouse protocol http")
+	}
+
+	return nil
 }
 
 func (a *application) Close() {
