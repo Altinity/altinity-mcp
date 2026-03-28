@@ -2,7 +2,7 @@ name: Build Altinity MCP
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'codex/**' ]
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ main, master ]
