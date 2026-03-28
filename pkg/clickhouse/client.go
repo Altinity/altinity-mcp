@@ -119,6 +119,7 @@ func (c *Client) connect() error {
 		MaxOpenConns:    10,
 		MaxIdleConns:    5,
 		ConnMaxLifetime: time.Hour,
+		DialStrategy:    dialWithoutQueryDeadline,
 	})
 
 	if openErr != nil {
@@ -149,6 +150,14 @@ func (c *Client) connect() error {
 	}
 
 	return nil
+}
+
+// clickhouse-go derives max_execution_time from connection-establishment context
+// deadlines for HTTP handshakes. Some managed servers forbid changing that
+// setting, so we strip the deadline during dial and rely on the driver's own
+// DialTimeout for network-level bounds.
+func dialWithoutQueryDeadline(ctx context.Context, connID int, opt *clickhouse.Options, dial clickhouse.Dial) (clickhouse.DialResult, error) {
+	return clickhouse.DefaultDialStrategy(context.WithoutCancel(ctx), connID, opt, dial)
 }
 
 // Close closes the ClickHouse connection
