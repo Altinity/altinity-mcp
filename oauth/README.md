@@ -13,7 +13,7 @@ This harness is for local-first development of `altinity-mcp` OAuth support with
 - Serves the forward MCP endpoint under `https://PUBLIC_HOST.example.com/http-f`
 - Serves the forward OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-f/`
 - Supports two manual Google-provider flows:
-  - `forward`: local `altinity-mcp` plus Docker Antalya with token forwarding into ClickHouse
+  - `forward`: local `altinity-mcp` plus `github.demo.altinity.cloud:8443` with token forwarding into ClickHouse
   - `terminate`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
 - Uses Codex as the OAuth client via `codex mcp login`
 - Uses Google only as the upstream identity provider
@@ -190,7 +190,7 @@ The working nginx example for this repo is in [nginx-PUBLIC_HOST.example.com-spl
 
 ### Forward Mode
 
-This mode forwards the Google bearer token that ClickHouse expects to ClickHouse Antalya over HTTP.
+This mode forwards the Google bearer token that ClickHouse expects to `github.demo.altinity.cloud:8443` over HTTPS.
 When the upstream provider returns both `id_token` and `access_token`, the browser-login callback returns `id_token` as the MCP bearer token and keeps `access_token` only for fallback or provider-specific use. If no `id_token` is available, the callback falls back to the upstream `access_token`.
 In forward mode, `altinity-mcp` only requires that a bearer token is present on incoming requests and forwards it unchanged to ClickHouse. Real token validation and user identity mapping are delegated to ClickHouse `token_processors`.
 
@@ -210,8 +210,8 @@ codex exec "Use the configured MCP server named altinity_mcp_oauth_forward. Exec
 
 What it does:
 
-- starts Docker ClickHouse Antalya with Google `token_processors`
 - starts local `altinity-mcp` in `mode: forward`
+- connects to `github.demo.altinity.cloud:8443` with `demo/demo`
 - probes the public MCP and OAuth metadata URLs
 - registers the MCP server in Codex
 - runs `codex mcp login`
@@ -226,7 +226,7 @@ oauth/test-google-forward-direct.sh
 What it verifies:
 
 - `gcloud auth print-identity-token` returns a Google-signed ID token for the active account
-- direct Antalya auth works with that token
+- direct auth to `github.demo.altinity.cloud:8443` works with that token
 - local `altinity-mcp` forward mode passes that token through to ClickHouse
 - the public `https://PUBLIC_HOST.example.com/http-f/openapi/execute_query` path is probed separately so proxy issues are visible without blocking the core server validation
 
