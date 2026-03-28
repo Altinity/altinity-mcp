@@ -663,7 +663,7 @@ func TestHealthHandler(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -883,7 +883,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -930,7 +930,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -1019,7 +1019,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -1070,7 +1070,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -1118,7 +1118,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
+				t.Logf("Failed to broker container: %v", termErr)
 			}
 		}()
 
@@ -2749,7 +2749,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	}
 	defer func() {
 		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-			t.Logf("Failed to terminate container: %v", termErr)
+			t.Logf("Failed to broker container: %v", termErr)
 		}
 	}()
 
@@ -3004,7 +3004,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3025,7 +3025,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3046,7 +3046,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3067,7 +3067,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3090,7 +3090,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3110,7 +3110,7 @@ logging:
 
 			tokenInContext := false
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, tokenInContext = r.Context().Value("jwe_token").(string)
+				_, tokenInContext = r.Context().Value(altinitymcp.JWETokenKey).(string)
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -3373,7 +3373,6 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 				},
 			},
 		},
-		oauthState: newOAuthStateStore(),
 	}
 
 	t.Run("protected_resource_metadata", func(t *testing.T) {
@@ -3493,7 +3492,6 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 			Audience:            "https://mcp.example.com",
 			BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
 		}}}, "test"),
-		oauthState: newOAuthStateStore(),
 	}
 
 	jweToken, err := jwe_auth.GenerateJWEToken(map[string]interface{}{"host": "localhost", "port": 8123, "exp": time.Now().Add(time.Hour).Unix()}, []byte("this-is-a-32-byte-secret-key!!"), []byte("jwt-secret"))
@@ -3519,8 +3517,8 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 		called := false
 		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
-			require.Equal(t, jweToken, r.Context().Value("jwe_token"))
-			require.Equal(t, token, r.Context().Value("oauth_token"))
+			require.Equal(t, jweToken, r.Context().Value(altinitymcp.JWETokenKey))
+			require.Equal(t, token, r.Context().Value(altinitymcp.OAuthTokenKey))
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(rr, req)
@@ -3530,37 +3528,35 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 }
 
 func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
+	token := "opaque-access-token"
 	app := &application{
 		config: config.Config{
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:         true,
-					Mode:            "forward",
-					BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		},
 		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:         true,
-					Mode:            "forward",
-					BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test"),
-		oauthState: newOAuthStateStore(),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/http", nil)
-	req.Header.Set("Authorization", "Bearer opaque-access-token")
+	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 	called := false
 
 	handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		require.Equal(t, "opaque-access-token", r.Context().Value("oauth_token"))
-		require.Nil(t, r.Context().Value("oauth_claims"))
+		require.Equal(t, token, r.Context().Value(altinitymcp.OAuthTokenKey))
+		require.Nil(t, r.Context().Value(altinitymcp.OAuthClaimsKey))
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -3581,7 +3577,6 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 				},
 			},
 		},
-		oauthState: newOAuthStateStore(),
 	}
 
 	mux := http.NewServeMux()
@@ -3744,13 +3739,13 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
-				Enabled:         true,
-				Mode:            "forward",
-				Issuer:          provider.server.URL,
-				JWKSURL:         provider.server.URL + "/jwks",
-				AuthURL:         provider.server.URL + "/authorize",
-				TokenURL:        provider.server.URL + "/token",
-				UserInfoURL:     provider.server.URL + "/userinfo",
+				Enabled:      true,
+				Mode:         "forward",
+				Issuer:       provider.server.URL,
+				JWKSURL:      provider.server.URL + "/jwks",
+				AuthURL:      provider.server.URL + "/authorize",
+				TokenURL:     provider.server.URL + "/token",
+				UserInfoURL:  provider.server.URL + "/userinfo",
 				ClientID:        "upstream-client-id",
 				ClientSecret:    "upstream-client-secret",
 				Scopes:          []string{"openid", "email"},
@@ -3760,9 +3755,8 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 	}
 
 	return &application{
-		config:     cfg,
-		mcpServer:  altinitymcp.NewClickHouseMCPServer(cfg, "test"),
-		oauthState: newOAuthStateStore(),
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
 	}
 }
 
@@ -3867,8 +3861,8 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 
 		var tokenResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		// In forward mode, the raw upstream token is returned directly
 		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
-		require.NotEqual(t, "upstream-access-token", tokenResp["access_token"])
 		require.Equal(t, "Bearer", tokenResp["token_type"])
 		require.Equal(t, "openid email profile", tokenResp["scope"])
 		require.Greater(t, tokenResp["expires_in"].(float64), float64(0))
@@ -3909,6 +3903,7 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 
 		var tokenResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		// In forward mode, the raw upstream access token is returned directly
 		require.Equal(t, "opaque-access-token", tokenResp["access_token"])
 		require.Equal(t, "DPoP", tokenResp["token_type"])
 		require.Equal(t, "openid email", tokenResp["scope"])
@@ -3953,6 +3948,7 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 
 		var tokenResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+		// In forward mode, the raw upstream id_token is returned directly
 		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
 		require.Equal(t, "Bearer", tokenResp["token_type"])
 		require.Equal(t, "openid email", tokenResp["scope"])

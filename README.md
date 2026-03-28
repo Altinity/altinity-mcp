@@ -418,6 +418,16 @@ Integration tests use Docker containers and require Docker to be running:
 go test -v ./cmd/altinity-mcp/...
 ```
 
+### ClickHouse OAuth E2E Test
+
+The ClickHouse OAuth end-to-end test is opt-in because it starts Docker containers for Keycloak and the Altinity Antalya ClickHouse build with `token_processors` enabled:
+
+```bash
+RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
+```
+
+For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
+
 ## Development
 
 ### Prerequisites
@@ -440,6 +450,9 @@ go test ./pkg/...
 
 # Integration tests (requires Docker)
 go test -v ./cmd/altinity-mcp/...
+
+# ClickHouse OAuth E2E test (requires Docker, Keycloak, and Antalya image)
+RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
 ```
 
 ## CLI Reference

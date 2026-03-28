@@ -94,8 +94,8 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 		clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
 		// Connect server with context containing the server instance and OAuth token
-		srvCtx := context.WithValue(ctx, "clickhouse_jwe_server", srv)
-		srvCtx = context.WithValue(srvCtx, "oauth_token", token)
+		srvCtx := context.WithValue(ctx, CHJWEServerKey, srv)
+		srvCtx = context.WithValue(srvCtx, OAuthTokenKey, token)
 		serverSession, err := srv.MCPServer.Connect(srvCtx, serverTransport, nil)
 		require.NoError(t, err, "Server connect should succeed")
 		defer serverSession.Close()
@@ -193,7 +193,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			query := url.QueryEscape("SELECT currentUser() AS user, 1 AS ok")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()
@@ -214,7 +214,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 		t.Run("OpenAPISchema", func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()
@@ -228,7 +228,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 		t.Run("ExecuteQuery_MissingBearerToken", func(t *testing.T) {
 			query := url.QueryEscape("SELECT currentUser() AS user")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()
@@ -248,7 +248,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 				"exp":   time.Now().Add(10 * time.Minute).Unix(),
 				"scope": "openid",
 			}))
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()

@@ -74,6 +74,12 @@ type JWEConfig struct {
 
 // OAuthConfig defines configuration for OAuth 2.0 authentication
 type OAuthConfig struct {
+	// Mode controls whether altinity-mcp forwards external OAuth bearers or brokers them into local MCP tokens.
+	// "forward" is the production path: pass the end-user bearer through to ClickHouse.
+	// "broker" keeps the built-in limited OAuth facade that issues its own tokens.
+	// "terminate" is accepted as a deprecated alias for "broker".
+	Mode string `json:"mode" yaml:"mode" flag:"oauth-mode" desc:"OAuth operating mode (forward/broker)"`
+
 	// Enabled enables OAuth authentication
 	Enabled bool `json:"enabled" yaml:"enabled" flag:"oauth-enabled" desc:"Enable OAuth 2.0 authentication"`
 
@@ -107,6 +113,10 @@ type OAuthConfig struct {
 	// AuthURL is the OAuth authorization endpoint URL (used for authorization code flow)
 	AuthURL string `json:"auth_url" yaml:"auth_url" flag:"oauth-auth-url" desc:"OAuth authorization endpoint URL"`
 
+	// UserInfoURL is the upstream OpenID Connect userinfo endpoint URL.
+	// If empty, it will be discovered from issuer metadata when needed.
+	UserInfoURL string `json:"userinfo_url" yaml:"userinfo_url" flag:"oauth-userinfo-url" desc:"OAuth/OpenID Connect userinfo endpoint URL"`
+
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
 
@@ -132,6 +142,15 @@ type OAuthConfig struct {
 	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
 	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
 	ClaimsToHeaders map[string]string `json:"claims_to_headers" yaml:"claims_to_headers" desc:"Map OAuth claims to ClickHouse HTTP headers"`
+
+	// AllowedEmailDomains constrains accepted principals by email domain.
+	AllowedEmailDomains []string `json:"allowed_email_domains" yaml:"allowed_email_domains" flag:"oauth-allowed-email-domains" desc:"Allowed email domains for verified OAuth identities"`
+
+	// AllowedHostedDomains constrains accepted principals by hosted/workspace domain claim such as Google hd.
+	AllowedHostedDomains []string `json:"allowed_hosted_domains" yaml:"allowed_hosted_domains" flag:"oauth-allowed-hosted-domains" desc:"Allowed hosted/workspace domains for verified OAuth identities"`
+
+	// RequireEmailVerified rejects identities where email_verified is false when an email claim is present.
+	RequireEmailVerified bool `json:"require_email_verified" yaml:"require_email_verified" flag:"oauth-require-email-verified" desc:"Require email_verified=true on OAuth identities"`
 
 	// ProtectedResourceMetadataPath configures the relative path for RFC 9728 protected resource metadata.
 	ProtectedResourceMetadataPath string `json:"protected_resource_metadata_path" yaml:"protected_resource_metadata_path" flag:"oauth-protected-resource-metadata-path" desc:"Relative path for OAuth protected resource metadata"`
@@ -165,6 +184,35 @@ type OAuthConfig struct {
 
 	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
 	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" desc:"Refresh token lifetime in seconds"`
+
+	// BrokerSecretKey is the symmetric secret used for OAuth client registration artifacts
+	// and broker-mode self-issued token minting/validation.
+	BrokerSecretKey string `json:"broker_secret_key" yaml:"broker_secret_key" flag:"oauth-broker-secret-key" desc:"Secret key for stateless OAuth facade artifacts"`
+}
+
+func (cfg OAuthConfig) NormalizedMode() string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch mode {
+	case "forward":
+		return "forward"
+	case "broker", "terminate":
+		return "broker"
+	case "":
+		if cfg.ForwardToClickHouse {
+			return "forward"
+		}
+		return "broker"
+	default:
+		return mode
+	}
+}
+
+func (cfg OAuthConfig) IsForwardMode() bool {
+	return cfg.NormalizedMode() == "forward"
+}
+
+func (cfg OAuthConfig) IsBrokerMode() bool {
+	return cfg.NormalizedMode() == "broker"
 }
 
 // ServerConfig defines configuration for the MCP server

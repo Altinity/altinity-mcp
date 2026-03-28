@@ -18,3 +18,5 @@ coverage.out
 go-carpet*
 .mcp.json
 .gocache/
+.gomodcache/
+.tmp/

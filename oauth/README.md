@@ -6,19 +6,19 @@ This harness is for local-first development of `altinity-mcp` OAuth support with
 
 - Runs `altinity-mcp` locally on separate ports so both modes can stay up together:
   - forward on `0.0.0.0:18080`
-  - terminate on `0.0.0.0:18081`
+  - broker on `0.0.0.0:18081`
 - Exposes it publicly through nginx on `https://PUBLIC_HOST.example.com`
-- Serves the terminate MCP endpoint under `https://PUBLIC_HOST.example.com/http-t`
-- Serves the terminate OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-t/`
+- Serves the broker MCP endpoint under `https://PUBLIC_HOST.example.com/http-t`
+- Serves the broker OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-t/`
 - Serves the forward MCP endpoint under `https://PUBLIC_HOST.example.com/http-f`
 - Serves the forward OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-f/`
 - Supports two manual Google-provider flows:
   - `forward`: local `altinity-mcp` plus `github.demo.altinity.cloud:8443` with token forwarding into ClickHouse
-  - `terminate`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
+  - `broker`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
 - Uses Codex as the OAuth client via `codex mcp login`
 - Uses Google only as the upstream identity provider
 - In `forward` mode, returns the upstream Google access token to Codex and validates it on inbound requests
-- In `terminate` mode, mints self-issued MCP access tokens after Google login
+- In `broker` mode, mints self-issued MCP access tokens after Google login
 
 ## Important URLs
 
@@ -26,7 +26,7 @@ This harness is for local-first development of `altinity-mcp` OAuth support with
 - Terminate OAuth base: `https://PUBLIC_HOST.example.com/oauth-t/`
 - Forward MCP base: `https://PUBLIC_HOST.example.com/http-f`
 - Forward OAuth base: `https://PUBLIC_HOST.example.com/oauth-f/`
-- OAuth callback for terminate Google app: `https://PUBLIC_HOST.example.com/oauth-t/callback`
+- OAuth callback for broker Google app: `https://PUBLIC_HOST.example.com/oauth-t/callback`
 - OAuth callback for forward Google app: `https://PUBLIC_HOST.example.com/oauth-f/callback`
 
 ## Google Project
@@ -241,17 +241,17 @@ Default ClickHouse target:
 - password `demo`
 
 ```bash
-oauth/test-google-terminate.sh
+oauth/test-google-broker.sh
 ```
 
 Manual Codex flow:
 
 ```bash
 export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
-codex mcp remove altinity_mcp_oauth_terminate >/dev/null 2>&1 || true
-codex mcp add altinity_mcp_oauth_terminate --url "https://${MCP_TARGET_HOST}/http-t"
-codex mcp login altinity_mcp_oauth_terminate
-codex exec "Use the configured MCP server named altinity_mcp_oauth_terminate. Execute SELECT version() and return only the SQL result."
+codex mcp remove altinity_mcp_oauth_broker >/dev/null 2>&1 || true
+codex mcp add altinity_mcp_oauth_broker --url "https://${MCP_TARGET_HOST}/http-t"
+codex mcp login altinity_mcp_oauth_broker
+codex exec "Use the configured MCP server named altinity_mcp_oauth_broker. Execute SELECT version() and return only the SQL result."
 ```
 
 What it does:
@@ -265,9 +265,9 @@ What it does:
 - runs `codex mcp login`
 - runs `SELECT version()`
 
-For terminate mode, sign in with a verified `@altinity.com` Google account.
+For broker mode, sign in with a verified `@altinity.com` Google account.
 
-Terminate mode default local bind:
+Broker mode default local bind:
 
 - `0.0.0.0:18081`
 
@@ -319,9 +319,9 @@ Key fields:
 - `auth_code_ttl_seconds`
   Lifetime of stateless broker authorization codes.
 - `access_token_ttl_seconds`
-  Lifetime of self-issued access tokens in `terminate` mode only.
+  Lifetime of self-issued access tokens in `broker` mode only.
 - `refresh_token_ttl_seconds`
-  Reserved for `terminate` mode only. `forward` mode does not mint refresh tokens.
+  Reserved for `broker` mode only. `forward` mode does not mint refresh tokens.
 
 Minimal `forward` mode config for the current `PUBLIC_HOST.example.com` split-path setup:
 
@@ -356,12 +356,12 @@ server:
     access_token_ttl_seconds: 3600
 ```
 
-Minimal `terminate` mode differences:
+Minimal `broker` mode differences:
 
 ```yaml
 server:
   oauth:
-    mode: "terminate"
+    mode: "broker"
     issuer: "https://accounts.google.com"
     audience: "https://PUBLIC_HOST.example.com/http-t"
     allowed_email_domains: ["altinity.com"]
@@ -376,5 +376,5 @@ server:
 - This repo exposes MCP OAuth discovery and a test-oriented auth server facade.
 - Google is only the upstream login provider.
 - In `forward` mode, Codex receives the upstream Google access token and `altinity-mcp` forwards it to ClickHouse.
-- In `terminate` mode, `altinity-mcp` mints and validates its own MCP access tokens after Google login.
+- In `broker` mode, `altinity-mcp` mints and validates its own MCP access tokens after Google login.
 - This is for development/testing, not production security hardening.

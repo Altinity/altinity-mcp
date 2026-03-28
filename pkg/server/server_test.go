@@ -123,7 +123,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.ServeOpenAPISchema(rr, req)
@@ -143,7 +143,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -158,7 +158,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20*%20FROM%20default.test&limit=1", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -176,7 +176,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -197,7 +197,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -236,7 +236,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		body := strings.NewReader(`{"id":1}`)
 		req := httptest.NewRequest(http.MethodPost, "/openapi/custom_default_v_api", body)
 		req.Header.Set("Content-Type", "application/json")
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -260,7 +260,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		body := strings.NewReader(`{"id":1}`)
 		req := httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", body)
 		req.Header.Set("Content-Type", "application/json")
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -285,7 +285,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 		body := strings.NewReader(`not json`)
 		req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -343,7 +343,7 @@ func TestHandleExecuteQuery(t *testing.T) {
 	}, "test")
 
 	// Add server to context
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+	ctx = context.WithValue(ctx, CHJWEServerKey, srv)
 
 	t.Run("successful_select", func(t *testing.T) {
 		req := &mcp.CallToolRequest{
@@ -451,7 +451,7 @@ func TestHandleSchemaResource(t *testing.T) {
 		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+	ctx = context.WithValue(ctx, CHJWEServerKey, srv)
 
 	t.Run("returns_schema", func(t *testing.T) {
 		result, err := HandleSchemaResource(ctx, &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{}})
@@ -479,7 +479,7 @@ func TestHandleTableResource(t *testing.T) {
 		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+	ctx = context.WithValue(ctx, CHJWEServerKey, srv)
 
 	t.Run("returns_table_structure", func(t *testing.T) {
 		req := &mcp.ReadResourceRequest{
@@ -545,8 +545,8 @@ func TestJWEAuthentication(t *testing.T) {
 			},
 		}, "test")
 
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
-		ctx = context.WithValue(ctx, "jwe_token", token)
+		ctx = context.WithValue(ctx, CHJWEServerKey, srv)
+		ctx = context.WithValue(ctx, JWETokenKey, token)
 
 		client, err := srv.GetClickHouseClient(ctx, token)
 		require.NoError(t, err)
@@ -636,7 +636,7 @@ func TestExtractTokenFromCtx(t *testing.T) {
 	srv := &ClickHouseJWEServer{}
 
 	t.Run("with_token", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "jwe_token", "test-token")
+		ctx := context.WithValue(context.Background(), JWETokenKey, "test-token")
 		token := srv.ExtractTokenFromCtx(ctx)
 		require.Equal(t, "test-token", token)
 	})
@@ -647,7 +647,7 @@ func TestExtractTokenFromCtx(t *testing.T) {
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "jwe_token", 123)
+		ctx := context.WithValue(context.Background(), JWETokenKey, 123)
 		token := srv.ExtractTokenFromCtx(ctx)
 		require.Empty(t, token)
 	})
@@ -822,7 +822,7 @@ func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/openapi", nil)
-	ctx := context.WithValue(req.Context(), "clickhouse_jwe_server", s)
+	ctx := context.WithValue(req.Context(), CHJWEServerKey, s)
 	req = req.WithContext(ctx)
 	s.ServeOpenAPISchema(rr, req)
 
@@ -871,13 +871,13 @@ func TestGetClickHouseJWEServerFromContext(t *testing.T) {
 
 	t.Run("with_server", func(t *testing.T) {
 		expectedServer := &ClickHouseJWEServer{}
-		ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", expectedServer)
+		ctx := context.WithValue(context.Background(), CHJWEServerKey, expectedServer)
 		srv := GetClickHouseJWEServerFromContext(ctx)
 		require.Equal(t, expectedServer, srv)
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", "not-a-server")
+		ctx := context.WithValue(context.Background(), CHJWEServerKey, "not-a-server")
 		srv := GetClickHouseJWEServerFromContext(ctx)
 		require.Nil(t, srv)
 	})
@@ -1006,7 +1006,7 @@ func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
 	}
 
 	// context with server
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", s)
+	ctx = context.WithValue(ctx, CHJWEServerKey, s)
 	result, err := handler(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -1107,7 +1107,7 @@ func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Inject server into context and call OpenAPIHandler
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, s))
 	s.OpenAPIHandler(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -1139,7 +1139,7 @@ func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
 
 	// With JWE enabled and invalid token, the token validation occurs before method check → 401
 	req := httptest.NewRequest(http.MethodGet, "/token/openapi/tool", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, s))
 	rr := httptest.NewRecorder()
 	s.OpenAPIHandler(rr, req)
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
@@ -1149,7 +1149,7 @@ func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
 
 	// invalid JSON body
 	req = httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader("not-json"))
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, s))
 	rr = httptest.NewRecorder()
 	s.OpenAPIHandler(rr, req)
 	require.Equal(t, http.StatusBadRequest, rr.Code)
@@ -1157,7 +1157,7 @@ func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
 	// Unknown tool -> 404
 	req = httptest.NewRequest(http.MethodPost, "/openapi/unknown_tool", strings.NewReader(`{"id":1}`))
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", s))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, s))
 	rr = httptest.NewRecorder()
 	s.OpenAPIHandler(rr, req)
 	require.Equal(t, http.StatusNotFound, rr.Code)
@@ -1414,7 +1414,7 @@ func TestHandleExecuteQueryOpenAPI_MethodNotAllowed(t *testing.T) {
 	}, "test")
 
 	req := httptest.NewRequest(http.MethodPost, "/openapi/execute_query?query=SELECT%201", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1433,7 +1433,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 
 	t.Run("non_numeric_limit", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=abc", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1443,7 +1443,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 
 	t.Run("zero_limit", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=0", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1453,7 +1453,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 
 	t.Run("negative_limit", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=-1", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1479,7 +1479,7 @@ func TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit(t *testing.T) {
 	}, "test")
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=100", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1529,7 +1529,7 @@ func TestHandleDynamicToolOpenAPI_MissingRequiredParam(t *testing.T) {
 	body := strings.NewReader(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
@@ -1552,7 +1552,7 @@ func TestServeOpenAPISchema_WithTLS(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 	req.Host = "example.com"
 
 	rr := httptest.NewRecorder()
@@ -1624,7 +1624,7 @@ func TestHandleExecuteQuery_EmptyQuery(t *testing.T) {
 		dynamicTools: map[string]dynamicToolMeta{},
 	}
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
@@ -1654,7 +1654,7 @@ func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 		Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
@@ -1680,7 +1680,7 @@ func TestHandleExecuteQuery_WithQueryWithExistingLimit(t *testing.T) {
 		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
@@ -1811,7 +1811,7 @@ func TestMakeDynamicToolHandler_QueryError(t *testing.T) {
 		},
 	}
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 	result, err := handler(ctx, req)
 	require.NoError(t, err)
 	require.True(t, result.IsError)
@@ -1824,7 +1824,7 @@ func TestHandleTableResource_EmptyDatabaseOrTable(t *testing.T) {
 		dynamicTools: map[string]dynamicToolMeta{},
 	}
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 
 	t.Run("empty_database", func(t *testing.T) {
 		req := &mcp.ReadResourceRequest{
@@ -1877,7 +1877,7 @@ func TestOpenAPIHandler_InvalidJWEToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
 	req.Header.Set("x-altinity-mcp-key", "invalid-token") // Use JWE-specific header
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.OpenAPIHandler(rr, req)
@@ -1909,7 +1909,7 @@ func TestHandleDynamicToolOpenAPI_QueryError(t *testing.T) {
 	body := strings.NewReader(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
@@ -1928,7 +1928,7 @@ func TestHandleExecuteQueryOpenAPI_QueryError(t *testing.T) {
 	}, "test")
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=INVALID%20SYNTAX%20HERE", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1948,7 +1948,7 @@ func TestHandleExecuteQueryOpenAPI_NonSelectWithLimit(t *testing.T) {
 
 	// SHOW TABLES is not a SELECT query, limit should not be appended
 	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SHOW%20TABLES&limit=10", nil)
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleExecuteQueryOpenAPI(rr, req, "")
@@ -1992,7 +1992,7 @@ func TestHandleDynamicToolOpenAPI_WithOptionalParams(t *testing.T) {
 	body := strings.NewReader(`{}`)
 	req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
@@ -2029,7 +2029,7 @@ func TestMakeDynamicToolHandler_GetClientError(t *testing.T) {
 		},
 	}
 
-	ctx := context.WithValue(context.Background(), "clickhouse_jwe_server", srv)
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
 	result, err := handler(ctx, req)
 	require.NoError(t, err)
 	require.True(t, result.IsError)
@@ -2079,7 +2079,7 @@ func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 		},
 	}
 
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
+	ctx = context.WithValue(ctx, CHJWEServerKey, srv)
 	result, err := handler(ctx, req)
 	require.NoError(t, err)
 	require.False(t, result.IsError)
@@ -2350,6 +2350,24 @@ func generateOAuthToken(t *testing.T, claims map[string]interface{}) string {
 	return header + "." + payloadEncoded + "." + signature
 }
 
+// mintSelfIssuedToken creates a properly signed HS256 JWT using the broker secret
+func mintSelfIssuedToken(t *testing.T, brokerSecret string, claims map[string]interface{}) string {
+	t.Helper()
+	hashedSecret := jwe_auth.HashSHA256([]byte(brokerSecret))
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	require.NoError(t, err)
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+	object, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := object.CompactSerialize()
+	require.NoError(t, err)
+	return token
+}
+
 type testOAuthProvider struct {
 	server              *httptest.Server
 	privateKey          *rsa.PrivateKey
@@ -2541,7 +2559,7 @@ func TestOAuthExtractTokenFromCtx(t *testing.T) {
 	srv := &ClickHouseJWEServer{}
 
 	t.Run("with_token", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "oauth_token", "ctx-oauth-token")
+		ctx := context.WithValue(context.Background(), OAuthTokenKey, "ctx-oauth-token")
 		token := srv.ExtractOAuthTokenFromCtx(ctx)
 		require.Equal(t, "ctx-oauth-token", token)
 	})
@@ -2552,7 +2570,7 @@ func TestOAuthExtractTokenFromCtx(t *testing.T) {
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "oauth_token", 123)
+		ctx := context.WithValue(context.Background(), OAuthTokenKey, 123)
 		token := srv.ExtractOAuthTokenFromCtx(ctx)
 		require.Empty(t, token)
 	})
@@ -2952,6 +2970,7 @@ func TestOAuthClearClickHouseCredentials(t *testing.T) {
 
 		require.False(t, srv.Config.Server.OAuth.ClearClickHouseCredentials)
 	})
+
 }
 
 // TestOAuthAndJWECombined tests OAuth and JWE working together
@@ -2996,7 +3015,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		// Create request with only JWE token
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		jweTokenOut, oauthToken, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
@@ -3021,11 +3040,10 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:  true,
-					Mode:     "forward",
-					Issuer:   provider.server.URL,
-					JWKSURL:  provider.server.URL + "/jwks",
-					Audience: "clickhouse-api",
+					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
@@ -3035,7 +3053,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		// Create request with only OAuth token
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-oauth-token", oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
@@ -3070,7 +3088,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					Mode:                 "forward",
 					Issuer:               provider.server.URL,
 					JWKSURL:              provider.server.URL + "/jwks",
-					Audience:             "clickhouse-api",
 					ForwardToClickHouse:  true,
 					ForwardAccessToken:   true,
 					ClickHouseHeaderName: "X-ClickHouse-OAuth-Token",
@@ -3084,7 +3101,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req.Header.Set("x-oauth-token", oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
@@ -3115,7 +3132,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		_, _, _, err := srv.ValidateAuth(req)
 		require.Error(t, err)
@@ -3143,29 +3160,28 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:  true,
-					Mode:     "forward",
-					Issuer:   provider.server.URL,
-					JWKSURL:  provider.server.URL + "/jwks",
-					Audience: "clickhouse-api",
+					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		req.Header.Set("x-oauth-token", oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("x-oauth-token", "opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// Should succeed because JWE is valid
+		// Should succeed because JWE is valid (OR logic when both enabled)
 		jweTokenOut, _, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
 	})
 
 	t.Run("both_enabled_jwe_invalid_oauth_valid", func(t *testing.T) {
+		oauthToken := "opaque-access-token"
+
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
@@ -3175,23 +3191,20 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:  true,
-					Mode:     "forward",
-					Issuer:   provider.server.URL,
-					JWKSURL:  provider.server.URL + "/jwks",
-					Audience: "clickhouse-api",
+					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", "invalid-jwe-token")
 		req.Header.Set("x-oauth-token", oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// Should succeed because OAuth is valid
+		// Should succeed because OAuth is valid (OR logic when both enabled)
 		_, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.Equal(t, oauthToken, oauthTokenOut)
@@ -3226,7 +3239,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3241,12 +3254,15 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3269,11 +3285,10 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
+		// Opaque token passes through in forward mode (no validation)
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3291,16 +3306,16 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 					Mode:           "forward",
 					Issuer:         provider.server.URL,
 					JWKSURL:        provider.server.URL + "/jwks",
+					Audience:       "clickhouse-api",
 					RequiredScopes: []string{"admin"},
 				},
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
+		// Opaque token passes through in forward mode (no scope validation)
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3317,17 +3332,19 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 					Enabled: true,
 					Mode:    "forward",
 					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req.Header.Set("Authorization", "Bearer invalid-token")
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
+		// Forward mode passes through opaque tokens without validation
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
 }
@@ -3341,7 +3358,7 @@ func TestGetOAuthClaimsFromCtx(t *testing.T) {
 			Subject: "user123",
 			Email:   "user@example.com",
 		}
-		ctx := context.WithValue(context.Background(), "oauth_claims", expectedClaims)
+		ctx := context.WithValue(context.Background(), OAuthClaimsKey, expectedClaims)
 		claims := srv.GetOAuthClaimsFromCtx(ctx)
 		require.NotNil(t, claims)
 		require.Equal(t, "user123", claims.Subject)
@@ -3354,7 +3371,7 @@ func TestGetOAuthClaimsFromCtx(t *testing.T) {
 	})
 
 	t.Run("wrong_type", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "oauth_claims", "not-claims")
+		ctx := context.WithValue(context.Background(), OAuthClaimsKey, "not-claims")
 		claims := srv.GetOAuthClaimsFromCtx(ctx)
 		require.Nil(t, claims)
 	})
@@ -3493,9 +3510,9 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		oauthToken := "opaque-access-token"
 
 		// Create context with server and OAuth claims (simulating MCP middleware)
-		ctx = context.WithValue(ctx, "clickhouse_jwe_server", srv)
-		ctx = context.WithValue(ctx, "oauth_token", oauthToken)
-		ctx = context.WithValue(ctx, "oauth_claims", (*OAuthClaims)(nil))
+		ctx = context.WithValue(ctx, CHJWEServerKey, srv)
+		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
+		ctx = context.WithValue(ctx, OAuthClaimsKey, (*OAuthClaims)(nil))
 
 		// Execute MCP tool request
 		req := &mcp.CallToolRequest{
@@ -3569,6 +3586,8 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
 					Mode:                "forward",
+					Issuer:              provider.server.URL,
+					JWKSURL:             provider.server.URL + "/jwks",
 					ForwardToClickHouse: true,
 					ForwardAccessToken:  true,
 				},
@@ -3579,7 +3598,7 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req.Header.Set("x-oauth-token", oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		// Validate both
 		jweOut, oauthOut, oauthClaims, err := srv.ValidateAuth(req)
@@ -3588,8 +3607,9 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		require.Equal(t, oauthToken, oauthOut)
 		require.Nil(t, oauthClaims)
 
+		// Forward mode passes opaque token through directly
 		headers := srv.BuildClickHouseHeadersFromOAuth(oauthOut, oauthClaims)
-		require.Equal(t, "Bearer "+oauthToken, headers["Authorization"])
+		require.Equal(t, "Bearer opaque-access-token", headers["Authorization"])
 	})
 }
 
@@ -3599,35 +3619,31 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
-		// 1. Create server with OAuth
+		// 1. Create server with OAuth (forward mode, JWKS validation)
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
-					Enabled:        true,
-					Mode:           "forward",
-					Issuer:         provider.server.URL,
-					JWKSURL:        provider.server.URL + "/jwks",
-					Audience:       "clickhouse-api",
-					RequiredScopes: []string{"query:execute"},
+					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
 
-		// 2. Generate OAuth token with correct claims
+		// 2. Generate JWKS-signed token
 		oauthToken := provider.issueJWT(t, map[string]interface{}{
-			"sub":   "service-account-123",
-			"iss":   provider.server.URL,
-			"aud":   "clickhouse-api",
-			"exp":   time.Now().Add(time.Hour).Unix(),
-			"scope": "query:execute query:read",
+			"sub": "service-account-123",
+			"iss": provider.server.URL,
+			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 
 		// 3. Make OpenAPI request
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20version()%20as%20version", nil)
 		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3656,11 +3672,10 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
+		// Opaque token passes through in forward mode (no audience validation)
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
@@ -3678,16 +3693,16 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 					Mode:           "forward",
 					Issuer:         provider.server.URL,
 					JWKSURL:        provider.server.URL + "/jwks",
+					Audience:       "clickhouse-api",
 					RequiredScopes: []string{"admin"},
 				},
 			},
 		}, "test")
 
-		oauthToken := "opaque-access-token"
-
+		// Opaque token passes through in forward mode (no scope validation)
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
-		req.Header.Set("Authorization", "Bearer "+oauthToken)
-		req = req.WithContext(context.WithValue(req.Context(), "clickhouse_jwe_server", srv))
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)

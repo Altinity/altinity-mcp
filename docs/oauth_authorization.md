@@ -2,7 +2,7 @@
 
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server. It covers both:
 
-- local MCP token validation in `terminate` mode
+- local MCP token validation in `broker` mode
 - thin bearer-token forwarding to ClickHouse for `token_processors`-based authentication in `forward` mode
 
 ## Overview
@@ -164,14 +164,14 @@ server:
     mode: "forward"
 
     # Upstream OAuth/OIDC issuer URL used by the built-in browser-login facade
-    # and by terminate-mode validation
+    # and by broker-mode validation
     issuer: ""
 
-    # URL to fetch JWKS for terminate-mode validation
+    # URL to fetch JWKS for broker-mode validation
     # If empty, discovered from issuer's .well-known/openid-configuration
     jwks_url: ""
 
-    # Expected audience claim for terminate-mode validation
+    # Expected audience claim for broker-mode validation
     audience: ""
 
     # Shared secret for stateless browser-login artifacts (registration/state/code)
@@ -224,7 +224,7 @@ server:
       - "profile"
       - "email"
 
-    # Required scopes enforced by terminate mode
+    # Required scopes enforced by broker mode
     required_scopes: []
 
     # Allowed upstream IdP issuers for the identity token returned by the upstream provider
@@ -254,7 +254,7 @@ server:
 
     # Map specific token claims to ClickHouse HTTP headers.
     # In forward mode, MCP does not populate local claims, so this is useful
-    # only when terminate-mode validation is active or claims are provided by
+    # only when broker-mode validation is active or claims are provided by
     # some other trusted auth layer.
     claims_to_headers:
       sub: "X-ClickHouse-User"
@@ -265,7 +265,7 @@ server:
 
 | Option | Description |
 |--------|-------------|
-| `mode` | `forward` verifies external tokens; `terminate` issues limited self-signed MCP tokens |
+| `mode` | `forward` verifies external tokens; `broker` issues limited self-signed MCP tokens |
 | `issuer` | Upstream IdP issuer used for verification and discovery |
 | `jwks_url` | Optional JWKS override for JWT verification |
 | `audience` | Required audience in incoming tokens when present |
@@ -285,8 +285,8 @@ server:
 | `token_path` | Relative path for the token endpoint |
 | `upstream_issuer_allowlist` | Allowed issuers for upstream identity tokens returned during callback exchange |
 | `auth_code_ttl_seconds` | Lifetime of stateless broker authorization codes |
-| `access_token_ttl_seconds` | Lifetime of self-issued MCP access tokens in `terminate` mode |
-| `refresh_token_ttl_seconds` | Reserved for `terminate` mode |
+| `access_token_ttl_seconds` | Lifetime of self-issued MCP access tokens in `broker` mode |
+| `refresh_token_ttl_seconds` | Reserved for `broker` mode |
 
 ## Browser-Based MCP Login
 

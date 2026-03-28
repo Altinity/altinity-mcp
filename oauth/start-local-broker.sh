@@ -1,62 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET_HOST="${MCP_TARGET_HOST:-welcome.ru}"
-MCP_PREFIX="${MCP_PUBLIC_MCP_PREFIX:-/http}"
-OAUTH_PREFIX="${MCP_PUBLIC_OAUTH_PREFIX:-/oauth}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+load_oauth_local_config
+
+TARGET_HOST="${MCP_TARGET_HOST}"
+MCP_PREFIX="${MCP_PUBLIC_MCP_PREFIX:-/http-t}"
+OAUTH_PREFIX="${MCP_PUBLIC_OAUTH_PREFIX:-/oauth-t}"
 BIN_DIR="${BIN_DIR:-$PWD/.tmp}"
-BIN_PATH="${BIN_DIR}/altinity-mcp-oauth"
-CONFIG_PATH="${BIN_DIR}/oauth-local.yaml"
-PORT="${MCP_LOCAL_PORT:-8080}"
+BIN_PATH="${BIN_DIR}/altinity-mcp-oauth-broker"
+CONFIG_PATH="${BIN_DIR}/oauth-broker.yaml"
+PORT="${MCP_LOCAL_PORT:-18081}"
 ADDRESS="${MCP_LOCAL_ADDRESS:-0.0.0.0}"
-CLICKHOUSE_CLIENT_CONFIG="${CLICKHOUSE_CLIENT_CONFIG:-$HOME/.clickhouse-client/config.xml}"
-CLICKHOUSE_CONNECTION_NAME="${CLICKHOUSE_CONNECTION_NAME:-demo}"
 
 : "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
 : "${GOOGLE_OAUTH_CLIENT_SECRET:?set GOOGLE_OAUTH_CLIENT_SECRET}"
+: "${MCP_OAUTH_BROKER_SECRET:?set MCP_OAUTH_BROKER_SECRET}"
+
+CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-github.demo.altinity.cloud}"
+CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-9440}"
+CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-default}"
+CLICKHOUSE_USERNAME="${CLICKHOUSE_USERNAME:-demo}"
+CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-demo}"
+CLICKHOUSE_PROTOCOL="${CLICKHOUSE_PROTOCOL:-tcp}"
 
 mkdir -p "${BIN_DIR}"
-
-if [[ -z "${CLICKHOUSE_HOST:-}" ]]; then
-  if [[ ! -s "${CLICKHOUSE_CLIENT_CONFIG}" ]]; then
-    echo "Missing ClickHouse client config: ${CLICKHOUSE_CLIENT_CONFIG}" >&2
-    exit 1
-  fi
-  eval "$(
-    python3 - <<'PY'
-import shlex
-import xml.etree.ElementTree as ET
-from pathlib import Path
-import os
-
-cfg = Path(os.environ["CLICKHOUSE_CLIENT_CONFIG"])
-name = os.environ["CLICKHOUSE_CONNECTION_NAME"]
-root = ET.parse(cfg).getroot()
-section = root.find("connections_credentials")
-if section is None:
-    raise SystemExit("missing <connections_credentials>")
-target = None
-for conn in section.findall("connection"):
-    if (conn.findtext("name") or "").strip() == name:
-        target = conn
-        break
-if target is None:
-    raise SystemExit(f"missing connection named {name!r}")
-
-def emit(key, value):
-    print(f'{key}={shlex.quote((value or "").strip())}')
-
-emit("CLICKHOUSE_HOST", target.findtext("hostname"))
-emit("CLICKHOUSE_PORT", target.findtext("port") or "9440")
-emit("CLICKHOUSE_DATABASE", target.findtext("database") or "default")
-emit("CLICKHOUSE_USERNAME", target.findtext("user"))
-emit("CLICKHOUSE_PASSWORD", target.findtext("password") or "")
-secure = (target.findtext("secure") or "").strip()
-emit("CLICKHOUSE_PROTOCOL", "tcp")
-emit("CLICKHOUSE_TLS_ENABLED", "true" if secure in {"1", "true", "True"} else "false")
-PY
-  )"
-fi
 
 go build -o "${BIN_PATH}" ./cmd/altinity-mcp
 
@@ -69,7 +38,7 @@ clickhouse:
   password: "${CLICKHOUSE_PASSWORD}"
   protocol: "${CLICKHOUSE_PROTOCOL}"
   tls:
-    enabled: ${CLICKHOUSE_TLS_ENABLED:-false}
+    enabled: ${CLICKHOUSE_TLS_ENABLED:-true}
     insecure_skip_verify: ${CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
   read_only: ${CLICKHOUSE_READ_ONLY:-true}
   limit: 0
@@ -84,8 +53,10 @@ server:
     enabled: false
   oauth:
     enabled: true
-    issuer: "https://${TARGET_HOST}${OAUTH_PREFIX}"
+    mode: "broker"
+    issuer: "https://accounts.google.com"
     audience: "https://${TARGET_HOST}${MCP_PREFIX}"
+    broker_secret_key: "${MCP_OAUTH_BROKER_SECRET}"
     public_resource_url: "https://${TARGET_HOST}${MCP_PREFIX}"
     public_auth_server_url: "https://${TARGET_HOST}${OAUTH_PREFIX}"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
@@ -107,6 +78,9 @@ server:
       - "email"
     required_scopes:
       - "openid"
+    allowed_email_domains:
+      - "altinity.com"
+    require_email_verified: true
     auth_code_ttl_seconds: 300
     access_token_ttl_seconds: 3600
     refresh_token_ttl_seconds: 2592000
@@ -117,8 +91,8 @@ logging:
   level: "debug"
 EOF
 
-echo "Starting local altinity-mcp on ${ADDRESS}:${PORT}"
-echo "ClickHouse connection: ${CLICKHOUSE_CONNECTION_NAME} -> ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
+echo "Starting local altinity-mcp broker mode on ${ADDRESS}:${PORT}"
+echo "ClickHouse broker target: ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
 echo "Public MCP base: https://${TARGET_HOST}${MCP_PREFIX}"
 echo "Public OAuth base: https://${TARGET_HOST}${OAUTH_PREFIX}/"
 exec "${BIN_PATH}" --config "${CONFIG_PATH}"
