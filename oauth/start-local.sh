@@ -86,6 +86,18 @@ server:
     enabled: true
     issuer: "https://${TARGET_HOST}${OAUTH_PREFIX}"
     audience: "https://${TARGET_HOST}${MCP_PREFIX}"
+    public_resource_url: "https://${TARGET_HOST}${MCP_PREFIX}"
+    public_auth_server_url: "https://${TARGET_HOST}${OAUTH_PREFIX}"
+    protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
+    authorization_server_metadata_path: "/.well-known/oauth-authorization-server"
+    openid_configuration_path: "/.well-known/openid-configuration"
+    registration_path: "/register"
+    authorization_path: "/authorize"
+    callback_path: "/callback"
+    token_path: "/token"
+    upstream_issuer_allowlist:
+      - "accounts.google.com"
+      - "https://accounts.google.com"
     client_id: "${GOOGLE_OAUTH_CLIENT_ID}"
     client_secret: "${GOOGLE_OAUTH_CLIENT_SECRET}"
     token_url: "https://oauth2.googleapis.com/token"
@@ -95,6 +107,9 @@ server:
       - "email"
     required_scopes:
       - "openid"
+    auth_code_ttl_seconds: 300
+    access_token_ttl_seconds: 3600
+    refresh_token_ttl_seconds: 2592000
     forward_to_clickhouse: false
     forward_access_token: false
     clear_clickhouse_credentials: false

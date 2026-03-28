@@ -18,6 +18,19 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const (
+	defaultProtectedResourceMetadataPath   = "/.well-known/oauth-protected-resource"
+	defaultAuthorizationServerMetadataPath = "/.well-known/oauth-authorization-server"
+	defaultOpenIDConfigurationPath         = "/.well-known/openid-configuration"
+	defaultRegistrationPath                = "/oauth/register"
+	defaultAuthorizationPath               = "/oauth/authorize"
+	defaultCallbackPath                    = "/oauth/callback"
+	defaultTokenPath                       = "/oauth/token"
+	defaultAuthCodeTTLSeconds              = 5 * 60
+	defaultAccessTokenTTLSeconds           = 60 * 60
+	defaultRefreshTokenTTLSeconds          = 30 * 24 * 60 * 60
+)
+
 type googleIdentityClaims struct {
 	Subject string   `json:"sub"`
 	Issuer  string   `json:"iss"`
@@ -84,6 +97,69 @@ func (a *application) oauthEnabled() bool {
 	return a.GetCurrentConfig().Server.OAuth.Enabled
 }
 
+func normalizeURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+func normalizedPath(raw string, fallback string) string {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		path = fallback
+	}
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if path == "/" {
+		return path
+	}
+	return strings.TrimRight(path, "/")
+}
+
+func joinURLPath(base string, path string) string {
+	base = normalizeURL(base)
+	path = normalizedPath(path, "")
+	if path == "" || path == "/" {
+		return base
+	}
+	return base + path
+}
+
+func ttlSeconds(value int, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func containsAnyString(list []string, target string) bool {
+	for _, item := range list {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func uniquePaths(paths ...string) []string {
+	result := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = normalizedPath(path, "")
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		result = append(result, path)
+	}
+	return result
+}
+
 func (a *application) schemeAndHost(r *http.Request) string {
 	scheme := "http"
 	switch {
@@ -143,6 +219,7 @@ func pathFromConfiguredURL(raw string) string {
 }
 
 func (a *application) resourcePrefix(r *http.Request) string {
+	cfg := a.GetCurrentConfig().Server.OAuth
 	if prefix := cleanedPathPrefix(r.Header.Get("X-Forwarded-Prefix")); prefix != "" {
 		return prefix
 	}
@@ -154,10 +231,14 @@ func (a *application) resourcePrefix(r *http.Request) string {
 	); prefix != "" {
 		return prefix
 	}
-	return pathFromConfiguredURL(a.GetCurrentConfig().Server.OAuth.Audience)
+	if prefix := pathFromConfiguredURL(cfg.PublicResourceURL); prefix != "" {
+		return prefix
+	}
+	return pathFromConfiguredURL(cfg.Audience)
 }
 
 func (a *application) oauthPrefix(r *http.Request) string {
+	cfg := a.GetCurrentConfig().Server.OAuth
 	if prefix := cleanedPathPrefix(r.Header.Get("X-Forwarded-OAuth-Prefix")); prefix != "" {
 		return prefix
 	}
@@ -171,10 +252,16 @@ func (a *application) oauthPrefix(r *http.Request) string {
 	); prefix == "/oauth" {
 		return prefix
 	}
-	return pathFromConfiguredURL(a.GetCurrentConfig().Server.OAuth.Issuer)
+	if prefix := pathFromConfiguredURL(cfg.PublicAuthServerURL); prefix != "" {
+		return prefix
+	}
+	return pathFromConfiguredURL(cfg.Issuer)
 }
 
 func (a *application) resourceBaseURL(r *http.Request) string {
+	if configured := normalizeURL(a.GetCurrentConfig().Server.OAuth.PublicResourceURL); configured != "" {
+		return configured
+	}
 	return a.schemeAndHost(r) + a.resourcePrefix(r)
 }
 
@@ -183,12 +270,43 @@ func (a *application) publicBaseURL(r *http.Request) string {
 }
 
 func (a *application) oauthAuthorizationServerBaseURL(r *http.Request) string {
+	if configured := normalizeURL(a.GetCurrentConfig().Server.OAuth.PublicAuthServerURL); configured != "" {
+		return configured
+	}
 	return a.schemeAndHost(r) + a.oauthPrefix(r)
+}
+
+func (a *application) oauthProtectedResourceMetadataPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.ProtectedResourceMetadataPath, defaultProtectedResourceMetadataPath)
+}
+
+func (a *application) oauthAuthorizationServerMetadataPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationServerMetadataPath, defaultAuthorizationServerMetadataPath)
+}
+
+func (a *application) oauthOpenIDConfigurationPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.OpenIDConfigurationPath, defaultOpenIDConfigurationPath)
+}
+
+func (a *application) oauthRegistrationPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.RegistrationPath, defaultRegistrationPath)
+}
+
+func (a *application) oauthAuthorizationPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationPath, defaultAuthorizationPath)
+}
+
+func (a *application) oauthCallbackPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.CallbackPath, defaultCallbackPath)
+}
+
+func (a *application) oauthTokenPath() string {
+	return normalizedPath(a.GetCurrentConfig().Server.OAuth.TokenPath, defaultTokenPath)
 }
 
 func (a *application) oauthChallengeHeader(r *http.Request) string {
 	baseURL := a.resourceBaseURL(r)
-	challenge := fmt.Sprintf("Bearer resource_metadata=%q", baseURL+"/.well-known/oauth-protected-resource")
+	challenge := fmt.Sprintf("Bearer resource_metadata=%q", joinURLPath(baseURL, a.oauthProtectedResourceMetadataPath()))
 	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
 	if len(scopes) == 0 {
 		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
@@ -311,9 +429,9 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
 		"issuer":                                baseURL,
-		"authorization_endpoint":                baseURL + "/oauth/authorize",
-		"token_endpoint":                        baseURL + "/oauth/token",
-		"registration_endpoint":                 baseURL + "/oauth/register",
+		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
+		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
+		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
@@ -332,9 +450,9 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
 		"issuer":                                baseURL,
-		"authorization_endpoint":                baseURL + "/oauth/authorize",
-		"token_endpoint":                        baseURL + "/oauth/token",
-		"registration_endpoint":                 baseURL + "/oauth/register",
+		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
+		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
+		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
@@ -437,7 +555,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	a.oauthState.mu.Unlock()
 
 	cfg := a.GetCurrentConfig()
-	callbackURL := a.publicBaseURL(r) + "/oauth/callback"
+	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
 	upstream := url.Values{}
 	upstream.Set("client_id", cfg.Server.OAuth.ClientID)
 	upstream.Set("redirect_uri", callbackURL)
@@ -475,7 +593,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	}
 
 	cfg := a.GetCurrentConfig()
-	callbackURL := a.publicBaseURL(r) + "/oauth/callback"
+	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
@@ -507,7 +625,11 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to validate Google identity", http.StatusBadGateway)
 		return
 	}
-	if claims.Issuer != "accounts.google.com" && claims.Issuer != "https://accounts.google.com" {
+	allowedIssuers := cfg.Server.OAuth.UpstreamIssuerAllowlist
+	if len(allowedIssuers) == 0 {
+		allowedIssuers = []string{"accounts.google.com", "https://accounts.google.com"}
+	}
+	if !containsAnyString(allowedIssuers, claims.Issuer) {
 		http.Error(w, "Unexpected Google issuer", http.StatusBadGateway)
 		return
 	}
@@ -523,7 +645,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		Scope:               pending.Scope,
 		CodeChallenge:       pending.CodeChallenge,
 		CodeChallengeMethod: pending.CodeChallengeMethod,
-		ExpiresAt:           time.Now().Add(5 * time.Minute),
+		ExpiresAt:           time.Now().Add(time.Duration(ttlSeconds(cfg.Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second),
 	}
 	a.oauthState.mu.Unlock()
 
@@ -625,7 +747,7 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		"sub":   subject,
 		"iss":   issuer,
 		"aud":   audience,
-		"exp":   time.Now().Add(time.Hour).Unix(),
+		"exp":   time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)) * time.Second).Unix(),
 		"iat":   time.Now().Unix(),
 		"scope": scope,
 		"email": email,
@@ -643,15 +765,16 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		Email:     email,
 		Name:      name,
 		Scope:     scope,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.RefreshTokenTTLSeconds, defaultRefreshTokenTTLSeconds)) * time.Second),
 	}
 	a.oauthState.mu.Unlock()
 
+	accessTokenTTL := ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"access_token":  accessToken,
 		"token_type":    "Bearer",
-		"expires_in":    3600,
+		"expires_in":    accessTokenTTL,
 		"refresh_token": refreshToken,
 		"scope":         scope,
 	})
@@ -713,39 +836,53 @@ func parseGoogleIdentityToken(token string) (*googleIdentityClaims, error) {
 }
 
 func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
-	protectedResourceAliases := []string{
-		"/.well-known/oauth-protected-resource",
+	protectedResourceMetadataPath := a.oauthProtectedResourceMetadataPath()
+	protectedResourceAliases := uniquePaths(
+		protectedResourceMetadataPath,
+		defaultProtectedResourceMetadataPath,
 		"/.well-known/oauth-protected-resource/http",
 		"/http/.well-known/oauth-protected-resource",
-	}
+	)
 	for _, path := range protectedResourceAliases {
 		mux.HandleFunc(path, a.handleOAuthProtectedResource)
 	}
 
-	authMetadataAliases := []string{
-		"/.well-known/oauth-authorization-server",
+	authMetadataPath := a.oauthAuthorizationServerMetadataPath()
+	authMetadataAliases := uniquePaths(
+		authMetadataPath,
+		defaultAuthorizationServerMetadataPath,
 		"/.well-known/oauth-authorization-server/http",
 		"/.well-known/oauth-authorization-server/oauth",
 		"/http/.well-known/oauth-authorization-server",
 		"/oauth/.well-known/oauth-authorization-server",
-	}
+	)
 	for _, path := range authMetadataAliases {
 		mux.HandleFunc(path, a.handleOAuthAuthorizationServerMetadata)
 	}
 
-	openIDAliases := []string{
-		"/.well-known/openid-configuration",
+	openIDConfigurationPath := a.oauthOpenIDConfigurationPath()
+	openIDAliases := uniquePaths(
+		openIDConfigurationPath,
+		defaultOpenIDConfigurationPath,
 		"/.well-known/openid-configuration/http",
 		"/.well-known/openid-configuration/oauth",
 		"/http/.well-known/openid-configuration",
 		"/oauth/.well-known/openid-configuration",
-	}
+	)
 	for _, path := range openIDAliases {
 		mux.HandleFunc(path, a.handleOAuthOpenIDConfiguration)
 	}
 
-	mux.HandleFunc("/oauth/register", a.handleOAuthRegister)
-	mux.HandleFunc("/oauth/authorize", a.handleOAuthAuthorize)
-	mux.HandleFunc("/oauth/callback", a.handleOAuthCallback)
-	mux.HandleFunc("/oauth/token", a.handleOAuthToken)
+	for _, path := range uniquePaths(a.oauthRegistrationPath(), defaultRegistrationPath) {
+		mux.HandleFunc(path, a.handleOAuthRegister)
+	}
+	for _, path := range uniquePaths(a.oauthAuthorizationPath(), defaultAuthorizationPath) {
+		mux.HandleFunc(path, a.handleOAuthAuthorize)
+	}
+	for _, path := range uniquePaths(a.oauthCallbackPath(), defaultCallbackPath) {
+		mux.HandleFunc(path, a.handleOAuthCallback)
+	}
+	for _, path := range uniquePaths(a.oauthTokenPath(), defaultTokenPath) {
+		mux.HandleFunc(path, a.handleOAuthToken)
+	}
 }

@@ -3413,6 +3413,33 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Contains(t, rr.Body.String(), "\"client_id\"")
 		require.Contains(t, rr.Body.String(), "\"token_endpoint_auth_method\":\"none\"")
 	})
+
+	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
+		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com/http"
+		app.config.Server.OAuth.PublicAuthServerURL = "https://public.example.com/oauth"
+		app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
+		app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
+		app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
+		app.config.Server.OAuth.RegistrationPath = "/register"
+		app.config.Server.OAuth.AuthorizationPath = "/authorize"
+		app.config.Server.OAuth.CallbackPath = "/callback"
+		app.config.Server.OAuth.TokenPath = "/token"
+
+		req := httptest.NewRequest(http.MethodGet, "https://internal.example.com/auth-metadata", nil)
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorizationServerMetadata(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://public.example.com/oauth\"")
+		require.Contains(t, rr.Body.String(), "\"authorization_endpoint\":\"https://public.example.com/oauth/authorize\"")
+		require.Contains(t, rr.Body.String(), "\"registration_endpoint\":\"https://public.example.com/oauth/register\"")
+
+		req = httptest.NewRequest(http.MethodGet, "https://internal.example.com/resource-metadata", nil)
+		rr = httptest.NewRecorder()
+		app.handleOAuthProtectedResource(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/http\"")
+		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
+	})
 }
 
 func TestOAuthMCPAuthInjector(t *testing.T) {
@@ -3512,6 +3539,36 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 		require.Equalf(t, http.StatusOK, rr.Code, "expected alias %s to resolve", path)
+	}
+
+	app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
+	app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
+	app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
+	app.config.Server.OAuth.RegistrationPath = "/register"
+	app.config.Server.OAuth.AuthorizationPath = "/authorize"
+	app.config.Server.OAuth.CallbackPath = "/callback"
+	app.config.Server.OAuth.TokenPath = "/token"
+
+	mux = http.NewServeMux()
+	app.registerOAuthHTTPRoutes(mux)
+
+	for _, path := range []string{
+		"/resource-metadata",
+		"/auth-metadata",
+		"/openid",
+		"/register",
+		"/authorize",
+		"/callback",
+		"/token",
+	} {
+		method := http.MethodGet
+		if path == "/register" || path == "/token" {
+			method = http.MethodPost
+		}
+		req := httptest.NewRequest(method, "https://mcp.example.com"+path, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		require.NotEqualf(t, http.StatusNotFound, rr.Code, "expected configured path %s to resolve", path)
 	}
 }
 

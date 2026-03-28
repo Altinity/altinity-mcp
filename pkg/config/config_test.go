@@ -420,27 +420,42 @@ func TestConfigStructs(t *testing.T) {
 
 	t.Run("oauth_config", func(t *testing.T) {
 		cfg := OAuthConfig{
-			Enabled:                    true,
-			Issuer:                     "https://auth.example.com",
-			JWKSURL:                    "https://auth.example.com/.well-known/jwks.json",
-			Audience:                   "my-api",
-			ClientID:                   "client-123",
-			ClientSecret:               "secret-456",
-			TokenURL:                   "https://auth.example.com/oauth/token",
-			AuthURL:                    "https://auth.example.com/oauth/authorize",
-			Scopes:                     []string{"read", "write"},
-			RequiredScopes:             []string{"read"},
-			ForwardToClickHouse:        true,
-			ClickHouseHeaderName:       "X-Custom-Token",
-			ForwardAccessToken:         true,
-			ClearClickHouseCredentials: true,
-			ClaimsToHeaders:            map[string]string{"sub": "X-User", "email": "X-Email"},
+			Enabled:                         true,
+			Issuer:                          "https://auth.example.com",
+			JWKSURL:                         "https://auth.example.com/.well-known/jwks.json",
+			Audience:                        "my-api",
+			PublicResourceURL:               "https://public.example.com/http",
+			PublicAuthServerURL:             "https://public.example.com/oauth",
+			ClientID:                        "client-123",
+			ClientSecret:                    "secret-456",
+			TokenURL:                        "https://auth.example.com/oauth/token",
+			AuthURL:                         "https://auth.example.com/oauth/authorize",
+			Scopes:                          []string{"read", "write"},
+			RequiredScopes:                  []string{"read"},
+			ForwardToClickHouse:             true,
+			ClickHouseHeaderName:            "X-Custom-Token",
+			ForwardAccessToken:              true,
+			ClearClickHouseCredentials:      true,
+			ClaimsToHeaders:                 map[string]string{"sub": "X-User", "email": "X-Email"},
+			ProtectedResourceMetadataPath:   "/resource-metadata",
+			AuthorizationServerMetadataPath: "/auth-metadata",
+			OpenIDConfigurationPath:         "/openid",
+			RegistrationPath:                "/register",
+			AuthorizationPath:               "/authorize",
+			CallbackPath:                    "/callback",
+			TokenPath:                       "/token",
+			UpstreamIssuerAllowlist:         []string{"https://accounts.google.com"},
+			AuthCodeTTLSeconds:              120,
+			AccessTokenTTLSeconds:           600,
+			RefreshTokenTTLSeconds:          86400,
 		}
 
 		require.True(t, cfg.Enabled)
 		require.Equal(t, "https://auth.example.com", cfg.Issuer)
 		require.Equal(t, "https://auth.example.com/.well-known/jwks.json", cfg.JWKSURL)
 		require.Equal(t, "my-api", cfg.Audience)
+		require.Equal(t, "https://public.example.com/http", cfg.PublicResourceURL)
+		require.Equal(t, "https://public.example.com/oauth", cfg.PublicAuthServerURL)
 		require.Equal(t, "client-123", cfg.ClientID)
 		require.Equal(t, "secret-456", cfg.ClientSecret)
 		require.Equal(t, "https://auth.example.com/oauth/token", cfg.TokenURL)
@@ -453,6 +468,17 @@ func TestConfigStructs(t *testing.T) {
 		require.True(t, cfg.ClearClickHouseCredentials)
 		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
+		require.Equal(t, "/resource-metadata", cfg.ProtectedResourceMetadataPath)
+		require.Equal(t, "/auth-metadata", cfg.AuthorizationServerMetadataPath)
+		require.Equal(t, "/openid", cfg.OpenIDConfigurationPath)
+		require.Equal(t, "/register", cfg.RegistrationPath)
+		require.Equal(t, "/authorize", cfg.AuthorizationPath)
+		require.Equal(t, "/callback", cfg.CallbackPath)
+		require.Equal(t, "/token", cfg.TokenPath)
+		require.Equal(t, []string{"https://accounts.google.com"}, cfg.UpstreamIssuerAllowlist)
+		require.Equal(t, 120, cfg.AuthCodeTTLSeconds)
+		require.Equal(t, 600, cfg.AccessTokenTTLSeconds)
+		require.Equal(t, 86400, cfg.RefreshTokenTTLSeconds)
 	})
 }
 
@@ -479,10 +505,24 @@ server:
     issuer: "https://auth.example.com"
     jwks_url: "https://auth.example.com/.well-known/jwks.json"
     audience: "my-api"
+    public_resource_url: "https://public.example.com/http"
+    public_auth_server_url: "https://public.example.com/oauth"
     client_id: "client-123"
     client_secret: "secret-456"
     token_url: "https://auth.example.com/oauth/token"
     auth_url: "https://auth.example.com/oauth/authorize"
+    protected_resource_metadata_path: "/resource-metadata"
+    authorization_server_metadata_path: "/auth-metadata"
+    openid_configuration_path: "/openid"
+    registration_path: "/register"
+    authorization_path: "/authorize"
+    callback_path: "/callback"
+    token_path: "/token"
+    upstream_issuer_allowlist:
+      - "https://accounts.google.com"
+    auth_code_ttl_seconds: 120
+    access_token_ttl_seconds: 600
+    refresh_token_ttl_seconds: 86400
     scopes:
       - read
       - write
@@ -515,6 +555,8 @@ logging:
 		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
 		require.Equal(t, "https://auth.example.com/.well-known/jwks.json", cfg.Server.OAuth.JWKSURL)
 		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
+		require.Equal(t, "https://public.example.com/http", cfg.Server.OAuth.PublicResourceURL)
+		require.Equal(t, "https://public.example.com/oauth", cfg.Server.OAuth.PublicAuthServerURL)
 		require.Equal(t, "client-123", cfg.Server.OAuth.ClientID)
 		require.Equal(t, "secret-456", cfg.Server.OAuth.ClientSecret)
 		require.Equal(t, "https://auth.example.com/oauth/token", cfg.Server.OAuth.TokenURL)
@@ -526,6 +568,17 @@ logging:
 		require.True(t, cfg.Server.OAuth.ForwardAccessToken)
 		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
+		require.Equal(t, "/resource-metadata", cfg.Server.OAuth.ProtectedResourceMetadataPath)
+		require.Equal(t, "/auth-metadata", cfg.Server.OAuth.AuthorizationServerMetadataPath)
+		require.Equal(t, "/openid", cfg.Server.OAuth.OpenIDConfigurationPath)
+		require.Equal(t, "/register", cfg.Server.OAuth.RegistrationPath)
+		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
+		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
+		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)
+		require.Equal(t, []string{"https://accounts.google.com"}, cfg.Server.OAuth.UpstreamIssuerAllowlist)
+		require.Equal(t, 120, cfg.Server.OAuth.AuthCodeTTLSeconds)
+		require.Equal(t, 600, cfg.Server.OAuth.AccessTokenTTLSeconds)
+		require.Equal(t, 86400, cfg.Server.OAuth.RefreshTokenTTLSeconds)
 	})
 
 	t.Run("oauth_json_config", func(t *testing.T) {

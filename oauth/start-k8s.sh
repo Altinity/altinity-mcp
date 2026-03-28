@@ -6,6 +6,7 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-$HOME/.kube/aw-demo.config}"
 NAMESPACE="${NAMESPACE:-demo}"
 RELEASE_NAME="${RELEASE_NAME:-altinity-mcp-oauth}"
 JWE_KEY_FILE="${JWE_KEY_FILE:-$HOME/.mcp/$TARGET_HOST/jwe.key}"
+MCP_PREFIX="${MCP_PUBLIC_MCP_PREFIX:-/http}"
 OAUTH_PREFIX="${MCP_PUBLIC_OAUTH_PREFIX:-/oauth}"
 
 : "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
@@ -23,6 +24,8 @@ KUBECONFIG="${KUBECONFIG_PATH}" helm upgrade --install "${RELEASE_NAME}" \
   -f oauth/values.yaml \
   --set-string config.server.jwe.jwe_secret_key="$(tr -d '\n' < "${JWE_KEY_FILE}")" \
   --set-string config.server.oauth.issuer="https://${TARGET_HOST}${OAUTH_PREFIX}" \
-  --set-string config.server.oauth.audience="https://${TARGET_HOST}${OAUTH_PREFIX}" \
+  --set-string config.server.oauth.audience="https://${TARGET_HOST}${MCP_PREFIX}" \
+  --set-string config.server.oauth.public_resource_url="https://${TARGET_HOST}${MCP_PREFIX}" \
+  --set-string config.server.oauth.public_auth_server_url="https://${TARGET_HOST}${OAUTH_PREFIX}" \
   --set-string config.server.oauth.client_id="${GOOGLE_OAUTH_CLIENT_ID}" \
   --set-string config.server.oauth.client_secret="${GOOGLE_OAUTH_CLIENT_SECRET}"

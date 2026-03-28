@@ -87,6 +87,14 @@ type OAuthConfig struct {
 	// Audience is the expected audience claim in the token
 	Audience string `json:"audience" yaml:"audience" flag:"oauth-audience" desc:"Expected audience claim in OAuth token"`
 
+	// PublicResourceURL is the externally visible protected resource base URL.
+	// When empty, it is inferred from the request host/prefix or Audience path.
+	PublicResourceURL string `json:"public_resource_url" yaml:"public_resource_url" flag:"oauth-public-resource-url" desc:"Externally visible protected resource base URL"`
+
+	// PublicAuthServerURL is the externally visible authorization server base URL.
+	// When empty, it is inferred from the request host/prefix or Issuer path.
+	PublicAuthServerURL string `json:"public_auth_server_url" yaml:"public_auth_server_url" flag:"oauth-public-auth-server-url" desc:"Externally visible OAuth authorization server base URL"`
+
 	// ClientID is the OAuth client ID (used for client credentials flow or validation)
 	ClientID string `json:"client_id" yaml:"client_id" flag:"oauth-client-id" desc:"OAuth client ID"`
 
@@ -124,6 +132,39 @@ type OAuthConfig struct {
 	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
 	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
 	ClaimsToHeaders map[string]string `json:"claims_to_headers" yaml:"claims_to_headers" desc:"Map OAuth claims to ClickHouse HTTP headers"`
+
+	// ProtectedResourceMetadataPath configures the relative path for RFC 9728 protected resource metadata.
+	ProtectedResourceMetadataPath string `json:"protected_resource_metadata_path" yaml:"protected_resource_metadata_path" flag:"oauth-protected-resource-metadata-path" desc:"Relative path for OAuth protected resource metadata"`
+
+	// AuthorizationServerMetadataPath configures the relative path for authorization server metadata.
+	AuthorizationServerMetadataPath string `json:"authorization_server_metadata_path" yaml:"authorization_server_metadata_path" flag:"oauth-authorization-server-metadata-path" desc:"Relative path for OAuth authorization server metadata"`
+
+	// OpenIDConfigurationPath configures the relative path for OpenID configuration metadata.
+	OpenIDConfigurationPath string `json:"openid_configuration_path" yaml:"openid_configuration_path" flag:"oauth-openid-configuration-path" desc:"Relative path for OpenID configuration metadata"`
+
+	// RegistrationPath configures the relative path for dynamic client registration.
+	RegistrationPath string `json:"registration_path" yaml:"registration_path" flag:"oauth-registration-path" desc:"Relative path for OAuth client registration endpoint"`
+
+	// AuthorizationPath configures the relative path for the authorization endpoint.
+	AuthorizationPath string `json:"authorization_path" yaml:"authorization_path" flag:"oauth-authorization-path" desc:"Relative path for OAuth authorization endpoint"`
+
+	// CallbackPath configures the relative path for the upstream IdP callback handler.
+	CallbackPath string `json:"callback_path" yaml:"callback_path" flag:"oauth-callback-path" desc:"Relative path for OAuth upstream callback endpoint"`
+
+	// TokenPath configures the relative path for the token endpoint.
+	TokenPath string `json:"token_path" yaml:"token_path" flag:"oauth-token-path" desc:"Relative path for OAuth token endpoint"`
+
+	// UpstreamIssuerAllowlist constrains which upstream identity token issuers are accepted during callback exchange.
+	UpstreamIssuerAllowlist []string `json:"upstream_issuer_allowlist" yaml:"upstream_issuer_allowlist" flag:"oauth-upstream-issuer-allowlist" desc:"Allowed upstream identity token issuers"`
+
+	// AuthCodeTTLSeconds controls how long minted authorization codes remain valid.
+	AuthCodeTTLSeconds int `json:"auth_code_ttl_seconds" yaml:"auth_code_ttl_seconds" flag:"oauth-auth-code-ttl-seconds" desc:"Authorization code lifetime in seconds"`
+
+	// AccessTokenTTLSeconds controls how long minted access tokens remain valid.
+	AccessTokenTTLSeconds int `json:"access_token_ttl_seconds" yaml:"access_token_ttl_seconds" flag:"oauth-access-token-ttl-seconds" desc:"Access token lifetime in seconds"`
+
+	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
+	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" desc:"Refresh token lifetime in seconds"`
 }
 
 // ServerConfig defines configuration for the MCP server
