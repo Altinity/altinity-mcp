@@ -47,24 +47,56 @@ OAuth 2.0 authorization supports two modes.
 
 ### Forward mode
 
-1. An MCP client sends a bearer token to the MCP server
-2. The MCP server requires that a bearer token is present (it does **not** validate the token locally)
-3. The MCP server forwards the token to ClickHouse via HTTP headers
-4. ClickHouse validates the token using `token_processors` and authenticates the user
+1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token
+2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header
+3. The MCP server requires only that a bearer token is present (it does **not** validate the token locally)
+4. The MCP server forwards the token to ClickHouse via HTTP headers
+5. ClickHouse validates the token using `token_processors` and authenticates the user
 
 ```
-MCP Client ──Bearer token──> MCP Server ──Bearer token──> ClickHouse
-                                                          (validates via
-                                                           OIDC/JWKS)
+┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
+│  MCP   │─────>│   IdP    │      │   MCP    │      │ ClickHouse │
+│ Client │<─────│(Keycloak,│      │  Server  │      │  (Antalya) │
+│        │      │ Azure AD,│      │          │      │            │
+│        │      │ Google)  │      │          │      │            │
+│        │      └──────────┘      │          │      │            │
+│        │                        │          │      │            │
+│        │──Bearer token─────────>│          │      │            │
+│        │                        │─Bearer──>│      │            │
+│        │                        │  token   │─────>│ Validates  │
+│        │                        │          │      │ via OIDC/  │
+│        │<───────────────────────│<─────────│<─────│ JWKS       │
+│        │      query results     │          │      │            │
+└────────┘                        └──────────┘      └────────────┘
 ```
 
 ### Gating mode
 
 1. An MCP client authenticates with an Identity Provider (IdP) via browser login
-2. The MCP server validates the upstream identity, then mints its own signed access and refresh tokens
-3. The MCP server connects to ClickHouse with its statically configured credentials
+2. The MCP server validates the upstream identity (email domain, hosted domain, email verification)
+3. The MCP server mints its own signed access and refresh tokens
+4. The MCP server connects to ClickHouse with its statically configured credentials
 
 This mode works even when ClickHouse has no native OAuth support.
+
+```
+┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
+│  MCP   │─────>│   IdP    │      │   MCP    │      │ ClickHouse │
+│ Client │<─────│(Keycloak,│      │  Server  │      │            │
+│        │      │ Azure AD,│      │          │      │            │
+│        │      │ Google)  │      │          │      │            │
+│        │      └──────────┘      │          │      │            │
+│        │                        │          │      │            │
+│        │──Browser login────────>│──Verify──>│     │            │
+│        │<─────────MCP token─────│  identity │     │            │
+│        │                        │          │      │            │
+│        │──MCP token────────────>│          │      │            │
+│        │                        │─Static──>│      │            │
+│        │                        │  creds   │─────>│ Authn via  │
+│        │<───────────────────────│<─────────│<─────│ config user│
+│        │      query results     │          │      │            │
+└────────┘                        └──────────┘      └────────────┘
+```
 
 ## Requirements
 
