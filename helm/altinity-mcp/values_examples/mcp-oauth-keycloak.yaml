@@ -37,9 +37,6 @@ config:
       enabled: true
       issuer: "http://keycloak:8080/realms/myrealm"
       audience: "clickhouse-mcp"
-      forward_to_clickhouse: true
-      forward_access_token: true
-      clear_clickhouse_credentials: true
 
   logging:
     level: "info"

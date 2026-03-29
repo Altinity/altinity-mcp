@@ -903,23 +903,21 @@ func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthC
 
 // BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config
 func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, claims *OAuthClaims) map[string]string {
-	if !s.Config.Server.OAuth.ForwardToClickHouse {
+	if !s.Config.Server.OAuth.IsForwardMode() {
 		return nil
 	}
 
 	headers := make(map[string]string)
 
-	// Forward access token if configured
-	if s.Config.Server.OAuth.ForwardAccessToken {
-		headerName := s.Config.Server.OAuth.ClickHouseHeaderName
-		if headerName == "" {
-			headerName = "Authorization"
-		}
-		if headerName == "Authorization" {
-			headers[headerName] = "Bearer " + token
-		} else {
-			headers[headerName] = token
-		}
+	// Forward the access token (always in forward mode)
+	headerName := s.Config.Server.OAuth.ClickHouseHeaderName
+	if headerName == "" {
+		headerName = "Authorization"
+	}
+	if headerName == "Authorization" {
+		headers[headerName] = "Bearer " + token
+	} else {
+		headers[headerName] = token
 	}
 
 	// Map claims to headers if configured
@@ -1058,7 +1056,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	}
 
 	// Add OAuth headers if forwarding is enabled
-	if s.Config.Server.OAuth.ForwardToClickHouse && oauthToken != "" {
+	if s.Config.Server.OAuth.IsForwardMode() && oauthToken != "" {
 		oauthHeaders := s.BuildClickHouseHeadersFromOAuth(oauthToken, oauthClaims)
 		if len(oauthHeaders) > 0 {
 			if chConfig.HttpHeaders == nil {
@@ -1068,10 +1066,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 				chConfig.HttpHeaders[k] = v
 			}
 		}
-		if s.Config.Server.OAuth.ClearClickHouseCredentials {
-			chConfig.Username = ""
-			chConfig.Password = ""
-		}
+		// In forward mode, always clear static credentials — ClickHouse authenticates via the token
+		chConfig.Username = ""
+		chConfig.Password = ""
 	}
 
 	// Merge forwarded HTTP headers from context (forward_http_headers)

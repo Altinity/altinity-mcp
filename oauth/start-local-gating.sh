@@ -84,9 +84,6 @@ server:
     auth_code_ttl_seconds: 300
     access_token_ttl_seconds: 3600
     refresh_token_ttl_seconds: 2592000
-    forward_to_clickhouse: false
-    forward_access_token: false
-    clear_clickhouse_credentials: false
 logging:
   level: "debug"
 EOF

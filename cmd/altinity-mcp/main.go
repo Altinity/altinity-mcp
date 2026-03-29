@@ -237,13 +237,6 @@ func run(args []string) error {
 				Value:   "*",
 				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
 			},
-			// OAuth configuration flags
-			&cli.BoolFlag{
-				Name:    "oauth-clear-clickhouse-credentials",
-				Usage:   "Clear ClickHouse credentials when forwarding OAuth token",
-				Value:   false,
-				Sources: cli.EnvVars("OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS"),
-			},
 			&cli.StringFlag{
 				Name:    "forward-http-headers",
 				Usage:   "Comma-separated header name patterns forwarded from incoming requests to ClickHouse (supports * wildcard, e.g. X-*,X-Custom-Header)",
@@ -845,7 +838,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Test ClickHouse connection for readiness, unless credentials are per-request
 	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
-		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode() && cfg.Server.OAuth.ClearClickHouseCredentials)
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
 	if !credentialsArePerRequest {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
@@ -1137,11 +1130,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		}
 	}
 
-	// Override OAuth config with CLI flags
-	if cmd.IsSet("oauth-clear-clickhouse-credentials") {
-		cfg.Server.OAuth.ClearClickHouseCredentials = cmd.Bool("oauth-clear-clickhouse-credentials")
-	}
-
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {
 		cfg.ReloadTime = cmd.Int("config-reload-time")
 	}
@@ -1177,15 +1165,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 	oauth := cfg.Server.OAuth
 	if !oauth.Enabled {
 		return
-	}
-	if oauth.IsForwardMode() && !oauth.ForwardToClickHouse {
-		log.Warn().Msg("OAuth forward mode is enabled but forward_to_clickhouse is false — " +
-			"bearer tokens will be accepted without validation and will NOT be forwarded to ClickHouse; " +
-			"requests will run as the statically configured ClickHouse user")
-	}
-	if oauth.IsForwardMode() && oauth.ForwardToClickHouse && !oauth.ClearClickHouseCredentials {
-		log.Warn().Msg("OAuth forward mode forwards tokens to ClickHouse but clear_clickhouse_credentials is false — " +
-			"static ClickHouse username/password will be sent alongside the bearer token")
 	}
 	if oauth.IsGatingMode() && strings.TrimSpace(oauth.PublicAuthServerURL) == "" && strings.TrimSpace(oauth.Issuer) != "" {
 		log.Warn().Msg("OAuth gating mode: public_auth_server_url is not set — " +
@@ -1311,9 +1290,9 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 
 	// Test connection to ClickHouse at startup, unless credentials are dynamic:
 	// - JWE: each request carries its own ClickHouse credentials
-	// - OAuth forward + clear_credentials: no static creds, bearer token arrives per-request
+	// - OAuth forward mode: static creds are cleared; bearer token arrives per-request
 	skipStartupPing := cfg.Server.JWE.Enabled ||
-		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode() && cfg.Server.OAuth.ClearClickHouseCredentials)
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
 	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
@@ -1387,8 +1366,8 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth gating_secret_key is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
 	}
 
-	if cfg.Server.OAuth.ForwardToClickHouse && cfg.ClickHouse.Protocol != config.HTTPProtocol {
-		return fmt.Errorf("oauth token forwarding to ClickHouse requires clickhouse protocol http")
+	if cfg.Server.OAuth.IsForwardMode() && cfg.ClickHouse.Protocol != config.HTTPProtocol {
+		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
 	}
 
 	return nil

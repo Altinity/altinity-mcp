@@ -432,10 +432,7 @@ func TestConfigStructs(t *testing.T) {
 			AuthURL:                         "https://auth.example.com/oauth/authorize",
 			Scopes:                          []string{"read", "write"},
 			RequiredScopes:                  []string{"read"},
-			ForwardToClickHouse:             true,
 			ClickHouseHeaderName:            "X-Custom-Token",
-			ForwardAccessToken:              true,
-			ClearClickHouseCredentials:      true,
 			ClaimsToHeaders:                 map[string]string{"sub": "X-User", "email": "X-Email"},
 			ProtectedResourceMetadataPath:   "/resource-metadata",
 			AuthorizationServerMetadataPath: "/auth-metadata",
@@ -462,10 +459,7 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.Equal(t, []string{"read"}, cfg.RequiredScopes)
-		require.True(t, cfg.ForwardToClickHouse)
 		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
-		require.True(t, cfg.ForwardAccessToken)
-		require.True(t, cfg.ClearClickHouseCredentials)
 		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
 		require.Equal(t, "/resource-metadata", cfg.ProtectedResourceMetadataPath)
@@ -528,9 +522,7 @@ server:
       - write
     required_scopes:
       - read
-    forward_to_clickhouse: true
     clickhouse_header_name: "X-Custom-Token"
-    forward_access_token: true
     claims_to_headers:
       sub: "X-ClickHouse-User"
       email: "X-ClickHouse-Email"
@@ -563,9 +555,7 @@ logging:
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.Server.OAuth.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.Scopes)
 		require.Equal(t, []string{"read"}, cfg.Server.OAuth.RequiredScopes)
-		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
 		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
-		require.True(t, cfg.Server.OAuth.ForwardAccessToken)
 		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
 		require.Equal(t, "/resource-metadata", cfg.Server.OAuth.ProtectedResourceMetadataPath)
@@ -604,8 +594,6 @@ logging:
       "issuer": "https://auth.example.com",
       "audience": "my-api",
       "required_scopes": ["read", "write"],
-      "forward_to_clickhouse": true,
-      "forward_access_token": false,
       "claims_to_headers": {
         "sub": "X-User-ID",
         "name": "X-User-Name"
@@ -630,35 +618,8 @@ logging:
 		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
 		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.RequiredScopes)
-		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
-		require.False(t, cfg.Server.OAuth.ForwardAccessToken)
 		require.Equal(t, "X-User-ID", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-User-Name", cfg.Server.OAuth.ClaimsToHeaders["name"])
-	})
-
-	t.Run("oauth_clear_credentials_yaml", func(t *testing.T) {
-		yamlContent := `
-clickhouse:
-  host: localhost
-  port: 8123
-  database: default
-server:
-  oauth:
-    enabled: true
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
-`
-		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
-		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
-		require.NoError(t, err)
-
-		cfg, err := LoadConfigFromFile(tmpFile)
-		require.NoError(t, err)
-		require.NotNil(t, cfg)
-		require.True(t, cfg.Server.OAuth.ClearClickHouseCredentials)
-		require.True(t, cfg.Server.OAuth.ForwardToClickHouse)
-		require.True(t, cfg.Server.OAuth.ForwardAccessToken)
 	})
 
 	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {

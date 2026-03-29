@@ -266,11 +266,11 @@ Dynamic tools are automatically exposed through the OpenAPI endpoints when `serv
 1. Make the regexp more specific to match only one view
 2. Consider using a different approach or splitting into multiple rules
 
-### Dynamic tools not loading when JWE is enabled
+### Dynamic tools not loading when JWE or OAuth forward mode is enabled
 
-When JWE authentication is enabled, ClickHouse credentials are normally embedded in the per-user JWE token. However, dynamic tool discovery runs at the server level — it queries `system.tables` once at startup, before any user request arrives, so there is no JWE token in context.
+When JWE authentication is enabled, ClickHouse credentials are normally embedded in the per-user JWE token. In OAuth forward mode, static credentials are automatically cleared for user requests and each request uses the forwarded bearer token instead. However, dynamic tool discovery runs at the server level — it queries `system.tables` once at startup, before any user request arrives, so there is no per-user token in context.
 
-The server handles this by falling back to the static `clickhouse` credentials from the config file for discovery. This means **you must configure static ClickHouse credentials** (even minimal read-only ones) so the server can reach ClickHouse for view discovery:
+The server handles this by falling back to the static `clickhouse` credentials from the config file for discovery. This means **you must configure static ClickHouse credentials** (even minimal read-only ones) so the server can reach ClickHouse for view discovery at startup:
 
 ```yaml
 clickhouse:

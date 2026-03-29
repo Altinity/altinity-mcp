@@ -168,18 +168,10 @@ config:
       scopes: []
       # -- Required scopes for access (token must have all of these)
       required_scopes: []
-      # -- Forward OAuth token to ClickHouse via HTTP headers
-      forward_to_clickhouse: false
       # -- Header name for forwarding OAuth token to ClickHouse
       # Default: "Authorization" (sends as "Bearer {token}")
       # Set to a custom header name to send raw token without "Bearer " prefix
       clickhouse_header_name: ""
-      # -- Forward raw access token to ClickHouse
-      forward_access_token: false
-      # -- Clear ClickHouse username/password when forwarding OAuth token
-      # Required when ClickHouse authenticates via token_processors (JWT/OIDC)
-      # where user identity comes from the token's sub claim, not from basic auth
-      clear_clickhouse_credentials: false
       # -- Map OAuth token claims to ClickHouse HTTP headers
       # Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
       claims_to_headers: {}

@@ -231,7 +231,6 @@ func TestRoutePatterns(t *testing.T) {
 				"/{token}/openapi/list_tables",
 				"/{token}/openapi/describe_table",
 				"/{token}/openapi/execute_query",
-				"/openapi/",
 				"/openapi/list_tables",
 				"/openapi/describe_table",
 				"/openapi/execute_query",
@@ -294,21 +293,6 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
 	})
 
-	t.Run("oauth_clear_clickhouse_credentials_override", func(t *testing.T) {
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"oauth-clear-clickhouse-credentials": true,
-			},
-			setFlags: map[string]bool{
-				"oauth-clear-clickhouse-credentials": true,
-			},
-			stringMaps: make(map[string]map[string]string),
-		}
-
-		cfg := &config.Config{}
-		overrideWithCLIFlags(cfg, cmd)
-		require.True(t, cfg.Server.OAuth.ClearClickHouseCredentials)
-	})
 }
 
 // mockCommand implements CommandInterface for testing

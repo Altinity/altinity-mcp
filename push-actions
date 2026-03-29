@@ -1,0 +1,1 @@
+gh workflow run "Build Altinity MCP" --ref codex/oauth

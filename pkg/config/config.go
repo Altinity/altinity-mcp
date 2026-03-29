@@ -122,21 +122,10 @@ type OAuthConfig struct {
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" desc:"Required OAuth scopes for access"`
 
-	// ForwardToClickHouse enables forwarding OAuth token to ClickHouse via HTTP headers
-	ForwardToClickHouse bool `json:"forward_to_clickhouse" yaml:"forward_to_clickhouse" flag:"oauth-forward-to-clickhouse" desc:"Forward OAuth token to ClickHouse via HTTP headers"`
-
 	// ClickHouseHeaderName is the header name to use when forwarding OAuth token to ClickHouse
 	// Default: "Authorization" (sends as "Bearer {token}")
 	// When set to a custom header, the raw token is sent without "Bearer " prefix
 	ClickHouseHeaderName string `json:"clickhouse_header_name" yaml:"clickhouse_header_name" flag:"oauth-clickhouse-header-name" desc:"Header name for forwarding OAuth token to ClickHouse"`
-
-	// ForwardAccessToken forwards the access token itself (vs. just claims)
-	ForwardAccessToken bool `json:"forward_access_token" yaml:"forward_access_token" flag:"oauth-forward-access-token" desc:"Forward raw access token to ClickHouse"`
-
-	// ClearClickHouseCredentials clears ClickHouse username/password when forwarding OAuth token
-	// This is needed when ClickHouse authenticates via token_processors (JWT/OIDC)
-	// where the user identity comes from the token's sub claim, not from basic auth
-	ClearClickHouseCredentials bool `json:"clear_clickhouse_credentials" yaml:"clear_clickhouse_credentials" flag:"oauth-clear-clickhouse-credentials" desc:"Clear ClickHouse credentials when forwarding OAuth token"`
 
 	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
 	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
@@ -197,9 +186,6 @@ func (cfg OAuthConfig) NormalizedMode() string {
 	case "gating":
 		return "gating"
 	case "":
-		if cfg.ForwardToClickHouse {
-			return "forward"
-		}
 		return "gating"
 	default:
 		return mode

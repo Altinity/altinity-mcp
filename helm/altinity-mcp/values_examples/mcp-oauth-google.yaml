@@ -42,9 +42,6 @@ config:
         - "openid"
         - "profile"
         - "email"
-      forward_to_clickhouse: true
-      forward_access_token: true
-      clear_clickhouse_credentials: true
 
   logging:
     level: "info"

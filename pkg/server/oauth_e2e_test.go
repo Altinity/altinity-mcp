@@ -82,10 +82,8 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:                    true,
-					ForwardToClickHouse:        true,
-					ForwardAccessToken:         true,
-					ClearClickHouseCredentials: true,
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")
@@ -180,10 +178,8 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:                    true,
-					ForwardToClickHouse:        true,
-					ForwardAccessToken:         true,
-					ClearClickHouseCredentials: true,
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")

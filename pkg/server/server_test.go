@@ -2549,7 +2549,6 @@ func TestOAuthConfig(t *testing.T) {
 		require.False(t, cfg.Enabled)
 		require.Empty(t, cfg.Issuer)
 		require.Empty(t, cfg.Audience)
-		require.False(t, cfg.ForwardToClickHouse)
 	})
 
 	t.Run("oauth_config_with_values", func(t *testing.T) {
@@ -2563,9 +2562,7 @@ func TestOAuthConfig(t *testing.T) {
 			AuthURL:              "https://auth.example.com/oauth/authorize",
 			Scopes:               []string{"read", "write"},
 			RequiredScopes:       []string{"read"},
-			ForwardToClickHouse:  true,
 			ClickHouseHeaderName: "X-Custom-Token",
-			ForwardAccessToken:   true,
 			ClaimsToHeaders: map[string]string{
 				"sub":   "X-ClickHouse-User",
 				"email": "X-ClickHouse-Email",
@@ -2579,9 +2576,7 @@ func TestOAuthConfig(t *testing.T) {
 		require.Equal(t, "secret-456", cfg.ClientSecret)
 		require.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.Equal(t, []string{"read"}, cfg.RequiredScopes)
-		require.True(t, cfg.ForwardToClickHouse)
 		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
-		require.True(t, cfg.ForwardAccessToken)
 		require.Len(t, cfg.ClaimsToHeaders, 2)
 	})
 }
@@ -2875,7 +2870,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{ForwardToClickHouse: false},
+					OAuth: config.OAuthConfig{Mode: "gating"},
 				},
 			},
 		}
@@ -2889,8 +2884,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse: true,
-						ForwardAccessToken:  true,
+						Mode: "forward",
 					},
 				},
 			},
@@ -2906,8 +2900,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse:  true,
-						ForwardAccessToken:   true,
+						Mode:                 "forward",
 						ClickHouseHeaderName: "Authorization",
 					},
 				},
@@ -2924,8 +2917,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse:  true,
-						ForwardAccessToken:   true,
+						Mode:                 "forward",
 						ClickHouseHeaderName: "X-Custom-Token-Header",
 					},
 				},
@@ -2942,7 +2934,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse: true,
+						Mode: "forward",
 						ClaimsToHeaders: map[string]string{
 							"sub":   "X-ClickHouse-User",
 							"email": "X-ClickHouse-Email",
@@ -2971,7 +2963,7 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse: true,
+						Mode: "forward",
 						ClaimsToHeaders: map[string]string{
 							"custom_claim": "X-Custom-Claim",
 						},
@@ -2992,9 +2984,9 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 	})
 }
 
-// TestOAuthClearClickHouseCredentials tests credential clearing when forwarding OAuth token
+// TestOAuthClearClickHouseCredentials tests credential clearing when forwarding OAuth token in forward mode
 func TestOAuthClearClickHouseCredentials(t *testing.T) {
-	t.Run("credentials_cleared_when_enabled", func(t *testing.T) {
+	t.Run("credentials_cleared_in_forward_mode", func(t *testing.T) {
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				ClickHouse: config.ClickHouseConfig{
@@ -3006,48 +2998,17 @@ func TestOAuthClearClickHouseCredentials(t *testing.T) {
 				},
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						ForwardToClickHouse:        true,
-						ForwardAccessToken:         true,
-						ClearClickHouseCredentials: true,
+						Mode: "forward",
 					},
 				},
 			},
 		}
 
-		// GetClickHouseClientWithOAuth will fail to connect, but we can test
-		// the config building by calling BuildClickHouseHeadersFromOAuth and
-		// verifying the logic path
+		// In forward mode, BuildClickHouseHeadersFromOAuth should return headers
 		headers := srv.BuildClickHouseHeadersFromOAuth("test-token", nil)
 		require.NotNil(t, headers)
 		require.Equal(t, "Bearer test-token", headers["Authorization"])
-
-		// Verify the config field is set
-		require.True(t, srv.Config.Server.OAuth.ClearClickHouseCredentials)
 	})
-
-	t.Run("credentials_not_cleared_when_disabled", func(t *testing.T) {
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				ClickHouse: config.ClickHouseConfig{
-					Host:     "localhost",
-					Port:     8123,
-					Username: "default",
-					Password: "secret",
-					Protocol: config.HTTPProtocol,
-				},
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						ForwardToClickHouse:        true,
-						ForwardAccessToken:         true,
-						ClearClickHouseCredentials: false,
-					},
-				},
-			},
-		}
-
-		require.False(t, srv.Config.Server.OAuth.ClearClickHouseCredentials)
-	})
-
 }
 
 // TestOAuthAndJWECombined tests OAuth and JWE working together
@@ -3168,8 +3129,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					Mode:                 "forward",
 					Issuer:               provider.server.URL,
 					JWKSURL:              provider.server.URL + "/jwks",
-					ForwardToClickHouse:  true,
-					ForwardAccessToken:   true,
 					ClickHouseHeaderName: "X-ClickHouse-OAuth-Token",
 				},
 			},
@@ -3472,8 +3431,8 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
-					Enabled:             true,
-					ForwardToClickHouse: false,
+					Enabled: true,
+					Mode:    "gating",
 				},
 			},
 		}, "test")
@@ -3490,9 +3449,8 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
-					Enabled:             true,
-					ForwardToClickHouse: true,
-					ForwardAccessToken:  false, // Don't forward access token to avoid ClickHouse auth conflict
+					Enabled: true,
+					Mode:    "forward",
 					ClaimsToHeaders: map[string]string{
 						"sub": "X-ClickHouse-Quota-Key", // Use a header that ClickHouse accepts
 					},
@@ -3535,8 +3493,6 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:              true,
-					ForwardToClickHouse:  true,
-					ForwardAccessToken:   true,
 					ClickHouseHeaderName: "X-ClickHouse-OAuth-Token",
 				},
 			},
@@ -3776,10 +3732,8 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
-					Enabled:             true,
-					Mode:                "forward",
-					ForwardToClickHouse: true,
-					ForwardAccessToken:  true,
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test")
@@ -3821,8 +3775,6 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 					Mode:                "forward",
 					Issuer:              provider.server.URL,
 					JWKSURL:             provider.server.URL + "/jwks",
-					ForwardToClickHouse: true,
-					ForwardAccessToken:  true,
 				},
 			},
 		}, "test")

@@ -366,9 +366,6 @@ server:
     audience: "https://PUBLIC_HOST.example.com/http-t"
     allowed_email_domains: ["altinity.com"]
     require_email_verified: true
-    forward_to_clickhouse: false
-    forward_access_token: false
-    clear_clickhouse_credentials: false
 ```
 
 ## Notes

@@ -47,10 +47,9 @@ server:
     client_id: "<YOUR_CLIENT_ID>"
     client_secret: "<YOUR_CLIENT_SECRET>"
     scopes: ["openid", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
+
+In forward mode, the bearer token is automatically forwarded to ClickHouse and static credentials are cleared. No additional flags needed.
 
 
 ### Gating mode
@@ -209,11 +208,6 @@ server:
     access_token_ttl_seconds: 3600    # 1 hour
     refresh_token_ttl_seconds: 2592000 # 30 days (gating mode only)
 
-    # Forward bearer token to ClickHouse via HTTP headers (forward mode)
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
-
     # Header name for forwarding. Default "Authorization" sends "Bearer {token}".
     # Set to a custom name to send the raw token without "Bearer " prefix.
     clickhouse_header_name: ""
@@ -244,22 +238,9 @@ server:
 | `mode` | `forward` passes tokens to ClickHouse for validation; `gating` validates upstream identity and mints local tokens |
 | `gating_secret_key` | Symmetric secret for all stateless OAuth artifacts. **Required** whenever OAuth is enabled |
 | `issuer` | Upstream IdP issuer URL for OIDC discovery and token validation |
-| `forward_to_clickhouse` | Forward the bearer token to ClickHouse via HTTP headers |
-| `forward_access_token` | Send the raw access token (required for ClickHouse `token_processors`) |
-| `clear_clickhouse_credentials` | Remove static username/password when forwarding. **Required** for `token_processors` |
 | `public_resource_url` | Externally visible MCP endpoint URL. **Required** behind a reverse proxy |
 | `public_auth_server_url` | Externally visible OAuth authorization server URL. **Required** behind a reverse proxy |
 | `refresh_token_ttl_seconds` | Lifetime of stateless refresh tokens in gating mode (default 30 days) |
-
-## Command Line Options
-
-```
---oauth-clear-clickhouse-credentials    Clear ClickHouse credentials when forwarding OAuth token
-```
-
-Environment variable: `OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS=true`
-
-All other OAuth options are configured via the YAML config file.
 
 ## Frontend / Reverse Proxy Requirements
 
@@ -326,10 +307,9 @@ server:
     client_id: "YOUR_GOOGLE_WEB_CLIENT.apps.googleusercontent.com"
     client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
     scopes: ["openid", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
+
+In forward mode, the bearer token is automatically forwarded to ClickHouse and static credentials are cleared. No additional flags needed.
 
 ## ClickHouse Configuration
 
@@ -447,9 +427,6 @@ server:
     client_id: "clickhouse-mcp"
     client_secret: "<KEYCLOAK_CLIENT_SECRET>"
     scopes: ["openid", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 4. ClickHouse Configuration
@@ -509,9 +486,6 @@ server:
     token_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token"
     auth_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/authorize"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 6. ClickHouse Configuration
@@ -558,9 +532,6 @@ server:
     token_url: "https://oauth2.googleapis.com/token"
     auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 3. ClickHouse Configuration
@@ -626,9 +597,6 @@ server:
     token_url: "https://<DOMAIN>.auth.<REGION>.amazoncognito.com/oauth2/token"
     auth_url: "https://<DOMAIN>.auth.<REGION>.amazoncognito.com/oauth2/authorize"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 5. ClickHouse Configuration
@@ -694,14 +662,6 @@ Create the roles referenced in `common_roles` and grant them the necessary permi
 CREATE ROLE OR REPLACE default_role;
 GRANT SELECT ON *.* TO default_role;
 ```
-
-### Token forwarding works but ClickHouse rejects the user
-
-Ensure `clear_clickhouse_credentials: true` is set. When ClickHouse receives both a username/password (basic auth) and a Bearer token, the basic auth may take precedence and fail.
-
-### Startup warning: "forward mode is enabled but forward_to_clickhouse is false"
-
-Forward mode without token forwarding means tokens are accepted by presence only but not sent to ClickHouse. Requests run as the statically configured ClickHouse user. This is almost certainly a misconfiguration. Either enable `forward_to_clickhouse: true` or switch to gating mode.
 
 ## Automated ClickHouse OAuth E2E Test
 
