@@ -1292,14 +1292,19 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		return nil
 	}
 
-	// Check if we have a valid client/token to proceed
+	// Get ClickHouse client for view discovery.
+	// Try with the token from context first; if JWE is enabled but no token is present,
+	// fall back to the static config (e.g. open ClickHouse used for tool discovery).
 	token := s.ExtractTokenFromCtx(ctx)
-	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
-		// If we can't get a client (e.g. missing token when JWE enabled), we can't register dynamic tools yet
-		// Return error so we retry later
-		return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
+			// No per-user token available; use static ClickHouse config for discovery.
+			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
+		}
+		if err != nil {
+			return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		}
 	}
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {

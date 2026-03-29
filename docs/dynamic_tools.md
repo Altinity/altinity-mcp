@@ -266,6 +266,33 @@ Dynamic tools are automatically exposed through the OpenAPI endpoints when `serv
 1. Make the regexp more specific to match only one view
 2. Consider using a different approach or splitting into multiple rules
 
+### Dynamic tools not loading when JWE is enabled
+
+When JWE authentication is enabled, ClickHouse credentials are normally embedded in the per-user JWE token. However, dynamic tool discovery runs at the server level — it queries `system.tables` once at startup, before any user request arrives, so there is no JWE token in context.
+
+The server handles this by falling back to the static `clickhouse` credentials from the config file for discovery. This means **you must configure static ClickHouse credentials** (even minimal read-only ones) so the server can reach ClickHouse for view discovery:
+
+```yaml
+clickhouse:
+  host: my-clickhouse.internal
+  port: 8123
+  username: "mcp_discovery"   # needs SELECT on system.tables only
+  password: "secret"
+
+server:
+  jwe:
+    enabled: true
+    jwe_secret_key: "..."
+  dynamic_tools:
+    - regexp: "mydb\\..*"
+```
+
+Without these credentials the server logs:
+```
+WRN Failed to ensure dynamic tools error="dynamic_tools: failed to get ClickHouse client: missing JWE token"
+```
+and retries on every request until credentials are provided.
+
 ### Parameters not detected
 
 1. Ensure parameters are defined using the correct syntax: `{param_name: Type}`
