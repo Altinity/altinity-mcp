@@ -4206,3 +4206,268 @@ func TestOAuthStateStoreSizeCap(t *testing.T) {
 		require.True(t, ok)
 	})
 }
+
+// newBrokerModeTestApp creates an application configured for broker mode OAuth.
+func newBrokerModeTestApp(provider *testForwardModeOIDCProvider) *application {
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "broker",
+				Issuer:                 provider.server.URL,
+				JWKSURL:                provider.server.URL + "/jwks",
+				AuthURL:                provider.server.URL + "/authorize",
+				TokenURL:               provider.server.URL + "/token",
+				UserInfoURL:            provider.server.URL + "/userinfo",
+				ClientID:               "upstream-client-id",
+				ClientSecret:           "upstream-client-secret",
+				Scopes:                 []string{"openid", "email"},
+				BrokerSecretKey:        "test-broker-secret-32-byte-key!!",
+				AccessTokenTTLSeconds:  300,
+				RefreshTokenTTLSeconds: 86400,
+			},
+		},
+	}
+	return &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+}
+
+// doBrokerAuthCodeFlow runs the full authorize→callback→token exchange and
+// returns the parsed token response.
+func doBrokerAuthCodeFlow(t *testing.T, app *application, provider *testForwardModeOIDCProvider, redirectURI, codeVerifier string) map[string]interface{} {
+	t.Helper()
+
+	clientID := registerOAuthBrowserClient(t, app, redirectURI)
+	state := startOAuthBrowserLogin(t, app, clientID, redirectURI, "s", codeVerifier)
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+	callbackRR := httptest.NewRecorder()
+	app.handleOAuthCallback(callbackRR, callbackReq)
+	require.Equal(t, http.StatusFound, callbackRR.Code)
+
+	loc, err := url.Parse(callbackRR.Header().Get("Location"))
+	require.NoError(t, err)
+
+	tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
+	require.Equal(t, http.StatusOK, tokenRR.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &resp))
+	resp["_client_id"] = clientID // stash for refresh tests
+	return resp
+}
+
+func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken string) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", clientID)
+	form.Set("refresh_token", refreshToken)
+
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	app.handleOAuthToken(rr, req)
+	return rr
+}
+
+func TestOAuthRefreshTokenBrokerMode(t *testing.T) {
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app := newBrokerModeTestApp(provider)
+	resp := doBrokerAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+
+	t.Run("auth_code_response_includes_refresh_token", func(t *testing.T) {
+		require.NotEmpty(t, resp["access_token"])
+		require.NotEmpty(t, resp["refresh_token"], "broker mode should return a refresh_token")
+		require.Equal(t, "Bearer", resp["token_type"])
+		require.Greater(t, resp["expires_in"].(float64), float64(0))
+	})
+
+	t.Run("refresh_grants_new_tokens", func(t *testing.T) {
+		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var refreshResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &refreshResp))
+		require.NotEmpty(t, refreshResp["access_token"])
+		require.NotEmpty(t, refreshResp["refresh_token"], "refresh response should include rotated refresh_token")
+		require.Equal(t, "Bearer", refreshResp["token_type"])
+		require.Greater(t, refreshResp["expires_in"].(float64), float64(0))
+
+		// Refresh token is JWE (random IV) so always differs; access token is
+		// deterministic HS256 JWT so may match within the same second — only
+		// check the refresh token is rotated.
+		require.NotEqual(t, resp["refresh_token"], refreshResp["refresh_token"])
+	})
+
+	t.Run("chained_refresh_works", func(t *testing.T) {
+		// First refresh
+		rr1 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusOK, rr1.Code)
+		var resp1 map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr1.Body.Bytes(), &resp1))
+
+		// Second refresh using rotated token
+		rr2 := exchangeRefreshToken(t, app, clientID, resp1["refresh_token"].(string))
+		require.Equal(t, http.StatusOK, rr2.Code)
+		var resp2 map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &resp2))
+		require.NotEmpty(t, resp2["access_token"])
+		require.NotEmpty(t, resp2["refresh_token"])
+	})
+}
+
+func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
+	const redirectURI = "http://127.0.0.1:3334/callback"
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app := newBrokerModeTestApp(provider)
+	resp := doBrokerAuthCodeFlow(t, app, provider, redirectURI, "verifier1")
+	clientID := resp["_client_id"].(string)
+
+	t.Run("wrong_client_id", func(t *testing.T) {
+		otherClientID := registerOAuthBrowserClient(t, app, redirectURI)
+		rr := exchangeRefreshToken(t, app, otherClientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Contains(t, rr.Body.String(), "not issued to this client")
+	})
+
+	t.Run("malformed_refresh_token", func(t *testing.T) {
+		rr := exchangeRefreshToken(t, app, clientID, "garbage-token")
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Contains(t, rr.Body.String(), "invalid refresh token")
+	})
+
+	t.Run("missing_refresh_token", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("grant_type", "refresh_token")
+		form.Set("client_id", clientID)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		app.handleOAuthToken(rr, req)
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Contains(t, rr.Body.String(), "missing refresh token")
+	})
+
+	t.Run("forward_mode_rejects_refresh", func(t *testing.T) {
+		fwdApp := newForwardModeBrowserLoginTestApp(provider)
+		fwdClientID := registerOAuthBrowserClient(t, fwdApp, redirectURI)
+		rr := exchangeRefreshToken(t, fwdApp, fwdClientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Contains(t, rr.Body.String(), "not supported in forward mode")
+	})
+}
+
+func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+		clientState  = "cs"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app := newForwardModeBrowserLoginTestApp(provider)
+	clientID := registerOAuthBrowserClient(t, app, redirectURI)
+	state := startOAuthBrowserLogin(t, app, clientID, redirectURI, clientState, codeVerifier)
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+	callbackRR := httptest.NewRecorder()
+	app.handleOAuthCallback(callbackRR, callbackReq)
+	require.Equal(t, http.StatusFound, callbackRR.Code)
+
+	loc, err := url.Parse(callbackRR.Header().Get("Location"))
+	require.NoError(t, err)
+
+	tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
+	require.Equal(t, http.StatusOK, tokenRR.Code)
+
+	var tokenResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
+	_, hasRefresh := tokenResp["refresh_token"]
+	require.False(t, hasRefresh, "forward mode should NOT include refresh_token")
+}
+
+func TestOAuthMetadataAdvertisesRefreshToken(t *testing.T) {
+	provider := newTestForwardModeOIDCProvider(t, nil, nil)
+	app := newBrokerModeTestApp(provider)
+
+	for _, path := range []string{
+		"/.well-known/oauth-authorization-server",
+		"/.well-known/openid-configuration",
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com"+path, nil)
+			rr := httptest.NewRecorder()
+			if strings.Contains(path, "openid") {
+				app.handleOAuthOpenIDConfiguration(rr, req)
+			} else {
+				app.handleOAuthAuthorizationServerMetadata(rr, req)
+			}
+			require.Equal(t, http.StatusOK, rr.Code)
+
+			var meta map[string]interface{}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &meta))
+			grants, ok := meta["grant_types_supported"].([]interface{})
+			require.True(t, ok)
+			var grantStrings []string
+			for _, g := range grants {
+				grantStrings = append(grantStrings, g.(string))
+			}
+			require.Contains(t, grantStrings, "refresh_token")
+		})
+	}
+}

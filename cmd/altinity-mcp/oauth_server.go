@@ -694,7 +694,7 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
@@ -715,7 +715,7 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
@@ -1008,6 +1008,80 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
 
+// brokerIdentity holds the identity fields needed to mint broker-mode tokens.
+type brokerIdentity struct {
+	ClientID      string
+	Subject       string
+	Email         string
+	Name          string
+	HostedDomain  string
+	EmailVerified bool
+	Scope         string
+}
+
+// mintBrokerTokenResponse mints an access token and a stateless refresh token
+// for broker mode, then writes the JSON response.
+func (a *application) mintBrokerTokenResponse(w http.ResponseWriter, r *http.Request, secret []byte, id brokerIdentity) {
+	cfg := a.GetCurrentConfig()
+	issuer := strings.TrimSuffix(a.oauthAuthorizationServerBaseURL(r), "/")
+	audience := strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
+	if audience == "" {
+		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")
+	}
+	scope := id.Scope
+	if scope == "" {
+		scope = strings.Join(cfg.Server.OAuth.Scopes, " ")
+	}
+
+	now := time.Now()
+	accessToken, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
+		"sub":            id.Subject,
+		"iss":            issuer,
+		"aud":            audience,
+		"exp":            now.Add(time.Duration(ttlSeconds(cfg.Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)) * time.Second).Unix(),
+		"iat":            now.Unix(),
+		"scope":          scope,
+		"email":          id.Email,
+		"name":           id.Name,
+		"hd":             id.HostedDomain,
+		"email_verified": id.EmailVerified,
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to mint self-issued access token")
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+
+	refreshToken, err := encodeBrokerArtifact(secret, map[string]interface{}{
+		"sub":            id.Subject,
+		"iss":            issuer,
+		"aud":            audience,
+		"exp":            now.Add(time.Duration(ttlSeconds(cfg.Server.OAuth.RefreshTokenTTLSeconds, defaultRefreshTokenTTLSeconds)) * time.Second).Unix(),
+		"iat":            now.Unix(),
+		"scope":          scope,
+		"email":          id.Email,
+		"name":           id.Name,
+		"hd":             id.HostedDomain,
+		"email_verified": id.EmailVerified,
+		"client_id":      id.ClientID,
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to mint refresh token")
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+
+	accessTokenTTL := ttlSeconds(cfg.Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    accessTokenTTL,
+		"scope":         scope,
+	})
+}
+
 func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if !a.oauthEnabled() {
 		http.NotFound(w, r)
@@ -1021,10 +1095,18 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid token request")
 		return
 	}
-	if r.Form.Get("grant_type") != "authorization_code" {
+
+	switch r.Form.Get("grant_type") {
+	case "authorization_code":
+		a.handleOAuthTokenAuthCode(w, r)
+	case "refresh_token":
+		a.handleOAuthTokenRefresh(w, r)
+	default:
 		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant type")
-		return
 	}
+}
+
+func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 	secret, err := a.mustBrokerSecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
@@ -1094,40 +1176,79 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issuer := strings.TrimSuffix(a.oauthAuthorizationServerBaseURL(r), "/")
-	audience := strings.TrimSuffix(a.GetCurrentConfig().Server.OAuth.Audience, "/")
-	if audience == "" {
-		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")
-	}
-	scope := issued.Scope
-	if scope == "" {
-		scope = strings.Join(a.GetCurrentConfig().Server.OAuth.Scopes, " ")
-	}
-	accessToken, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
-		"sub":            issued.Subject,
-		"iss":            issuer,
-		"aud":            audience,
-		"exp":            time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)) * time.Second).Unix(),
-		"iat":            time.Now().Unix(),
-		"scope":          scope,
-		"email":          issued.Email,
-		"name":           issued.Name,
-		"hd":             issued.HostedDomain,
-		"email_verified": issued.EmailVerified,
+	a.mintBrokerTokenResponse(w, r, secret, brokerIdentity{
+		ClientID:      issued.ClientID,
+		Subject:       issued.Subject,
+		Email:         issued.Email,
+		Name:          issued.Name,
+		HostedDomain:  issued.HostedDomain,
+		EmailVerified: issued.EmailVerified,
+		Scope:         issued.Scope,
 	})
+}
+
+func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
+	if a.oauthForwardMode() {
+		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "refresh tokens are not supported in forward mode")
+		return
+	}
+	secret, err := a.mustBrokerSecret()
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to mint self-issued access token")
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
 
-	accessTokenTTL := ttlSeconds(a.GetCurrentConfig().Server.OAuth.AccessTokenTTLSeconds, defaultAccessTokenTTLSeconds)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"access_token": accessToken,
-		"token_type":   "Bearer",
-		"expires_in":   accessTokenTTL,
-		"scope":        scope,
+	// Validate client_id
+	clientID := r.Form.Get("client_id")
+	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	if err != nil {
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	client, err := parseStatelessRegisteredClient(clientClaims)
+	if err != nil || time.Now().Unix() > client.ExpiresAt {
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+
+	// Decrypt and validate refresh token
+	refreshTokenStr := r.Form.Get("refresh_token")
+	if refreshTokenStr == "" {
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "missing refresh token")
+		return
+	}
+	claims, err := decodeBrokerArtifact(secret, refreshTokenStr)
+	if err != nil {
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
+		return
+	}
+
+	// Verify client_id in refresh token matches the requesting client
+	tokenClientID, _ := claims["client_id"].(string)
+	if tokenClientID != clientID {
+		log.Debug().
+			Str("token_client_id", tokenClientID).
+			Str("request_client_id", clientID).
+			Msg("OAuth refresh rejected: client_id mismatch")
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token was not issued to this client")
+		return
+	}
+
+	sub, _ := claims["sub"].(string)
+	email, _ := claims["email"].(string)
+	name, _ := claims["name"].(string)
+	hd, _ := claims["hd"].(string)
+	emailVerified, _ := claims["email_verified"].(bool)
+	scope, _ := claims["scope"].(string)
+
+	a.mintBrokerTokenResponse(w, r, secret, brokerIdentity{
+		ClientID:      clientID,
+		Subject:       sub,
+		Email:         email,
+		Name:          name,
+		HostedDomain:  hd,
+		EmailVerified: emailVerified,
+		Scope:         scope,
 	})
 }
 
