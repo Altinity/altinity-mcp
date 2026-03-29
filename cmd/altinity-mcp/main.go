@@ -249,6 +249,12 @@ func run(args []string) error {
 				Value:   "",
 				Sources: cli.EnvVars("HEADER_TO_SETTINGS"),
 			},
+			&cli.StringFlag{
+				Name:    "tool-input-settings",
+				Usage:   "Comma-separated list of ClickHouse setting names allowed in tool arguments (e.g. custom_tenant_id,custom_org_id)",
+				Value:   "",
+				Sources: cli.EnvVars("TOOL_INPUT_SETTINGS"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -1127,6 +1133,27 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	if len(cfg.Server.HeaderToSettings) > 0 {
 		if err := altinitymcp.ValidateHeaderToSettings(cfg.Server.HeaderToSettings); err != nil {
 			log.Fatal().Err(err).Msg("invalid header_to_settings configuration")
+		}
+	}
+
+	// Override tool-input-settings with CLI flags
+	if cmd.IsSet("tool-input-settings") {
+		raw := cmd.String("tool-input-settings")
+		if raw != "" {
+			settings := strings.Split(raw, ",")
+			for i := range settings {
+				settings[i] = strings.TrimSpace(settings[i])
+			}
+			cfg.Server.ToolInputSettings = settings
+		} else {
+			cfg.Server.ToolInputSettings = nil
+		}
+	}
+
+	// Validate tool_input_settings at startup
+	if len(cfg.Server.ToolInputSettings) > 0 {
+		if err := altinitymcp.ValidateToolInputSettings(cfg.Server.ToolInputSettings); err != nil {
+			log.Fatal().Err(err).Msg("invalid tool_input_settings configuration")
 		}
 	}
 

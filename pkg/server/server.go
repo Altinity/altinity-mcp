@@ -1081,6 +1081,11 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		chConfig = mergeExtraSettings(chConfig, extraSettings)
 	}
 
+	// Merge tool-input settings from context (highest priority, overrides header_to_settings)
+	if toolSettings := ToolInputSettingsFromContext(ctx); len(toolSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, toolSettings)
+	}
+
 	// Create client
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
@@ -1094,27 +1099,33 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
-// RegisterTools adds the ClickHouse tools to the MCP server
+// RegisterTools adds the ClickHouse tools to the MCP server.
+// When cfg.Server.ToolInputSettings is non-empty, a "settings" property is
+// added to every query-executing tool's schema.
 func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
-	// Execute Query Tool - InputSchema must be type "object" per MCP spec
+	properties := map[string]any{
+		"query": map[string]any{
+			"type":        "string",
+			"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+		},
+		"limit": map[string]any{
+			"type":        "number",
+			"description": "Maximum number of rows to return (default: 100000)",
+		},
+	}
+	if settingsSchema := buildToolInputSettingsSchema(cfg.Server.ToolInputSettings); settingsSchema != nil {
+		properties["settings"] = settingsSchema
+	}
+
 	executeQueryTool := &mcp.Tool{
 		Name:        "execute_query",
 		Title:       "Execute SQL Query",
 		Description: "Executes a SQL query against ClickHouse and returns the results",
 		Annotations: makeExecuteQueryAnnotations(cfg.ClickHouse.ReadOnly),
 		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
-				},
-				"limit": map[string]any{
-					"type":        "number",
-					"description": "Maximum number of rows to return (default: 100000)",
-				},
-			},
-			"required": []string{"query"},
+			"type":       "object",
+			"properties": properties,
+			"required":   []string{"query"},
 		},
 	}
 
@@ -1402,6 +1413,9 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 			}
 			props[p.Name] = prop
 		}
+		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
+			props["settings"] = settingsSchema
+		}
 
 		tool := &mcp.Tool{
 			Name:        toolName,
@@ -1442,6 +1456,19 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		if chJweServer == nil {
 			return nil, fmt.Errorf("can't get JWEServer from context")
 		}
+
+		// Get arguments from request
+		arguments := getArgumentsMap(req)
+
+		// Extract tool-input settings if configured
+		if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
+			if settings, settingsErr := extractToolInputSettings(arguments, chJweServer.Config.Server.ToolInputSettings); settingsErr != nil {
+				return NewToolResultError(fmt.Sprintf("Invalid settings: %v", settingsErr)), nil
+			} else if settings != nil {
+				ctx = ContextWithToolInputSettings(ctx, settings)
+			}
+		}
+
 		// Get ClickHouse client (handles both JWE and OAuth from context)
 		chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 		if err != nil {
@@ -1453,9 +1480,6 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 				log.Error().Err(closeErr).Str("tool", meta.ToolName).Msg("dynamic_tools: close client failed")
 			}
 		}()
-
-		// Get arguments from request
-		arguments := getArgumentsMap(req)
 
 		// build param list
 		args := make([]string, 0, len(meta.Params))
@@ -1785,6 +1809,15 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
+	// Extract tool-input settings if configured
+	if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
+		if settings, settingsErr := extractToolInputSettings(arguments, chJweServer.Config.Server.ToolInputSettings); settingsErr != nil {
+			return NewToolResultError(fmt.Sprintf("Invalid settings: %v", settingsErr)), nil
+		} else if settings != nil {
+			ctx = ContextWithToolInputSettings(ctx, settings)
+		}
+	}
+
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -1988,6 +2021,15 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				"schema":      map[string]interface{}{"type": "integer"},
 			},
 		)
+		for _, setting := range s.Config.Server.ToolInputSettings {
+			parameters = append(parameters, map[string]interface{}{
+				"name":        setting,
+				"in":          "query",
+				"required":    false,
+				"description": fmt.Sprintf("ClickHouse setting: %s", setting),
+				"schema":      map[string]interface{}{"type": "string"},
+			})
+		}
 
 		paths[prefix+"/openapi/execute_query"] = map[string]interface{}{
 			"get": map[string]interface{}{
@@ -2017,7 +2059,6 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	for _, prefix := range s.openAPIPathPrefixes() {
 		for toolName, meta := range s.dynamicTools {
 			path := prefix + "/openapi/" + toolName
-			// request body schema
 			props := map[string]interface{}{}
 			required := []string{}
 			for _, p := range meta.Params {
@@ -2029,6 +2070,9 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				if p.Required {
 					required = append(required, p.Name)
 				}
+			}
+			if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
+				props["settings"] = settingsSchema
 			}
 			paths[path] = map[string]interface{}{
 				"post": map[string]interface{}{
@@ -2105,6 +2149,19 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 
 	ctx := r.Context()
 
+	// Extract tool input settings from query parameters
+	if len(s.Config.Server.ToolInputSettings) > 0 {
+		toolSettings := make(map[string]string)
+		for _, name := range s.Config.Server.ToolInputSettings {
+			if val := r.URL.Query().Get(name); val != "" {
+				toolSettings[name] = val
+			}
+		}
+		if len(toolSettings) > 0 {
+			ctx = ContextWithToolInputSettings(ctx, toolSettings)
+		}
+	}
+
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -2143,6 +2200,17 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 	}
 
 	ctx := r.Context()
+
+	// Extract tool input settings from request body
+	if len(s.Config.Server.ToolInputSettings) > 0 {
+		if settings, settingsErr := extractToolInputSettings(body, s.Config.Server.ToolInputSettings); settingsErr != nil {
+			http.Error(w, fmt.Sprintf("Invalid settings: %v", settingsErr), http.StatusBadRequest)
+			return
+		} else if settings != nil {
+			ctx = ContextWithToolInputSettings(ctx, settings)
+		}
+	}
+
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -2441,6 +2509,118 @@ func mergeExtraSettings(cfg config.ClickHouseConfig, settings map[string]string)
 	}
 	cfg.ExtraSettings = merged
 	return cfg
+}
+
+// --- tool_input_settings: allow tool callers to pass ClickHouse settings via arguments ---
+
+const toolInputSettingsKey contextKey = "tool_input_settings"
+
+// ValidateToolInputSettings checks the allowlist at startup and returns an error
+// if any entry targets a blocked ClickHouse setting. Logs a warning when a
+// setting does not start with "custom_".
+func ValidateToolInputSettings(settings []string) error {
+	warnings, err := validateToolInputSettings(settings)
+	for _, w := range warnings {
+		log.Warn().Msg(w)
+	}
+	return err
+}
+
+// validateToolInputSettings is the testable core: returns (warnings, error).
+func validateToolInputSettings(settings []string) (warnings []string, err error) {
+	seen := make(map[string]bool, len(settings))
+	for _, setting := range settings {
+		lower := strings.ToLower(setting)
+		if blockedSettings[lower] {
+			return nil, fmt.Errorf("tool_input_settings: setting %q is blocked", setting)
+		}
+		if seen[lower] {
+			return nil, fmt.Errorf("tool_input_settings: duplicate setting %q", setting)
+		}
+		seen[lower] = true
+		if !strings.HasPrefix(lower, "custom_") {
+			warnings = append(warnings, fmt.Sprintf(
+				"tool_input_settings: setting %q does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				setting,
+			))
+		}
+	}
+	return warnings, nil
+}
+
+// buildToolInputSettingsSchema returns the JSON Schema fragment for the
+// "settings" tool parameter, or nil when no settings are configured.
+func buildToolInputSettingsSchema(settings []string) map[string]any {
+	if len(settings) == 0 {
+		return nil
+	}
+	props := make(map[string]any, len(settings))
+	for _, s := range settings {
+		props[s] = map[string]any{"type": "string"}
+	}
+	return map[string]any{
+		"type":                 "object",
+		"description":         fmt.Sprintf("Optional ClickHouse settings to apply to this query. Allowed: %s", strings.Join(settings, ", ")),
+		"properties":          props,
+		"additionalProperties": false,
+	}
+}
+
+// ContextWithToolInputSettings stores per-request ClickHouse settings
+// extracted from MCP tool arguments into context.
+func ContextWithToolInputSettings(ctx context.Context, settings map[string]string) context.Context {
+	return context.WithValue(ctx, toolInputSettingsKey, settings)
+}
+
+// ToolInputSettingsFromContext retrieves per-request ClickHouse settings
+// previously stored by ContextWithToolInputSettings. Returns nil when none.
+func ToolInputSettingsFromContext(ctx context.Context) map[string]string {
+	if settings, ok := ctx.Value(toolInputSettingsKey).(map[string]string); ok {
+		return settings
+	}
+	return nil
+}
+
+// extractToolInputSettings parses the "settings" key from tool arguments,
+// validates each entry against the admin-configured allowlist and the
+// blockedSettings denylist, and returns the resulting map.
+func extractToolInputSettings(arguments map[string]any, allowlist []string) (map[string]string, error) {
+	settingsRaw, ok := arguments["settings"]
+	if !ok {
+		return nil, nil
+	}
+	settingsMap, ok := settingsRaw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("settings must be an object")
+	}
+	if len(settingsMap) == 0 {
+		return nil, nil
+	}
+	allowSet := make(map[string]bool, len(allowlist))
+	for _, s := range allowlist {
+		allowSet[s] = true
+	}
+	settings := make(map[string]string, len(settingsMap))
+	for k, v := range settingsMap {
+		if !allowSet[k] {
+			return nil, fmt.Errorf("setting %q is not allowed; allowed settings: %s", k, strings.Join(allowlist, ", "))
+		}
+		if blockedSettings[strings.ToLower(k)] {
+			return nil, fmt.Errorf("setting %q is blocked", k)
+		}
+		strVal, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("setting %q value must be a string", k)
+		}
+		settings[k] = strVal
+	}
+	names := make([]string, 0, len(settings))
+	for k := range settings {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("tool input settings extracted from arguments")
+	return settings, nil
 }
 
 // matchesAnyPattern returns true if header matches at least one pattern.

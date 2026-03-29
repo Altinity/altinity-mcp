@@ -4051,3 +4051,143 @@ func TestOAuthStateStoreEviction(t *testing.T) {
 	_, ok = store.consumeAuthCode("new-code")
 	require.True(t, ok)
 }
+
+func TestToolInputSettingsCLIFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		flagVal  string
+		flagSet  bool
+		initList []string
+		wantLen  int
+		wantNil  bool
+		wantList []string
+	}{
+		{
+			name: "parses_comma_separated", flagVal: "custom_tenant_id,custom_org_id",
+			flagSet: true, wantLen: 2,
+			wantList: []string{"custom_tenant_id", "custom_org_id"},
+		},
+		{
+			name: "single_setting", flagVal: "custom_tenant_id",
+			flagSet: true, wantLen: 1,
+			wantList: []string{"custom_tenant_id"},
+		},
+		{
+			name: "handles_spaces", flagVal: " custom_tenant_id , custom_org_id ",
+			flagSet: true, wantLen: 2,
+			wantList: []string{"custom_tenant_id", "custom_org_id"},
+		},
+		{
+			name: "empty_string_clears", flagVal: "",
+			flagSet: true, initList: []string{"custom_old"},
+			wantNil: true,
+		},
+		{
+			name: "not_set_preserves_config",
+			flagSet: false, initList: []string{"custom_tenant_id"},
+			wantLen:  1,
+			wantList: []string{"custom_tenant_id"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &mockCommand{
+				flags:      map[string]interface{}{},
+				setFlags:   map[string]bool{},
+				stringMaps: make(map[string]map[string]string),
+			}
+			if tc.flagSet {
+				cmd.flags["tool-input-settings"] = tc.flagVal
+				cmd.setFlags["tool-input-settings"] = true
+			}
+
+			cfg := &config.Config{}
+			if tc.initList != nil {
+				cfg.Server.ToolInputSettings = tc.initList
+			}
+			overrideWithCLIFlags(cfg, cmd)
+
+			if tc.wantNil {
+				require.Nil(t, cfg.Server.ToolInputSettings)
+				return
+			}
+			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
+			for i, want := range tc.wantList {
+				require.Equal(t, want, cfg.Server.ToolInputSettings[i])
+			}
+		})
+	}
+}
+
+func TestToolInputSettingsConfigFile(t *testing.T) {
+	cases := []struct {
+		name      string
+		yaml      string
+		cliFlag   string
+		wantLen   int
+		wantList  []string
+		wantEmpty bool
+	}{
+		{
+			name: "parses_yaml_list",
+			yaml: `
+server:
+  tool_input_settings:
+    - custom_tenant_id
+    - custom_org_id
+`,
+			wantLen:  2,
+			wantList: []string{"custom_tenant_id", "custom_org_id"},
+		},
+		{
+			name: "cli_flag_overrides_config_file",
+			yaml: `
+server:
+  tool_input_settings:
+    - custom_tenant_id
+    - custom_org_id
+`,
+			cliFlag:  "custom_region",
+			wantLen:  1,
+			wantList: []string{"custom_region"},
+		},
+		{
+			name: "empty_list_in_config_file",
+			yaml: `
+server:
+  tool_input_settings: []
+`,
+			wantEmpty: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(f, []byte(tc.yaml), 0o600))
+
+			cmd := &mockCommand{
+				flags:      map[string]interface{}{"config": f},
+				setFlags:   map[string]bool{"config": true},
+				stringMaps: make(map[string]map[string]string),
+			}
+			if tc.cliFlag != "" {
+				cmd.flags["tool-input-settings"] = tc.cliFlag
+				cmd.setFlags["tool-input-settings"] = true
+			}
+
+			cfg, err := buildConfig(cmd)
+			require.NoError(t, err)
+
+			if tc.wantEmpty {
+				require.Empty(t, cfg.Server.ToolInputSettings)
+				return
+			}
+			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
+			for i, want := range tc.wantList {
+				require.Equal(t, want, cfg.Server.ToolInputSettings[i])
+			}
+		})
+	}
+}
