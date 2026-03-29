@@ -18,12 +18,40 @@ ADDRESS="${MCP_LOCAL_ADDRESS:-0.0.0.0}"
 : "${GOOGLE_OAUTH_CLIENT_SECRET:?set GOOGLE_OAUTH_CLIENT_SECRET}"
 : "${MCP_OAUTH_GATING_SECRET:?set MCP_OAUTH_GATING_SECRET}"
 
-CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-github.demo.altinity.cloud}"
-CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-8443}"
-CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-default}"
-CLICKHOUSE_USERNAME="${CLICKHOUSE_USERNAME:-demo}"
-CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-demo}"
-CLICKHOUSE_PROTOCOL="${CLICKHOUSE_PROTOCOL:-http}"
+# ── ClickHouse target ──
+# Default: remote demo server
+# Pass --local-clickhouse to start Antalya in Docker instead
+
+USE_LOCAL_CH=false
+for arg in "$@"; do
+  case "${arg}" in
+    --local-clickhouse) USE_LOCAL_CH=true ;;
+  esac
+done
+
+if [[ "${USE_LOCAL_CH}" == "true" ]]; then
+  echo "Starting local ClickHouse Antalya container..."
+  "${SCRIPT_DIR}/start-clickhouse-antalia-google.sh"
+  CLICKHOUSE_HOST="127.0.0.1"
+  CLICKHOUSE_PORT="${CLICKHOUSE_FORWARD_HTTP_PORT:-18123}"
+  CLICKHOUSE_DATABASE="default"
+  CLICKHOUSE_USERNAME="default"
+  CLICKHOUSE_PASSWORD=""
+  CLICKHOUSE_PROTOCOL="http"
+  CLICKHOUSE_TLS_ENABLED="false"
+  CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY="false"
+  CLICKHOUSE_READ_ONLY="false"
+else
+  CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-github.demo.altinity.cloud}"
+  CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-8443}"
+  CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-default}"
+  CLICKHOUSE_USERNAME="${CLICKHOUSE_USERNAME:-demo}"
+  CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-demo}"
+  CLICKHOUSE_PROTOCOL="${CLICKHOUSE_PROTOCOL:-http}"
+  CLICKHOUSE_TLS_ENABLED="${CLICKHOUSE_TLS_ENABLED:-true}"
+  CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY="${CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}"
+  CLICKHOUSE_READ_ONLY="${CLICKHOUSE_READ_ONLY:-true}"
+fi
 
 mkdir -p "${BIN_DIR}"
 
@@ -38,9 +66,9 @@ clickhouse:
   password: "${CLICKHOUSE_PASSWORD}"
   protocol: "${CLICKHOUSE_PROTOCOL}"
   tls:
-    enabled: ${CLICKHOUSE_TLS_ENABLED:-true}
-    insecure_skip_verify: ${CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY:-false}
-  read_only: ${CLICKHOUSE_READ_ONLY:-true}
+    enabled: ${CLICKHOUSE_TLS_ENABLED}
+    insecure_skip_verify: ${CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY}
+  read_only: ${CLICKHOUSE_READ_ONLY}
   limit: 0
 server:
   transport: "http"
@@ -89,7 +117,11 @@ logging:
 EOF
 
 echo "Starting local altinity-mcp forward mode on ${ADDRESS}:${PORT}"
-echo "ClickHouse forward target: ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
+if [[ "${USE_LOCAL_CH}" == "true" ]]; then
+  echo "ClickHouse: local Antalya container at ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}"
+else
+  echo "ClickHouse: remote ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
+fi
 echo "Public MCP base: https://${TARGET_HOST}${MCP_PREFIX}"
 echo "Public OAuth base: https://${TARGET_HOST}${OAUTH_PREFIX}/"
 exec "${BIN_PATH}" --config "${CONFIG_PATH}"
