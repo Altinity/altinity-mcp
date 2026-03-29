@@ -1244,8 +1244,12 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		return nil, err
 	}
 
-	// Test connection to ClickHouse if JWE auth is not enabled
-	if !cfg.Server.JWE.Enabled {
+	// Test connection to ClickHouse at startup, unless credentials are dynamic:
+	// - JWE: each request carries its own ClickHouse credentials
+	// - OAuth forward + clear_credentials: no static creds, bearer token arrives per-request
+	skipStartupPing := cfg.Server.JWE.Enabled ||
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode() && cfg.Server.OAuth.ClearClickHouseCredentials)
+	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
@@ -1272,7 +1276,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 			return nil, fmt.Errorf("can't close clickhouse connection after ping: %w", closeErr)
 		}
 	} else {
-		log.Debug().Msg("JWE encryption enabled, skipping default ClickHouse connection test")
+		log.Debug().Msg("Skipping startup ClickHouse connection test (credentials are per-request)")
 
 		// Validate JWE secret key is set when JWE auth is enabled
 		if cfg.Server.JWE.JWESecretKey == "" {
