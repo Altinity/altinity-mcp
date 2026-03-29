@@ -1172,6 +1172,21 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// handleOAuthTokenRefresh exchanges a refresh token for a new access + rotated
+// refresh token pair. Refresh tokens are stateless JWE-encrypted blobs containing
+// the user's identity claims, validated by decrypt + expiry check only.
+//
+// Limitations of the stateless design:
+//   - No revocation: a stolen refresh token is valid until its TTL expires
+//     (configured via refresh_token_ttl_seconds, default 30 days).
+//   - No reuse detection: a rotated-out refresh token remains valid alongside
+//     the new one until it naturally expires.
+//   - No server-side state: there is no token store to revoke against.
+//
+// These are accepted tradeoffs for a broker with no persistent storage.
+// Identity policy checks (allowed domains, email verification) are re-evaluated
+// on every refresh via mintBrokerTokenResponse. Deployments that require token
+// revocation should use forward mode, where the upstream IdP controls lifecycle.
 func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if a.oauthForwardMode() {
 		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "refresh tokens are not supported in forward mode")
