@@ -7,6 +7,7 @@
             <token_introspection_endpoint>https://oauth2.googleapis.com/tokeninfo</token_introspection_endpoint>
             <jwks_uri>https://www.googleapis.com/oauth2/v3/certs</jwks_uri>
             <token_cache_lifetime>60</token_cache_lifetime>
+            <username_claim>email</username_claim>
         </google>
     </token_processors>
 

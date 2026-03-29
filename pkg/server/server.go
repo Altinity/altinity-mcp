@@ -1815,11 +1815,13 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		token = oauthToken
 	}
 
-	// Store OAuth claims in context if available
+	// Store OAuth token and claims in context if available
 	ctx := r.Context()
+	if oauthToken != "" {
+		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
+	}
 	if oauthClaims != nil {
 		ctx = context.WithValue(ctx, OAuthClaimsKey, oauthClaims)
-		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
 	}
 	r = r.WithContext(ctx)
 
