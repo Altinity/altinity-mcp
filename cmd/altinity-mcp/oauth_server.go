@@ -886,7 +886,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to resolve upstream token endpoint", http.StatusBadGateway)
 		return
 	}
-	resp, err := http.PostForm(tokenURL, form)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(tokenURL, form)
 	if err != nil {
 		log.Error().Err(err).Str("token_url", tokenURL).Msg("Upstream OAuth token exchange request failed")
 		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
