@@ -1122,6 +1122,11 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 		log.Warn().Msg("OAuth forward mode forwards tokens to ClickHouse but clear_clickhouse_credentials is false — " +
 			"static ClickHouse username/password will be sent alongside the bearer token")
 	}
+	if oauth.IsBrokerMode() && strings.TrimSpace(oauth.PublicAuthServerURL) == "" && strings.TrimSpace(oauth.Issuer) != "" {
+		log.Warn().Msg("OAuth broker mode: public_auth_server_url is not set — " +
+			"minted tokens will use the request Host as issuer, but validation expects the configured issuer; " +
+			"set public_auth_server_url to match, or leave issuer empty to skip issuer validation")
+	}
 }
 
 // testConnection tests the connection to ClickHouse
@@ -1309,8 +1314,8 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
 	}
 
-	if cfg.Server.OAuth.IsBrokerMode() && strings.TrimSpace(cfg.Server.OAuth.BrokerSecretKey) == "" {
-		return fmt.Errorf("oauth broker_secret_key is required in broker mode")
+	if strings.TrimSpace(cfg.Server.OAuth.BrokerSecretKey) == "" {
+		return fmt.Errorf("oauth broker_secret_key is required when OAuth is enabled (used for client registration and token exchange in both forward and broker modes)")
 	}
 
 	if cfg.Server.OAuth.ForwardToClickHouse && cfg.ClickHouse.Protocol != config.HTTPProtocol {
