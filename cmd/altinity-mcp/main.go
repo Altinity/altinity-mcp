@@ -1106,6 +1106,24 @@ func buildServerTLSConfig(cfg *config.ServerTLSConfig) (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+// warnOAuthMisconfiguration logs warnings for OAuth configurations that are
+// technically valid but likely unintended.
+func warnOAuthMisconfiguration(cfg config.Config) {
+	oauth := cfg.Server.OAuth
+	if !oauth.Enabled {
+		return
+	}
+	if oauth.IsForwardMode() && !oauth.ForwardToClickHouse {
+		log.Warn().Msg("OAuth forward mode is enabled but forward_to_clickhouse is false — " +
+			"bearer tokens will be accepted without validation and will NOT be forwarded to ClickHouse; " +
+			"requests will run as the statically configured ClickHouse user")
+	}
+	if oauth.IsForwardMode() && oauth.ForwardToClickHouse && !oauth.ClearClickHouseCredentials {
+		log.Warn().Msg("OAuth forward mode forwards tokens to ClickHouse but clear_clickhouse_credentials is false — " +
+			"static ClickHouse username/password will be sent alongside the bearer token")
+	}
+}
+
 // testConnection tests the connection to ClickHouse
 func testConnection(ctx context.Context, cfg config.ClickHouseConfig) error {
 	log.Info().Msg("Testing ClickHouse connection...")
@@ -1168,6 +1186,8 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("commit", commit).
 		Str("build_date", date).
 		Msg("Starting Altinity MCP Server")
+
+	warnOAuthMisconfiguration(cfg)
 
 	app, err := newApplication(ctx, cfg, cmd)
 	if err != nil {
