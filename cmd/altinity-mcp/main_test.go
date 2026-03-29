@@ -4127,3 +4127,82 @@ func generateSelfSignedCert() ([]byte, []byte, error) {
 
 	return certPEM, privateKeyPEM, nil
 }
+
+func TestOAuthStateStoreSizeCap(t *testing.T) {
+	t.Run("pending_auth_evicts_oldest_at_cap", func(t *testing.T) {
+		store := newOAuthStateStore()
+		// Fill to capacity with entries that expire far in the future
+		for i := 0; i < maxOAuthStateEntries; i++ {
+			store.putPendingAuth(fmt.Sprintf("p_%d", i), oauthPendingAuth{
+				ClientID:  "client",
+				ExpiresAt: time.Now().Add(time.Hour),
+			})
+		}
+		require.Equal(t, maxOAuthStateEntries, len(store.pendingAuth))
+
+		// Insert one with the earliest expiry to make it the eviction target
+		store.pendingAuth["earliest"] = oauthPendingAuth{
+			ClientID:  "early",
+			ExpiresAt: time.Now().Add(-time.Minute),
+		}
+
+		// Next put should evict "earliest" and stay at cap
+		store.putPendingAuth("overflow", oauthPendingAuth{
+			ClientID:  "new",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		// expired entries cleaned + oldest evicted, should not exceed cap
+		require.LessOrEqual(t, len(store.pendingAuth), maxOAuthStateEntries)
+		_, ok := store.pendingAuth["earliest"]
+		require.False(t, ok, "earliest entry should have been evicted")
+		_, ok = store.pendingAuth["overflow"]
+		require.True(t, ok, "new entry should be present")
+	})
+
+	t.Run("auth_codes_evicts_oldest_at_cap", func(t *testing.T) {
+		store := newOAuthStateStore()
+		for i := 0; i < maxOAuthStateEntries; i++ {
+			store.putAuthCode(fmt.Sprintf("c_%d", i), oauthIssuedCode{
+				ClientID:  "client",
+				ExpiresAt: time.Now().Add(time.Hour),
+			})
+		}
+		require.Equal(t, maxOAuthStateEntries, len(store.authCodes))
+
+		store.authCodes["earliest"] = oauthIssuedCode{
+			ClientID:  "early",
+			ExpiresAt: time.Now().Add(-time.Minute),
+		}
+
+		store.putAuthCode("overflow", oauthIssuedCode{
+			ClientID:  "new",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		require.LessOrEqual(t, len(store.authCodes), maxOAuthStateEntries)
+		_, ok := store.authCodes["earliest"]
+		require.False(t, ok, "earliest entry should have been evicted")
+		_, ok = store.authCodes["overflow"]
+		require.True(t, ok, "new entry should be present")
+	})
+
+	t.Run("expired_entries_cleaned_before_cap_check", func(t *testing.T) {
+		store := newOAuthStateStore()
+		// Fill with already-expired entries
+		for i := 0; i < maxOAuthStateEntries; i++ {
+			store.pendingAuth[fmt.Sprintf("exp_%d", i)] = oauthPendingAuth{
+				ClientID:  "client",
+				ExpiresAt: time.Now().Add(-time.Second),
+			}
+		}
+		require.Equal(t, maxOAuthStateEntries, len(store.pendingAuth))
+
+		// putPendingAuth cleans expired first, so this should succeed without eviction
+		store.putPendingAuth("fresh", oauthPendingAuth{
+			ClientID:  "new",
+			ExpiresAt: time.Now().Add(time.Hour),
+		})
+		require.Equal(t, 1, len(store.pendingAuth))
+		_, ok := store.pendingAuth["fresh"]
+		require.True(t, ok)
+	})
+}

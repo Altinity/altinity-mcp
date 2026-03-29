@@ -71,6 +71,10 @@ type oauthIssuedCode struct {
 	AccessTokenExpiry   time.Time
 }
 
+// maxOAuthStateEntries caps each map in the state store to prevent memory
+// exhaustion from floods of unauthenticated /oauth/authorize requests.
+const maxOAuthStateEntries = 10000
+
 type oauthStateStore struct {
 	mu          sync.Mutex
 	pendingAuth map[string]oauthPendingAuth
@@ -97,10 +101,43 @@ func (s *oauthStateStore) cleanupExpiredLocked(now time.Time) {
 	}
 }
 
+// evictOldestPendingLocked removes the entry with the earliest expiry.
+func (s *oauthStateStore) evictOldestPendingLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, pending := range s.pendingAuth {
+		if oldestKey == "" || pending.ExpiresAt.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = pending.ExpiresAt
+		}
+	}
+	if oldestKey != "" {
+		delete(s.pendingAuth, oldestKey)
+	}
+}
+
+// evictOldestCodeLocked removes the entry with the earliest expiry.
+func (s *oauthStateStore) evictOldestCodeLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	for key, issued := range s.authCodes {
+		if oldestKey == "" || issued.ExpiresAt.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = issued.ExpiresAt
+		}
+	}
+	if oldestKey != "" {
+		delete(s.authCodes, oldestKey)
+	}
+}
+
 func (s *oauthStateStore) putPendingAuth(id string, pending oauthPendingAuth) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupExpiredLocked(time.Now())
+	if len(s.pendingAuth) >= maxOAuthStateEntries {
+		s.evictOldestPendingLocked()
+	}
 	s.pendingAuth[id] = pending
 }
 
@@ -119,6 +156,9 @@ func (s *oauthStateStore) putAuthCode(id string, issued oauthIssuedCode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupExpiredLocked(time.Now())
+	if len(s.authCodes) >= maxOAuthStateEntries {
+		s.evictOldestCodeLocked()
+	}
 	s.authCodes[id] = issued
 }
 
