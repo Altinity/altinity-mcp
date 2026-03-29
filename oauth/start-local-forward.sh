@@ -16,7 +16,7 @@ ADDRESS="${MCP_LOCAL_ADDRESS:-0.0.0.0}"
 
 : "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
 : "${GOOGLE_OAUTH_CLIENT_SECRET:?set GOOGLE_OAUTH_CLIENT_SECRET}"
-: "${MCP_OAUTH_BROKER_SECRET:?set MCP_OAUTH_BROKER_SECRET}"
+: "${MCP_OAUTH_GATING_SECRET:?set MCP_OAUTH_GATING_SECRET}"
 
 CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-github.demo.altinity.cloud}"
 CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-8443}"
@@ -56,7 +56,7 @@ server:
     mode: "forward"
     issuer: "https://accounts.google.com"
     audience: "${MCP_OAUTH_FORWARD_AUDIENCE:-}"
-    broker_secret_key: "${MCP_OAUTH_BROKER_SECRET}"
+    gating_secret_key: "${MCP_OAUTH_GATING_SECRET}"
     public_resource_url: "https://${TARGET_HOST}${MCP_PREFIX}"
     public_auth_server_url: "https://${TARGET_HOST}${OAUTH_PREFIX}"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"

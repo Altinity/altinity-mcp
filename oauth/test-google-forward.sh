@@ -16,7 +16,7 @@ LOCAL_LOG="${LOG_DIR}/test-google-forward.local.log"
 
 require_env GOOGLE_OAUTH_CLIENT_ID
 require_env GOOGLE_OAUTH_CLIENT_SECRET
-require_env MCP_OAUTH_BROKER_SECRET
+require_env MCP_OAUTH_GATING_SECRET
 
 mkdir -p "${LOG_DIR}"
 

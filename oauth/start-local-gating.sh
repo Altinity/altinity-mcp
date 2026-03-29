@@ -9,14 +9,14 @@ TARGET_HOST="${MCP_TARGET_HOST}"
 MCP_PREFIX="${MCP_PUBLIC_MCP_PREFIX:-/http-t}"
 OAUTH_PREFIX="${MCP_PUBLIC_OAUTH_PREFIX:-/oauth-t}"
 BIN_DIR="${BIN_DIR:-$PWD/.tmp}"
-BIN_PATH="${BIN_DIR}/altinity-mcp-oauth-broker"
-CONFIG_PATH="${BIN_DIR}/oauth-broker.yaml"
+BIN_PATH="${BIN_DIR}/altinity-mcp-oauth-gating"
+CONFIG_PATH="${BIN_DIR}/oauth-gating.yaml"
 PORT="${MCP_LOCAL_PORT:-18081}"
 ADDRESS="${MCP_LOCAL_ADDRESS:-0.0.0.0}"
 
 : "${GOOGLE_OAUTH_CLIENT_ID:?set GOOGLE_OAUTH_CLIENT_ID}"
 : "${GOOGLE_OAUTH_CLIENT_SECRET:?set GOOGLE_OAUTH_CLIENT_SECRET}"
-: "${MCP_OAUTH_BROKER_SECRET:?set MCP_OAUTH_BROKER_SECRET}"
+: "${MCP_OAUTH_GATING_SECRET:?set MCP_OAUTH_GATING_SECRET}"
 
 CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-github.demo.altinity.cloud}"
 CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-9440}"
@@ -53,10 +53,10 @@ server:
     enabled: false
   oauth:
     enabled: true
-    mode: "broker"
+    mode: "gating"
     issuer: "https://accounts.google.com"
     audience: "https://${TARGET_HOST}${MCP_PREFIX}"
-    broker_secret_key: "${MCP_OAUTH_BROKER_SECRET}"
+    gating_secret_key: "${MCP_OAUTH_GATING_SECRET}"
     public_resource_url: "https://${TARGET_HOST}${MCP_PREFIX}"
     public_auth_server_url: "https://${TARGET_HOST}${OAUTH_PREFIX}"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
@@ -91,8 +91,8 @@ logging:
   level: "debug"
 EOF
 
-echo "Starting local altinity-mcp broker mode on ${ADDRESS}:${PORT}"
-echo "ClickHouse broker target: ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
+echo "Starting local altinity-mcp gating mode on ${ADDRESS}:${PORT}"
+echo "ClickHouse gating target: ${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}/${CLICKHOUSE_DATABASE}"
 echo "Public MCP base: https://${TARGET_HOST}${MCP_PREFIX}"
 echo "Public OAuth base: https://${TARGET_HOST}${OAUTH_PREFIX}/"
 exec "${BIN_PATH}" --config "${CONFIG_PATH}"

@@ -395,7 +395,7 @@ func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) stri
 }
 
 func (s *ClickHouseJWEServer) oauthRequiresLocalValidation() bool {
-	return s.Config.Server.OAuth.IsBrokerMode()
+	return s.Config.Server.OAuth.IsGatingMode()
 }
 
 // ValidateOAuthToken validates an OAuth token and returns claims
@@ -428,7 +428,7 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 
 func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthClaims, error) {
 	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
-	if s.Config.Server.OAuth.IsBrokerMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
+	if s.Config.Server.OAuth.IsGatingMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
 		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
 	}
 	// Validate issuer if configured
@@ -616,9 +616,9 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 }
 
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
-	secret := strings.TrimSpace(s.Config.Server.OAuth.BrokerSecretKey)
+	secret := strings.TrimSpace(s.Config.Server.OAuth.GatingSecretKey)
 	if secret == "" {
-		return nil, fmt.Errorf("oauth broker_secret_key is required in broker mode")
+		return nil, fmt.Errorf("oauth gating_secret_key is required in gating mode")
 	}
 	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 

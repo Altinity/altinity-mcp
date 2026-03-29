@@ -6,27 +6,27 @@ This harness is for local-first development of `altinity-mcp` OAuth support with
 
 - Runs `altinity-mcp` locally on separate ports so both modes can stay up together:
   - forward on `0.0.0.0:18080`
-  - broker on `0.0.0.0:18081`
+  - gating on `0.0.0.0:18081`
 - Exposes it publicly through nginx on `https://PUBLIC_HOST.example.com`
-- Serves the broker MCP endpoint under `https://PUBLIC_HOST.example.com/http-t`
-- Serves the broker OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-t/`
+- Serves the gating MCP endpoint under `https://PUBLIC_HOST.example.com/http-t`
+- Serves the gating OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-t/`
 - Serves the forward MCP endpoint under `https://PUBLIC_HOST.example.com/http-f`
 - Serves the forward OAuth endpoints under `https://PUBLIC_HOST.example.com/oauth-f/`
 - Supports two manual Google-provider flows:
   - `forward`: local `altinity-mcp` plus `github.demo.altinity.cloud:8443` with token forwarding into ClickHouse
-  - `broker`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
+  - `gating`: local `altinity-mcp` plus normal ClickHouse auth against `github.demo.altinity.cloud:9440`
 - Uses Codex as the OAuth client via `codex mcp login`
 - Uses Google only as the upstream identity provider
 - In `forward` mode, returns the upstream Google access token to Codex and validates it on inbound requests
-- In `broker` mode, mints self-issued MCP access tokens after Google login
+- In `gating` mode, mints self-issued MCP access tokens after Google login
 
 ## Important URLs
 
-- Terminate MCP base: `https://PUBLIC_HOST.example.com/http-t`
-- Terminate OAuth base: `https://PUBLIC_HOST.example.com/oauth-t/`
+- Gating MCP base: `https://PUBLIC_HOST.example.com/http-t`
+- Gating OAuth base: `https://PUBLIC_HOST.example.com/oauth-t/`
 - Forward MCP base: `https://PUBLIC_HOST.example.com/http-f`
 - Forward OAuth base: `https://PUBLIC_HOST.example.com/oauth-f/`
-- OAuth callback for broker Google app: `https://PUBLIC_HOST.example.com/oauth-t/callback`
+- OAuth callback for gating Google app: `https://PUBLIC_HOST.example.com/oauth-t/callback`
 - OAuth callback for forward Google app: `https://PUBLIC_HOST.example.com/oauth-f/callback`
 
 ## Google Project
@@ -77,7 +77,7 @@ export MCP_LOCAL_PORT='18081'
 The scripts load Google credentials from:
 
 - `~/.mcp/$MCP_TARGET_HOST/google-oauth.env`
-- `~/.mcp/$MCP_TARGET_HOST/oauth-broker-secret`
+- `~/.mcp/$MCP_TARGET_HOST/oauth-gating-secret`
 
 `google-oauth.env` should contain only the Google client ID and secret for this harness.
 
@@ -104,7 +104,7 @@ export CLICKHOUSE_TLS_ENABLED='true'
 
 `PUBLIC_HOST.example.com` must reverse-proxy both mode pairs to different local ports:
 
-- terminate: `/http-t` and `/oauth-t/` to `192.168.1.155:18081`
+- gating: `/http-t` and `/oauth-t/` to `192.168.1.155:18081`
 - forward: `/http-f` and `/oauth-f/` to `192.168.1.155:18080`
 
 Minimum requirements:
@@ -230,7 +230,7 @@ What it verifies:
 - local `altinity-mcp` forward mode passes that token through to ClickHouse
 - the public `https://PUBLIC_HOST.example.com/http-f/openapi/execute_query` path is probed separately so proxy issues are visible without blocking the core server validation
 
-### Terminate Mode
+### Gating Mode
 
 This mode verifies the Google identity at `altinity-mcp`, limits access to verified `@altinity.com` emails, and then uses normal ClickHouse credentials.
 
@@ -241,22 +241,22 @@ Default ClickHouse target:
 - password `demo`
 
 ```bash
-oauth/test-google-broker.sh
+oauth/test-google-gating.sh
 ```
 
 Manual Codex flow:
 
 ```bash
 export MCP_TARGET_HOST='PUBLIC_HOST.example.com'
-codex mcp remove altinity_mcp_oauth_broker >/dev/null 2>&1 || true
-codex mcp add altinity_mcp_oauth_broker --url "https://${MCP_TARGET_HOST}/http-t"
-codex mcp login altinity_mcp_oauth_broker
-codex exec "Use the configured MCP server named altinity_mcp_oauth_broker. Execute SELECT version() and return only the SQL result."
+codex mcp remove altinity_mcp_oauth_gating >/dev/null 2>&1 || true
+codex mcp add altinity_mcp_oauth_gating --url "https://${MCP_TARGET_HOST}/http-t"
+codex mcp login altinity_mcp_oauth_gating
+codex exec "Use the configured MCP server named altinity_mcp_oauth_gating. Execute SELECT version() and return only the SQL result."
 ```
 
 What it does:
 
-- starts local `altinity-mcp` in `mode: terminate`
+- starts local `altinity-mcp` in `mode: gating`
 - connects to `github.demo.altinity.cloud:9440` with `demo/demo`
 - enforces `allowed_email_domains: [altinity.com]`
 - enforces `require_email_verified: true`
@@ -265,9 +265,9 @@ What it does:
 - runs `codex mcp login`
 - runs `SELECT version()`
 
-For broker mode, sign in with a verified `@altinity.com` Google account.
+For gating mode, sign in with a verified `@altinity.com` Google account.
 
-Broker mode default local bind:
+Gating mode default local bind:
 
 - `0.0.0.0:18081`
 
@@ -294,8 +294,8 @@ Key fields:
   The upstream OIDC issuer claim to validate on inbound OAuth tokens. For Google use `https://accounts.google.com`.
 - `audience`
   The audience claim to validate on inbound OAuth tokens when the upstream provider emits JWT access or identity tokens. For the public MCP resource this is typically `https://PUBLIC_HOST.example.com/http-t`.
-- `broker_secret_key`
-  Shared secret for stateless client registration, broker state, and broker codes used by the browser-login facade. This is required for `codex mcp login` in both modes.
+- `gating_secret_key`
+  Shared secret for stateless client registration, gating state, and gating codes used by the browser-login facade. This is required for `codex mcp login` in both modes.
 - `public_resource_url`
   The externally visible protected resource base URL advertised in `/.well-known/oauth-protected-resource`.
 - `public_auth_server_url`
@@ -317,11 +317,11 @@ Key fields:
 - `upstream_issuer_allowlist`
   Accepted upstream identity token issuers during Google callback exchange.
 - `auth_code_ttl_seconds`
-  Lifetime of stateless broker authorization codes.
+  Lifetime of stateless gating authorization codes.
 - `access_token_ttl_seconds`
-  Lifetime of self-issued access tokens in `broker` mode only.
+  Lifetime of self-issued access tokens in `gating` mode only.
 - `refresh_token_ttl_seconds`
-  Reserved for `broker` mode only. `forward` mode does not mint refresh tokens.
+  Reserved for `gating` mode only. `forward` mode does not mint refresh tokens.
 
 Minimal `forward` mode config for the current `PUBLIC_HOST.example.com` split-path setup:
 
@@ -333,7 +333,7 @@ server:
     mode: "forward"
     issuer: "https://accounts.google.com"
     audience: ""
-    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     public_resource_url: "https://PUBLIC_HOST.example.com/http-f"
     public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-f"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
@@ -356,12 +356,12 @@ server:
     access_token_ttl_seconds: 3600
 ```
 
-Minimal `broker` mode differences:
+Minimal `gating` mode differences:
 
 ```yaml
 server:
   oauth:
-    mode: "broker"
+    mode: "gating"
     issuer: "https://accounts.google.com"
     audience: "https://PUBLIC_HOST.example.com/http-t"
     allowed_email_domains: ["altinity.com"]
@@ -376,5 +376,5 @@ server:
 - This repo exposes MCP OAuth discovery and a test-oriented auth server facade.
 - Google is only the upstream login provider.
 - In `forward` mode, Codex receives the upstream Google access token and `altinity-mcp` forwards it to ClickHouse.
-- In `broker` mode, `altinity-mcp` mints and validates its own MCP access tokens after Google login.
+- In `gating` mode, `altinity-mcp` mints and validates its own MCP access tokens after Google login.
 - This is for development/testing, not production security hardening.

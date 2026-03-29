@@ -74,11 +74,10 @@ type JWEConfig struct {
 
 // OAuthConfig defines configuration for OAuth 2.0 authentication
 type OAuthConfig struct {
-	// Mode controls whether altinity-mcp forwards external OAuth bearers or brokers them into local MCP tokens.
+	// Mode controls whether altinity-mcp forwards external OAuth bearers or gates them into local MCP tokens.
 	// "forward" is the production path: pass the end-user bearer through to ClickHouse.
-	// "broker" keeps the built-in limited OAuth facade that issues its own tokens.
-	// "terminate" is accepted as a deprecated alias for "broker".
-	Mode string `json:"mode" yaml:"mode" flag:"oauth-mode" desc:"OAuth operating mode (forward/broker)"`
+	// "gating" keeps the built-in limited OAuth facade that issues its own tokens.
+	Mode string `json:"mode" yaml:"mode" flag:"oauth-mode" desc:"OAuth operating mode (forward/gating)"`
 
 	// Enabled enables OAuth authentication
 	Enabled bool `json:"enabled" yaml:"enabled" flag:"oauth-enabled" desc:"Enable OAuth 2.0 authentication"`
@@ -185,9 +184,9 @@ type OAuthConfig struct {
 	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
 	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" desc:"Refresh token lifetime in seconds"`
 
-	// BrokerSecretKey is the symmetric secret used for OAuth client registration artifacts
-	// and broker-mode self-issued token minting/validation.
-	BrokerSecretKey string `json:"broker_secret_key" yaml:"broker_secret_key" flag:"oauth-broker-secret-key" desc:"Secret key for stateless OAuth facade artifacts"`
+	// GatingSecretKey is the symmetric secret used for OAuth client registration artifacts
+	// and gating-mode self-issued token minting/validation.
+	GatingSecretKey string `json:"gating_secret_key" yaml:"gating_secret_key" flag:"oauth-gating-secret-key" desc:"Secret key for stateless OAuth facade artifacts"`
 }
 
 func (cfg OAuthConfig) NormalizedMode() string {
@@ -195,13 +194,13 @@ func (cfg OAuthConfig) NormalizedMode() string {
 	switch mode {
 	case "forward":
 		return "forward"
-	case "broker", "terminate":
-		return "broker"
+	case "gating":
+		return "gating"
 	case "":
 		if cfg.ForwardToClickHouse {
 			return "forward"
 		}
-		return "broker"
+		return "gating"
 	default:
 		return mode
 	}
@@ -211,8 +210,8 @@ func (cfg OAuthConfig) IsForwardMode() bool {
 	return cfg.NormalizedMode() == "forward"
 }
 
-func (cfg OAuthConfig) IsBrokerMode() bool {
-	return cfg.NormalizedMode() == "broker"
+func (cfg OAuthConfig) IsGatingMode() bool {
+	return cfg.NormalizedMode() == "gating"
 }
 
 // ServerConfig defines configuration for the MCP server

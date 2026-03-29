@@ -2354,10 +2354,10 @@ func generateOAuthToken(t *testing.T, claims map[string]interface{}) string {
 	return header + "." + payloadEncoded + "." + signature
 }
 
-// mintSelfIssuedToken creates a properly signed HS256 JWT using the broker secret
-func mintSelfIssuedToken(t *testing.T, brokerSecret string, claims map[string]interface{}) string {
+// mintSelfIssuedToken creates a properly signed HS256 JWT using the gating secret
+func mintSelfIssuedToken(t *testing.T, gatingSecret string, claims map[string]interface{}) string {
 	t.Helper()
-	hashedSecret := jwe_auth.HashSHA256([]byte(brokerSecret))
+	hashedSecret := jwe_auth.HashSHA256([]byte(gatingSecret))
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret},
 		(&jose.SignerOptions{}).WithType("JWT"),

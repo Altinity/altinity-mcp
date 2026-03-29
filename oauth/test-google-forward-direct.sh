@@ -24,12 +24,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" && -n "${MCP_OAUTH_BROKER_SECRET:-}" ]]; then
+if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" && -n "${MCP_OAUTH_GATING_SECRET:-}" ]]; then
   echo "Starting local altinity-mcp in forward mode..."
   LOCAL_PID="$(start_local_mcp "${SCRIPT_DIR}/start-local-forward.sh" "${LOCAL_LOG}")"
   wait_for_url "http://127.0.0.1:${LOCAL_PORT}/.well-known/oauth-protected-resource" 60
 else
-  echo "Skipping local altinity-mcp startup because one of GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, MCP_OAUTH_BROKER_SECRET is missing."
+  echo "Skipping local altinity-mcp startup because one of GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, MCP_OAUTH_GATING_SECRET is missing."
 fi
 
 TOKEN_CMD=(gcloud auth print-identity-token)

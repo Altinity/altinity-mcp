@@ -22,29 +22,29 @@ load_google_oauth_env() {
   fi
 }
 
-load_broker_secret() {
+load_gating_secret() {
   local config_dir secret_file
   config_dir="$(oauth_host_config_dir)"
   mkdir -p "${config_dir}"
-  secret_file="${MCP_BROKER_SECRET_FILE:-${config_dir}/oauth-broker-secret}"
+  secret_file="${MCP_GATING_SECRET_FILE:-${config_dir}/oauth-gating-secret}"
 
-  if [[ -z "${MCP_OAUTH_BROKER_SECRET:-}" && -s "${secret_file}" ]]; then
-    MCP_OAUTH_BROKER_SECRET="$(<"${secret_file}")"
-    export MCP_OAUTH_BROKER_SECRET
+  if [[ -z "${MCP_OAUTH_GATING_SECRET:-}" && -s "${secret_file}" ]]; then
+    MCP_OAUTH_GATING_SECRET="$(<"${secret_file}")"
+    export MCP_OAUTH_GATING_SECRET
   fi
 
-  if [[ -z "${MCP_OAUTH_BROKER_SECRET:-}" ]]; then
-    MCP_OAUTH_BROKER_SECRET="$(openssl rand -base64 32 | tr -d '\n')"
-    export MCP_OAUTH_BROKER_SECRET
+  if [[ -z "${MCP_OAUTH_GATING_SECRET:-}" ]]; then
+    MCP_OAUTH_GATING_SECRET="$(openssl rand -base64 32 | tr -d '\n')"
+    export MCP_OAUTH_GATING_SECRET
     umask 077
-    printf '%s\n' "${MCP_OAUTH_BROKER_SECRET}" > "${secret_file}"
+    printf '%s\n' "${MCP_OAUTH_GATING_SECRET}" > "${secret_file}"
   fi
 }
 
 load_oauth_local_config() {
   require_target_host
   load_google_oauth_env
-  load_broker_secret
+  load_gating_secret
 }
 
 require_env() {

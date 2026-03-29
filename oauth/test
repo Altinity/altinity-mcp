@@ -11,12 +11,12 @@ MCP_JSON="${PROJECT_DIR}/.mcp.json"
 
 usage() {
   cat <<'EOF'
-Usage: oauth/test <codex|claude> <forward|broker> [login]
+Usage: oauth/test <codex|claude> <forward|gating> [login]
 
   oauth/test codex forward             Codex batch query
-  oauth/test codex broker              Codex batch query
-  oauth/test claude broker login       Interactive session to complete OAuth
-  oauth/test claude broker             Batch query (requires prior login)
+  oauth/test codex gating              Codex batch query
+  oauth/test claude gating login       Interactive session to complete OAuth
+  oauth/test claude gating             Batch query (requires prior login)
 EOF
 }
 
@@ -46,9 +46,9 @@ case "${MODE}" in
     URL_SUFFIX="http-f"
     SERVER_NAME="altinity_mcp_oauth_forward"
     ;;
-  broker|terminate)
+  gating)
     URL_SUFFIX="http-t"
-    SERVER_NAME="altinity_mcp_oauth_broker"
+    SERVER_NAME="altinity_mcp_oauth_gating"
     ;;
   *)
     echo "Unsupported mode: ${MODE}" >&2

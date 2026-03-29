@@ -2,7 +2,7 @@
 
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server. It covers both:
 
-- local MCP token validation in `broker` mode
+- local MCP token validation in `gating` mode
 - thin bearer-token forwarding to ClickHouse for `token_processors`-based authentication in `forward` mode
 
 ## Overview
@@ -139,7 +139,7 @@ server:
     mode: "forward"
     issuer: "https://accounts.google.com"
     audience: "https://PUBLIC_HOST.example.com/http-t"
-    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     public_resource_url: "https://PUBLIC_HOST.example.com/http-t"
     public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-t"
     authorization_path: "/authorize"
@@ -160,22 +160,22 @@ server:
 
     # OAuth operating mode:
     # - forward: thin proxy mode; require a bearer token and forward it unchanged to ClickHouse
-    # - terminate: limited built-in facade that issues signed MCP tokens
+    # - gating: built-in facade that issues signed MCP tokens
     mode: "forward"
 
     # Upstream OAuth/OIDC issuer URL used by the built-in browser-login facade
-    # and by broker-mode validation
+    # and by gating-mode validation
     issuer: ""
 
-    # URL to fetch JWKS for broker-mode validation
+    # URL to fetch JWKS for gating-mode validation
     # If empty, discovered from issuer's .well-known/openid-configuration
     jwks_url: ""
 
-    # Expected audience claim for broker-mode validation
+    # Expected audience claim for gating-mode validation
     audience: ""
 
     # Shared secret for stateless browser-login artifacts (registration/state/code)
-    broker_secret_key: ""
+    gating_secret_key: ""
 
     # Externally visible protected-resource base URL
     # Required when OAuth is published behind a frontend or reverse proxy
@@ -224,7 +224,7 @@ server:
       - "profile"
       - "email"
 
-    # Required scopes enforced by broker mode
+    # Required scopes enforced by gating mode
     required_scopes: []
 
     # Allowed upstream IdP issuers for the identity token returned by the upstream provider
@@ -254,7 +254,7 @@ server:
 
     # Map specific token claims to ClickHouse HTTP headers.
     # In forward mode, MCP does not populate local claims, so this is useful
-    # only when broker-mode validation is active or claims are provided by
+    # only when gating-mode validation is active or claims are provided by
     # some other trusted auth layer.
     claims_to_headers:
       sub: "X-ClickHouse-User"
@@ -265,11 +265,11 @@ server:
 
 | Option | Description |
 |--------|-------------|
-| `mode` | `forward` verifies external tokens; `broker` issues limited self-signed MCP tokens |
+| `mode` | `forward` verifies external tokens; `gating` issues limited self-signed MCP tokens |
 | `issuer` | Upstream IdP issuer used for verification and discovery |
 | `jwks_url` | Optional JWKS override for JWT verification |
 | `audience` | Required audience in incoming tokens when present |
-| `broker_secret_key` | Secret used for stateless browser-login artifacts |
+| `gating_secret_key` | Secret used for stateless browser-login artifacts |
 | `forward_to_clickhouse` | Enables token forwarding to ClickHouse |
 | `forward_access_token` | Sends the raw access token (not just claims) |
 | `clear_clickhouse_credentials` | Removes username/password from requests to ClickHouse. **Required** when ClickHouse uses `token_processors` because it must authenticate the user from the token, not from basic auth |
@@ -284,9 +284,9 @@ server:
 | `callback_path` | Relative path for the upstream IdP callback handler |
 | `token_path` | Relative path for the token endpoint |
 | `upstream_issuer_allowlist` | Allowed issuers for upstream identity tokens returned during callback exchange |
-| `auth_code_ttl_seconds` | Lifetime of stateless broker authorization codes |
-| `access_token_ttl_seconds` | Lifetime of self-issued MCP access tokens in `broker` mode |
-| `refresh_token_ttl_seconds` | Reserved for `broker` mode |
+| `auth_code_ttl_seconds` | Lifetime of stateless gating authorization codes |
+| `access_token_ttl_seconds` | Lifetime of self-issued MCP access tokens in `gating` mode |
+| `refresh_token_ttl_seconds` | Reserved for `gating` mode |
 
 ## Browser-Based MCP Login
 
@@ -314,7 +314,7 @@ server:
     mode: "forward"
     issuer: "https://accounts.google.com"
     audience: "https://PUBLIC_HOST.example.com/http-t"
-    broker_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     public_resource_url: "https://PUBLIC_HOST.example.com/http-t"
     public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-t"
     protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
@@ -677,7 +677,7 @@ Any MCP-compatible client (AI agent, IDE plugin, CLI tool, etc.) can use OAuth t
 3. The MCP server validates the token and forwards it to ClickHouse
 4. ClickHouse authenticates the user via `token_processors`
 
-For forward-mode browser login, the broker returns the upstream bearer token that the downstream resource is expected to accept. When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
+For forward-mode browser login, the server returns the upstream bearer token that the downstream resource is expected to accept. When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
 Inbound OAuth validation on MCP/OpenAPI endpoints currently requires a signed JWT that can be validated via JWKS. Opaque bearer tokens are rejected unless token introspection support is added; `userinfo` is used only during browser-login identity lookup.
 
 

@@ -196,24 +196,24 @@ func (a *application) oauthForwardMode() bool {
 	return a.oauthMode() == "forward"
 }
 
-func (a *application) oauthBrokerSecret() []byte {
-	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.BrokerSecretKey)
+func (a *application) oauthGatingSecret() []byte {
+	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.GatingSecretKey)
 	return []byte(secret)
 }
 
-func (a *application) mustBrokerSecret() ([]byte, error) {
-	secret := a.oauthBrokerSecret()
+func (a *application) mustGatingSecret() ([]byte, error) {
+	secret := a.oauthGatingSecret()
 	if len(secret) == 0 {
-		return nil, fmt.Errorf("oauth broker_secret_key is required for OAuth client registration and broker-mode token minting")
+		return nil, fmt.Errorf("oauth gating_secret_key is required for OAuth client registration and gating-mode token minting")
 	}
 	return secret, nil
 }
 
-func encodeBrokerArtifact(secret []byte, claims map[string]interface{}) (string, error) {
+func encodeGatingArtifact(secret []byte, claims map[string]interface{}) (string, error) {
 	return jwe_auth.GenerateJWEToken(claims, secret, secret)
 }
 
-func decodeBrokerArtifact(secret []byte, token string) (map[string]interface{}, error) {
+func decodeGatingArtifact(secret []byte, token string) (map[string]interface{}, error) {
 	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
 }
 
@@ -449,7 +449,7 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
-				if cfg.Server.OAuth.IsBrokerMode() {
+				if cfg.Server.OAuth.IsGatingMode() {
 					var err error
 					claims, err = a.mcpServer.ValidateOAuthToken(oauthToken)
 					if err != nil {
@@ -761,12 +761,12 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Only public clients with PKCE are supported", http.StatusBadRequest)
 		return
 	}
-	secret, err := a.mustBrokerSecret()
+	secret, err := a.mustGatingSecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientID, err := encodeBrokerArtifact(secret, map[string]interface{}{
+	clientID, err := encodeGatingArtifact(secret, map[string]interface{}{
 		"redirect_uris":              req.RedirectURIs,
 		"token_endpoint_auth_method": "none",
 		"grant_type":                 "authorization_code",
@@ -804,12 +804,12 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Invalid authorization request", http.StatusBadRequest)
 		return
 	}
-	secret, err := a.mustBrokerSecret()
+	secret, err := a.mustGatingSecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	clientClaims, err := decodeGatingArtifact(secret, clientID)
 	if err != nil {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
@@ -957,7 +957,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	if bearerToken == "" {
 		bearerToken = tokenResp.AccessToken
 	}
-	brokerCode := randomToken("oac_")
+	gatingCode := randomToken("oac_")
 	issuedCode := oauthIssuedCode{
 		ClientID:            pending.ClientID,
 		RedirectURI:         pending.RedirectURI,
@@ -977,7 +977,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		issuedCode.HostedDomain = identityClaims.HostedDomain
 		issuedCode.EmailVerified = identityClaims.EmailVerified
 	}
-	a.getOAuthStateStore().putAuthCode(brokerCode, issuedCode)
+	a.getOAuthStateStore().putAuthCode(gatingCode, issuedCode)
 
 	redirect, err := url.Parse(pending.RedirectURI)
 	if err != nil {
@@ -985,7 +985,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	params := redirect.Query()
-	params.Set("code", brokerCode)
+	params.Set("code", gatingCode)
 	if pending.ClientState != "" {
 		params.Set("state", pending.ClientState)
 	}
@@ -993,8 +993,8 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
 
-// brokerIdentity holds the identity fields needed to mint broker-mode tokens.
-type brokerIdentity struct {
+// gatingIdentity holds the identity fields needed to mint gating-mode tokens.
+type gatingIdentity struct {
 	ClientID      string
 	Subject       string
 	Email         string
@@ -1004,9 +1004,9 @@ type brokerIdentity struct {
 	Scope         string
 }
 
-// mintBrokerTokenResponse mints an access token and a stateless refresh token
-// for broker mode, then writes the JSON response.
-func (a *application) mintBrokerTokenResponse(w http.ResponseWriter, r *http.Request, secret []byte, id brokerIdentity) {
+// mintGatingTokenResponse mints an access token and a stateless refresh token
+// for gating mode, then writes the JSON response.
+func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Request, secret []byte, id gatingIdentity) {
 	cfg := a.GetCurrentConfig()
 	issuer := strings.TrimSuffix(a.oauthAuthorizationServerBaseURL(r), "/")
 	audience := strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
@@ -1037,7 +1037,7 @@ func (a *application) mintBrokerTokenResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	refreshToken, err := encodeBrokerArtifact(secret, map[string]interface{}{
+	refreshToken, err := encodeGatingArtifact(secret, map[string]interface{}{
 		"sub":            id.Subject,
 		"iss":            issuer,
 		"aud":            audience,
@@ -1092,13 +1092,13 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Request) {
-	secret, err := a.mustBrokerSecret()
+	secret, err := a.mustGatingSecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	clientClaims, err := decodeGatingArtifact(secret, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1161,7 +1161,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	a.mintBrokerTokenResponse(w, r, secret, brokerIdentity{
+	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      issued.ClientID,
 		Subject:       issued.Subject,
 		Email:         issued.Email,
@@ -1183,16 +1183,16 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 //     the new one until it naturally expires.
 //   - No server-side state: there is no token store to revoke against.
 //
-// These are accepted tradeoffs for a broker with no persistent storage.
+// These are accepted tradeoffs for a gating server with no persistent storage.
 // Identity policy checks (allowed domains, email verification) are re-evaluated
-// on every refresh via mintBrokerTokenResponse. Deployments that require token
+// on every refresh via mintGatingTokenResponse. Deployments that require token
 // revocation should use forward mode, where the upstream IdP controls lifecycle.
 func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if a.oauthForwardMode() {
 		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "refresh tokens are not supported in forward mode")
 		return
 	}
-	secret, err := a.mustBrokerSecret()
+	secret, err := a.mustGatingSecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -1200,7 +1200,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 
 	// Validate client_id
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeBrokerArtifact(secret, clientID)
+	clientClaims, err := decodeGatingArtifact(secret, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1217,7 +1217,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "missing refresh token")
 		return
 	}
-	claims, err := decodeBrokerArtifact(secret, refreshTokenStr)
+	claims, err := decodeGatingArtifact(secret, refreshTokenStr)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		return
@@ -1241,7 +1241,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	emailVerified, _ := claims["email_verified"].(bool)
 	scope, _ := claims["scope"].(string)
 
-	a.mintBrokerTokenResponse(w, r, secret, brokerIdentity{
+	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      clientID,
 		Subject:       sub,
 		Email:         email,

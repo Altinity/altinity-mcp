@@ -663,7 +663,7 @@ func TestHealthHandler(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -883,7 +883,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -930,7 +930,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -1019,7 +1019,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -1070,7 +1070,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -1118,7 +1118,7 @@ func TestTestConnection(t *testing.T) {
 		}
 		defer func() {
 			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to broker container: %v", termErr)
+				t.Logf("Failed to terminate container: %v", termErr)
 			}
 		}()
 
@@ -2749,7 +2749,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	}
 	defer func() {
 		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-			t.Logf("Failed to broker container: %v", termErr)
+			t.Logf("Failed to terminate container: %v", termErr)
 		}
 	}()
 
@@ -3364,7 +3364,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 					Audience:            "https://mcp.example.com/http",
 					PublicResourceURL:   "https://mcp.example.com/http",
 					PublicAuthServerURL: "https://mcp.example.com/oauth",
-					BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
+					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
 					Scopes:              []string{"openid", "email"},
 					AuthURL:             "https://accounts.google.com/o/oauth2/v2/auth",
 					TokenURL:            "https://oauth2.googleapis.com/token",
@@ -3476,21 +3476,21 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
-					Mode:                "terminate",
+					Mode:                "gating",
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
+					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
 				},
 			},
 		},
 		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "terminate",
+			Mode:                "gating",
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			BrokerSecretKey:     "test-broker-secret-32-byte-key!!",
+			GatingSecretKey:     "test-gating-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -3749,7 +3749,7 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 				ClientID:        "upstream-client-id",
 				ClientSecret:    "upstream-client-secret",
 				Scopes:          []string{"openid", "email"},
-				BrokerSecretKey: "test-broker-secret-32-byte-key!!",
+				GatingSecretKey: "test-gating-secret-32-byte-key!!",
 			},
 		},
 	}
@@ -3964,7 +3964,7 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hashedSecret := jwe_auth.HashSHA256([]byte("test-broker-secret-32-byte-key!!"))
+	hashedSecret := jwe_auth.HashSHA256([]byte("test-gating-secret-32-byte-key!!"))
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
 	if err != nil {
 		return "", err
@@ -4207,13 +4207,13 @@ func TestOAuthStateStoreSizeCap(t *testing.T) {
 	})
 }
 
-// newBrokerModeTestApp creates an application configured for broker mode OAuth.
-func newBrokerModeTestApp(provider *testForwardModeOIDCProvider) *application {
+// newGatingModeTestApp creates an application configured for gating mode OAuth.
+func newGatingModeTestApp(provider *testForwardModeOIDCProvider) *application {
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:                true,
-				Mode:                   "broker",
+				Mode:                   "gating",
 				Issuer:                 provider.server.URL,
 				JWKSURL:                provider.server.URL + "/jwks",
 				AuthURL:                provider.server.URL + "/authorize",
@@ -4222,7 +4222,7 @@ func newBrokerModeTestApp(provider *testForwardModeOIDCProvider) *application {
 				ClientID:               "upstream-client-id",
 				ClientSecret:           "upstream-client-secret",
 				Scopes:                 []string{"openid", "email"},
-				BrokerSecretKey:        "test-broker-secret-32-byte-key!!",
+				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
 				AccessTokenTTLSeconds:  300,
 				RefreshTokenTTLSeconds: 86400,
 			},
@@ -4234,9 +4234,9 @@ func newBrokerModeTestApp(provider *testForwardModeOIDCProvider) *application {
 	}
 }
 
-// doBrokerAuthCodeFlow runs the full authorize→callback→token exchange and
+// doGatingAuthCodeFlow runs the full authorize→callback→token exchange and
 // returns the parsed token response.
-func doBrokerAuthCodeFlow(t *testing.T, app *application, provider *testForwardModeOIDCProvider, redirectURI, codeVerifier string) map[string]interface{} {
+func doGatingAuthCodeFlow(t *testing.T, app *application, provider *testForwardModeOIDCProvider, redirectURI, codeVerifier string) map[string]interface{} {
 	t.Helper()
 
 	clientID := registerOAuthBrowserClient(t, app, redirectURI)
@@ -4273,7 +4273,7 @@ func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken
 	return rr
 }
 
-func TestOAuthRefreshTokenBrokerMode(t *testing.T) {
+func TestOAuthRefreshTokenGatingMode(t *testing.T) {
 	const (
 		redirectURI  = "http://127.0.0.1:3334/callback"
 		codeVerifier = "test-code-verifier"
@@ -4295,13 +4295,13 @@ func TestOAuthRefreshTokenBrokerMode(t *testing.T) {
 		"email_verified": true,
 	})
 
-	app := newBrokerModeTestApp(provider)
-	resp := doBrokerAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	app := newGatingModeTestApp(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
 	clientID := resp["_client_id"].(string)
 
 	t.Run("auth_code_response_includes_refresh_token", func(t *testing.T) {
 		require.NotEmpty(t, resp["access_token"])
-		require.NotEmpty(t, resp["refresh_token"], "broker mode should return a refresh_token")
+		require.NotEmpty(t, resp["refresh_token"], "gating mode should return a refresh_token")
 		require.Equal(t, "Bearer", resp["token_type"])
 		require.Greater(t, resp["expires_in"].(float64), float64(0))
 	})
@@ -4359,8 +4359,8 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 		"email_verified": true,
 	})
 
-	app := newBrokerModeTestApp(provider)
-	resp := doBrokerAuthCodeFlow(t, app, provider, redirectURI, "verifier1")
+	app := newGatingModeTestApp(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, "verifier1")
 	clientID := resp["_client_id"].(string)
 
 	t.Run("wrong_client_id", func(t *testing.T) {
@@ -4443,7 +4443,7 @@ func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
 
 func TestOAuthMetadataAdvertisesRefreshToken(t *testing.T) {
 	provider := newTestForwardModeOIDCProvider(t, nil, nil)
-	app := newBrokerModeTestApp(provider)
+	app := newGatingModeTestApp(provider)
 
 	for _, path := range []string{
 		"/.well-known/oauth-authorization-server",
