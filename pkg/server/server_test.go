@@ -3488,6 +3488,46 @@ func TestValidateAuth(t *testing.T) {
 		require.Empty(t, oauth)
 		require.Nil(t, claims)
 	})
+
+	t.Run("both_enabled_jwe_only_rejected", func(t *testing.T) {
+		jweSecret := "this-is-a-32-byte-secret-key!!"
+		jwtSecret := "jwt-secret"
+		jweToken := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost", "port": float64(8123), "exp": time.Now().Add(time.Hour).Unix(),
+		}, []byte(jweSecret), []byte(jwtSecret))
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// Request with JWE token but no OAuth token
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("x-altinity-mcp-key", jweToken)
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when OAuth token is missing")
+	})
+
+	t.Run("both_enabled_oauth_only_rejected", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "key", JWTSecretKey: "jwt"},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// Request with OAuth token but no JWE token
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("Authorization", "Bearer some-oauth-token")
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when JWE token is missing")
+	})
 }
 
 // TestOAuthMCPToolExecution tests that OAuth works with MCP tool execution

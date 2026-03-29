@@ -967,22 +967,16 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oa
 		oauthErr = ErrMissingOAuthToken
 	}
 
-	// If both are enabled, at least one must succeed
+	// If both are enabled, both must succeed (AND semantics,
+	// consistent with createMCPAuthInjector for /http and /sse).
 	if jweEnabled && oauthEnabled {
-		if jweErr == nil || oauthErr == nil {
-			return jweToken, oauthToken, oauthClaims, nil
-		}
-		// Both failed, return the most relevant error
-		if jweToken != "" && oauthToken != "" {
-			return "", "", nil, fmt.Errorf("both JWE and OAuth validation failed")
-		}
-		if jweToken != "" {
+		if jweErr != nil {
 			return "", "", nil, jweErr
 		}
-		if oauthToken != "" {
+		if oauthErr != nil {
 			return "", "", nil, oauthErr
 		}
-		return "", "", nil, errors.New("authentication required (JWE or OAuth)")
+		return jweToken, oauthToken, oauthClaims, nil
 	}
 
 	// Only JWE enabled
