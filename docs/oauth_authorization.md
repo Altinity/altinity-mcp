@@ -36,7 +36,7 @@ Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The 
 ```yaml
 clickhouse:
   host: "clickhouse.example.com"
-  port: 8443
+  port: 8123
   protocol: http
 server:
   oauth:
@@ -86,8 +86,8 @@ This mode works even when ClickHouse has no native OAuth support.
 ```yaml
 clickhouse:
   host: "clickhouse.example.com"
-  port: 8443
-  protocol: http
+  port: 9000
+  protocol: tcp
   username: "default"
   password: "<CLICKHOUSE_PASSWORD>"
 server:
