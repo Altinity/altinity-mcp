@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -253,14 +254,6 @@ func ttlSeconds(value int, fallback int) int {
 	return fallback
 }
 
-func containsAnyString(list []string, target string) bool {
-	for _, item := range list {
-		if item == target {
-			return true
-		}
-	}
-	return false
-}
 
 func uniquePaths(paths ...string) []string {
 	result := make([]string, 0, len(paths))
@@ -504,14 +497,6 @@ func pkceChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func containsString(list []string, target string) bool {
-	for _, item := range list {
-		if item == target {
-			return true
-		}
-	}
-	return false
-}
 
 func decodeStringSlice(value interface{}) []string {
 	switch typed := value.(type) {
@@ -830,7 +815,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	client, err := parseStatelessRegisteredClient(clientClaims)
-	if err != nil || time.Now().Unix() > client.ExpiresAt || !containsString(client.RedirectURIs, redirectURI) {
+	if err != nil || time.Now().Unix() > client.ExpiresAt || !slices.Contains(client.RedirectURIs, redirectURI) {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
 	}
