@@ -425,30 +425,30 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
+			jweHasCredentials := false
 
 			if cfg.Server.JWE.Enabled {
 				token := r.PathValue("token")
 				if token == "" {
 					token = r.Header.Get("x-altinity-mcp-key")
 				}
-				if token == "" {
-					http.Error(w, "Missing JWE token", http.StatusUnauthorized)
-					return
+				if token != "" {
+					if err := a.mcpServer.ValidateJWEToken(token); err != nil {
+						http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
+						return
+					}
+					ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
+					jweHasCredentials = a.mcpServer.JWETokenHasCredentials(token)
 				}
-				if err := a.mcpServer.ValidateJWEToken(token); err != nil {
-					http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
-					return
-				}
-				ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
 			}
 
-			if cfg.Server.OAuth.Enabled {
+			if cfg.Server.OAuth.Enabled && !jweHasCredentials {
 				oauthToken := a.mcpServer.ExtractOAuthTokenFromRequest(r)
-				var claims *altinitymcp.OAuthClaims
 				if oauthToken == "" {
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
+				var claims *altinitymcp.OAuthClaims
 				if cfg.Server.OAuth.IsGatingMode() {
 					var err error
 					claims, err = a.mcpServer.ValidateOAuthToken(oauthToken)
@@ -459,6 +459,13 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 				}
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
 				ctx = context.WithValue(ctx, altinitymcp.OAuthClaimsKey, claims)
+			}
+
+			// At least one auth method must have succeeded
+			if cfg.Server.JWE.Enabled && ctx.Value(altinitymcp.JWETokenKey) == nil &&
+				cfg.Server.OAuth.Enabled && ctx.Value(altinitymcp.OAuthTokenKey) == nil {
+				http.Error(w, "Missing authentication", http.StatusUnauthorized)
+				return
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))

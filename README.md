@@ -334,13 +334,17 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 > **Note**: For Altinity Cloud deployments, use the provided endpoint URL with your organization-specific token.
 
-## OAuth 2.0 Authorization
+## Authentication and Authorization
 
-The MCP server supports OAuth 2.0 / OpenID Connect authentication with token forwarding to ClickHouse. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and have their Bearer tokens forwarded to ClickHouse for token-based authentication via `token_processors`.
+JWE takes priority — if present and valid and has valid credentials, use it and skip OAuth. If JWE is absent or has no credentials, fall through to OAuth. 
+
+### OAuth 2.0 Authorization
+
+The MCP server supports OAuth 2.0/OpenID Connect authentication, with token forwarding to ClickHouse or token verification locally. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and have their Bearer tokens forwarded to ClickHouse for token-based authentication via `token_processors`.
 
 For full setup instructions, provider-specific guides, and ClickHouse configuration, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
 
-## JWE Authentication
+### JWE Authentication
 
 When JWE authentication is enabled, the server expects tokens encrypted using AES Key Wrap (A256KW) and AES-GCM (A256GCM). These tokens contain ClickHouse® connection parameters:
 

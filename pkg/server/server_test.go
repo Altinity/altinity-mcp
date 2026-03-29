@@ -3016,14 +3016,22 @@ func TestOAuthAndJWECombined(t *testing.T) {
 			},
 		}, "test")
 
-		// Create request with only JWE token (no OAuth)
+		// Create request with only JWE token (no OAuth) — JWE has username, so it's self-sufficient
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// AND semantics: both must be present when both are enabled
-		_, _, _, err := srv.ValidateAuth(req)
-		require.Error(t, err, "should reject when OAuth token is missing")
+		jweTokenOut, oauthToken, oauthClaims, err := srv.ValidateAuth(req)
+		require.NoError(t, err, "JWE with credentials should succeed without OAuth")
+		require.NotEmpty(t, jweTokenOut)
+		require.Empty(t, oauthToken)
+		require.Nil(t, oauthClaims)
+
+		// Should be able to get ClickHouse client via JWE credentials
+		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, "", nil)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NoError(t, client.Close())
 	})
 
 	t.Run("both_enabled_oauth_only", func(t *testing.T) {
@@ -3046,14 +3054,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 
 		oauthToken := "opaque-access-token"
 
-		// Create request with only OAuth token (no JWE)
+		// Create request with only OAuth token (no JWE) → falls through to OAuth
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// AND semantics: both must be present when both are enabled
-		_, _, _, err := srv.ValidateAuth(req)
-		require.Error(t, err, "should reject when JWE token is missing")
+		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
+		require.NoError(t, err, "should succeed with OAuth when JWE token is absent")
+		require.Empty(t, jweTokenOut)
+		require.Equal(t, oauthToken, oauthTokenOut)
+		require.Nil(t, oauthClaims)
 	})
 
 	t.Run("both_enabled_both_provided", func(t *testing.T) {
@@ -3091,7 +3101,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 
 		oauthToken := "opaque-access-token"
 
-		// Create request with both tokens
+		// Create request with both tokens — JWE has credentials, takes priority
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req.Header.Set("x-oauth-token", oauthToken)
@@ -3100,11 +3110,11 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
-		require.Equal(t, oauthToken, oauthTokenOut)
+		require.Empty(t, oauthTokenOut, "OAuth should be skipped when JWE has credentials")
 		require.Nil(t, oauthClaims)
 
-		// Get client with OAuth headers forwarded
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, oauthTokenOut, oauthClaims)
+		// Get client via JWE credentials
+		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.NoError(t, client.Close())
@@ -3167,11 +3177,11 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-oauth-token", "opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// AND semantics: JWE is valid, OAuth is present (forward mode skips local
-		// validation), so both pass
-		jweTokenOut, _, _, err := srv.ValidateAuth(req)
+		// JWE has credentials (username) → takes priority, OAuth skipped entirely
+		jweTokenOut, oauthTokenOut, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
+		require.Empty(t, oauthTokenOut, "OAuth should be skipped when JWE has credentials")
 	})
 
 	t.Run("both_enabled_jwe_invalid_oauth_valid", func(t *testing.T) {
@@ -3478,11 +3488,12 @@ func TestValidateAuth(t *testing.T) {
 		require.Nil(t, claims)
 	})
 
-	t.Run("both_enabled_jwe_only_rejected", func(t *testing.T) {
+	t.Run("both_enabled_jwe_with_credentials_skips_oauth", func(t *testing.T) {
 		jweSecret := "this-is-a-32-byte-secret-key!!"
 		jwtSecret := "jwt-secret"
 		jweToken := generateJWEToken(t, map[string]interface{}{
-			"host": "localhost", "port": float64(8123), "exp": time.Now().Add(time.Hour).Unix(),
+			"host": "localhost", "port": float64(8123), "username": "default",
+			"exp": time.Now().Add(time.Hour).Unix(),
 		}, []byte(jweSecret), []byte(jwtSecret))
 
 		srv := &ClickHouseJWEServer{
@@ -3494,28 +3505,131 @@ func TestValidateAuth(t *testing.T) {
 			},
 		}
 
-		// Request with JWE token but no OAuth token
+		// Request with JWE token (has credentials) but no OAuth token → should succeed
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		_, _, _, err := srv.ValidateAuth(req)
-		require.Error(t, err, "should reject when OAuth token is missing")
+		jwe, oauth, claims, err := srv.ValidateAuth(req)
+		require.NoError(t, err, "JWE with credentials should succeed without OAuth")
+		require.NotEmpty(t, jwe)
+		require.Empty(t, oauth)
+		require.Nil(t, claims)
 	})
 
-	t.Run("both_enabled_oauth_only_rejected", func(t *testing.T) {
+	t.Run("both_enabled_jwe_no_credentials_oauth_fallback", func(t *testing.T) {
+		jweSecret := "this-is-a-32-byte-secret-key!!"
+		jwtSecret := "jwt-secret"
+		// JWE token without username → no credentials
+		jweToken := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost", "port": float64(8123),
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}, []byte(jweSecret), []byte(jwtSecret))
+
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
-					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "key", JWTSecretKey: "jwt"},
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
 					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
 				},
 			},
 		}
 
-		// Request with OAuth token but no JWE token
+		// JWE without credentials + OAuth token → falls through to OAuth
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("x-altinity-mcp-key", jweToken)
+		req.Header.Set("Authorization", "Bearer some-oauth-token")
+		jwe, oauth, _, err := srv.ValidateAuth(req)
+		require.NoError(t, err)
+		require.NotEmpty(t, jwe)
+		require.Equal(t, "some-oauth-token", oauth)
+	})
+
+	t.Run("both_enabled_jwe_no_credentials_no_oauth_rejected", func(t *testing.T) {
+		jweSecret := "this-is-a-32-byte-secret-key!!"
+		jwtSecret := "jwt-secret"
+		jweToken := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost", "port": float64(8123),
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}, []byte(jweSecret), []byte(jwtSecret))
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// JWE without credentials + no OAuth token → should fail
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("x-altinity-mcp-key", jweToken)
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when JWE has no credentials and OAuth is missing")
+	})
+
+	t.Run("both_enabled_oauth_only_succeeds", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt"},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// No JWE token, only OAuth → falls through to OAuth
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("Authorization", "Bearer some-oauth-token")
+		jwe, oauth, _, err := srv.ValidateAuth(req)
+		require.NoError(t, err, "should succeed with OAuth when JWE token is absent")
+		require.Empty(t, jwe)
+		require.Equal(t, "some-oauth-token", oauth)
+	})
+
+	t.Run("both_enabled_jwe_invalid_oauth_valid_rejected", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt"},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// Invalid JWE + valid OAuth → hard error (invalid JWE is always a failure)
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("x-altinity-mcp-key", "invalid-jwe-token")
+		req.Header.Set("Authorization", "Bearer some-oauth-token")
 		_, _, _, err := srv.ValidateAuth(req)
-		require.Error(t, err, "should reject when JWE token is missing")
+		require.Error(t, err, "invalid JWE should be a hard error even with valid OAuth")
+	})
+
+	t.Run("both_enabled_both_provided_jwe_priority", func(t *testing.T) {
+		jweSecret := "this-is-a-32-byte-secret-key!!"
+		jwtSecret := "jwt-secret"
+		jweToken := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost", "port": float64(8123), "username": "default",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}, []byte(jweSecret), []byte(jwtSecret))
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
+					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+				},
+			},
+		}
+
+		// Both tokens provided, JWE has credentials → JWE takes priority, OAuth skipped
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
+		req.Header.Set("x-altinity-mcp-key", jweToken)
+		req.Header.Set("Authorization", "Bearer some-oauth-token")
+		jwe, oauth, claims, err := srv.ValidateAuth(req)
+		require.NoError(t, err)
+		require.NotEmpty(t, jwe)
+		require.Empty(t, oauth, "OAuth should be skipped when JWE has credentials")
+		require.Nil(t, claims)
 	})
 }
 
@@ -3633,16 +3747,12 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// Validate both
+		// JWE has credentials (username) → takes priority, OAuth is skipped
 		jweOut, oauthOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweOut)
-		require.Equal(t, oauthToken, oauthOut)
+		require.Empty(t, oauthOut, "OAuth should be skipped when JWE has credentials")
 		require.Nil(t, oauthClaims)
-
-		// Forward mode passes opaque token through directly
-		headers := srv.BuildClickHouseHeadersFromOAuth(oauthOut, oauthClaims)
-		require.Equal(t, "Bearer opaque-access-token", headers["Authorization"])
 	})
 }
 

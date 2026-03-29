@@ -363,6 +363,16 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 	return nil
 }
 
+// JWETokenHasCredentials returns true if the JWE token contains a username claim
+func (s *ClickHouseJWEServer) JWETokenHasCredentials(token string) bool {
+	claims, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+	if err != nil {
+		return false
+	}
+	username, _ := claims["username"].(string)
+	return username != ""
+}
+
 // ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
 func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) string {
 	// Try Authorization header (Bearer token)
@@ -932,8 +942,9 @@ func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, clai
 	return headers
 }
 
-// ValidateAuth validates authentication (supports both JWE and OAuth)
-// Returns nil error if at least one enabled auth method validates successfully
+// ValidateAuth validates authentication using priority/fallback semantics.
+// JWE takes priority: if present and valid with credentials, OAuth is skipped.
+// If JWE is absent or has no credentials, falls through to OAuth.
 func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oauthToken string, oauthClaims *OAuthClaims, err error) {
 	jweEnabled := s.Config.Server.JWE.Enabled
 	oauthEnabled := s.Config.Server.OAuth.Enabled
@@ -943,49 +954,49 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oa
 		return "", "", nil, nil
 	}
 
-	// Extract tokens
-	jweToken = s.ExtractTokenFromRequest(r)
-	oauthToken = s.ExtractOAuthTokenFromRequest(r)
-
-	var jweErr, oauthErr error
-
-	// Validate JWE if enabled
-	if jweEnabled && jweToken != "" {
-		jweErr = s.ValidateJWEToken(jweToken)
-	} else if jweEnabled {
-		jweErr = jwe_auth.ErrMissingToken
-	}
-
-	// Validate OAuth if enabled
-	if oauthEnabled && oauthToken != "" {
-		if s.oauthRequiresLocalValidation() {
-			oauthClaims, oauthErr = s.ValidateOAuthToken(oauthToken)
+	// Try JWE first
+	if jweEnabled {
+		if oauthEnabled {
+			// When OAuth is also enabled, only extract JWE from unambiguous sources
+			// (path value / x-altinity-mcp-key) to avoid conflicting with OAuth Bearer.
+			jweToken = r.PathValue("token")
+			if jweToken == "" {
+				jweToken = r.Header.Get("x-altinity-mcp-key")
+			}
 		} else {
-			oauthErr = nil
+			jweToken = s.ExtractTokenFromRequest(r)
 		}
-	} else if oauthEnabled {
-		oauthErr = ErrMissingOAuthToken
+		if jweToken != "" {
+			if err := s.ValidateJWEToken(jweToken); err != nil {
+				return "", "", nil, err // JWE present but invalid → hard error
+			}
+			if s.JWETokenHasCredentials(jweToken) {
+				return jweToken, "", nil, nil // JWE sufficient, skip OAuth
+			}
+		}
 	}
 
-	// If both are enabled, both must succeed (AND semantics,
-	// consistent with createMCPAuthInjector for /http and /sse).
-	if jweEnabled && oauthEnabled {
-		if jweErr != nil {
-			return "", "", nil, jweErr
+	// Fall through to OAuth
+	if oauthEnabled {
+		oauthToken = s.ExtractOAuthTokenFromRequest(r)
+		if oauthToken == "" {
+			return jweToken, "", nil, ErrMissingOAuthToken
 		}
-		if oauthErr != nil {
-			return "", "", nil, oauthErr
+		if s.oauthRequiresLocalValidation() {
+			oauthClaims, err = s.ValidateOAuthToken(oauthToken)
+			if err != nil {
+				return jweToken, "", nil, err
+			}
 		}
 		return jweToken, oauthToken, oauthClaims, nil
 	}
 
-	// Only JWE enabled
-	if jweEnabled {
-		return jweToken, "", nil, jweErr
+	// JWE enabled but no token and no OAuth
+	if jweEnabled && jweToken == "" {
+		return "", "", nil, jwe_auth.ErrMissingToken
 	}
 
-	// Only OAuth enabled
-	return "", oauthToken, oauthClaims, oauthErr
+	return jweToken, "", nil, nil
 }
 
 // GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
