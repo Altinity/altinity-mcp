@@ -3016,22 +3016,14 @@ func TestOAuthAndJWECombined(t *testing.T) {
 			},
 		}, "test")
 
-		// Create request with only JWE token
+		// Create request with only JWE token (no OAuth)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		jweTokenOut, oauthToken, oauthClaims, err := srv.ValidateAuth(req)
-		require.NoError(t, err)
-		require.NotEmpty(t, jweTokenOut)
-		require.Empty(t, oauthToken)
-		require.Nil(t, oauthClaims)
-
-		// Should be able to get ClickHouse client
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, "", nil)
-		require.NoError(t, err)
-		require.NotNil(t, client)
-		require.NoError(t, client.Close())
+		// AND semantics: both must be present when both are enabled
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when OAuth token is missing")
 	})
 
 	t.Run("both_enabled_oauth_only", func(t *testing.T) {
@@ -3054,16 +3046,14 @@ func TestOAuthAndJWECombined(t *testing.T) {
 
 		oauthToken := "opaque-access-token"
 
-		// Create request with only OAuth token
+		// Create request with only OAuth token (no JWE)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
-		require.NoError(t, err)
-		require.Empty(t, jweTokenOut)
-		require.Equal(t, oauthToken, oauthTokenOut)
-		require.Nil(t, oauthClaims)
+		// AND semantics: both must be present when both are enabled
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when JWE token is missing")
 	})
 
 	t.Run("both_enabled_both_provided", func(t *testing.T) {
@@ -3177,7 +3167,8 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-oauth-token", "opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// Should succeed because JWE is valid (OR logic when both enabled)
+		// AND semantics: JWE is valid, OAuth is present (forward mode skips local
+		// validation), so both pass
 		jweTokenOut, _, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
@@ -3208,11 +3199,9 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// Should succeed because OAuth is valid (OR logic when both enabled)
-		_, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
-		require.NoError(t, err)
-		require.Equal(t, oauthToken, oauthTokenOut)
-		require.Nil(t, oauthClaims)
+		// AND semantics: JWE token is invalid, so request should fail
+		_, _, _, err := srv.ValidateAuth(req)
+		require.Error(t, err, "should reject when JWE token is invalid")
 	})
 }
 
