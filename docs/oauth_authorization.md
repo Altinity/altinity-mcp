@@ -2,50 +2,13 @@
 
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server.
 
-## Quick Start
-
-### Forward mode: ClickHouse validates tokens via token_processors
-
-Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The MCP server passes the bearer token through; ClickHouse validates it.
-
-```yaml
-server:
-  oauth:
-    enabled: true
-    mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
-    issuer: "https://accounts.google.com"
-    client_id: "<YOUR_CLIENT_ID>"
-    client_secret: "<YOUR_CLIENT_SECRET>"
-    scopes: ["openid", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
-```
-
-### Gating mode: MCP server validates tokens locally
-
-Use this when ClickHouse has no OAuth support. The MCP server authenticates users via the upstream IdP, mints its own tokens, and connects to ClickHouse with static credentials.
-
-```yaml
-server:
-  oauth:
-    enabled: true
-    mode: "gating"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
-    issuer: "https://accounts.google.com"
-    public_auth_server_url: "https://mcp.example.com"
-    client_id: "<YOUR_CLIENT_ID>"
-    client_secret: "<YOUR_CLIENT_SECRET>"
-    scopes: ["openid", "email"]
-    allowed_email_domains: ["example.com"]
-```
-
 ## Overview
 
 OAuth 2.0 authorization supports two modes.
 
 ### Forward mode
+
+Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The MCP server passes the bearer token through; ClickHouse validates it.
 
 1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token
 2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header
@@ -70,7 +33,29 @@ OAuth 2.0 authorization supports two modes.
 └────────┘                        └──────────┘      └────────────┘
 ```
 
+```yaml
+clickhouse:
+  host: "clickhouse.example.com"
+  port: 8443
+  protocol: http
+server:
+  oauth:
+    enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    issuer: "https://accounts.google.com"
+    client_id: "<YOUR_CLIENT_ID>"
+    client_secret: "<YOUR_CLIENT_SECRET>"
+    scopes: ["openid", "email"]
+    forward_to_clickhouse: true
+    forward_access_token: true
+    clear_clickhouse_credentials: true
+```
+
+
 ### Gating mode
+
+Use this when ClickHouse has no OAuth support. The MCP server itself authenticates users via the upstream IdP, mints its own tokens, and connects to ClickHouse with static credentials.
 
 1. An MCP client authenticates with an Identity Provider (IdP) via browser login
 2. The MCP server validates the upstream identity (email domain, hosted domain, email verification)
@@ -97,6 +82,27 @@ This mode works even when ClickHouse has no native OAuth support.
 │        │      query results     │          │      │            │
 └────────┘                        └──────────┘      └────────────┘
 ```
+
+```yaml
+clickhouse:
+  host: "clickhouse.example.com"
+  port: 8443
+  protocol: http
+  username: "default"
+  password: "<CLICKHOUSE_PASSWORD>"
+server:
+  oauth:
+    enabled: true
+    mode: "gating"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    issuer: "https://accounts.google.com"
+    public_auth_server_url: "https://mcp.example.com"
+    client_id: "<YOUR_CLIENT_ID>"
+    client_secret: "<YOUR_CLIENT_SECRET>"
+    scopes: ["openid", "email"]
+    allowed_email_domains: ["example.com"]
+```
+
 
 ## Requirements
 
