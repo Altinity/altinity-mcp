@@ -498,7 +498,7 @@ func buildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 
 // Helper functions
 
-var singleLineCommentRE = regexp.MustCompile(`^--.+`)
+var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
 var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
 
 // isSelectQuery determines if a query is a SELECT query

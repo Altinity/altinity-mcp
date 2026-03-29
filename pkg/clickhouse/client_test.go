@@ -212,6 +212,10 @@ func TestUtilityFunctions(t *testing.T) {
 		// Test with both comment types
 		require.True(t, isSelectQuery("-- line comment\n/* block comment */ SELECT * FROM table"))
 		require.False(t, isSelectQuery("-- line comment\n/* block comment */ INSERT INTO table VALUES (1)"))
+		// Mid-query single-line comments (multiline input)
+		require.True(t, isSelectQuery("SELECT 1\n-- mid comment\nFROM table"))
+		require.False(t, isSelectQuery("-- first line\n-- second line\nINSERT INTO table VALUES (1)"))
+		require.True(t, isSelectQuery("\n-- leading blank\n\nSELECT 1"))
 		// Additional query types
 		require.True(t, isSelectQuery("DESC table"))
 		require.True(t, isSelectQuery("EXISTS (SELECT 1)"))

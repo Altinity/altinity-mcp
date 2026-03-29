@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1637,7 +1636,6 @@ func sqlLiteral(jsonType string, v interface{}) string {
 		}
 		return "0"
 	default: // string
-		// URL-escape then single-quote, minimal safety; ClickHouse expects single-quoted strings
 		s := ""
 		switch x := v.(type) {
 		case string:
@@ -1646,7 +1644,10 @@ func sqlLiteral(jsonType string, v interface{}) string {
 			b, _ := json.Marshal(v)
 			s = string(b)
 		}
-		return "'" + strings.ReplaceAll(url.QueryEscape(s), "'", "''") + "'"
+		// ClickHouse single-quoted string literal escaping: escape backslashes then single quotes
+		s = strings.ReplaceAll(s, "\\", "\\\\")
+		s = strings.ReplaceAll(s, "'", "\\'")
+		return "'" + s + "'"
 	}
 }
 
@@ -2129,9 +2130,15 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 }
 
 // Helper functions
+
+var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
+var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+
 func isSelectQuery(query string) bool {
+	query = multiLineCommentRE.ReplaceAllString(query, "")
+	query = singleLineCommentRE.ReplaceAllString(query, "")
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
+	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
 }
 
 func hasLimitClause(query string) bool {

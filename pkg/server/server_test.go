@@ -685,9 +685,13 @@ func TestHelperFunctions(t *testing.T) {
 		// boolean
 		require.Equal(t, "1", sqlLiteral("boolean", true))
 		require.Equal(t, "0", sqlLiteral("boolean", false))
-		// string
-		out := sqlLiteral("string", "a'b c")
-		require.Contains(t, out, "'")
+		// string: spaces preserved, quotes escaped
+		require.Equal(t, "'hello world'", sqlLiteral("string", "hello world"))
+		require.Equal(t, `'O\'Brien'`, sqlLiteral("string", "O'Brien"))
+		require.Equal(t, `'a\\b'`, sqlLiteral("string", `a\b`))
+		require.Equal(t, `'plain'`, sqlLiteral("string", "plain"))
+		// string: injection attempts produce escaped literals, not SQL syntax
+		require.Equal(t, `'\') OR 1=1 --'`, sqlLiteral("string", "') OR 1=1 --"))
 	})
 
 	t.Run("buildDescription", func(t *testing.T) {
