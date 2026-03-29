@@ -573,9 +573,12 @@ Google uses the standard `openid` token processor type:
         <type>openid</type>
         <configuration_endpoint>https://accounts.google.com/.well-known/openid-configuration</configuration_endpoint>
         <token_cache_lifetime>60</token_cache_lifetime>
+        <username_claim>email</username_claim>
     </google>
 </token_processors>
 ```
+
+Default for `username_claim` is `sub`, that means IdP users will be shown in clickhouse (processlist, query_log, etc) as numerical ids.  To see emails, set `<username_claim>email</username_claim>`
 
 **References:**
 - [Google - OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
