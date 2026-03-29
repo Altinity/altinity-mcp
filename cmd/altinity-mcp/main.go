@@ -780,8 +780,10 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 	}
 
-	// If JWE auth is disabled, test ClickHouse connection for readiness
-	if !cfg.Server.JWE.Enabled {
+	// Test ClickHouse connection for readiness, unless credentials are per-request
+	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode() && cfg.Server.OAuth.ClearClickHouseCredentials)
+	if !credentialsArePerRequest {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
 			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
@@ -810,7 +812,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 		status["clickhouse"] = "connected"
 	} else {
-		status["auth"] = "jwe_enabled"
+		status["auth"] = "per_request_credentials"
 	}
 
 	w.Header().Set("Content-Type", "application/json")

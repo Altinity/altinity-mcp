@@ -16,7 +16,7 @@ cat > "${TOKEN_PROCESSOR_FILE}" <<'EOF'
 <clickhouse>
     <token_processors>
         <google>
-            <type>jwt_dynamic_jwks</type>
+            <type>openid</type>
             <userinfo_endpoint>https://openidconnect.googleapis.com/v1/userinfo</userinfo_endpoint>
             <token_introspection_endpoint>https://oauth2.googleapis.com/tokeninfo</token_introspection_endpoint>
             <jwks_uri>https://www.googleapis.com/oauth2/v3/certs</jwks_uri>
@@ -34,7 +34,7 @@ cat > "${TOKEN_PROCESSOR_FILE}" <<'EOF'
         <token>
             <processor>google</processor>
             <common_roles>
-                <default_role />
+                <oauth_google_demo_role />
             </common_roles>
         </token>
     </user_directories>
@@ -46,10 +46,10 @@ cat > "${STARTUP_SCRIPTS_FILE}" <<'EOF'
 <clickhouse>
     <startup_scripts>
         <scripts>
-            <query>CREATE ROLE OR REPLACE default_role</query>
+            <query>CREATE ROLE OR REPLACE oauth_google_demo_role</query>
         </scripts>
         <scripts>
-            <query>GRANT SELECT ON *.* TO default_role</query>
+            <query>GRANT SELECT ON *.* TO oauth_google_demo_role</query>
         </scripts>
     </startup_scripts>
 </clickhouse>

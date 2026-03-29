@@ -433,7 +433,7 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 
 // Health handler tests
 func TestHealthHandler_Additions(t *testing.T) {
-	// JWE enabled -> should return 200 and auth=jwe_enabled
+	// JWE enabled -> should return 200 and auth=per_request_credentials
 	t.Run("jwe_enabled", func(t *testing.T) {
 		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
 		rr := httptest.NewRecorder()
@@ -442,7 +442,7 @@ func TestHealthHandler_Additions(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "jwe_enabled", body["auth"])
+		require.Equal(t, "per_request_credentials", body["auth"])
 	})
 
 	// JWE disabled with invalid CH -> 503
@@ -585,7 +585,7 @@ func TestHealthHandler(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, w.Code)
 		require.Contains(t, w.Body.String(), "healthy")
-		require.Contains(t, w.Body.String(), "jwe_enabled")
+		require.Contains(t, w.Body.String(), "per_request_credentials")
 	})
 
 	t.Run("clickhouse_connection_failure", func(t *testing.T) {
