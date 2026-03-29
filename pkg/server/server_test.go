@@ -205,6 +205,32 @@ func TestOpenAPIHandlers(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
 
+	t.Run("combined_auth_oauth_only_via_openapi", func(t *testing.T) {
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "this-is-a-32-byte-secret-key!!",
+					JWTSecretKey: "jwt-secret",
+				},
+				OAuth: config.OAuthConfig{
+					Enabled: true,
+					Mode:    "forward",
+				},
+			},
+		}, "test")
+
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
+		req.Header.Set("Authorization", "Bearer opaque-access-token")
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	})
+
 	t.Run("dynamic_tool_execution", func(t *testing.T) {
 		// Create view
 		ctx := context.Background()
@@ -835,8 +861,55 @@ func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 	var schema map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
 	paths := schema["paths"].(map[string]interface{})
-	_, ok := paths["/{jwe_token}/openapi/custom_db_view"]
+	_, ok := paths["/openapi/custom_db_view"]
 	require.True(t, ok)
+}
+
+func TestOpenAPI_SchemaIncludesCombinedAuthPaths(t *testing.T) {
+	s := &ClickHouseJWEServer{
+		Version: "test-version",
+		Config: config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      true,
+					JWESecretKey: "this-is-a-32-byte-secret-key!!",
+					JWTSecretKey: "jwt-secret",
+				},
+				OAuth: config.OAuthConfig{
+					Enabled: true,
+					Mode:    "forward",
+				},
+			},
+		},
+		dynamicTools: map[string]dynamicToolMeta{
+			"custom_db_view": {
+				ToolName:    "custom_db_view",
+				Description: "desc",
+				Annotations: buildDynamicToolAnnotations(nil),
+				Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
+			},
+		},
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/openapi", nil)
+	ctx := context.WithValue(req.Context(), CHJWEServerKey, s)
+	req = req.WithContext(ctx)
+	s.ServeOpenAPISchema(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var schema map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
+	paths := schema["paths"].(map[string]interface{})
+	_, hasOAuthFallbackExecute := paths["/openapi/execute_query"]
+	_, hasTokenizedExecute := paths["/{jwe_token}/openapi/execute_query"]
+	_, hasOAuthFallbackTool := paths["/openapi/custom_db_view"]
+	_, hasTokenizedTool := paths["/{jwe_token}/openapi/custom_db_view"]
+	require.True(t, hasOAuthFallbackExecute)
+	require.True(t, hasTokenizedExecute)
+	require.True(t, hasOAuthFallbackTool)
+	require.True(t, hasTokenizedTool)
 }
 
 // TestResourceHandlers_NoServerInContext tests error handling when server is missing from context
@@ -1218,7 +1291,7 @@ func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	var schema map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &schema))
 	paths := schema["paths"].(map[string]interface{})
-	_, ok = paths["/{jwe_token}/openapi/lazy_default_v_lazy"]
+	_, ok = paths["/openapi/lazy_default_v_lazy"]
 	require.True(t, ok)
 }
 
@@ -1421,7 +1494,7 @@ func TestHandleExecuteQueryOpenAPI_MethodNotAllowed(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleExecuteQueryOpenAPI(rr, req, "")
+	srv.handleExecuteQueryOpenAPI(rr, req)
 
 	require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
@@ -1440,7 +1513,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req, "")
+		srv.handleExecuteQueryOpenAPI(rr, req)
 
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
@@ -1450,7 +1523,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req, "")
+		srv.handleExecuteQueryOpenAPI(rr, req)
 
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
@@ -1460,7 +1533,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req, "")
+		srv.handleExecuteQueryOpenAPI(rr, req)
 
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
@@ -1486,7 +1559,7 @@ func TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleExecuteQueryOpenAPI(rr, req, "")
+	srv.handleExecuteQueryOpenAPI(rr, req)
 
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 	require.Contains(t, rr.Body.String(), "Limit cannot exceed 10")
@@ -1505,7 +1578,7 @@ func TestHandleDynamicToolOpenAPI_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/openapi/tool", nil)
 	rr := httptest.NewRecorder()
 
-	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
+	srv.handleDynamicToolOpenAPI(rr, req, meta)
 
 	require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
@@ -1536,7 +1609,7 @@ func TestHandleDynamicToolOpenAPI_MissingRequiredParam(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
+	srv.handleDynamicToolOpenAPI(rr, req, meta)
 
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 	require.Contains(t, rr.Body.String(), "Missing required parameter")
@@ -1916,7 +1989,7 @@ func TestHandleDynamicToolOpenAPI_QueryError(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
+	srv.handleDynamicToolOpenAPI(rr, req, meta)
 
 	require.Equal(t, http.StatusInternalServerError, rr.Code)
 	require.Contains(t, rr.Body.String(), "Query execution failed")
@@ -1935,7 +2008,7 @@ func TestHandleExecuteQueryOpenAPI_QueryError(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleExecuteQueryOpenAPI(rr, req, "")
+	srv.handleExecuteQueryOpenAPI(rr, req)
 
 	require.Equal(t, http.StatusInternalServerError, rr.Code)
 	require.Contains(t, rr.Body.String(), "Query execution failed")
@@ -1955,7 +2028,7 @@ func TestHandleExecuteQueryOpenAPI_NonSelectWithLimit(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleExecuteQueryOpenAPI(rr, req, "")
+	srv.handleExecuteQueryOpenAPI(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 }
@@ -1999,7 +2072,7 @@ func TestHandleDynamicToolOpenAPI_WithOptionalParams(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
-	srv.handleDynamicToolOpenAPI(rr, req, "", meta)
+	srv.handleDynamicToolOpenAPI(rr, req, meta)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 }
@@ -3021,14 +3094,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		jweTokenOut, oauthToken, oauthClaims, err := srv.ValidateAuth(req)
+		jweTokenOut, jweClaims, oauthToken, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err, "JWE with credentials should succeed without OAuth")
 		require.NotEmpty(t, jweTokenOut)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauthToken)
 		require.Nil(t, oauthClaims)
 
-		// Should be able to get ClickHouse client via JWE credentials
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, "", nil)
+		// Should be able to get ClickHouse client via JWE credentials without reparsing JWE.
+		ctxWithClaims := context.WithValue(ctx, JWEClaimsKey, jweClaims)
+		client, err := srv.GetClickHouseClientWithOAuth(ctxWithClaims, jweTokenOut, "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.NoError(t, client.Close())
@@ -3059,9 +3134,10 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
+		jweTokenOut, jweClaims, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err, "should succeed with OAuth when JWE token is absent")
 		require.Empty(t, jweTokenOut)
+		require.Nil(t, jweClaims)
 		require.Equal(t, oauthToken, oauthTokenOut)
 		require.Nil(t, oauthClaims)
 	})
@@ -3107,14 +3183,16 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req.Header.Set("x-oauth-token", oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		jweTokenOut, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
+		jweTokenOut, jweClaims, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauthTokenOut, "OAuth should be skipped when JWE has credentials")
 		require.Nil(t, oauthClaims)
 
-		// Get client via JWE credentials
-		client, err := srv.GetClickHouseClientWithOAuth(ctx, jweTokenOut, "", nil)
+		// Get client via JWE credentials without reparsing JWE.
+		ctxWithClaims := context.WithValue(ctx, JWEClaimsKey, jweClaims)
+		client, err := srv.GetClickHouseClientWithOAuth(ctxWithClaims, jweTokenOut, "", nil)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.NoError(t, client.Close())
@@ -3138,7 +3216,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		_, _, _, err := srv.ValidateAuth(req)
+		_, _, _, _, err := srv.ValidateAuth(req)
 		require.Error(t, err)
 	})
 
@@ -3164,23 +3242,26 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled: true,
-					Mode:    "forward",
-					Issuer:  provider.server.URL,
-					JWKSURL: provider.server.URL + "/jwks",
+					Enabled:         true,
+					Mode:            "gating",
+					Issuer:          provider.server.URL,
+					JWKSURL:         provider.server.URL + "/jwks",
+					Audience:        "https://mcp.example.com",
+					GatingSecretKey: "test-gating-secret-32-byte-key!!",
 				},
 			},
 		}, "test")
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		req.Header.Set("x-oauth-token", "opaque-access-token")
+		req.Header.Set("x-oauth-token", "not-a-valid-oauth-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
-		// JWE has credentials (username) → takes priority, OAuth skipped entirely
-		jweTokenOut, oauthTokenOut, _, err := srv.ValidateAuth(req)
+		// JWE has credentials (username) → takes priority, OAuth skipped entirely.
+		jweTokenOut, jweClaims, oauthTokenOut, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweTokenOut)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauthTokenOut, "OAuth should be skipped when JWE has credentials")
 	})
 
@@ -3210,7 +3291,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		// AND semantics: JWE token is invalid, so request should fail
-		_, _, _, err := srv.ValidateAuth(req)
+		_, _, _, _, err := srv.ValidateAuth(req)
 		require.Error(t, err, "should reject when JWE token is invalid")
 	})
 }
@@ -3481,9 +3562,10 @@ func TestValidateAuth(t *testing.T) {
 		}
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		jwe, oauth, claims, err := srv.ValidateAuth(req)
+		jwe, jweClaims, oauth, claims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.Empty(t, jwe)
+		require.Nil(t, jweClaims)
 		require.Empty(t, oauth)
 		require.Nil(t, claims)
 	})
@@ -3508,9 +3590,10 @@ func TestValidateAuth(t *testing.T) {
 		// Request with JWE token (has credentials) but no OAuth token → should succeed
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		jwe, oauth, claims, err := srv.ValidateAuth(req)
+		jwe, jweClaims, oauth, claims, err := srv.ValidateAuth(req)
 		require.NoError(t, err, "JWE with credentials should succeed without OAuth")
 		require.NotEmpty(t, jwe)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauth)
 		require.Nil(t, claims)
 	})
@@ -3537,9 +3620,10 @@ func TestValidateAuth(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req.Header.Set("Authorization", "Bearer some-oauth-token")
-		jwe, oauth, _, err := srv.ValidateAuth(req)
+		jwe, jweClaims, oauth, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jwe)
+		require.NotNil(t, jweClaims)
 		require.Equal(t, "some-oauth-token", oauth)
 	})
 
@@ -3563,7 +3647,7 @@ func TestValidateAuth(t *testing.T) {
 		// JWE without credentials + no OAuth token → should fail
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
-		_, _, _, err := srv.ValidateAuth(req)
+		_, _, _, _, err := srv.ValidateAuth(req)
 		require.Error(t, err, "should reject when JWE has no credentials and OAuth is missing")
 	})
 
@@ -3580,9 +3664,10 @@ func TestValidateAuth(t *testing.T) {
 		// No JWE token, only OAuth → falls through to OAuth
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("Authorization", "Bearer some-oauth-token")
-		jwe, oauth, _, err := srv.ValidateAuth(req)
+		jwe, jweClaims, oauth, _, err := srv.ValidateAuth(req)
 		require.NoError(t, err, "should succeed with OAuth when JWE token is absent")
 		require.Empty(t, jwe)
+		require.Nil(t, jweClaims)
 		require.Equal(t, "some-oauth-token", oauth)
 	})
 
@@ -3600,7 +3685,7 @@ func TestValidateAuth(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", "invalid-jwe-token")
 		req.Header.Set("Authorization", "Bearer some-oauth-token")
-		_, _, _, err := srv.ValidateAuth(req)
+		_, _, _, _, err := srv.ValidateAuth(req)
 		require.Error(t, err, "invalid JWE should be a hard error even with valid OAuth")
 	})
 
@@ -3625,9 +3710,10 @@ func TestValidateAuth(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query", nil)
 		req.Header.Set("x-altinity-mcp-key", jweToken)
 		req.Header.Set("Authorization", "Bearer some-oauth-token")
-		jwe, oauth, claims, err := srv.ValidateAuth(req)
+		jwe, jweClaims, oauth, claims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jwe)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauth, "OAuth should be skipped when JWE has credentials")
 		require.Nil(t, claims)
 	})
@@ -3748,9 +3834,10 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		// JWE has credentials (username) → takes priority, OAuth is skipped
-		jweOut, oauthOut, oauthClaims, err := srv.ValidateAuth(req)
+		jweOut, jweClaims, oauthOut, oauthClaims, err := srv.ValidateAuth(req)
 		require.NoError(t, err)
 		require.NotEmpty(t, jweOut)
+		require.NotNil(t, jweClaims)
 		require.Empty(t, oauthOut, "OAuth should be skipped when JWE has credentials")
 		require.Nil(t, oauthClaims)
 	})

@@ -211,6 +211,36 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	})
 }
 
+func TestRoutePatterns(t *testing.T) {
+	t.Run("combined_auth_transport_routes_include_tokenized_and_pathless", func(t *testing.T) {
+		require.Equal(t,
+			[]string{"/{token}/http", "/http"},
+			transportRoutePatterns(true, true, "http"),
+		)
+		require.Equal(t,
+			[]string{"/{token}/sse", "/sse"},
+			transportRoutePatterns(true, true, "sse"),
+		)
+	})
+
+	t.Run("combined_auth_openapi_routes_include_oauth_fallback_subpaths", func(t *testing.T) {
+		require.Equal(t,
+			[]string{
+				"/{token}/openapi",
+				"/{token}/openapi/",
+				"/{token}/openapi/list_tables",
+				"/{token}/openapi/describe_table",
+				"/{token}/openapi/execute_query",
+				"/openapi/",
+				"/openapi/list_tables",
+				"/openapi/describe_table",
+				"/openapi/execute_query",
+			},
+			openAPIRoutePatterns(true, true),
+		)
+	})
+}
+
 // TestOverrideWithCLIFlags tests CLI flag override functionality
 func TestOverrideWithCLIFlags(t *testing.T) {
 	t.Run("protocol_override", func(t *testing.T) {
@@ -3496,6 +3526,14 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 
 	jweToken, err := jwe_auth.GenerateJWEToken(map[string]interface{}{"host": "localhost", "port": 8123, "exp": time.Now().Add(time.Hour).Unix()}, []byte("this-is-a-32-byte-secret-key!!"), []byte("jwt-secret"))
 	require.NoError(t, err)
+	jweTokenWithCredentials, err := jwe_auth.GenerateJWEToken(map[string]interface{}{
+		"host":     "localhost",
+		"port":     8123,
+		"username": "default",
+		"password": "secret",
+		"exp":      time.Now().Add(time.Hour).Unix(),
+	}, []byte("this-is-a-32-byte-secret-key!!"), []byte("jwt-secret"))
+	require.NoError(t, err)
 
 	t.Run("missing_oauth_gets_challenge", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
@@ -3519,6 +3557,22 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 			called = true
 			require.Equal(t, jweToken, r.Context().Value(altinitymcp.JWETokenKey))
 			require.Equal(t, token, r.Context().Value(altinitymcp.OAuthTokenKey))
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.True(t, called)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("jwe_with_credentials_skips_oauth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweTokenWithCredentials+"/http", nil)
+		req.SetPathValue("token", jweTokenWithCredentials)
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			require.Equal(t, jweTokenWithCredentials, r.Context().Value(altinitymcp.JWETokenKey))
+			require.Nil(t, r.Context().Value(altinitymcp.OAuthTokenKey))
 			w.WriteHeader(http.StatusOK)
 		}))
 		handler.ServeHTTP(rr, req)
@@ -3739,13 +3793,13 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
-				Enabled:      true,
-				Mode:         "forward",
-				Issuer:       provider.server.URL,
-				JWKSURL:      provider.server.URL + "/jwks",
-				AuthURL:      provider.server.URL + "/authorize",
-				TokenURL:     provider.server.URL + "/token",
-				UserInfoURL:  provider.server.URL + "/userinfo",
+				Enabled:         true,
+				Mode:            "forward",
+				Issuer:          provider.server.URL,
+				JWKSURL:         provider.server.URL + "/jwks",
+				AuthURL:         provider.server.URL + "/authorize",
+				TokenURL:        provider.server.URL + "/token",
+				UserInfoURL:     provider.server.URL + "/userinfo",
 				ClientID:        "upstream-client-id",
 				ClientSecret:    "upstream-client-secret",
 				Scopes:          []string{"openid", "email"},

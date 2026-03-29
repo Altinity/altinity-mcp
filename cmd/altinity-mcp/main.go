@@ -345,6 +345,11 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 			// Inject token into request context if found
 			if token != "" {
 				ctx := context.WithValue(r.Context(), altinitymcp.JWETokenKey, token)
+				if a.mcpServer != nil {
+					if claims, err := a.mcpServer.ParseJWEClaims(token); err == nil && claims != nil {
+						ctx = context.WithValue(ctx, altinitymcp.JWEClaimsKey, claims)
+					}
+				}
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -371,6 +376,45 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func transportRoutePatterns(jweEnabled, oauthEnabled bool, transport string) []string {
+	if jweEnabled {
+		patterns := []string{"/{token}/" + transport}
+		if oauthEnabled {
+			patterns = append(patterns, "/"+transport)
+		}
+		return patterns
+	}
+	return []string{"/" + transport}
+}
+
+func openAPIRoutePatterns(jweEnabled, oauthEnabled bool) []string {
+	tokenized := []string{
+		"/{token}/openapi",
+		"/{token}/openapi/",
+		"/{token}/openapi/list_tables",
+		"/{token}/openapi/describe_table",
+		"/{token}/openapi/execute_query",
+	}
+	pathless := []string{
+		"/openapi",
+		"/openapi/",
+		"/openapi/list_tables",
+		"/openapi/describe_table",
+		"/openapi/execute_query",
+	}
+
+	switch {
+	case jweEnabled && oauthEnabled:
+		// Exact /openapi remains unauthenticated schema discovery in combined mode.
+		// Skip /openapi/ (index 1) — stripTrailingSlash handles it, and it conflicts with /{token}/openapi/.
+		return append(tokenized, pathless[2:]...)
+	case jweEnabled:
+		return tokenized
+	default:
+		return pathless
+	}
 }
 
 // jweTokenGeneratorHandler handles requests for generating JWE tokens.
@@ -555,6 +599,12 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
+	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
+		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
+	}
 
 	// CORS handler
 	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
@@ -585,21 +635,24 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 			return mcpServer
 		}, nil)
 
-		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
+		transportHandler := serverInjector(tokenInjector(dtInjector(httpServer)))
 		if cfg.Server.OAuth.Enabled {
-			mux.Handle("/{token}/http", serverInjector(authInjector(dtInjector(httpServer))))
-		} else {
-			mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
+			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
+			mux.HandleFunc("/openapi", serverInjectorSchema)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
+			openAPIPath := "/{token}/openapi"
+			if cfg.Server.OAuth.Enabled {
+				openAPIPath = "/openapi"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -612,17 +665,17 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
+		transportHandler := serverInjector(dtInjector(httpServer))
 		if cfg.Server.OAuth.Enabled {
-			mux.Handle("/http", serverInjector(authInjector(dtInjector(httpServer))))
-		} else {
-			mux.Handle("/http", serverInjector(dtInjector(httpServer)))
+			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
@@ -666,6 +719,12 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
+	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
+		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
+	}
 
 	// CORS handler
 	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
@@ -704,19 +763,23 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 
 		mux := http.NewServeMux()
+		transportHandler := serverInjector(tokenInjector(dtInjector(sseServer)))
 		if cfg.Server.OAuth.Enabled {
-			mux.Handle("/{token}/sse", serverInjector(authInjector(dtInjector(sseServer))))
-		} else {
-			mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer))))
+			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
+			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
+			mux.HandleFunc("/openapi", serverInjectorSchema)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
+			openAPIPath := "/{token}/openapi"
+			if cfg.Server.OAuth.Enabled {
+				openAPIPath = "/openapi"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
@@ -729,17 +792,17 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
+		transportHandler := serverInjector(dtInjector(sseServer))
 		if cfg.Server.OAuth.Enabled {
-			mux.Handle("/sse", serverInjector(authInjector(dtInjector(sseServer))))
-		} else {
-			mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
+			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
+			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)

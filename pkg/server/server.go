@@ -344,17 +344,26 @@ func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
 	return token
 }
 
-// ValidateJWEToken validates a JWE token if JWE auth is enabled
-func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
+func (s *ClickHouseJWEServer) parseJWEClaims(token string) (map[string]interface{}, error) {
 	if !s.Config.Server.JWE.Enabled {
-		return nil
+		return nil, nil
 	}
 
 	if token == "" {
-		return jwe_auth.ErrMissingToken
+		return nil, jwe_auth.ErrMissingToken
 	}
 
-	_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+	return jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+}
+
+// ParseJWEClaims parses and decrypts a JWE token into claims.
+func (s *ClickHouseJWEServer) ParseJWEClaims(token string) (map[string]interface{}, error) {
+	return s.parseJWEClaims(token)
+}
+
+// ValidateJWEToken validates a JWE token if JWE auth is enabled
+func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
+	_, err := s.parseJWEClaims(token)
 	if err != nil {
 		log.Error().Err(err).Msg("JWE token validation failed")
 		return err
@@ -363,14 +372,19 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 	return nil
 }
 
+// JWEClaimsHaveCredentials returns true if the parsed JWE claims contain a username claim.
+func (s *ClickHouseJWEServer) JWEClaimsHaveCredentials(claims map[string]interface{}) bool {
+	username, _ := claims["username"].(string)
+	return username != ""
+}
+
 // JWETokenHasCredentials returns true if the JWE token contains a username claim
 func (s *ClickHouseJWEServer) JWETokenHasCredentials(token string) bool {
-	claims, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+	claims, err := s.parseJWEClaims(token)
 	if err != nil {
 		return false
 	}
-	username, _ := claims["username"].(string)
-	return username != ""
+	return s.JWEClaimsHaveCredentials(claims)
 }
 
 // ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
@@ -758,7 +772,6 @@ func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKey
 	return &keySet, nil
 }
 
-
 func oauthClaimsFromRawClaims(rawClaims map[string]interface{}) *OAuthClaims {
 	claims := &OAuthClaims{
 		Extra: make(map[string]interface{}),
@@ -868,6 +881,16 @@ func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*
 	return s.GetClickHouseClientWithOAuth(ctx, jweToken, oauthToken, oauthClaims)
 }
 
+// GetJWEClaimsFromCtx extracts parsed JWE claims from context.
+func (s *ClickHouseJWEServer) GetJWEClaimsFromCtx(ctx context.Context) map[string]interface{} {
+	if claims := ctx.Value(JWEClaimsKey); claims != nil {
+		if jweClaims, ok := claims.(map[string]interface{}); ok {
+			return jweClaims
+		}
+	}
+	return nil
+}
+
 // GetOAuthClaimsFromCtx extracts OAuth claims from context
 func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthClaims {
 	if claims := ctx.Value(OAuthClaimsKey); claims != nil {
@@ -945,13 +968,13 @@ func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, clai
 // ValidateAuth validates authentication using priority/fallback semantics.
 // JWE takes priority: if present and valid with credentials, OAuth is skipped.
 // If JWE is absent or has no credentials, falls through to OAuth.
-func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oauthToken string, oauthClaims *OAuthClaims, err error) {
+func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jweClaims map[string]interface{}, oauthToken string, oauthClaims *OAuthClaims, err error) {
 	jweEnabled := s.Config.Server.JWE.Enabled
 	oauthEnabled := s.Config.Server.OAuth.Enabled
 
 	// If neither auth method is enabled, no validation needed
 	if !jweEnabled && !oauthEnabled {
-		return "", "", nil, nil
+		return "", nil, "", nil, nil
 	}
 
 	// Try JWE first
@@ -967,11 +990,12 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oa
 			jweToken = s.ExtractTokenFromRequest(r)
 		}
 		if jweToken != "" {
-			if err := s.ValidateJWEToken(jweToken); err != nil {
-				return "", "", nil, err // JWE present but invalid → hard error
+			jweClaims, err = s.ParseJWEClaims(jweToken)
+			if err != nil {
+				return "", nil, "", nil, err // JWE present but invalid → hard error
 			}
-			if s.JWETokenHasCredentials(jweToken) {
-				return jweToken, "", nil, nil // JWE sufficient, skip OAuth
+			if s.JWEClaimsHaveCredentials(jweClaims) {
+				return jweToken, jweClaims, "", nil, nil // JWE sufficient, skip OAuth
 			}
 		}
 	}
@@ -980,35 +1004,50 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oa
 	if oauthEnabled {
 		oauthToken = s.ExtractOAuthTokenFromRequest(r)
 		if oauthToken == "" {
-			return jweToken, "", nil, ErrMissingOAuthToken
+			return jweToken, jweClaims, "", nil, ErrMissingOAuthToken
 		}
 		if s.oauthRequiresLocalValidation() {
 			oauthClaims, err = s.ValidateOAuthToken(oauthToken)
 			if err != nil {
-				return jweToken, "", nil, err
+				return jweToken, jweClaims, "", nil, err
 			}
 		}
-		return jweToken, oauthToken, oauthClaims, nil
+		return jweToken, jweClaims, oauthToken, oauthClaims, nil
 	}
 
 	// JWE enabled but no token and no OAuth
 	if jweEnabled && jweToken == "" {
-		return "", "", nil, jwe_auth.ErrMissingToken
+		return "", nil, "", nil, jwe_auth.ErrMissingToken
 	}
 
-	return jweToken, "", nil, nil
+	return jweToken, jweClaims, "", nil, nil
+}
+
+func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
+	if s.Config.Server.JWE.Enabled {
+		prefixes := []string{"/{jwe_token}"}
+		if s.Config.Server.OAuth.Enabled {
+			prefixes = append(prefixes, "")
+		}
+		return prefixes
+	}
+	return []string{""}
 }
 
 // GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
 func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
 	// Build base config
 	var chConfig config.ClickHouseConfig
+	var err error
 
 	// If JWE is enabled and token provided, use JWE config
 	if s.Config.Server.JWE.Enabled && jweToken != "" {
-		claims, err := jwe_auth.ParseAndDecryptJWE(jweToken, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse JWE token: %w", err)
+		claims := s.GetJWEClaimsFromCtx(ctx)
+		if claims == nil {
+			claims, err = s.ParseJWEClaims(jweToken)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse JWE token: %w", err)
+			}
 		}
 		chConfig, err = s.buildConfigFromClaims(claims)
 		if err != nil {
@@ -1798,7 +1837,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Validate authentication (JWE and/or OAuth)
-	jweToken, oauthToken, oauthClaims, err := s.ValidateAuth(r)
+	jweToken, jweClaims, oauthToken, oauthClaims, err := s.ValidateAuth(r)
 	if err != nil {
 		if errors.Is(err, jwe_auth.ErrMissingToken) || errors.Is(err, ErrMissingOAuthToken) {
 			http.Error(w, "Missing authentication token", http.StatusUnauthorized)
@@ -1820,14 +1859,14 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Use JWE token as primary token for backward compatibility
-	token := jweToken
-	if token == "" && oauthToken != "" {
-		token = oauthToken
-	}
-
-	// Store OAuth token and claims in context if available
+	// Store validated auth data in context for downstream handlers.
 	ctx := r.Context()
+	if jweToken != "" {
+		ctx = context.WithValue(ctx, JWETokenKey, jweToken)
+		if jweClaims != nil {
+			ctx = context.WithValue(ctx, JWEClaimsKey, jweClaims)
+		}
+	}
 	if oauthToken != "" {
 		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
 	}
@@ -1839,7 +1878,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	// Route to appropriate handler based on path suffix
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
-		s.handleExecuteQueryOpenAPI(w, r, token)
+		s.handleExecuteQueryOpenAPI(w, r)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
 		// Ensure dynamic tools are loaded
 		if err := s.EnsureDynamicTools(r.Context()); err != nil {
@@ -1856,7 +1895,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 			s.dynamicToolsMu.RUnlock()
 
 			if ok {
-				s.handleDynamicToolOpenAPI(w, r, token, meta)
+				s.handleDynamicToolOpenAPI(w, r, meta)
 				return
 			}
 		}
@@ -1879,6 +1918,22 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		protocol = "https"
 	}
 	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
+	executeQueryProperties := map[string]interface{}{
+		"columns": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "string"},
+		},
+		"types": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "string"},
+		},
+		"rows": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "array"},
+		},
+		"count": map[string]interface{}{"type": "integer"},
+		"error": map[string]interface{}{"type": "string"},
+	}
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -1895,120 +1950,113 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		"components": map[string]interface{}{
 			"schemas": map[string]interface{}{},
 		},
-		"paths": map[string]interface{}{
-			"/{jwe_token}/openapi/execute_query": map[string]interface{}{
-				"get": map[string]interface{}{
-					"operationId": "execute_query",
-					"summary":     "Execute a SQL query",
-					"parameters": []map[string]interface{}{
-						{
-							"name":        "jwe_token",
-							"in":          "path",
-							"required":    true,
-							"description": "JWE token for authentication.",
-							"schema": map[string]interface{}{
-								"type": "string",
+		"paths": map[string]interface{}{},
+	}
+
+	// add dynamic tool paths (POST)
+	paths := schema["paths"].(map[string]interface{})
+	for _, prefix := range s.openAPIPathPrefixes() {
+		parameters := []map[string]interface{}{}
+		if prefix != "" {
+			parameters = append(parameters, map[string]interface{}{
+				"name":        "jwe_token",
+				"in":          "path",
+				"required":    true,
+				"description": "JWE token for authentication.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+				"default":    "default",
+			})
+		}
+		parameters = append(parameters,
+			map[string]interface{}{
+				"name":        "query",
+				"in":          "query",
+				"required":    true,
+				"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+				"schema":      map[string]interface{}{"type": "string"},
+			},
+			map[string]interface{}{
+				"name":        "limit",
+				"in":          "query",
+				"required":    false,
+				"description": "Optional max rows to return. If not specified, no limit is applied. If configured, cannot exceed server's maximum limit.",
+				"schema":      map[string]interface{}{"type": "integer"},
+			},
+		)
+
+		paths[prefix+"/openapi/execute_query"] = map[string]interface{}{
+			"get": map[string]interface{}{
+				"operationId": "execute_query",
+				"summary":     "Execute a SQL query",
+				"parameters":  parameters,
+				"responses": map[string]interface{}{
+					"200": map[string]interface{}{
+						"description": "Query result as JSON",
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":       "object",
+									"properties": executeQueryProperties,
+								},
 							},
-							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    "default",
 						},
-						{
-							"name":        "query",
-							"in":          "query",
-							"required":    true,
-							"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
-							"schema":      map[string]interface{}{"type": "string"},
-						},
-						{
-							"name":        "limit",
-							"in":          "query",
-							"required":    false,
-							"description": "Optional max rows to return. If not specified, no limit is applied. If configured, cannot exceed server's maximum limit.",
-							"schema":      map[string]interface{}{"type": "integer"},
+					},
+				},
+			},
+		}
+	}
+
+	s.dynamicToolsMu.RLock()
+	defer s.dynamicToolsMu.RUnlock()
+
+	for _, prefix := range s.openAPIPathPrefixes() {
+		for toolName, meta := range s.dynamicTools {
+			path := prefix + "/openapi/" + toolName
+			// request body schema
+			props := map[string]interface{}{}
+			required := []string{}
+			for _, p := range meta.Params {
+				prop := map[string]interface{}{"type": p.JSONType}
+				if p.JSONFormat != "" {
+					prop["format"] = p.JSONFormat
+				}
+				props[p.Name] = prop
+				if p.Required {
+					required = append(required, p.Name)
+				}
+			}
+			paths[path] = map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary": meta.Description,
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":       "object",
+									"properties": props,
+									"required":   required,
+								},
+							},
 						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "Query result as JSON",
+							"description": "Query result",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
 									"schema": map[string]interface{}{
 										"type": "object",
-										"properties": map[string]interface{}{
-											"columns": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "string"},
-											},
-											"types": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "string"},
-											},
-											"rows": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "array"},
-											},
-											"count": map[string]interface{}{"type": "integer"},
-											"error": map[string]interface{}{"type": "string"},
-										},
 									},
 								},
 							},
 						},
 					},
 				},
-			},
-		},
-	}
-
-	// add dynamic tool paths (POST)
-	paths := schema["paths"].(map[string]interface{})
-
-	s.dynamicToolsMu.RLock()
-	defer s.dynamicToolsMu.RUnlock()
-
-	for toolName, meta := range s.dynamicTools {
-		path := "/{jwe_token}/openapi/" + toolName
-		// request body schema
-		props := map[string]interface{}{}
-		required := []string{}
-		for _, p := range meta.Params {
-			prop := map[string]interface{}{"type": p.JSONType}
-			if p.JSONFormat != "" {
-				prop["format"] = p.JSONFormat
 			}
-			props[p.Name] = prop
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		paths[path] = map[string]interface{}{
-			"post": map[string]interface{}{
-				"summary": meta.Description,
-				"requestBody": map[string]interface{}{
-					"required": true,
-					"content": map[string]interface{}{
-						"application/json": map[string]interface{}{
-							"schema": map[string]interface{}{
-								"type":       "object",
-								"properties": props,
-								"required":   required,
-							},
-						},
-					},
-				},
-				"responses": map[string]interface{}{
-					"200": map[string]interface{}{
-						"description": "Query result",
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-								},
-							},
-						},
-					},
-				},
-			},
 		}
 	}
 
@@ -2018,7 +2066,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	}
 }
 
-func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2053,7 +2101,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
-	ctx := context.WithValue(r.Context(), JWETokenKey, token)
+	ctx := r.Context()
 
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
@@ -2079,7 +2127,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 }
 
-func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r *http.Request, token string, meta dynamicToolMeta) {
+func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r *http.Request, meta dynamicToolMeta) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2092,7 +2140,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		return
 	}
 
-	ctx := context.WithValue(r.Context(), JWETokenKey, token)
+	ctx := r.Context()
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -2161,6 +2209,7 @@ const forwardedHeadersKey contextKey = "forwarded_http_headers"
 // Auth context keys
 const (
 	JWETokenKey    contextKey = "jwe_token"
+	JWEClaimsKey   contextKey = "jwe_claims"
 	OAuthTokenKey  contextKey = "oauth_token"
 	OAuthClaimsKey contextKey = "oauth_claims"
 	CHJWEServerKey contextKey = "clickhouse_jwe_server"

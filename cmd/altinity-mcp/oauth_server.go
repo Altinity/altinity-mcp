@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -174,7 +174,6 @@ func (s *oauthStateStore) consumeAuthCode(id string) (oauthIssuedCode, bool) {
 	return issued, ok
 }
 
-
 func writeOAuthTokenError(w http.ResponseWriter, status int, code, description string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -253,7 +252,6 @@ func ttlSeconds(value int, fallback int) int {
 	}
 	return fallback
 }
-
 
 func uniquePaths(paths ...string) []string {
 	result := make([]string, 0, len(paths))
@@ -433,12 +431,14 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					token = r.Header.Get("x-altinity-mcp-key")
 				}
 				if token != "" {
-					if err := a.mcpServer.ValidateJWEToken(token); err != nil {
+					jweClaims, err := a.mcpServer.ParseJWEClaims(token)
+					if err != nil {
 						http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
 						return
 					}
 					ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
-					jweHasCredentials = a.mcpServer.JWETokenHasCredentials(token)
+					ctx = context.WithValue(ctx, altinitymcp.JWEClaimsKey, jweClaims)
+					jweHasCredentials = a.mcpServer.JWEClaimsHaveCredentials(jweClaims)
 				}
 			}
 
@@ -481,7 +481,6 @@ func randomToken(prefix string) string {
 	return prefix + base64.RawURLEncoding.EncodeToString(buf)
 }
 
-
 func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
 	hashedSecret := jwe_auth.HashSHA256(secret)
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
@@ -503,7 +502,6 @@ func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
-
 
 func decodeStringSlice(value interface{}) []string {
 	switch typed := value.(type) {
@@ -1265,7 +1263,6 @@ func truncateForLog(value string, max int) string {
 	}
 	return value[:max]
 }
-
 
 func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	protectedResourceMetadataPath := a.oauthProtectedResourceMetadataPath()
