@@ -17,6 +17,8 @@ cat > "${TOKEN_PROCESSOR_FILE}" <<'EOF'
     <token_processors>
         <google>
             <type>jwt_dynamic_jwks</type>
+            <userinfo_endpoint>https://openidconnect.googleapis.com/v1/userinfo</userinfo_endpoint>
+            <token_introspection_endpoint>https://oauth2.googleapis.com/tokeninfo</token_introspection_endpoint>
             <jwks_uri>https://www.googleapis.com/oauth2/v3/certs</jwks_uri>
             <token_cache_lifetime>60</token_cache_lifetime>
             <username_claim>email</username_claim>
