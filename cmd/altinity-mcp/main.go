@@ -1277,11 +1277,11 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		}
 	} else {
 		log.Debug().Msg("Skipping startup ClickHouse connection test (credentials are per-request)")
+	}
 
-		// Validate JWE secret key is set when JWE auth is enabled
-		if cfg.Server.JWE.JWESecretKey == "" {
-			return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
-		}
+	// Validate JWE secret key is set when JWE auth is enabled
+	if cfg.Server.JWE.Enabled && cfg.Server.JWE.JWESecretKey == "" {
+		return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
 	}
 
 	// Create MCP server
