@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"unicode"
 	"time"
+	"unicode"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -678,7 +678,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		}
 	}
 
-    // Merge forwarded HTTP headers from context (forward_http_headers)
+	// Merge forwarded HTTP headers from context (forward_http_headers)
 	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
 		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
 	}
