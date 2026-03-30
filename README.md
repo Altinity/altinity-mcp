@@ -29,8 +29,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - [OAuth 2.0 Authorization](#oauth-20-authorization)
 - [JWE Authentication](#jwe-authentication)
 - [TLS Configuration](#tls-configuration)
-- [Testing](#testing)
-- [Development](#development)
+- [Development & Testing](#development--testing)
 - [CLI Reference](#cli-reference)
 - [Contributing](#contributing)
 - [License](#license)
@@ -397,67 +396,11 @@ More details in [jwe_authentication.md](docs/jwe_authentication.md)
   --server-tls-key-file /path/to/server.key
 ```
 
-## Testing
+## Development & Testing
 
-### Test ClickHouse® Connection
-
-```bash
-./altinity-mcp test-connection \
-  --clickhouse-host localhost \
-  --clickhouse-port 8123 \
-  --clickhouse-database default
-```
-
-### Run Tests
-
-```bash
-go test ./...
-```
-
-### Integration Tests
-
-Integration tests use Docker containers and require Docker to be running:
-
-```bash
-go test -v ./cmd/altinity-mcp/...
-```
-
-### ClickHouse OAuth E2E Test
-
-The ClickHouse OAuth end-to-end test is opt-in because it starts Docker containers for Keycloak and the Altinity Antalya ClickHouse build with `token_processors` enabled:
-
-```bash
-RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
-```
+Development workflow, build commands, test tiers, and the optional OAuth Docker e2e flow are documented in [docs/development_and_testing.md](docs/development_and_testing.md).
 
 For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
-
-## Development
-
-### Prerequisites
-
-- Go 1.24 or later
-- Docker (for integration tests)
-- ClickHouse® server (for development)
-
-### Building
-
-```bash
-go build -o altinity-mcp ./cmd/altinity-mcp
-```
-
-### Running Tests
-
-```bash
-# Unit tests
-go test ./pkg/...
-
-# Integration tests (requires Docker)
-go test -v ./cmd/altinity-mcp/...
-
-# ClickHouse OAuth E2E test (requires Docker, Keycloak, and Antalya image)
-RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
-```
 
 ## CLI Reference
 
