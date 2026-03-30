@@ -87,6 +87,7 @@ type ClickHouseJWEServer struct {
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
+	blockedClausePatterns []blockedClause
 }
 
 type dynamicToolParam struct {
@@ -150,10 +151,11 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	}, opts)
 
 	chJweServer := &ClickHouseJWEServer{
-		MCPServer:    srv,
-		Config:       cfg,
-		Version:      version,
-		dynamicTools: make(map[string]dynamicToolMeta),
+		MCPServer:             srv,
+		Config:                cfg,
+		Version:               version,
+		dynamicTools:          make(map[string]dynamicToolMeta),
+		blockedClausePatterns: CompileBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
 	// Register tools, resources, and prompts
@@ -1784,6 +1786,11 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
+	// Block queries containing disallowed SQL clauses
+	if clause := checkBlockedClauses(query, chJweServer.blockedClausePatterns); clause != "" {
+		return NewToolResultError(fmt.Sprintf("Query rejected: %s clause is not allowed", clause)), nil
+	}
+
 	// Get optional limit parameter
 	var limit float64
 	hasLimit := false
@@ -2124,6 +2131,12 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		return
 	}
 
+	// Block queries containing disallowed SQL clauses
+	if clause := checkBlockedClauses(query, s.blockedClausePatterns); clause != "" {
+		http.Error(w, fmt.Sprintf("Query rejected: %s clause is not allowed", clause), http.StatusBadRequest)
+		return
+	}
+
 	limitStr := r.URL.Query().Get("limit")
 	var limit int
 	hasLimit := false
@@ -2269,6 +2282,67 @@ func isSelectQuery(query string) bool {
 func hasLimitClause(query string) bool {
 	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
 	return hasLimit
+}
+
+// --- blocked_query_clauses: block specific SQL clauses in user queries ---
+//
+// TODO: consider replacing regex-based detection with AST-based parsing via
+// github.com/AfterShip/clickhouse-sql-parser for zero false-positive clause
+// detection (e.g. distinguishing a column named "settings" from a SETTINGS clause).
+
+type blockedClause struct {
+	Name    string
+	Pattern *regexp.Regexp
+}
+
+// knownClausePatterns maps clause names (upper-cased) to context-aware regex
+// patterns that avoid false positives on column/table names.
+// Unknown clause names fall back to a generic word-boundary match.
+var knownClausePatterns = map[string]string{
+	"SETTINGS":     `(?i)\bSETTINGS\s+\w+\s*=`,
+	"FORMAT":       `(?i)\bFORMAT\s+[A-Za-z]\w*\s*$`,
+	"INTO OUTFILE": `(?i)\bINTO\s+OUTFILE\b`,
+	"SET":          `(?i)^\s*SET\b`,
+	"EXPLAIN":      `(?i)^\s*EXPLAIN\b`,
+}
+
+// CompileBlockedClauses converts a list of clause names into compiled regex
+// patterns. Known clauses get context-aware patterns; unknown names fall back
+// to a generic word-boundary match.
+func CompileBlockedClauses(clauses []string) []blockedClause {
+	if len(clauses) == 0 {
+		return nil
+	}
+	compiled := make([]blockedClause, 0, len(clauses))
+	for _, name := range clauses {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		upper := strings.ToUpper(trimmed)
+		pattern, ok := knownClausePatterns[upper]
+		if !ok {
+			escaped := regexp.QuoteMeta(trimmed)
+			escaped = strings.ReplaceAll(escaped, " ", `\s+`)
+			pattern = `(?i)\b` + escaped + `\b`
+		}
+		compiled = append(compiled, blockedClause{
+			Name:    upper,
+			Pattern: regexp.MustCompile(pattern),
+		})
+	}
+	return compiled
+}
+
+// checkBlockedClauses returns the name of the first blocked clause found
+// in the query, or "" if none match.
+func checkBlockedClauses(query string, patterns []blockedClause) string {
+	for _, bc := range patterns {
+		if bc.Pattern.MatchString(query) {
+			return bc.Name
+		}
+	}
+	return ""
 }
 
 // contextKey avoids collisions with other packages using context.WithValue.

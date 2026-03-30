@@ -255,6 +255,12 @@ func run(args []string) error {
 				Value:   "",
 				Sources: cli.EnvVars("TOOL_INPUT_SETTINGS"),
 			},
+			&cli.StringFlag{
+				Name:    "blocked-query-clauses",
+				Usage:   "Comma-separated SQL clauses to block in user queries (e.g. SETTINGS,FORMAT,SET,INTO OUTFILE,EXPLAIN)",
+				Value:   "",
+				Sources: cli.EnvVars("BLOCKED_QUERY_CLAUSES"),
+			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
@@ -1154,6 +1160,20 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 	if len(cfg.Server.ToolInputSettings) > 0 {
 		if err := altinitymcp.ValidateToolInputSettings(cfg.Server.ToolInputSettings); err != nil {
 			log.Fatal().Err(err).Msg("invalid tool_input_settings configuration")
+		}
+	}
+
+	// Override blocked-query-clauses with CLI flags
+	if cmd.IsSet("blocked-query-clauses") {
+		raw := cmd.String("blocked-query-clauses")
+		if raw != "" {
+			clauses := strings.Split(raw, ",")
+			for i := range clauses {
+				clauses[i] = strings.TrimSpace(clauses[i])
+			}
+			cfg.Server.BlockedQueryClauses = clauses
+		} else {
+			cfg.Server.BlockedQueryClauses = nil
 		}
 	}
 

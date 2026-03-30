@@ -6077,6 +6077,108 @@ func TestRegisterToolsWithSettings(t *testing.T) {
 	})
 }
 
+func TestCompileBlockedClauses(t *testing.T) {
+	t.Run("nil_for_empty", func(t *testing.T) {
+		require.Nil(t, CompileBlockedClauses(nil))
+		require.Nil(t, CompileBlockedClauses([]string{}))
+	})
+
+	t.Run("compiles_clauses", func(t *testing.T) {
+		patterns := CompileBlockedClauses([]string{"SETTINGS", "FORMAT", "SET", "INTO OUTFILE", "EXPLAIN"})
+		require.Len(t, patterns, 5)
+		require.Equal(t, "SETTINGS", patterns[0].Name)
+		require.Equal(t, "FORMAT", patterns[1].Name)
+		require.Equal(t, "SET", patterns[2].Name)
+		require.Equal(t, "INTO OUTFILE", patterns[3].Name)
+		require.Equal(t, "EXPLAIN", patterns[4].Name)
+	})
+
+	t.Run("uppercases_names", func(t *testing.T) {
+		patterns := CompileBlockedClauses([]string{"settings", "Format"})
+		require.Len(t, patterns, 2)
+		require.Equal(t, "SETTINGS", patterns[0].Name)
+		require.Equal(t, "FORMAT", patterns[1].Name)
+	})
+
+	t.Run("multi_word_clause_matches_flexible_whitespace", func(t *testing.T) {
+		patterns := CompileBlockedClauses([]string{"INTO OUTFILE"})
+		require.True(t, patterns[0].Pattern.MatchString("INTO  OUTFILE"))
+		require.True(t, patterns[0].Pattern.MatchString("into\toutfile"))
+	})
+
+	t.Run("arbitrary_clause_name", func(t *testing.T) {
+		patterns := CompileBlockedClauses([]string{"FOOBAR"})
+		require.Len(t, patterns, 1)
+		require.True(t, patterns[0].Pattern.MatchString("SELECT FOOBAR test"))
+		require.False(t, patterns[0].Pattern.MatchString("SELECT test"))
+	})
+
+	t.Run("skips_empty_entries", func(t *testing.T) {
+		patterns := CompileBlockedClauses([]string{"SETTINGS", "", "  "})
+		require.Len(t, patterns, 1)
+	})
+}
+
+func TestCheckBlockedClauses(t *testing.T) {
+	allPatterns := CompileBlockedClauses([]string{"SETTINGS", "FORMAT", "SET", "INTO OUTFILE", "EXPLAIN"})
+
+	cases := []struct {
+		name    string
+		query   string
+		blocked string
+	}{
+		// Clean queries — should pass
+		{"plain_select", "SELECT * FROM events", ""},
+		{"select_with_limit", "SELECT * FROM events LIMIT 10", ""},
+		{"select_with_where", "SELECT * FROM events WHERE tenant_id = 'a'", ""},
+		{"show_tables", "SHOW TABLES", ""},
+		{"describe_table", "DESCRIBE events", ""},
+		{"table_named_settings_compound", "SELECT * FROM settings_table", ""},
+		{"table_named_nosettings", "SELECT * FROM nosettings", ""},
+		{"offset_not_set", "SELECT * FROM t LIMIT 10 OFFSET 5", ""},
+
+		// Column/function names that match clause keywords — should NOT be blocked
+		{"column_named_format", "SELECT format FROM t", ""},
+		{"function_format", "SELECT format('hello {0}', name) FROM t", ""},
+		{"column_named_settings", "SELECT settings FROM t", ""},
+		{"select_explain_column", "SELECT explain_col FROM t", ""},
+
+		// SETTINGS injection — all cases/variations
+		{"settings_override", "SELECT * FROM events SETTINGS custom_tenant_id='evil'", "SETTINGS"},
+		{"settings_lowercase", "select * from events settings custom_tenant_id = 'x'", "SETTINGS"},
+		{"settings_mixed_case", "SELECT 1 Settings max_threads=2", "SETTINGS"},
+
+		// FORMAT — requires format name at end of query
+		{"format_json", "SELECT * FROM events FORMAT JSON", "FORMAT"},
+		{"format_csv", "SELECT * FROM events FORMAT CSV", "FORMAT"},
+		{"format_lowercase", "select 1 format tabseparated", "FORMAT"},
+
+		// SET — only at start of query
+		{"set_statement", "SET custom_tenant_id = 'evil'", "SET"},
+		{"set_lowercase", "set max_threads = 1", "SET"},
+
+		// INTO OUTFILE — two-word clause
+		{"into_outfile", "SELECT * FROM events INTO OUTFILE '/tmp/data.csv'", "INTO OUTFILE"},
+		{"into_outfile_lowercase", "select 1 into outfile '/tmp/x'", "INTO OUTFILE"},
+
+		// EXPLAIN — only at start of query
+		{"explain_select", "EXPLAIN SELECT * FROM events", "EXPLAIN"},
+		{"explain_plan", "EXPLAIN PLAN SELECT 1", "EXPLAIN"},
+		{"explain_lowercase", "explain select 1", "EXPLAIN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkBlockedClauses(tc.query, allPatterns)
+			require.Equal(t, tc.blocked, got, "query: %s", tc.query)
+		})
+	}
+}
+
+func TestCheckBlockedClauses_EmptyPatterns(t *testing.T) {
+	require.Equal(t, "", checkBlockedClauses("SELECT 1 SETTINGS x=1", nil))
+	require.Equal(t, "", checkBlockedClauses("SET x=1", []blockedClause{}))
+}
+
 type mockMCPServer struct {
 	addToolFn func(tool *mcp.Tool, handler ToolHandlerFunc)
 }

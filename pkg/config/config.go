@@ -212,7 +212,8 @@ type ServerConfig struct {
 	CORSOrigin         string            `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
 	ForwardHTTPHeaders []string          `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
 	HeaderToSettings   map[string]string `json:"header_to_settings" yaml:"header_to_settings" desc:"Map incoming HTTP headers to ClickHouse settings"`
-	ToolInputSettings  []string          `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
+	ToolInputSettings    []string          `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
+	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"SQL clauses to block in user queries (e.g. SETTINGS, FORMAT, SET, INTO OUTFILE, EXPLAIN)"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }
