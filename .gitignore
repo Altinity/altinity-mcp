@@ -14,6 +14,7 @@ AGENTS.md
 .claude/
 build/
 dist/
+/altinity-mcp
 coverage.out
 go-carpet*
 .mcp.json
