@@ -662,22 +662,3 @@ Create the roles referenced in `common_roles` and grant them the necessary permi
 CREATE ROLE OR REPLACE default_role;
 GRANT SELECT ON *.* TO default_role;
 ```
-
-## Automated ClickHouse OAuth E2E Test
-
-The automated ClickHouse OAuth test suite uses:
-
-- Keycloak as the OIDC provider
-- `altinity/clickhouse-server:25.8.16.20001.altinityantalya`
-- real ClickHouse `token_processors` plus `user_directories` token auth
-- `altinity-mcp` with bearer-token forwarding enabled
-
-Run the E2E test explicitly:
-
-```bash
-RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
-```
-
-The test is skipped by default unless `RUN_OAUTH_E2E=1` is set, and it is also skipped in `go test -short`.
-
-The Antalya image is required because standard upstream ClickHouse images do not provide the `token_processors` support needed for bearer-token authentication.
