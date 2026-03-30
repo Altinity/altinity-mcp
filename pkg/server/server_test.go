@@ -3344,7 +3344,10 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.NotEqual(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusInternalServerError, rr.Code,
+			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
+			"response should indicate CH connection failure, not MCP rejection")
 	})
 
 	t.Run("oauth_only_insufficient_scopes", func(t *testing.T) {
@@ -3364,7 +3367,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		}, "test")
 
 		// Forward mode passes token through without MCP-layer validation.
-		// CH may reject with 500/403 — that's expected. We assert MCP didn't return 401.
+		// CH may reject with 500/403 — that's expected.
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
@@ -3372,7 +3375,10 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.NotEqual(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusInternalServerError, rr.Code,
+			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
+			"response should indicate CH connection failure, not MCP rejection")
 	})
 
 	t.Run("oauth_only_invalid", func(t *testing.T) {
@@ -3390,7 +3396,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		}, "test")
 
 		// Forward mode passes token through without MCP-layer validation.
-		// CH may reject with 500/403 — that's expected. We assert MCP didn't return 401.
+		// CH may reject with 500/403 — that's expected.
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
@@ -3398,7 +3404,10 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.NotEqual(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusInternalServerError, rr.Code,
+			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
+			"response should indicate CH connection failure, not MCP rejection")
 	})
 }
 
@@ -3850,7 +3859,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		}, "test")
 
 		// Forward mode passes token through without MCP-layer validation.
-		// CH may reject with 500/403 — that's expected. We assert MCP didn't return 401.
+		// CH may reject with 500/403 — that's expected.
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
@@ -3858,7 +3867,10 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.NotEqual(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusInternalServerError, rr.Code,
+			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
+			"response should indicate CH connection failure, not MCP rejection")
 	})
 
 	t.Run("forward_mode_passthrough_missing_scope", func(t *testing.T) {
@@ -3878,7 +3890,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		}, "test")
 
 		// Forward mode passes token through without MCP-layer validation.
-		// CH may reject with 500/403 — that's expected. We assert MCP didn't return 401.
+		// CH may reject with 500/403 — that's expected.
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
 		req.Header.Set("Authorization", "Bearer opaque-access-token")
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
@@ -3886,6 +3898,385 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.NotEqual(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, http.StatusInternalServerError, rr.Code,
+			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
+			"response should indicate CH connection failure, not MCP rejection")
+	})
+}
+
+func TestResolveOAuthJWKSURL(t *testing.T) {
+	t.Run("direct_jwks_url_configured", func(t *testing.T) {
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						JWKSURL: "https://auth.example.com/jwks",
+					},
+				},
+			},
+		}
+		url, err := srv.resolveOAuthJWKSURL()
+		require.NoError(t, err)
+		require.Equal(t, "https://auth.example.com/jwks", url)
+	})
+
+	t.Run("openid_configuration_discovery", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/.well-known/openid-configuration" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"issuer":   "https://auth.example.com",
+					"jwks_uri": "https://auth.example.com/keys",
+				})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer mockServer.Close()
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Issuer: mockServer.URL,
+					},
+				},
+			},
+		}
+		url, err := srv.resolveOAuthJWKSURL()
+		require.NoError(t, err)
+		require.Equal(t, "https://auth.example.com/keys", url)
+	})
+
+	t.Run("fallback_to_oauth_authorization_server", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/.well-known/openid-configuration" {
+				http.NotFound(w, r)
+				return
+			}
+			if r.URL.Path == "/.well-known/oauth-authorization-server" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"issuer":   "https://auth.example.com",
+					"jwks_uri": "https://auth.example.com/fallback-keys",
+				})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer mockServer.Close()
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Issuer: mockServer.URL,
+					},
+				},
+			},
+		}
+		url, err := srv.resolveOAuthJWKSURL()
+		require.NoError(t, err)
+		require.Equal(t, "https://auth.example.com/fallback-keys", url)
+	})
+
+	t.Run("both_discovery_endpoints_fail", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}))
+		defer mockServer.Close()
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Issuer: mockServer.URL,
+					},
+				},
+			},
+		}
+		_, err := srv.resolveOAuthJWKSURL()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to discover")
+	})
+
+	t.Run("discovery_missing_jwks_uri", func(t *testing.T) {
+		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer": "https://auth.example.com",
+			})
+		}))
+		defer mockServer.Close()
+
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Issuer: mockServer.URL,
+					},
+				},
+			},
+		}
+		_, err := srv.resolveOAuthJWKSURL()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "jwks_uri")
+	})
+}
+
+func TestOIDCConfigCaching(t *testing.T) {
+	var requestCount int
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":   "https://auth.example.com",
+			"jwks_uri": "https://auth.example.com/keys",
+		})
+	}))
+	defer mockServer.Close()
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Issuer: mockServer.URL,
+				},
+			},
+		},
+	}
+
+	t.Run("cache_hit_within_ttl", func(t *testing.T) {
+		requestCount = 0
+		_, err := srv.FetchOpenIDConfiguration(mockServer.URL)
+		require.NoError(t, err)
+		_, err = srv.FetchOpenIDConfiguration(mockServer.URL)
+		require.NoError(t, err)
+		require.Equal(t, 1, requestCount, "second call should hit cache")
+	})
+
+	t.Run("cache_miss_after_ttl_expires", func(t *testing.T) {
+		// Ensure cache is populated
+		_, err := srv.FetchOpenIDConfiguration(mockServer.URL)
+		require.NoError(t, err)
+
+		// Manipulate cache time to simulate TTL expiry
+		srv.oidcConfigMu.Lock()
+		srv.oidcConfigTime = time.Now().Add(-oauthJWKSCacheTTL - time.Second)
+		srv.oidcConfigMu.Unlock()
+
+		countBefore := requestCount
+		_, err = srv.FetchOpenIDConfiguration(mockServer.URL)
+		require.NoError(t, err)
+		require.Equal(t, countBefore+1, requestCount, "should re-fetch after TTL expiry")
+	})
+}
+
+func TestParseAndVerifyExternalJWTUnknownKid(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	// Create JWKS with kid "known"
+	knownJWK := jose.JSONWebKey{Key: &privateKey.PublicKey, KeyID: "known", Algorithm: "RS256", Use: "sig"}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":   r.Host,
+				"jwks_uri": "http://" + r.Host + "/jwks",
+			})
+		case "/jwks":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{knownJWK}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockServer.Close()
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Issuer:  mockServer.URL,
+					JWKSURL: mockServer.URL + "/jwks",
+				},
+			},
+		},
+	}
+
+	// Sign token with kid "unknown"
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "unknown"),
+	)
+	require.NoError(t, err)
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"sub": "user-1",
+		"iss": mockServer.URL,
+		"aud": "test-audience",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	})
+	require.NoError(t, err)
+
+	object, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := object.CompactSerialize()
+	require.NoError(t, err)
+
+	_, err = srv.parseAndVerifyExternalJWT(token, "test-audience")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no JWK found for kid")
+}
+
+func TestValidateOAuthClaimsTemporalEdgeCases(t *testing.T) {
+	const gatingSecret = "test-gating-secret-32-byte-key!!"
+	now := time.Now().Unix()
+
+	baseClaims := func() map[string]interface{} {
+		return map[string]interface{}{
+			"sub":   "user-1",
+			"iss":   "https://mcp.example.com",
+			"aud":   "https://mcp.example.com",
+			"email": "user@example.com",
+		}
+	}
+
+	newSrv := func() *ClickHouseJWEServer {
+		return NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:         true,
+					Mode:            "gating",
+					GatingSecretKey: gatingSecret,
+				},
+			},
+		}, "test")
+	}
+
+	t.Run("expired_token", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now - 120
+		c["iat"] = now - 300
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthTokenExpired)
+	})
+
+	t.Run("expired_within_clock_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now - 30
+		c["iat"] = now - 300
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+	})
+
+	t.Run("expired_beyond_clock_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now - 61
+		c["iat"] = now - 300
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthTokenExpired)
+	})
+
+	t.Run("future_nbf_within_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now + 3600
+		c["iat"] = now
+		c["nbf"] = now + 30
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+	})
+
+	t.Run("future_nbf_beyond_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now + 3600
+		c["iat"] = now
+		c["nbf"] = now + 120
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("future_iat_within_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now + 3600
+		c["iat"] = now + 30
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+	})
+
+	t.Run("future_iat_beyond_skew", func(t *testing.T) {
+		c := baseClaims()
+		c["exp"] = now + 3600
+		c["iat"] = now + 120
+		token := mintSelfIssuedToken(t, gatingSecret, c)
+		srv := newSrv()
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+}
+
+func TestGatingModeIdentityPolicy(t *testing.T) {
+	const gatingSecret = "test-gating-secret-32-byte-key!!"
+
+	newSrv := func(oauthCfg config.OAuthConfig) *ClickHouseJWEServer {
+		oauthCfg.Enabled = true
+		oauthCfg.Mode = "gating"
+		oauthCfg.GatingSecretKey = gatingSecret
+		return NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: oauthCfg,
+			},
+		}, "test")
+	}
+
+	t.Run("allowed_email_domain_match", func(t *testing.T) {
+		srv := newSrv(config.OAuthConfig{AllowedEmailDomains: []string{"corp.com"}})
+		claims := &OAuthClaims{Email: "user@corp.com", EmailVerified: true}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.NoError(t, err)
+	})
+
+	t.Run("allowed_email_domain_reject", func(t *testing.T) {
+		srv := newSrv(config.OAuthConfig{AllowedEmailDomains: []string{"corp.com"}})
+		claims := &OAuthClaims{Email: "user@other.com", EmailVerified: true}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
+	})
+
+	t.Run("require_email_verified_pass", func(t *testing.T) {
+		srv := newSrv(config.OAuthConfig{RequireEmailVerified: true})
+		claims := &OAuthClaims{Email: "user@example.com", EmailVerified: true}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.NoError(t, err)
+	})
+
+	t.Run("require_email_verified_fail", func(t *testing.T) {
+		srv := newSrv(config.OAuthConfig{RequireEmailVerified: true})
+		claims := &OAuthClaims{Email: "user@example.com", EmailVerified: false}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.ErrorIs(t, err, ErrOAuthEmailNotVerified)
+	})
+
+	t.Run("allowed_hosted_domain_reject", func(t *testing.T) {
+		srv := newSrv(config.OAuthConfig{AllowedHostedDomains: []string{"corp.com"}})
+		claims := &OAuthClaims{HostedDomain: "other.com"}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
 	})
 }

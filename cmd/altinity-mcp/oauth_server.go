@@ -1190,7 +1190,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 //
 // These are accepted tradeoffs for a gating server with no persistent storage.
 // Identity policy checks (allowed domains, email verification) are re-evaluated
-// on every refresh via mintGatingTokenResponse. Deployments that require token
+// on every refresh before minting new tokens. Deployments that require token
 // revocation should use forward mode, where the upstream IdP controls lifecycle.
 func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if a.oauthForwardMode() {
@@ -1245,6 +1245,16 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	hd, _ := claims["hd"].(string)
 	emailVerified, _ := claims["email_verified"].(bool)
 	scope, _ := claims["scope"].(string)
+
+	policyClaims := &altinitymcp.OAuthClaims{
+		Email:         email,
+		EmailVerified: emailVerified,
+		HostedDomain:  hd,
+	}
+	if err := a.mcpServer.ValidateOAuthIdentityPolicyClaims(policyClaims); err != nil {
+		writeOAuthTokenError(w, http.StatusForbidden, "access_denied", err.Error())
+		return
+	}
 
 	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      clientID,
