@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -543,4 +547,197 @@ func generateUnsignedJWT(t *testing.T, claims map[string]any) string {
 		base64.RawURLEncoding.EncodeToString(headerJSON),
 		base64.RawURLEncoding.EncodeToString(payloadJSON),
 	)
+}
+
+// getDockerHostIP returns the hostname reachable from Docker containers.
+// We always return "host.docker.internal" and rely on the ExtraHosts container setting
+// (host.docker.internal:host-gateway) so it resolves correctly on both macOS and Linux.
+func getDockerHostIP() string {
+	return "host.docker.internal"
+}
+
+// newTestOAuthProviderReachableFromDocker creates an OIDC provider bound to 0.0.0.0
+// so Docker containers can reach it. Returns (provider, dockerAccessURL).
+//
+// The discovery document, JWKS, and userinfo endpoints all use dockerURL directly,
+// so ClickHouse containers can reach all endpoints without any forwarding.
+func newTestOAuthProviderReachableFromDocker(t *testing.T, userInfoClaims map[string]interface{}) (*testOAuthProvider, string) {
+	t.Helper()
+
+	// Bind to all interfaces so Docker containers can reach us.
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	dockerURL := fmt.Sprintf("http://%s:%d", getDockerHostIP(), port)
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", port) // for host-side access in tests
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testOAuthProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		userInfoClaims: userInfoClaims,
+	}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		// Antalya CH requires a complete OIDC discovery document with introspection_endpoint
+		// (or userinfo_endpoint) plus the standard required OIDC fields. Without them CH
+		// silently ignores the document and logs "Cannot extract userinfo_endpoint or
+		// introspection_endpoint from OIDC configuration". Content-Length must be set
+		// explicitly so CH's HTTP client receives the full body over the OrbStack NAT.
+		doc := map[string]interface{}{
+			"issuer":                                 dockerURL,
+			"authorization_endpoint":                dockerURL + "/auth",
+			"token_endpoint":                        dockerURL + "/token",
+			"jwks_uri":                              dockerURL + "/jwks",
+			"userinfo_endpoint":                     dockerURL + "/userinfo",
+			"introspection_endpoint":                dockerURL + "/introspect",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		}
+		body, _ := json.Marshal(doc)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		body, _ := json.Marshal(keySet)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.lastAuthorizationMu.Lock()
+		provider.lastAuthorization = r.Header.Get("Authorization")
+		provider.lastAuthorizationMu.Unlock()
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
+	})
+
+	// Use plain http.Serve (not httptest) — httptest replaces the listener
+	// in a way that breaks 0.0.0.0 binding needed for Docker-to-host connectivity.
+	httpSrv := &http.Server{Handler: mux}
+	go func() { _ = httpSrv.Serve(ln) }()
+	time.Sleep(50 * time.Millisecond) // ensure goroutine is scheduled before container starts
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	})
+
+	// Set a stub server so provider.server.URL works in test verification code.
+	stub := httptest.NewUnstartedServer(nil)
+	stub.Listener.Close() // free the auto-created listener immediately
+	stub.URL = localURL
+	provider.server = stub
+
+	return provider, dockerURL
+}
+
+// setupAntalyaClickHouseWithOIDC starts an Antalya ClickHouse container with token_processors
+// pointing at the given OIDC discovery URL.
+// Requires host.docker.internal to resolve inside the container (automatic on macOS/OrbStack
+// and Docker Desktop; on Linux add --add-host=host.docker.internal:host-gateway to Docker daemon).
+func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDiscoveryURL string) config.ClickHouseConfig {
+	t.Helper()
+
+	tokenProcessorXML := fmt.Sprintf(`<?xml version="1.0"?>
+<clickhouse>
+    <token_processors>
+        <test_oidc>
+            <type>openid</type>
+            <configuration_endpoint>%s/.well-known/openid-configuration</configuration_endpoint>
+            <token_cache_lifetime>60</token_cache_lifetime>
+        </test_oidc>
+    </token_processors>
+    <user_directories replace="replace">
+        <users_xml>
+            <path>users.xml</path>
+        </users_xml>
+        <local_directory>
+            <path>/var/lib/clickhouse/access/</path>
+        </local_directory>
+        <token>
+            <processor>test_oidc</processor>
+            <common_roles>
+                <default_role />
+            </common_roles>
+        </token>
+    </user_directories>
+</clickhouse>
+`, oidcDiscoveryURL)
+	startupScriptsXML := generateClickHouseStartupScriptsConfig()
+
+	tmpDir := t.TempDir()
+	tokenProcessorFile := tmpDir + "/token_processor.xml"
+	require.NoError(t, os.WriteFile(tokenProcessorFile, []byte(tokenProcessorXML), 0644))
+	startupScriptsFile := tmpDir + "/startup_scripts.xml"
+	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
+
+	req := testcontainers.ContainerRequest{
+		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
+		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
+		Files: []testcontainers.ContainerFile{
+			{HostFilePath: tokenProcessorFile, ContainerFilePath: "/etc/clickhouse-server/config.d/token_processor.xml", FileMode: 0644},
+			{HostFilePath: startupScriptsFile, ContainerFilePath: "/etc/clickhouse-server/config.d/startup_scripts.xml", FileMode: 0644},
+		},
+		Env: map[string]string{
+			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
+			"CLICKHOUSE_DB":                        "default",
+			"CLICKHOUSE_USER":                      "default",
+			"CLICKHOUSE_PASSWORD":                  "",
+			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
+		},
+		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
+			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = container.Terminate(cleanupCtx)
+	})
+
+	host, err := container.Host(ctx)
+	require.NoError(t, err)
+	httpPort, err := container.MappedPort(ctx, "8123")
+	require.NoError(t, err)
+
+	t.Logf("Antalya ClickHouse HTTP at %s:%s", host, httpPort.Port())
+
+	return config.ClickHouseConfig{
+		Host:             host,
+		Port:             httpPort.Int(),
+		Database:         "default",
+		Username:         "default",
+		Password:         "",
+		Protocol:         config.HTTPProtocol,
+		ReadOnly:         false,
+		MaxExecutionTime: 60,
+	}
 }
