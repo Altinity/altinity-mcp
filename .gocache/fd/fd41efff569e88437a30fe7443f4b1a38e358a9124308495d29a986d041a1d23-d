@@ -1,7 +1,0 @@
-./conn.go
-./frame.go
-./jsonrpc2.go
-./messages.go
-./net.go
-./serve.go
-./wire.go
