@@ -248,8 +248,8 @@ For direct bearer-token use, a plain reverse proxy is usually enough.
 
 For browser-based MCP login, the frontend must expose two public URL spaces:
 
-- the protected resource, for example `https://PUBLIC_HOST.example.com/http-t`
-- the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth-t`
+- the protected resource, for example `https://PUBLIC_HOST.example.com/http`
+- the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth`
 
 The proxy must:
 
@@ -263,7 +263,7 @@ The proxy must:
 Example nginx configuration:
 
 ```nginx
-location ^~ /http-t {
+location ^~ /http {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Authorization $http_authorization;
@@ -271,18 +271,6 @@ location ^~ /http-t {
     proxy_request_buffering off;
     proxy_read_timeout 3600;
     proxy_send_timeout 3600;
-    proxy_pass http://ALTINITY_MCP_UPSTREAM;
-}
-
-location ^~ /oauth-t/ {
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header Authorization $http_authorization;
-    proxy_buffering off;
-    proxy_request_buffering off;
-    proxy_read_timeout 3600;
-    proxy_send_timeout 3600;
-    rewrite ^/oauth-t/(.*)$ /$1 break;
     proxy_pass http://ALTINITY_MCP_UPSTREAM;
 }
 ```
@@ -301,9 +289,9 @@ server:
     mode: "forward"
     gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
-    audience: "https://PUBLIC_HOST.example.com/http-t"
-    public_resource_url: "https://PUBLIC_HOST.example.com/http-t"
-    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth-t"
+    audience: "https://PUBLIC_HOST.example.com/http"
+    public_resource_url: "https://PUBLIC_HOST.example.com/http"
+    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth"
     client_id: "YOUR_GOOGLE_WEB_CLIENT.apps.googleusercontent.com"
     client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
     scopes: ["openid", "email"]
