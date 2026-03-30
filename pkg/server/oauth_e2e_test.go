@@ -589,7 +589,7 @@ func newTestOAuthProviderReachableFromDocker(t *testing.T, userInfoClaims map[st
 		// introspection_endpoint from OIDC configuration". Content-Length must be set
 		// explicitly so CH's HTTP client receives the full body over the OrbStack NAT.
 		doc := map[string]interface{}{
-			"issuer":                                 dockerURL,
+			"issuer":                                dockerURL,
 			"authorization_endpoint":                dockerURL + "/auth",
 			"token_endpoint":                        dockerURL + "/token",
 			"jwks_uri":                              dockerURL + "/jwks",

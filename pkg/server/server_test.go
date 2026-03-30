@@ -3467,8 +3467,8 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled: true,
-					Mode:    "forward",
+					Enabled:         true,
+					Mode:            "forward",
 					ClaimsToHeaders: map[string]string{"sub": "X-ClickHouse-Quota-Key"},
 				},
 			},
@@ -3786,10 +3786,10 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:             true,
-					Mode:                "forward",
-					Issuer:              provider.server.URL,
-					JWKSURL:             provider.server.URL + "/jwks",
+					Enabled: true,
+					Mode:    "forward",
+					Issuer:  provider.server.URL,
+					JWKSURL: provider.server.URL + "/jwks",
 				},
 			},
 		}, "test")
@@ -3824,7 +3824,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		dockerChConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: dockerChConfig,
-			Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
+			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
 		}, "test")
 		oauthToken := dockerProvider.issueJWT(t, map[string]interface{}{
 			"sub": "service-account-123",

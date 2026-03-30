@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 func TestRunGenerator(t *testing.T) {
 	jweSecretKey := "any-jwe-secret" // Will be hashed to 32 bytes
 

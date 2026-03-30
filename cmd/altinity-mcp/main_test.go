@@ -4719,7 +4719,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 						TokenURL:               errorServer.URL + "/token",
 						AuthURL:                errorServer.URL + "/authorize",
 						ClientID:               "upstream-client-id",
-						ClientSecret:            "upstream-client-secret",
+						ClientSecret:           "upstream-client-secret",
 						Scopes:                 []string{"openid", "email"},
 						GatingSecretKey:        "test-gating-secret-32-byte-key!!",
 						AccessTokenTTLSeconds:  300,
