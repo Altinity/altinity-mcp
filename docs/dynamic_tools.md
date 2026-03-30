@@ -88,7 +88,49 @@ This view will generate a tool with three parameters:
 - `start_date` (string/date)
 - `end_date` (string/date)
 
-The view's `COMMENT` will be used as the tool's description. If no comment is provided, a default description is generated.
+The view's `COMMENT` can be either:
+- A plain string, which becomes the tool description.
+- A strict JSON object with top-level tool metadata.
+
+If no comment is provided, Altinity MCP generates a default human-readable title, a default read-only description, and read-only MCP annotations.
+
+## Tool Metadata in `COMMENT`
+
+Altinity MCP supports strict JSON metadata in a view `COMMENT` for these top-level fields:
+
+- `title`
+- `description`
+- `annotations.openWorldHint`
+
+Example:
+
+```sql
+CREATE OR REPLACE VIEW mcp.search AS
+SELECT number, title
+FROM github_events
+WHERE title ILIKE '%' || {query: String} || '%'
+COMMENT '{"title":"GitHub Search","description":"Returns issues with matching titles.","annotations":{"openWorldHint":true}}'
+```
+
+Notes:
+
+- Dynamic view-backed tools are always exposed with:
+  - `readOnlyHint=true`
+  - `destructiveHint=false`
+- `annotations.openWorldHint` is optional and may be set to `true` when the tool interacts with arbitrary external targets.
+- If the `COMMENT` is not valid JSON, it is treated as a plain description string.
+- Parameter-level metadata is not supported in `COMMENT` yet.
+
+## MCP Safety Hints
+
+Dynamic tools generated from ClickHouse views are exposed as read-only MCP tools. This matches the OpenAI Apps SDK guidance for tool annotations and reduces unnecessary confirmation prompts in compatible clients.
+
+Relevant references:
+
+- [Apps SDK Reference](https://developers.openai.com/apps-sdk/reference)
+- [Define tools](https://developers.openai.com/apps-sdk/plan/tools)
+- [Build your MCP server](https://developers.openai.com/apps-sdk/build/mcp-server)
+- [MCP concepts / server docs](https://developers.openai.com/apps-sdk/concepts/mcp-server)
 
 ## Type Mapping
 
@@ -195,6 +237,7 @@ Dynamic tools are automatically exposed through the OpenAPI endpoints when `serv
 1. **Use descriptive names**: When using the `name` field, choose clear, descriptive names that indicate the tool's purpose.
 
 2. **Add comments to views**: Use the `COMMENT` clause in your view definitions to provide meaningful descriptions for the generated tools.
+   Use strict JSON if you want to set `title` or explicit MCP annotations.
 
 3. **Use specific regexps**: For named tools, use specific regular expressions to ensure only one view matches.
 

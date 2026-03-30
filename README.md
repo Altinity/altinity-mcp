@@ -113,6 +113,14 @@ helm install altinity-mcp ./helm/altinity-mcp \
   --set config.server.port=8080
 ```
 
+From a tag-published GHCR image
+```bash
+helm install altinity-mcp oci://ghcr.io/altinity/altinity-mcp/helm/altinity-mcp \
+  --set image.tag=<tag-or-sha-tag> \
+  --set config.clickhouse.host=clickhouse.example.com \
+  --set config.clickhouse.database=default
+```
+
 For detailed Helm chart configuration options, see [Helm Chart README](helm/altinity-mcp/README.md).
 
 ### Docker Compose
@@ -225,9 +233,22 @@ export LOG_LEVEL=debug
 ### `execute_query`
 Executes SQL queries against ClickHouse® with optional result limiting.
 
+MCP tool safety annotations:
+- When the server runs with `--read-only`, `execute_query` is exposed as read-only.
+- Otherwise `execute_query` is marked as potentially destructive.
+
 **Parameters:**
 - `query` (required): The SQL query to execute
 - `limit` (optional): Maximum number of rows to return (default: server configured limit, max: 10,000)
+
+### Dynamic Tools
+Dynamic tools generated from ClickHouse views are always exposed as read-only MCP tools with explicit safety hints.
+
+View `COMMENT` supports either:
+- A plain string description.
+- A strict JSON object with top-level `title`, `description`, and `annotations`.
+
+See [Dynamic Tools Documentation](docs/dynamic_tools.md) for examples and supported metadata.
 
 ## Available Resources
 
@@ -243,6 +264,12 @@ No prompts currently available
 ## OpenAI GPTs Integration
 
 The Altinity MCP Server supports seamless integration with OpenAI GPTs through its OpenAPI-compatible endpoints. These endpoints enable GPT assistants to perform ClickHouse® database operations directly.
+
+OpenAI MCP/tooling references:
+- [Apps SDK Reference](https://developers.openai.com/apps-sdk/reference)
+- [Define tools](https://developers.openai.com/apps-sdk/plan/tools)
+- [Build your MCP server](https://developers.openai.com/apps-sdk/build/mcp-server)
+- [MCP concepts / server docs](https://developers.openai.com/apps-sdk/concepts/mcp-server)
 
 ### Authentication
 - **With JWE**: Add the JWE token to either:

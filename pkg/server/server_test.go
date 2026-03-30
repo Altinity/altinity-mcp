@@ -21,6 +21,20 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+type captureServer struct {
+	tools []*mcp.Tool
+}
+
+func (c *captureServer) AddTool(tool *mcp.Tool, _ ToolHandlerFunc) {
+	c.tools = append(c.tools, tool)
+}
+
+func (c *captureServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc) {}
+
+func (c *captureServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
+
+func (c *captureServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc) {}
+
 // generateJWEToken is a helper to create JWE tokens for testing.
 func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey []byte, jwtSecretKey []byte) string {
 	token, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
@@ -674,7 +688,89 @@ func TestHelperFunctions(t *testing.T) {
 
 	t.Run("buildDescription", func(t *testing.T) {
 		require.Equal(t, "My desc", buildDescription("My desc", "db", "view"))
-		require.Equal(t, "Tool to load data from db.view", buildDescription("", "db", "view"))
+		require.Equal(t, "Read-only tool to query data from db.view", buildDescription("", "db", "view"))
+	})
+
+	t.Run("buildTitle", func(t *testing.T) {
+		require.Equal(t, "Github Search", buildTitle("github_search", ""))
+		require.Equal(t, "Explicit Title", buildTitle("github_search", " Explicit Title "))
+	})
+}
+
+func TestDynamicToolCommentMetadata(t *testing.T) {
+	t.Run("valid_json_comment", func(t *testing.T) {
+		comment := `{"title":"GitHub Search","description":"Returns matching issues.","annotations":{"openWorldHint":true}}`
+
+		meta := buildDynamicToolMeta("github_search", "mcp", "search", comment, nil)
+
+		require.Equal(t, "GitHub Search", meta.Title)
+		require.Equal(t, "Returns matching issues.", meta.Description)
+		require.NotNil(t, meta.Annotations)
+		require.True(t, meta.Annotations.ReadOnlyHint)
+		require.NotNil(t, meta.Annotations.DestructiveHint)
+		require.False(t, *meta.Annotations.DestructiveHint)
+		require.NotNil(t, meta.Annotations.OpenWorldHint)
+		require.True(t, *meta.Annotations.OpenWorldHint)
+	})
+
+	t.Run("invalid_json_falls_back_to_plain_description", func(t *testing.T) {
+		comment := `{"title":"GitHub Search"`
+
+		meta := buildDynamicToolMeta("github_search", "mcp", "search", comment, nil)
+
+		require.Equal(t, "Github Search", meta.Title)
+		require.Equal(t, comment, meta.Description)
+		require.True(t, meta.Annotations.ReadOnlyHint)
+	})
+
+	t.Run("empty_comment_uses_defaults", func(t *testing.T) {
+		meta := buildDynamicToolMeta("github_search", "mcp", "search", "", nil)
+
+		require.Equal(t, "Github Search", meta.Title)
+		require.Equal(t, "Read-only tool to query data from mcp.search", meta.Description)
+		require.True(t, meta.Annotations.ReadOnlyHint)
+		require.NotNil(t, meta.Annotations.DestructiveHint)
+		require.False(t, *meta.Annotations.DestructiveHint)
+		require.NotNil(t, meta.Annotations.OpenWorldHint)
+		require.False(t, *meta.Annotations.OpenWorldHint)
+	})
+}
+
+func TestRegisterTools_Annotations(t *testing.T) {
+	t.Run("read_only_server_marks_execute_query_safe", func(t *testing.T) {
+		srv := &captureServer{}
+
+		RegisterTools(srv, config.Config{
+			ClickHouse: config.ClickHouseConfig{ReadOnly: true},
+		})
+
+		require.Len(t, srv.tools, 1)
+		tool := srv.tools[0]
+		require.Equal(t, "execute_query", tool.Name)
+		require.Equal(t, "Execute SQL Query", tool.Title)
+		require.NotNil(t, tool.Annotations)
+		require.True(t, tool.Annotations.ReadOnlyHint)
+		require.NotNil(t, tool.Annotations.DestructiveHint)
+		require.False(t, *tool.Annotations.DestructiveHint)
+		require.NotNil(t, tool.Annotations.OpenWorldHint)
+		require.False(t, *tool.Annotations.OpenWorldHint)
+	})
+
+	t.Run("read_write_server_marks_execute_query_risky", func(t *testing.T) {
+		srv := &captureServer{}
+
+		RegisterTools(srv, config.Config{
+			ClickHouse: config.ClickHouseConfig{ReadOnly: false},
+		})
+
+		require.Len(t, srv.tools, 1)
+		tool := srv.tools[0]
+		require.NotNil(t, tool.Annotations)
+		require.False(t, tool.Annotations.ReadOnlyHint)
+		require.NotNil(t, tool.Annotations.DestructiveHint)
+		require.True(t, *tool.Annotations.DestructiveHint)
+		require.NotNil(t, tool.Annotations.OpenWorldHint)
+		require.False(t, *tool.Annotations.OpenWorldHint)
 	})
 }
 
@@ -710,9 +806,11 @@ func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 		dynamicTools: map[string]dynamicToolMeta{
 			"custom_db_view": {
 				ToolName:    "custom_db_view",
+				Title:       "Custom Db View",
 				Database:    "db",
 				Table:       "view",
 				Description: "desc",
+				Annotations: buildDynamicToolAnnotations(nil),
 				Params:      []dynamicToolParam{{Name: "id", CHType: "UInt64", JSONType: "integer", JSONFormat: "int64", Required: true}},
 			},
 		},
