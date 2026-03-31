@@ -19,6 +19,7 @@ import (
 )
 
 func TestRunGenerator(t *testing.T) {
+	t.Parallel()
 	jweSecretKey := "any-jwe-secret" // Will be hashed to 32 bytes
 
 	testCases := []struct {
@@ -81,6 +82,7 @@ func TestRunGenerator(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var out bytes.Buffer
 			err := run(&out, tc.args)
 
@@ -99,6 +101,7 @@ func TestRunGenerator(t *testing.T) {
 }
 
 func TestJWEAuthEndToEnd(t *testing.T) {
+	t.Parallel()
 	// This is an integration test that replaces the old test_jwe_auth.sh script.
 	// It builds and starts the altinity-mcp server, generates a JWE token,
 	// and then makes a request to the server using that token.

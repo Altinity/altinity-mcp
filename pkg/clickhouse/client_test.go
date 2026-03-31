@@ -16,6 +16,8 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
 	ctx := context.Background()
 
+	totalStart := time.Now()
+
 	req := testcontainers.ContainerRequest{
 		Image:        "clickhouse/clickhouse-server:latest",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
@@ -28,18 +30,22 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 		},
 		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
 	}
+	containerStart := time.Now()
 	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
+	containerElapsed := time.Since(containerStart)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
+		cleanupStart := time.Now()
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := chContainer.Terminate(cleanupCtx); err != nil {
 			t.Logf("Warning: failed to terminate container: %v", err)
 		}
+		t.Logf("[container/%s] cleanup took %s", req.Image, time.Since(cleanupStart))
 	})
 
 	host, err := chContainer.Host(ctx)
@@ -47,6 +53,8 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 
 	port, err := chContainer.MappedPort(ctx, "9000")
 	require.NoError(t, err)
+
+	t.Logf("[container/%s] start=%s total=%s", req.Image, containerElapsed, time.Since(totalStart))
 
 	return &config.ClickHouseConfig{
 		Host:             host,
@@ -63,7 +71,9 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 
 // TestNewClient tests client creation
 func TestNewClient(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid_config", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		cfg := config.ClickHouseConfig{
 			Host:     "invalid-host-that-does-not-exist",
@@ -80,6 +90,7 @@ func TestNewClient(t *testing.T) {
 	})
 
 	t.Run("valid_config_but_no_server", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		cfg := config.ClickHouseConfig{
 			Host:     "localhost",
@@ -97,6 +108,7 @@ func TestNewClient(t *testing.T) {
 
 // TestClientOperations tests client operations with real ClickHouse
 func TestClientOperations(t *testing.T) {
+	t.Parallel()
 	cfg := setupClickHouseContainer(t)
 	ctx := context.Background()
 
@@ -149,7 +161,9 @@ func TestClientOperations(t *testing.T) {
 }
 
 func TestClientErrorPaths(t *testing.T) {
+	t.Parallel()
 	t.Run("ping_failure", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}
 		ctx := context.Background()
 		client, err := NewClient(ctx, *cfg)
@@ -158,6 +172,7 @@ func TestClientErrorPaths(t *testing.T) {
 	})
 
 	t.Run("describe_table_not_exists", func(t *testing.T) {
+		t.Parallel()
 		cfg := setupClickHouseContainer(t)
 		ctx := context.Background()
 		client, err := NewClient(ctx, *cfg)
@@ -169,6 +184,7 @@ func TestClientErrorPaths(t *testing.T) {
 	})
 
 	t.Run("non_select_error", func(t *testing.T) {
+		t.Parallel()
 		cfg := setupClickHouseContainer(t)
 		ctx := context.Background()
 		client, err := NewClient(ctx, *cfg)
@@ -179,6 +195,7 @@ func TestClientErrorPaths(t *testing.T) {
 	})
 
 	t.Run("read_only_blocks_non_select", func(t *testing.T) {
+		t.Parallel()
 		client := &Client{
 			config: config.ClickHouseConfig{
 				ReadOnly: true,
@@ -192,7 +209,9 @@ func TestClientErrorPaths(t *testing.T) {
 
 // TestUtilityFunctions tests utility functions
 func TestUtilityFunctions(t *testing.T) {
+	t.Parallel()
 	t.Run("isSelectQuery", func(t *testing.T) {
+		t.Parallel()
 		require.True(t, isSelectQuery("SELECT * FROM table"))
 		require.True(t, isSelectQuery("  select * from table  "))
 		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
@@ -223,11 +242,13 @@ func TestUtilityFunctions(t *testing.T) {
 	})
 
 	t.Run("truncateString", func(t *testing.T) {
+		t.Parallel()
 		require.Equal(t, "hello", truncateString("hello", 10))
 		require.Equal(t, "hello...", truncateString("hello world", 5))
 	})
 
 	t.Run("convertToSerializable", func(t *testing.T) {
+		t.Parallel()
 		now := time.Now()
 		require.Equal(t, now.Format(time.RFC3339), convertToSerializable(now))
 		require.Equal(t, "hello", convertToSerializable([]byte("hello")))
@@ -237,7 +258,9 @@ func TestUtilityFunctions(t *testing.T) {
 
 // TestTLSConfig tests TLS configuration building
 func TestTLSConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("disabled", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.TLSConfig{Enabled: false}
 		tlsConfig, err := buildTLSConfig(cfg)
 		require.NoError(t, err)
@@ -245,6 +268,7 @@ func TestTLSConfig(t *testing.T) {
 	})
 
 	t.Run("enabled_insecure", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.TLSConfig{
 			Enabled:            true,
 			InsecureSkipVerify: true,
@@ -256,6 +280,7 @@ func TestTLSConfig(t *testing.T) {
 	})
 
 	t.Run("ca_cert_not_found", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.TLSConfig{
 			Enabled: true,
 			CaCert:  "/path/that/does/not/exist/ca.crt",
@@ -267,6 +292,7 @@ func TestTLSConfig(t *testing.T) {
 	})
 
 	t.Run("client_cert_not_found", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.TLSConfig{
 			Enabled:    true,
 			ClientCert: "/path/that/does/not/exist/client.crt",
@@ -280,7 +306,9 @@ func TestTLSConfig(t *testing.T) {
 }
 
 func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
+	t.Parallel()
 	t.Run("http_tls_bearer_uses_jwt_hook", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.ClickHouseConfig{
 			Protocol: config.HTTPProtocol,
 			TLS: config.TLSConfig{
@@ -304,6 +332,7 @@ func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
 	})
 
 	t.Run("non_tls_keeps_authorization_header", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.ClickHouseConfig{
 			Protocol: config.HTTPProtocol,
 			HttpHeaders: map[string]string{
@@ -317,6 +346,7 @@ func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
 	})
 
 	t.Run("custom_auth_scheme_kept_as_header", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.ClickHouseConfig{
 			Protocol: config.HTTPProtocol,
 			TLS: config.TLSConfig{

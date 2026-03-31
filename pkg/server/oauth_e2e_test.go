@@ -31,6 +31,7 @@ import (
 // 2. ClickHouse (Antalya build) with token_processors for JWT auth
 // 3. MCP server forwarding Bearer tokens to ClickHouse
 func TestOAuthE2EWithMockOIDC(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
@@ -61,6 +62,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 	// ---------- Step 4: Test via MCP Client (InMemoryTransports) ----------
 	t.Run("MCP_Client", func(t *testing.T) {
+		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
@@ -89,6 +91,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 		require.NoError(t, err, "Client connect should succeed")
 		defer clientSession.Close()
 
+		// NOTE: MCP subtests are NOT parallel — they share clientSession
 		// 4a. ListTools — verify execute_query is registered
 		t.Run("ListTools", func(t *testing.T) {
 			toolsResult, err := clientSession.ListTools(ctx, nil)
@@ -157,6 +160,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 	// ---------- Step 5: Test via OpenAPI Client (httptest) ----------
 	t.Run("OpenAPI_Client", func(t *testing.T) {
+		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
@@ -169,6 +173,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 		// 5a. Execute query via OpenAPI with Bearer token
 		t.Run("ExecuteQuery", func(t *testing.T) {
+			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user, 1 AS ok")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
@@ -191,6 +196,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 		// 5b. OpenAPI schema endpoint should work
 		t.Run("OpenAPISchema", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
 			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
@@ -205,6 +211,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 		})
 
 		t.Run("ExecuteQuery_MissingBearerToken", func(t *testing.T) {
+			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
@@ -218,6 +225,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 		})
 
 		t.Run("ExecuteQuery_InvalidBearerTokenRejectedByClickHouse", func(t *testing.T) {
+			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+generateUnsignedJWT(t, map[string]any{

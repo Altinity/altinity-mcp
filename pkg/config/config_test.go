@@ -9,7 +9,9 @@ import (
 )
 
 func TestLoadConfigWithDynamicTools(t *testing.T) {
+	t.Parallel()
 	t.Run("basic_dynamic_tools", func(t *testing.T) {
+		t.Parallel()
 		yaml := []byte(`
 clickhouse:
   host: localhost
@@ -44,6 +46,7 @@ logging:
 	})
 
 	t.Run("dynamic_tools_with_name", func(t *testing.T) {
+		t.Parallel()
 		yaml := []byte(`
 clickhouse:
   host: localhost
@@ -79,6 +82,7 @@ logging:
 	})
 
 	t.Run("multiple_dynamic_tools_mixed", func(t *testing.T) {
+		t.Parallel()
 		yaml := []byte(`
 clickhouse:
   host: localhost
@@ -130,6 +134,7 @@ logging:
 	})
 
 	t.Run("dynamic_tools_with_name_json", func(t *testing.T) {
+		t.Parallel()
 		jsonContent := []byte(`{
   "clickhouse": {
     "host": "localhost",
@@ -174,7 +179,9 @@ logging:
 
 // TestLoadConfigFromFile tests configuration loading from files
 func TestLoadConfigFromFile(t *testing.T) {
+	t.Parallel()
 	t.Run("yaml_config", func(t *testing.T) {
+		t.Parallel()
 		yamlContent := `
 clickhouse:
   host: "test-host"
@@ -222,6 +229,7 @@ logging:
 	})
 
 	t.Run("json_config", func(t *testing.T) {
+		t.Parallel()
 		jsonContent := `{
   "clickhouse": {
     "host": "json-host",
@@ -272,12 +280,14 @@ logging:
 	})
 
 	t.Run("nonexistent_file", func(t *testing.T) {
+		t.Parallel()
 		cfg, err := LoadConfigFromFile("/nonexistent/file.yaml")
 		require.Error(t, err)
 		require.Nil(t, cfg)
 	})
 
 	t.Run("invalid_yaml", func(t *testing.T) {
+		t.Parallel()
 		invalidYaml := `
 clickhouse:
   host: "test-host"
@@ -294,6 +304,7 @@ clickhouse:
 	})
 
 	t.Run("invalid_json", func(t *testing.T) {
+		t.Parallel()
 		invalidJson := `{
   "clickhouse": {
     "host": "test-host",
@@ -310,6 +321,7 @@ clickhouse:
 	})
 
 	t.Run("unsupported_extension", func(t *testing.T) {
+		t.Parallel()
 		tmpFile := filepath.Join(t.TempDir(), "config.txt")
 		err := os.WriteFile(tmpFile, []byte("some content"), 0644)
 		require.NoError(t, err)
@@ -322,18 +334,22 @@ clickhouse:
 
 // TestConfigConstants tests configuration constants
 func TestConfigConstants(t *testing.T) {
+	t.Parallel()
 	t.Run("clickhouse_protocols", func(t *testing.T) {
+		t.Parallel()
 		require.Equal(t, ClickHouseProtocol("http"), HTTPProtocol)
 		require.Equal(t, ClickHouseProtocol("tcp"), TCPProtocol)
 	})
 
 	t.Run("mcp_transports", func(t *testing.T) {
+		t.Parallel()
 		require.Equal(t, MCPTransport("stdio"), StdioTransport)
 		require.Equal(t, MCPTransport("http"), HTTPTransport)
 		require.Equal(t, MCPTransport("sse"), SSETransport)
 	})
 
 	t.Run("log_levels", func(t *testing.T) {
+		t.Parallel()
 		require.Equal(t, LogLevel("debug"), DebugLevel)
 		require.Equal(t, LogLevel("info"), InfoLevel)
 		require.Equal(t, LogLevel("warn"), WarnLevel)
@@ -343,7 +359,9 @@ func TestConfigConstants(t *testing.T) {
 
 // TestConfigStructs tests configuration struct initialization
 func TestConfigStructs(t *testing.T) {
+	t.Parallel()
 	t.Run("clickhouse_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := ClickHouseConfig{
 			Host:             "localhost",
 			Port:             8123,
@@ -371,6 +389,7 @@ func TestConfigStructs(t *testing.T) {
 	})
 
 	t.Run("tls_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := TLSConfig{
 			Enabled:            true,
 			CaCert:             "/path/to/ca.crt",
@@ -387,6 +406,7 @@ func TestConfigStructs(t *testing.T) {
 	})
 
 	t.Run("server_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := ServerConfig{
 			Transport: HTTPTransport,
 			Address:   "0.0.0.0",
@@ -399,6 +419,7 @@ func TestConfigStructs(t *testing.T) {
 	})
 
 	t.Run("jwe_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := JWEConfig{
 			Enabled:      true,
 			JWESecretKey: "jwe-private-key",
@@ -411,6 +432,7 @@ func TestConfigStructs(t *testing.T) {
 	})
 
 	t.Run("logging_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := LoggingConfig{
 			Level: DebugLevel,
 		}
@@ -419,6 +441,7 @@ func TestConfigStructs(t *testing.T) {
 	})
 
 	t.Run("oauth_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := OAuthConfig{
 			Enabled:                         true,
 			Issuer:                          "https://auth.example.com",
@@ -478,7 +501,9 @@ func TestConfigStructs(t *testing.T) {
 
 // TestLoadConfigWithOAuth tests OAuth configuration loading from files
 func TestLoadConfigWithOAuth(t *testing.T) {
+	t.Parallel()
 	t.Run("oauth_yaml_config", func(t *testing.T) {
+		t.Parallel()
 		yamlContent := `
 clickhouse:
   host: localhost
@@ -572,6 +597,7 @@ logging:
 	})
 
 	t.Run("oauth_json_config", func(t *testing.T) {
+		t.Parallel()
 		jsonContent := `{
   "clickhouse": {
     "host": "localhost",
@@ -623,6 +649,7 @@ logging:
 	})
 
 	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {
+		t.Parallel()
 		yamlContent := `
 clickhouse:
   host: localhost

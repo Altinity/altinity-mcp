@@ -22,6 +22,7 @@ import (
 )
 
 func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
+	t.Parallel()
 	app := &application{
 		config: config.Config{
 			Server: config.ServerConfig{
@@ -42,6 +43,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		},
 	}
 
+	// NOTE: subtests are NOT parallel — custom_public_urls_and_paths mutates shared app.config
 	t.Run("protected_resource_metadata", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-protected-resource", nil)
 		rr := httptest.NewRecorder()
@@ -123,6 +125,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 }
 
 func TestOAuthMCPAuthInjector(t *testing.T) {
+	t.Parallel()
 	token, err := generateOAuthTokenForApp(map[string]interface{}{
 		"sub":   "user123",
 		"iss":   "https://mcp.example.com",
@@ -173,6 +176,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("missing_oauth_gets_challenge", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
 		req.SetPathValue("token", jweToken)
 		rr := httptest.NewRecorder()
@@ -185,6 +189,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 	})
 
 	t.Run("valid_oauth_sets_context", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
 		req.SetPathValue("token", jweToken)
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -202,6 +207,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 	})
 
 	t.Run("jwe_with_credentials_skips_oauth", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweTokenWithCredentials+"/http", nil)
 		req.SetPathValue("token", jweTokenWithCredentials)
 		rr := httptest.NewRecorder()
@@ -219,6 +225,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 }
 
 func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
+	t.Parallel()
 	token := "opaque-access-token"
 	app := &application{
 		config: config.Config{
@@ -257,6 +264,7 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 }
 
 func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
+	t.Parallel()
 	app := &application{
 		config: config.Config{
 			Server: config.ServerConfig{
@@ -511,6 +519,7 @@ func exchangeOAuthBrowserCode(t *testing.T, app *application, clientID, code, re
 }
 
 func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
+	t.Parallel()
 	const (
 		redirectURI  = "http://127.0.0.1:3334/callback"
 		codeVerifier = "test-code-verifier"
@@ -518,6 +527,7 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 	)
 
 	t.Run("access_token_and_id_token_prefers_id_token", func(t *testing.T) {
+		t.Parallel()
 		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 			"access_token": "upstream-access-token",
 			"token_type":   "Bearer",
@@ -565,6 +575,7 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 	})
 
 	t.Run("access_token_only_uses_userinfo_and_returns_access_token", func(t *testing.T) {
+		t.Parallel()
 		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 			"access_token": "opaque-access-token",
 			"token_type":   "DPoP",
@@ -607,6 +618,7 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 	})
 
 	t.Run("id_token_without_access_token_returns_id_token", func(t *testing.T) {
+		t.Parallel()
 		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 			"token_type": "Bearer",
 			"expires_in": 900,
@@ -668,6 +680,7 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 }
 
 func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {
+	t.Parallel()
 	token, err := encodeSelfIssuedAccessToken([]byte("short-secret"), map[string]interface{}{
 		"sub": "user-1",
 		"iss": "https://issuer.example.com",
@@ -679,7 +692,9 @@ func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {
 }
 
 func TestOAuthStateStoreSizeCap(t *testing.T) {
+	t.Parallel()
 	t.Run("pending_auth_evicts_oldest_at_cap", func(t *testing.T) {
+		t.Parallel()
 		store := newOAuthStateStore()
 		// Fill to capacity with entries that expire far in the future
 		for i := 0; i < maxOAuthStateEntries; i++ {
@@ -710,6 +725,7 @@ func TestOAuthStateStoreSizeCap(t *testing.T) {
 	})
 
 	t.Run("auth_codes_evicts_oldest_at_cap", func(t *testing.T) {
+		t.Parallel()
 		store := newOAuthStateStore()
 		for i := 0; i < maxOAuthStateEntries; i++ {
 			store.putAuthCode(fmt.Sprintf("c_%d", i), oauthIssuedCode{
@@ -736,6 +752,7 @@ func TestOAuthStateStoreSizeCap(t *testing.T) {
 	})
 
 	t.Run("expired_entries_cleaned_before_cap_check", func(t *testing.T) {
+		t.Parallel()
 		store := newOAuthStateStore()
 		// Fill with already-expired entries
 		for i := 0; i < maxOAuthStateEntries; i++ {
@@ -824,6 +841,7 @@ func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken
 }
 
 func TestOAuthRefreshTokenGatingMode(t *testing.T) {
+	t.Parallel()
 	const (
 		redirectURI  = "http://127.0.0.1:3334/callback"
 		codeVerifier = "test-code-verifier"
@@ -850,6 +868,7 @@ func TestOAuthRefreshTokenGatingMode(t *testing.T) {
 	clientID := resp["_client_id"].(string)
 
 	t.Run("auth_code_response_includes_refresh_token", func(t *testing.T) {
+		t.Parallel()
 		require.NotEmpty(t, resp["access_token"])
 		require.NotEmpty(t, resp["refresh_token"], "gating mode should return a refresh_token")
 		require.Equal(t, "Bearer", resp["token_type"])
@@ -857,6 +876,7 @@ func TestOAuthRefreshTokenGatingMode(t *testing.T) {
 	})
 
 	t.Run("refresh_grants_new_tokens", func(t *testing.T) {
+		t.Parallel()
 		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
 		require.Equal(t, http.StatusOK, rr.Code)
 
@@ -874,6 +894,7 @@ func TestOAuthRefreshTokenGatingMode(t *testing.T) {
 	})
 
 	t.Run("chained_refresh_works", func(t *testing.T) {
+		t.Parallel()
 		// First refresh
 		rr1 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
 		require.Equal(t, http.StatusOK, rr1.Code)
@@ -891,6 +912,7 @@ func TestOAuthRefreshTokenGatingMode(t *testing.T) {
 }
 
 func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
+	t.Parallel()
 	const redirectURI = "http://127.0.0.1:3334/callback"
 
 	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
@@ -914,6 +936,7 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 	clientID := resp["_client_id"].(string)
 
 	t.Run("wrong_client_id", func(t *testing.T) {
+		t.Parallel()
 		otherClientID := registerOAuthBrowserClient(t, app, redirectURI)
 		rr := exchangeRefreshToken(t, app, otherClientID, resp["refresh_token"].(string))
 		require.Equal(t, http.StatusBadRequest, rr.Code)
@@ -921,12 +944,14 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 	})
 
 	t.Run("malformed_refresh_token", func(t *testing.T) {
+		t.Parallel()
 		rr := exchangeRefreshToken(t, app, clientID, "garbage-token")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 		require.Contains(t, rr.Body.String(), "invalid refresh token")
 	})
 
 	t.Run("missing_refresh_token", func(t *testing.T) {
+		t.Parallel()
 		form := url.Values{}
 		form.Set("grant_type", "refresh_token")
 		form.Set("client_id", clientID)
@@ -939,6 +964,7 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 	})
 
 	t.Run("forward_mode_rejects_refresh", func(t *testing.T) {
+		t.Parallel()
 		fwdApp := newForwardModeBrowserLoginTestApp(provider)
 		fwdClientID := registerOAuthBrowserClient(t, fwdApp, redirectURI)
 		rr := exchangeRefreshToken(t, fwdApp, fwdClientID, resp["refresh_token"].(string))
@@ -948,6 +974,7 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 }
 
 func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
+	t.Parallel()
 	const (
 		redirectURI  = "http://127.0.0.1:3334/callback"
 		codeVerifier = "test-code-verifier"
@@ -992,6 +1019,7 @@ func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
 }
 
 func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
+	t.Parallel()
 	const (
 		redirectURI  = "http://127.0.0.1:3334/callback"
 		codeVerifier = "test-code-verifier-policy"
@@ -1026,6 +1054,7 @@ func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
 	}
 
 	t.Run("refresh_rejected_when_email_domain_removed", func(t *testing.T) {
+		t.Parallel()
 		_, app, resp := setupProviderAndApp(t, "user@allowed.com", true, "")
 		app.config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
 		app.mcpServer.Config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
@@ -1045,6 +1074,7 @@ func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
 	})
 
 	t.Run("refresh_rejected_when_email_verification_required", func(t *testing.T) {
+		t.Parallel()
 		_, app, resp := setupProviderAndApp(t, "user@example.com", false, "")
 		clientID := resp["_client_id"].(string)
 
@@ -1062,6 +1092,7 @@ func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
 	})
 
 	t.Run("refresh_rejected_when_hosted_domain_removed", func(t *testing.T) {
+		t.Parallel()
 		_, app, resp := setupProviderAndApp(t, "user@corp.com", true, "corp.com")
 		app.config.Server.OAuth.AllowedHostedDomains = []string{"corp.com"}
 		app.mcpServer.Config.Server.OAuth.AllowedHostedDomains = []string{"corp.com"}
@@ -1080,6 +1111,7 @@ func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
 	})
 
 	t.Run("refresh_succeeds_when_policy_still_satisfied", func(t *testing.T) {
+		t.Parallel()
 		_, app, resp := setupProviderAndApp(t, "user@allowed.com", true, "")
 		app.config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
 		app.mcpServer.Config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
@@ -1096,6 +1128,7 @@ func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
 }
 
 func TestOAuthRegistrationNegative(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, nil, nil)
 	app := newGatingModeTestApp(provider)
 
@@ -1107,32 +1140,38 @@ func TestOAuthRegistrationNegative(t *testing.T) {
 	}
 
 	t.Run("invalid_json", func(t *testing.T) {
+		t.Parallel()
 		rr := post("{broken")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("empty_redirect_uris", func(t *testing.T) {
+		t.Parallel()
 		rr := post(`{"redirect_uris":[]}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("http_non_localhost_redirect", func(t *testing.T) {
+		t.Parallel()
 		rr := post(`{"redirect_uris":["http://evil.com/cb"]}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("invalid_redirect_uri", func(t *testing.T) {
+		t.Parallel()
 		rr := post(`{"redirect_uris":["not-a-url"]}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("unsupported_auth_method", func(t *testing.T) {
+		t.Parallel()
 		rr := post(`{"redirect_uris":["https://example.com/cb"],"token_endpoint_auth_method":"client_secret_post"}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 }
 
 func TestOAuthAuthorizeNegative(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, nil, nil)
 	app := newGatingModeTestApp(provider)
 	redirectURI := "http://127.0.0.1:3334/callback"
@@ -1146,32 +1185,38 @@ func TestOAuthAuthorizeNegative(t *testing.T) {
 	}
 
 	t.Run("missing_client_id", func(t *testing.T) {
+		t.Parallel()
 		rr := get("redirect_uri=" + url.QueryEscape(redirectURI) + "&response_type=code&code_challenge=abc&code_challenge_method=S256")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("missing_redirect_uri", func(t *testing.T) {
+		t.Parallel()
 		rr := get("client_id=" + url.QueryEscape(clientID) + "&response_type=code&code_challenge=abc&code_challenge_method=S256")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("redirect_uri_mismatch", func(t *testing.T) {
+		t.Parallel()
 		rr := get("client_id=" + url.QueryEscape(clientID) + "&redirect_uri=" + url.QueryEscape("https://evil.com/cb") + "&response_type=code&code_challenge=abc&code_challenge_method=S256")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("missing_pkce_challenge", func(t *testing.T) {
+		t.Parallel()
 		rr := get("client_id=" + url.QueryEscape(clientID) + "&redirect_uri=" + url.QueryEscape(redirectURI) + "&response_type=code&code_challenge_method=S256")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
 	t.Run("wrong_pkce_method", func(t *testing.T) {
+		t.Parallel()
 		rr := get("client_id=" + url.QueryEscape(clientID) + "&redirect_uri=" + url.QueryEscape(redirectURI) + "&response_type=code&code_challenge=abc&code_challenge_method=plain")
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 }
 
 func TestOAuthCallbackNegative(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 		"access_token": "upstream-access-token",
 		"token_type":   "Bearer",
@@ -1190,6 +1235,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 	app := newGatingModeTestApp(provider)
 
 	t.Run("missing_state", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=some-code", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthCallback(rr, req)
@@ -1197,6 +1243,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 	})
 
 	t.Run("missing_code", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?state=some-state", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthCallback(rr, req)
@@ -1204,6 +1251,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 	})
 
 	t.Run("unknown_pending_state", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=some-code&state=random-unknown-state", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthCallback(rr, req)
@@ -1211,6 +1259,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 	})
 
 	t.Run("upstream_token_endpoint_500", func(t *testing.T) {
+		t.Parallel()
 		// Create a mock server that returns 500 from its token endpoint
 		errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/token" {
@@ -1253,6 +1302,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 	})
 
 	t.Run("upstream_returns_empty_tokens", func(t *testing.T) {
+		t.Parallel()
 		emptyProvider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 			"token_type": "Bearer",
 			"expires_in": 1800,
@@ -1271,6 +1321,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 }
 
 func TestOAuthTokenExchangeNegative(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 		"access_token": "upstream-access-token",
 		"token_type":   "Bearer",
@@ -1299,6 +1350,7 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 	}
 
 	t.Run("unknown_auth_code", func(t *testing.T) {
+		t.Parallel()
 		form := url.Values{}
 		form.Set("grant_type", "authorization_code")
 		form.Set("client_id", clientID)
@@ -1311,6 +1363,7 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 	})
 
 	t.Run("redirect_uri_mismatch", func(t *testing.T) {
+		t.Parallel()
 		codeVerifier := "test-code-verifier-neg"
 		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, "s", codeVerifier)
 
@@ -1333,6 +1386,7 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 	})
 
 	t.Run("wrong_pkce_verifier", func(t *testing.T) {
+		t.Parallel()
 		codeVerifier := "correct-code-verifier"
 		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, "s", codeVerifier)
 
@@ -1355,6 +1409,7 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 	})
 
 	t.Run("unsupported_grant_type", func(t *testing.T) {
+		t.Parallel()
 		form := url.Values{}
 		form.Set("grant_type", "client_credentials")
 		form.Set("client_id", clientID)
@@ -1365,6 +1420,7 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 }
 
 func TestOAuthGatingFlowE2E(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
 		"access_token": "upstream-access-token",
 		"token_type":   "Bearer",
@@ -1391,6 +1447,7 @@ func TestOAuthGatingFlowE2E(t *testing.T) {
 
 	// Step 1: Discovery document
 	t.Run("discovery_document", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthAuthorizationServerMetadata(rr, req)
@@ -1435,6 +1492,7 @@ func TestOAuthGatingFlowE2E(t *testing.T) {
 
 	// Step 6: Verify access token is valid HS256 JWT
 	t.Run("access_token_is_valid_jwt", func(t *testing.T) {
+		t.Parallel()
 		claims, err := app.mcpServer.ValidateOAuthToken(accessToken)
 		require.NoError(t, err)
 		require.Equal(t, "user-1", claims.Subject)
@@ -1443,6 +1501,7 @@ func TestOAuthGatingFlowE2E(t *testing.T) {
 
 	// Step 7: Refresh token exchange
 	t.Run("refresh_token_exchange", func(t *testing.T) {
+		t.Parallel()
 		rr := exchangeRefreshToken(t, app, clientID, refreshToken)
 		require.Equal(t, http.StatusOK, rr.Code)
 
@@ -1456,6 +1515,7 @@ func TestOAuthGatingFlowE2E(t *testing.T) {
 }
 
 func TestOAuthMetadataAdvertisesRefreshToken(t *testing.T) {
+	t.Parallel()
 	provider := newTestForwardModeOIDCProvider(t, nil, nil)
 	app := newGatingModeTestApp(provider)
 
@@ -1464,6 +1524,7 @@ func TestOAuthMetadataAdvertisesRefreshToken(t *testing.T) {
 		"/.well-known/openid-configuration",
 	} {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com"+path, nil)
 			rr := httptest.NewRecorder()
 			if strings.Contains(path, "openid") {
