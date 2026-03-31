@@ -1,16 +1,20 @@
 # OAuth 2.0 Authorization for Altinity MCP Server
 
-This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server and forward Bearer tokens to ClickHouse for token-based authentication.
+This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server.
 
 ## Overview
 
-OAuth 2.0 authorization enables the following workflow:
+OAuth 2.0 authorization supports two modes.
 
-1. An MCP client (AI agent, IDE, etc.) authenticates with an Identity Provider (IdP) and obtains an access token
-2. The MCP client sends the access token to the MCP server in the `Authorization: Bearer {token}` header
-3. The MCP server validates the token (issuer, audience, expiration, scopes)
-4. The MCP server forwards the token to ClickHouse via the `Authorization: Bearer {token}` header
-5. ClickHouse validates the token using its `token_processors` configuration and authenticates the user
+### Forward mode
+
+Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The MCP server passes the bearer token through; ClickHouse validates it.
+
+1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token
+2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header
+3. The MCP server requires only that a bearer token is present (it does **not** validate the token locally)
+4. The MCP server forwards the token to ClickHouse via HTTP headers
+5. ClickHouse validates the token using `token_processors` and authenticates the user
 
 ```
 ┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
@@ -29,42 +33,128 @@ OAuth 2.0 authorization enables the following workflow:
 └────────┘                        └──────────┘      └────────────┘
 ```
 
+```yaml
+clickhouse:
+  host: "clickhouse.example.com"
+  port: 8123
+  protocol: http
+server:
+  oauth:
+    enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    issuer: "https://accounts.google.com"
+    client_id: "<YOUR_CLIENT_ID>"
+    client_secret: "<YOUR_CLIENT_SECRET>"
+    scopes: ["openid", "email"]
+```
+
+In forward mode, the bearer token is automatically forwarded to ClickHouse and static credentials are cleared. No additional flags needed.
+
+
+### Gating mode
+
+Use this when ClickHouse has no OAuth support. The MCP server itself authenticates users via the upstream IdP, mints its own tokens, and connects to ClickHouse with static credentials.
+
+1. An MCP client authenticates with an Identity Provider (IdP) via browser login
+2. The MCP server validates the upstream identity (email domain, hosted domain, email verification)
+3. The MCP server mints its own signed access and refresh tokens
+4. The MCP server connects to ClickHouse with its statically configured credentials
+
+This mode works even when ClickHouse has no native OAuth support.
+
+```
+┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
+│  MCP   │─────>│   IdP    │      │   MCP    │      │ ClickHouse │
+│ Client │<─────│(Keycloak,│      │  Server  │      │            │
+│        │      │ Azure AD,│      │          │      │            │
+│        │      │ Google)  │      │          │      │            │
+│        │      └──────────┘      │          │      │            │
+│        │                        │          │      │            │
+│        │──Browser login────────>│──Verify──>│     │            │
+│        │<─────────MCP token─────│  identity │     │            │
+│        │                        │          │      │            │
+│        │──MCP token────────────>│          │      │            │
+│        │                        │─Static──>│      │            │
+│        │                        │  creds   │─────>│ Authn via  │
+│        │<───────────────────────│<─────────│<─────│ config user│
+│        │      query results     │          │      │            │
+└────────┘                        └──────────┘      └────────────┘
+```
+
+```yaml
+clickhouse:
+  host: "clickhouse.example.com"
+  port: 9000
+  protocol: tcp
+  username: "default"
+  password: "<CLICKHOUSE_PASSWORD>"
+server:
+  oauth:
+    enabled: true
+    mode: "gating"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    issuer: "https://accounts.google.com"
+    public_auth_server_url: "https://mcp.example.com"
+    client_id: "<YOUR_CLIENT_ID>"
+    client_secret: "<YOUR_CLIENT_SECRET>"
+    scopes: ["openid", "email"]
+    allowed_email_domains: ["example.com"]
+```
+
+
 ## Requirements
 
-- **ClickHouse**: Altinity Antalya build 25.8+ (or any Altinity stable build that supports `token_processors`)
-- **ClickHouse protocol**: `http` only — OAuth token forwarding via `Authorization: Bearer` header is not supported with the native `tcp` protocol
+- **ClickHouse protocol**: Forward mode requires `http`. Gating mode works with both `http` and native `tcp`.
+- **ClickHouse version**: Forward mode requires Altinity Antalya build 25.8+ (or any build that supports `token_processors`). Gating mode works with any ClickHouse version.
 - **Identity Provider**: Any OAuth 2.0 / OIDC-compliant provider (Keycloak, Azure AD, Google, AWS Cognito, etc.)
+- **`gating_secret_key`**: Required in both modes. Protects stateless client registration, authorization codes, and (in gating mode) refresh tokens.
+- **Frontend / reverse proxy**: If published behind a proxy, configure explicit `public_resource_url` and `public_auth_server_url`. See [Frontend / Reverse Proxy Requirements](#frontend--reverse-proxy-requirements).
 
-## Command Line Options
+## MCP Client Discovery Flow
 
-```
---oauth-clear-clickhouse-credentials    Clear ClickHouse credentials when forwarding OAuth token
-```
+OAuth-capable MCP clients (e.g., Claude Desktop, Codex) discover authentication automatically:
 
-Environment variable:
+1. Client fetches `/.well-known/oauth-protected-resource` from the MCP endpoint
+2. Response points to the authorization server URL
+3. Client fetches `/.well-known/oauth-authorization-server` for endpoint metadata
+4. Client dynamically registers via the registration endpoint (PKCE, public client)
+5. Client initiates authorization code flow with S256 PKCE
+6. After login, client exchanges the code for access + refresh tokens
+7. Client uses the access token for MCP requests and refreshes silently when it expires
 
-```
-OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS=true
-```
+## Refresh Tokens (Gating Mode)
 
-All other OAuth options are configured via the YAML config file.
+In gating mode, the token endpoint returns a `refresh_token` alongside the `access_token`. Clients can exchange it via `grant_type=refresh_token` to get a new access token without re-authorizing through the browser.
 
-## altinity-mcp Configuration File example
+- **TTL**: Controlled by `refresh_token_ttl_seconds` (default: 30 days)
+- **Rotation**: Each refresh returns a new refresh token (the old one remains valid until expiry)
+- **Stateless**: Refresh tokens are encrypted JWE blobs with no server-side state. There is no revocation or reuse detection.
+- **Forward mode**: Does not issue refresh tokens. The upstream IdP controls token lifecycle.
 
-Add the `oauth` section under `server` in your config file:
+Deployments that require token revocation should use forward mode with an IdP that supports it.
+
+## Identity Policy (Gating Mode)
+
+Gating mode can restrict access based on verified identity claims from the upstream IdP:
+
+| Option | Description |
+|--------|-------------|
+| `allowed_email_domains` | Only allow users with email addresses in these domains (e.g., `["example.com"]`) |
+| `allowed_hosted_domains` | Only allow users from these Google Workspace / hosted domains (checks the `hd` claim) |
+| `require_email_verified` | Reject users whose `email_verified` claim is false |
+
+These checks run on every token mint and refresh. Identity claims come from the upstream IdP's signed id_token or userinfo response and cannot be forged by the client.
 
 ```yaml
 server:
   oauth:
-    enabled: true
-    issuer: "https://your-idp.example.com"
-    audience: "your-client-id"
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
+    allowed_email_domains: ["altinity.com", "example.com"]
+    allowed_hosted_domains: ["altinity.com"]
+    require_email_verified: true
 ```
 
-### Full OAuth Configuration Reference
+## Full Configuration Reference
 
 ```yaml
 server:
@@ -72,68 +162,142 @@ server:
     # Enable OAuth 2.0 authentication
     enabled: false
 
-    # OAuth token issuer URL for validation
-    # Used to verify the "iss" claim in incoming tokens
+    # OAuth operating mode:
+    # - "forward": pass bearer tokens through to ClickHouse for validation
+    # - "gating": validate upstream identity and mint local MCP tokens
+    mode: "forward"
+
+    # Symmetric secret for stateless OAuth artifacts (client registration,
+    # authorization codes, refresh tokens). Required whenever OAuth is enabled.
+    gating_secret_key: ""
+
+    # Upstream OAuth/OIDC issuer URL (used for discovery and validation)
     issuer: ""
 
-    # URL to fetch JWKS for token signature validation
-    # If empty, discovered from issuer's .well-known/openid-configuration
+    # URL to fetch JWKS for token validation (discovered from issuer if empty)
     jwks_url: ""
 
-    # Expected audience claim in the token
+    # Expected audience claim in incoming tokens
     audience: ""
 
-    # OAuth client ID (for client credentials flow or validation)
+    # Upstream OAuth client credentials (for browser-login facade)
     client_id: ""
-
-    # OAuth client secret (for client credentials flow)
     client_secret: ""
 
-    # OAuth token endpoint URL
+    # Upstream OAuth endpoint URLs (discovered from issuer if empty)
     token_url: ""
-
-    # OAuth authorization endpoint URL
     auth_url: ""
+    userinfo_url: ""
 
-    # OAuth scopes to request
-    scopes:
-      - "openid"
-      - "profile"
-      - "email"
+    # OAuth scopes to request from upstream IdP
+    scopes: ["openid", "profile", "email"]
 
-    # Required scopes - token must have ALL of these to be accepted
+    # Scopes required in incoming tokens (gating mode only)
     required_scopes: []
 
-    # Forward the OAuth token to ClickHouse via HTTP headers
-    forward_to_clickhouse: true
+    # Allowed upstream IdP issuers for identity tokens during callback exchange
+    upstream_issuer_allowlist: []
 
-    # Header name for forwarding the token
-    # Default: "Authorization" (sends as "Bearer {token}")
-    # Set to a custom name (e.g. "X-ClickHouse-Token") to send raw token
+    # Identity policy (gating mode)
+    allowed_email_domains: []
+    allowed_hosted_domains: []
+    require_email_verified: false
+
+    # Token/code lifetimes
+    auth_code_ttl_seconds: 300        # 5 minutes
+    access_token_ttl_seconds: 3600    # 1 hour
+    refresh_token_ttl_seconds: 2592000 # 30 days (gating mode only)
+
+    # Header name for forwarding. Default "Authorization" sends "Bearer {token}".
+    # Set to a custom name to send the raw token without "Bearer " prefix.
     clickhouse_header_name: ""
 
-    # Forward the raw access token (required for ClickHouse token_processors)
-    forward_access_token: true
-
-    # Clear ClickHouse username/password when forwarding OAuth token
-    # Required when ClickHouse authenticates via token_processors,
-    # where user identity comes from the token's "sub" claim
-    clear_clickhouse_credentials: true
-
-    # Map specific token claims to ClickHouse HTTP headers
+    # Map token claims to ClickHouse HTTP headers (gating mode with claims)
     claims_to_headers:
       sub: "X-ClickHouse-User"
       email: "X-ClickHouse-Email"
+
+    # Externally visible URLs (required behind a reverse proxy)
+    public_resource_url: ""
+    public_auth_server_url: ""
+
+    # Endpoint paths (defaults shown; override for custom proxy layouts)
+    protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
+    authorization_server_metadata_path: "/.well-known/oauth-authorization-server"
+    openid_configuration_path: "/.well-known/openid-configuration"
+    registration_path: "/register"
+    authorization_path: "/authorize"
+    callback_path: "/callback"
+    token_path: "/token"
 ```
 
 ### Key Options Explained
 
 | Option | Description |
 |--------|-------------|
-| `forward_to_clickhouse` | Enables token forwarding to ClickHouse |
-| `forward_access_token` | Sends the raw access token (not just claims) |
-| `clear_clickhouse_credentials` | Removes username/password from requests to ClickHouse. **Required** when ClickHouse uses `token_processors` because it must authenticate the user from the token, not from basic auth |
-| `clickhouse_header_name` | Controls the HTTP header used for forwarding. Default is `Authorization` which sends `Bearer {token}`. Set to any custom header to send the raw token |
+| `mode` | `forward` passes tokens to ClickHouse for validation; `gating` validates upstream identity and mints local tokens |
+| `gating_secret_key` | Symmetric secret for all stateless OAuth artifacts. **Required** whenever OAuth is enabled |
+| `issuer` | Upstream IdP issuer URL for OIDC discovery and token validation |
+| `public_resource_url` | Externally visible MCP endpoint URL. **Required** behind a reverse proxy |
+| `public_auth_server_url` | Externally visible OAuth authorization server URL. **Required** behind a reverse proxy |
+| `refresh_token_ttl_seconds` | Lifetime of stateless refresh tokens in gating mode (default 30 days) |
+
+## Frontend / Reverse Proxy Requirements
+
+For direct bearer-token use, a plain reverse proxy is usually enough.
+
+For browser-based MCP login, the frontend must expose two public URL spaces:
+
+- the protected resource, for example `https://PUBLIC_HOST.example.com/http`
+- the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth`
+
+The proxy must:
+
+- Forward `Host` and `Authorization` headers unchanged
+- Disable response buffering for MCP streaming
+- Disable request buffering for long-lived POSTs
+- Keep long read/send timeouts
+- Not normalize or rewrite the configured callback or metadata paths
+- Not rely on forwarded-prefix headers; configure the public OAuth URLs explicitly in `altinity-mcp`
+
+Example nginx configuration:
+
+```nginx
+location ^~ /http {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600;
+    proxy_send_timeout 3600;
+    proxy_pass http://ALTINITY_MCP_UPSTREAM;
+}
+```
+
+Notes:
+
+- Set both `public_resource_url` and `public_auth_server_url` whenever OAuth is published behind a proxy.
+- If an IdP reports `redirect_uri_mismatch`, verify the public callback URL seen by the browser exactly matches the URI registered at the IdP.
+
+### Browser-login config behind a proxy (Google + forward mode)
+
+```yaml
+server:
+  oauth:
+    enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    issuer: "https://accounts.google.com"
+    audience: "https://PUBLIC_HOST.example.com/http"
+    public_resource_url: "https://PUBLIC_HOST.example.com/http"
+    public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth"
+    client_id: "YOUR_GOOGLE_WEB_CLIENT.apps.googleusercontent.com"
+    client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
+    scopes: ["openid", "email"]
+```
+
+In forward mode, the bearer token is automatically forwarded to ClickHouse and static credentials are cleared. No additional flags needed.
 
 ## ClickHouse Configuration
 
@@ -180,8 +344,6 @@ Alternatively, you can specify the OIDC endpoints explicitly:
             <common_roles>
                 <default_role />
             </common_roles>
-            <!-- Optional: transform group names to ClickHouse role names -->
-            <roles_transform>s/-/_/g</roles_transform>
         </token>
     </user_directories>
 </clickhouse>
@@ -215,10 +377,7 @@ Azure AD has a dedicated `azure` type that requires no explicit endpoint configu
 You must create the roles referenced in `common_roles` before users can authenticate:
 
 ```sql
--- Create a role for token-authenticated users
 CREATE ROLE OR REPLACE default_role;
-
--- Grant permissions
 GRANT SELECT ON default.* TO default_role;
 ```
 
@@ -249,11 +408,13 @@ In the Keycloak admin console:
 server:
   oauth:
     enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "http://keycloak:8080/realms/mcp"
     audience: "clickhouse-mcp"
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
+    client_id: "clickhouse-mcp"
+    client_secret: "<KEYCLOAK_CLIENT_SECRET>"
+    scopes: ["openid", "email"]
 ```
 
 #### 4. ClickHouse Configuration
@@ -304,6 +465,8 @@ In the [Azure Portal](https://portal.azure.com):
 server:
   oauth:
     enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
     audience: "<APPLICATION_CLIENT_ID>"
     client_id: "<APPLICATION_CLIENT_ID>"
@@ -311,9 +474,6 @@ server:
     token_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/token"
     auth_url: "https://login.microsoftonline.com/<TENANT_ID>/oauth2/v2.0/authorize"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 6. ClickHouse Configuration
@@ -351,6 +511,8 @@ In the [Google Cloud Console](https://console.cloud.google.com):
 server:
   oauth:
     enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
     audience: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
     client_id: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
@@ -358,9 +520,6 @@ server:
     token_url: "https://oauth2.googleapis.com/token"
     auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 3. ClickHouse Configuration
@@ -373,9 +532,12 @@ Google uses the standard `openid` token processor type:
         <type>openid</type>
         <configuration_endpoint>https://accounts.google.com/.well-known/openid-configuration</configuration_endpoint>
         <token_cache_lifetime>60</token_cache_lifetime>
+        <username_claim>email</username_claim>
     </google>
 </token_processors>
 ```
+
+Default for `username_claim` is `sub`, that means IdP users will be shown in clickhouse (processlist, query_log, etc) as numerical ids.  To see emails, set `<username_claim>email</username_claim>`
 
 **References:**
 - [Google - OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
@@ -395,7 +557,7 @@ In the [AWS Console](https://console.aws.amazon.com/cognito):
 #### 2. Configure App Client
 
 - Under **App integration** > **App clients**, create a new app client
-- Enable the OAuth 2.0 grant types you need (Authorization Code, Implicit)
+- Enable the OAuth 2.0 grant types you need (Authorization Code)
 - Set the allowed callback URLs
 - Select the OAuth scopes: `openid`, `profile`, `email`
 
@@ -414,6 +576,8 @@ In the [AWS Console](https://console.aws.amazon.com/cognito):
 server:
   oauth:
     enabled: true
+    mode: "forward"
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>"
     audience: "<APP_CLIENT_ID>"
     client_id: "<APP_CLIENT_ID>"
@@ -421,9 +585,6 @@ server:
     token_url: "https://<DOMAIN>.auth.<REGION>.amazoncognito.com/oauth2/token"
     auth_url: "https://<DOMAIN>.auth.<REGION>.amazoncognito.com/oauth2/authorize"
     scopes: ["openid", "profile", "email"]
-    forward_to_clickhouse: true
-    forward_access_token: true
-    clear_clickhouse_credentials: true
 ```
 
 #### 5. ClickHouse Configuration
@@ -459,15 +620,13 @@ Example values files are provided for each provider:
 - `values_examples/mcp-oauth-azure.yaml` - Azure AD (Microsoft Entra ID)
 - `values_examples/mcp-oauth-google.yaml` - Google Cloud Identity
 
-## MCP Client Integration
+## Security Considerations
 
-Any MCP-compatible client (AI agent, IDE plugin, CLI tool, etc.) can use OAuth token forwarding:
-
-1. Configure the MCP client to authenticate with your OAuth provider
-2. The MCP client sends the access token in the `Authorization: Bearer {token}` header
-3. The MCP server validates the token and forwards it to ClickHouse
-4. ClickHouse authenticates the user via `token_processors`
-
+- **`gating_secret_key`** protects all stateless OAuth artifacts (client registrations, authorization codes, refresh tokens). Treat it like a signing key. Rotate it to invalidate all outstanding registrations and tokens.
+- **Forward mode does not validate tokens locally.** It checks only that a bearer token is present, then forwards it to ClickHouse. Token validation is ClickHouse's responsibility via `token_processors`.
+- **Gating-mode refresh tokens are stateless.** There is no server-side state, so individual tokens cannot be revoked. The only way to invalidate all tokens is to rotate `gating_secret_key`. Use `refresh_token_ttl_seconds` to limit exposure.
+- **Opaque bearer tokens are not supported.** Inbound OAuth validation on MCP/OpenAPI endpoints requires a signed JWT that can be validated via JWKS. The `userinfo` endpoint is used only during browser-login identity lookup, not for runtime token validation.
+- **Token preference during browser login.** When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
 
 ## Troubleshooting
 
@@ -481,6 +640,8 @@ Ensure the `issuer` in your MCP config matches exactly what your IdP puts in the
 - Trailing slash mismatch (`https://accounts.google.com` vs `https://accounts.google.com/`)
 - Missing `/v2.0` suffix for Azure AD
 
+In gating mode, also ensure `public_auth_server_url` is set when `issuer` is configured. The server mints tokens with `public_auth_server_url` as the issuer but validates against `issuer` if `public_auth_server_url` is empty.
+
 ### ClickHouse authenticates but user has no permissions
 
 Create the roles referenced in `common_roles` and grant them the necessary permissions:
@@ -489,7 +650,3 @@ Create the roles referenced in `common_roles` and grant them the necessary permi
 CREATE ROLE OR REPLACE default_role;
 GRANT SELECT ON *.* TO default_role;
 ```
-
-### Token forwarding works but ClickHouse rejects the user
-
-Ensure `clear_clickhouse_credentials: true` is set. When ClickHouse receives both a username/password (basic auth) and a Bearer token, the basic auth may take precedence and fail.

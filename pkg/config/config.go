@@ -74,6 +74,11 @@ type JWEConfig struct {
 
 // OAuthConfig defines configuration for OAuth 2.0 authentication
 type OAuthConfig struct {
+	// Mode controls whether altinity-mcp forwards external OAuth bearers or gates them into local MCP tokens.
+	// "forward" is the production path: pass the end-user bearer through to ClickHouse.
+	// "gating" keeps the built-in limited OAuth facade that issues its own tokens.
+	Mode string `json:"mode" yaml:"mode" flag:"oauth-mode" desc:"OAuth operating mode (forward/gating)"`
+
 	// Enabled enables OAuth authentication
 	Enabled bool `json:"enabled" yaml:"enabled" flag:"oauth-enabled" desc:"Enable OAuth 2.0 authentication"`
 
@@ -87,6 +92,14 @@ type OAuthConfig struct {
 	// Audience is the expected audience claim in the token
 	Audience string `json:"audience" yaml:"audience" flag:"oauth-audience" desc:"Expected audience claim in OAuth token"`
 
+	// PublicResourceURL is the externally visible protected resource base URL.
+	// When empty, it is inferred from the request host/prefix or Audience path.
+	PublicResourceURL string `json:"public_resource_url" yaml:"public_resource_url" flag:"oauth-public-resource-url" desc:"Externally visible protected resource base URL"`
+
+	// PublicAuthServerURL is the externally visible authorization server base URL.
+	// When empty, it is inferred from the request host/prefix or Issuer path.
+	PublicAuthServerURL string `json:"public_auth_server_url" yaml:"public_auth_server_url" flag:"oauth-public-auth-server-url" desc:"Externally visible OAuth authorization server base URL"`
+
 	// ClientID is the OAuth client ID (used for client credentials flow or validation)
 	ClientID string `json:"client_id" yaml:"client_id" flag:"oauth-client-id" desc:"OAuth client ID"`
 
@@ -99,31 +112,92 @@ type OAuthConfig struct {
 	// AuthURL is the OAuth authorization endpoint URL (used for authorization code flow)
 	AuthURL string `json:"auth_url" yaml:"auth_url" flag:"oauth-auth-url" desc:"OAuth authorization endpoint URL"`
 
+	// UserInfoURL is the upstream OpenID Connect userinfo endpoint URL.
+	// If empty, it will be discovered from issuer metadata when needed.
+	UserInfoURL string `json:"userinfo_url" yaml:"userinfo_url" flag:"oauth-userinfo-url" desc:"OAuth/OpenID Connect userinfo endpoint URL"`
+
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
 
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" desc:"Required OAuth scopes for access"`
 
-	// ForwardToClickHouse enables forwarding OAuth token to ClickHouse via HTTP headers
-	ForwardToClickHouse bool `json:"forward_to_clickhouse" yaml:"forward_to_clickhouse" flag:"oauth-forward-to-clickhouse" desc:"Forward OAuth token to ClickHouse via HTTP headers"`
-
 	// ClickHouseHeaderName is the header name to use when forwarding OAuth token to ClickHouse
 	// Default: "Authorization" (sends as "Bearer {token}")
 	// When set to a custom header, the raw token is sent without "Bearer " prefix
 	ClickHouseHeaderName string `json:"clickhouse_header_name" yaml:"clickhouse_header_name" flag:"oauth-clickhouse-header-name" desc:"Header name for forwarding OAuth token to ClickHouse"`
 
-	// ForwardAccessToken forwards the access token itself (vs. just claims)
-	ForwardAccessToken bool `json:"forward_access_token" yaml:"forward_access_token" flag:"oauth-forward-access-token" desc:"Forward raw access token to ClickHouse"`
-
-	// ClearClickHouseCredentials clears ClickHouse username/password when forwarding OAuth token
-	// This is needed when ClickHouse authenticates via token_processors (JWT/OIDC)
-	// where the user identity comes from the token's sub claim, not from basic auth
-	ClearClickHouseCredentials bool `json:"clear_clickhouse_credentials" yaml:"clear_clickhouse_credentials" flag:"oauth-clear-clickhouse-credentials" desc:"Clear ClickHouse credentials when forwarding OAuth token"`
-
 	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
 	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
 	ClaimsToHeaders map[string]string `json:"claims_to_headers" yaml:"claims_to_headers" desc:"Map OAuth claims to ClickHouse HTTP headers"`
+
+	// AllowedEmailDomains constrains accepted principals by email domain.
+	AllowedEmailDomains []string `json:"allowed_email_domains" yaml:"allowed_email_domains" flag:"oauth-allowed-email-domains" desc:"Allowed email domains for verified OAuth identities"`
+
+	// AllowedHostedDomains constrains accepted principals by hosted/workspace domain claim such as Google hd.
+	AllowedHostedDomains []string `json:"allowed_hosted_domains" yaml:"allowed_hosted_domains" flag:"oauth-allowed-hosted-domains" desc:"Allowed hosted/workspace domains for verified OAuth identities"`
+
+	// RequireEmailVerified rejects identities where email_verified is false when an email claim is present.
+	RequireEmailVerified bool `json:"require_email_verified" yaml:"require_email_verified" flag:"oauth-require-email-verified" desc:"Require email_verified=true on OAuth identities"`
+
+	// ProtectedResourceMetadataPath configures the relative path for RFC 9728 protected resource metadata.
+	ProtectedResourceMetadataPath string `json:"protected_resource_metadata_path" yaml:"protected_resource_metadata_path" flag:"oauth-protected-resource-metadata-path" desc:"Relative path for OAuth protected resource metadata"`
+
+	// AuthorizationServerMetadataPath configures the relative path for authorization server metadata.
+	AuthorizationServerMetadataPath string `json:"authorization_server_metadata_path" yaml:"authorization_server_metadata_path" flag:"oauth-authorization-server-metadata-path" desc:"Relative path for OAuth authorization server metadata"`
+
+	// OpenIDConfigurationPath configures the relative path for OpenID configuration metadata.
+	OpenIDConfigurationPath string `json:"openid_configuration_path" yaml:"openid_configuration_path" flag:"oauth-openid-configuration-path" desc:"Relative path for OpenID configuration metadata"`
+
+	// RegistrationPath configures the relative path for dynamic client registration.
+	RegistrationPath string `json:"registration_path" yaml:"registration_path" flag:"oauth-registration-path" desc:"Relative path for OAuth client registration endpoint"`
+
+	// AuthorizationPath configures the relative path for the authorization endpoint.
+	AuthorizationPath string `json:"authorization_path" yaml:"authorization_path" flag:"oauth-authorization-path" desc:"Relative path for OAuth authorization endpoint"`
+
+	// CallbackPath configures the relative path for the upstream IdP callback handler.
+	CallbackPath string `json:"callback_path" yaml:"callback_path" flag:"oauth-callback-path" desc:"Relative path for OAuth upstream callback endpoint"`
+
+	// TokenPath configures the relative path for the token endpoint.
+	TokenPath string `json:"token_path" yaml:"token_path" flag:"oauth-token-path" desc:"Relative path for OAuth token endpoint"`
+
+	// UpstreamIssuerAllowlist constrains which upstream identity token issuers are accepted during callback exchange.
+	UpstreamIssuerAllowlist []string `json:"upstream_issuer_allowlist" yaml:"upstream_issuer_allowlist" flag:"oauth-upstream-issuer-allowlist" desc:"Allowed upstream identity token issuers"`
+
+	// AuthCodeTTLSeconds controls how long minted authorization codes remain valid.
+	AuthCodeTTLSeconds int `json:"auth_code_ttl_seconds" yaml:"auth_code_ttl_seconds" flag:"oauth-auth-code-ttl-seconds" desc:"Authorization code lifetime in seconds"`
+
+	// AccessTokenTTLSeconds controls how long minted access tokens remain valid.
+	AccessTokenTTLSeconds int `json:"access_token_ttl_seconds" yaml:"access_token_ttl_seconds" flag:"oauth-access-token-ttl-seconds" desc:"Access token lifetime in seconds"`
+
+	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
+	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" desc:"Refresh token lifetime in seconds"`
+
+	// GatingSecretKey is the symmetric secret used for OAuth client registration artifacts
+	// and gating-mode self-issued token minting/validation.
+	GatingSecretKey string `json:"gating_secret_key" yaml:"gating_secret_key" flag:"oauth-gating-secret-key" desc:"Secret key for stateless OAuth facade artifacts"`
+}
+
+func (cfg OAuthConfig) NormalizedMode() string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch mode {
+	case "forward":
+		return "forward"
+	case "gating":
+		return "gating"
+	case "":
+		return "gating"
+	default:
+		return mode
+	}
+}
+
+func (cfg OAuthConfig) IsForwardMode() bool {
+	return cfg.NormalizedMode() == "forward"
+}
+
+func (cfg OAuthConfig) IsGatingMode() bool {
+	return cfg.NormalizedMode() == "gating"
 }
 
 // ServerConfig defines configuration for the MCP server

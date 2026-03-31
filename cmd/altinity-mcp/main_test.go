@@ -43,7 +43,9 @@ func TestMain(m *testing.M) {
 
 // TestSetupLogging tests the logging setup function
 func TestSetupLogging(t *testing.T) {
+	t.Parallel()
 	t.Run("valid_levels", func(t *testing.T) {
+		t.Parallel()
 		levels := []string{"debug", "info", "warn", "error"}
 		for _, level := range levels {
 			err := setupLogging(level)
@@ -52,12 +54,14 @@ func TestSetupLogging(t *testing.T) {
 	})
 
 	t.Run("invalid_level", func(t *testing.T) {
+		t.Parallel()
 		err := setupLogging("invalid")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid log level")
 	})
 
 	t.Run("case_insensitive", func(t *testing.T) {
+		t.Parallel()
 		err := setupLogging("DEBUG")
 		require.NoError(t, err)
 
@@ -68,7 +72,9 @@ func TestSetupLogging(t *testing.T) {
 
 // TestBuildConfig tests configuration building
 func TestBuildConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("default_values", func(t *testing.T) {
+		t.Parallel()
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
 			&cli.StringFlag{Name: "config"},
@@ -112,6 +118,7 @@ func TestBuildConfig(t *testing.T) {
 	})
 
 	t.Run("with_http_headers", func(t *testing.T) {
+		t.Parallel()
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
 			&cli.StringFlag{Name: "config"},
@@ -132,6 +139,7 @@ func TestBuildConfig(t *testing.T) {
 	})
 
 	t.Run("openapi_enabled_http", func(t *testing.T) {
+		t.Parallel()
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
 			&cli.StringFlag{Name: "openapi", Value: "http"},
@@ -144,6 +152,7 @@ func TestBuildConfig(t *testing.T) {
 	})
 
 	t.Run("nonexistent_config_file", func(t *testing.T) {
+		t.Parallel()
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
 			&cli.StringFlag{Name: "config", Value: "/nonexistent/config.yaml"},
@@ -157,6 +166,7 @@ func TestBuildConfig(t *testing.T) {
 
 // TestStripTrailingSlashMiddleware ensures routes work with and without a trailing slash
 func TestStripTrailingSlashMiddleware(t *testing.T) {
+	t.Parallel()
 	// helper to create a mux with our middleware
 	newMux := func(jwe bool) http.Handler {
 		mux := http.NewServeMux()
@@ -181,6 +191,7 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	}
 
 	t.Run("static_path_with_and_without_slash", func(t *testing.T) {
+		t.Parallel()
 		h := newMux(false)
 		cases := []string{"/http", "/http/"}
 		for _, path := range cases {
@@ -193,6 +204,7 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	})
 
 	t.Run("dynamic_path_with_and_without_slash", func(t *testing.T) {
+		t.Parallel()
 		h := newMux(true)
 		cases := []struct{ in, want string }{
 			{"/abc/http", "dyn:abc"},
@@ -208,9 +220,43 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	})
 }
 
+func TestRoutePatterns(t *testing.T) {
+	t.Parallel()
+	t.Run("combined_auth_transport_routes_include_tokenized_and_pathless", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t,
+			[]string{"/{token}/http", "/http"},
+			transportRoutePatterns(true, true, "http"),
+		)
+		require.Equal(t,
+			[]string{"/{token}/sse", "/sse"},
+			transportRoutePatterns(true, true, "sse"),
+		)
+	})
+
+	t.Run("combined_auth_openapi_routes_include_oauth_fallback_subpaths", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t,
+			[]string{
+				"/{token}/openapi",
+				"/{token}/openapi/",
+				"/{token}/openapi/list_tables",
+				"/{token}/openapi/describe_table",
+				"/{token}/openapi/execute_query",
+				"/openapi/list_tables",
+				"/openapi/describe_table",
+				"/openapi/execute_query",
+			},
+			openAPIRoutePatterns(true, true),
+		)
+	})
+}
+
 // TestOverrideWithCLIFlags tests CLI flag override functionality
 func TestOverrideWithCLIFlags(t *testing.T) {
+	t.Parallel()
 	t.Run("protocol_override", func(t *testing.T) {
+		t.Parallel()
 		// Create a mock command that simulates flag being set
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
@@ -228,6 +274,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 	})
 
 	t.Run("transport_override", func(t *testing.T) {
+		t.Parallel()
 		// Create a mock command that simulates flag being set
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
@@ -245,6 +292,7 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 	})
 
 	t.Run("log_level_override", func(t *testing.T) {
+		t.Parallel()
 		// Create a mock command that simulates flag being set
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
@@ -261,21 +309,6 @@ func TestOverrideWithCLIFlags(t *testing.T) {
 		require.Equal(t, config.DebugLevel, cfg.Logging.Level)
 	})
 
-	t.Run("oauth_clear_clickhouse_credentials_override", func(t *testing.T) {
-		cmd := &mockCommand{
-			flags: map[string]interface{}{
-				"oauth-clear-clickhouse-credentials": true,
-			},
-			setFlags: map[string]bool{
-				"oauth-clear-clickhouse-credentials": true,
-			},
-			stringMaps: make(map[string]map[string]string),
-		}
-
-		cfg := &config.Config{}
-		overrideWithCLIFlags(cfg, cmd)
-		require.True(t, cfg.Server.OAuth.ClearClickHouseCredentials)
-	})
 }
 
 // mockCommand implements CommandInterface for testing
@@ -325,7 +358,9 @@ func (m *mockCommand) IsSet(name string) bool {
 
 // TestBuildServerTLSConfig tests server TLS configuration building
 func TestBuildServerTLSConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("disabled", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.ServerTLSConfig{Enabled: false}
 		tlsConfig, err := buildServerTLSConfig(cfg)
 		require.NoError(t, err)
@@ -333,6 +368,7 @@ func TestBuildServerTLSConfig(t *testing.T) {
 	})
 
 	t.Run("enabled_without_ca", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.ServerTLSConfig{Enabled: true}
 		tlsConfig, err := buildServerTLSConfig(cfg)
 		require.NoError(t, err)
@@ -340,6 +376,7 @@ func TestBuildServerTLSConfig(t *testing.T) {
 	})
 
 	t.Run("enabled_with_invalid_ca", func(t *testing.T) {
+		t.Parallel()
 		cfg := &config.ServerTLSConfig{
 			Enabled: true,
 			CaCert:  "/nonexistent/ca.crt",
@@ -350,6 +387,7 @@ func TestBuildServerTLSConfig(t *testing.T) {
 	})
 
 	t.Run("enabled_with_valid_ca", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary CA certificate file
 		tmpFile, err := os.CreateTemp("", "test-ca-*.crt")
 		require.NoError(t, err)
@@ -381,6 +419,8 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
 	ctx := context.Background()
 
+	totalStart := time.Now()
+
 	req := testcontainers.ContainerRequest{
 		Image:        "clickhouse/clickhouse-server:latest",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
@@ -393,13 +433,17 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 		},
 		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
 	}
+	containerStart := time.Now()
 	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: req, Started: true})
+	containerElapsed := time.Since(containerStart)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
+		cleanupStart := time.Now()
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = chContainer.Terminate(cleanupCtx)
+		t.Logf("[container/%s] cleanup took %s", req.Image, time.Since(cleanupStart))
 	})
 
 	host, err := chContainer.Host(ctx)
@@ -420,18 +464,33 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 	}
 
 	// create base table
+	setupStart := time.Now()
 	client, err := clickhouse.NewClient(ctx, *cfg)
 	require.NoError(t, err)
 	defer func() { _ = client.Close() }()
 	_, _ = client.ExecuteQuery(ctx, "CREATE TABLE IF NOT EXISTS default.test (id UInt64, value String) ENGINE = Memory")
 	_, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
+	setupElapsed := time.Since(setupStart)
+
+	t.Logf("[container/%s] start=%s setup=%s total=%s", req.Image, containerElapsed, setupElapsed, time.Since(totalStart))
 	return cfg
+}
+
+// startContainerWithTiming wraps testcontainers.GenericContainer with timing logs.
+func startContainerWithTiming(t *testing.T, ctx context.Context, req testcontainers.GenericContainerRequest) (testcontainers.Container, error) {
+	t.Helper()
+	start := time.Now()
+	container, err := testcontainers.GenericContainer(ctx, req)
+	t.Logf("[container/%s] start took %s", req.Image, time.Since(start))
+	return container, err
 }
 
 // Health handler tests
 func TestHealthHandler_Additions(t *testing.T) {
-	// JWE enabled -> should return 200 and auth=jwe_enabled
+	t.Parallel()
+	// JWE enabled -> should return 200 and auth=per_request_credentials
 	t.Run("jwe_enabled", func(t *testing.T) {
+		t.Parallel()
 		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -439,11 +498,12 @@ func TestHealthHandler_Additions(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "jwe_enabled", body["auth"])
+		require.Equal(t, "per_request_credentials", body["auth"])
 	})
 
 	// JWE disabled with invalid CH -> 503
 	t.Run("clickhouse_unhealthy", func(t *testing.T) {
+		t.Parallel()
 		app := &application{config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}, ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}}}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -453,6 +513,7 @@ func TestHealthHandler_Additions(t *testing.T) {
 
 	// JWE disabled with real CH -> 200
 	t.Run("clickhouse_healthy", func(t *testing.T) {
+		t.Parallel()
 		// spin container
 		ctx := context.Background()
 		cfg := setupClickHouseContainerMain(t)
@@ -469,6 +530,7 @@ func TestHealthHandler_Additions(t *testing.T) {
 
 	// Method not allowed
 	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
 		app := &application{config: config.Config{}}
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/health", nil)
@@ -479,7 +541,9 @@ func TestHealthHandler_Additions(t *testing.T) {
 
 // testConnection tests
 func TestTestConnection_Additions(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
+		t.Parallel()
 		cfg := setupClickHouseContainerMain(t)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -488,6 +552,7 @@ func TestTestConnection_Additions(t *testing.T) {
 	})
 
 	t.Run("failure", func(t *testing.T) {
+		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		bad := config.ClickHouseConfig{Host: "127.0.0.1", Port: 9999, Database: "default", Username: "default", Protocol: config.TCPProtocol}
@@ -497,8 +562,10 @@ func TestTestConnection_Additions(t *testing.T) {
 }
 
 func TestNewApplication_ErrorPaths(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("jwe_enabled_missing_key", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}
 		_, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
 		require.Error(t, err)
@@ -506,6 +573,7 @@ func TestNewApplication_ErrorPaths(t *testing.T) {
 	})
 
 	t.Run("clickhouse_ping_fail", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 65000, Database: "default", Username: "default", Protocol: config.TCPProtocol}}
 		_, err := newApplication(ctx, cfg, &mockCommand{flags: map[string]interface{}{"config-reload-time": 0}, setFlags: map[string]bool{"config-reload-time": true}, stringMaps: map[string]map[string]string{}})
 		require.Error(t, err)
@@ -513,6 +581,7 @@ func TestNewApplication_ErrorPaths(t *testing.T) {
 }
 
 func TestConfigReloadLoop_ErrorAndStop(t *testing.T) {
+	t.Parallel()
 	// Create temp invalid config file to trigger reload error
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -535,6 +604,7 @@ func TestConfigReloadLoop_ErrorAndStop(t *testing.T) {
 
 // ClickHouse client Ping/DescribeTable extra coverage
 func TestClickHouseClient_PingAndDescribeTable(t *testing.T) {
+	t.Parallel()
 	cfg := setupClickHouseContainerMain(t)
 	ctx := context.Background()
 	client, err := clickhouse.NewClient(ctx, *cfg)
@@ -549,7 +619,9 @@ func TestClickHouseClient_PingAndDescribeTable(t *testing.T) {
 
 // TestHealthHandler tests the health check endpoint
 func TestHealthHandler(t *testing.T) {
+	t.Parallel()
 	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
@@ -567,6 +639,7 @@ func TestHealthHandler(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
@@ -582,10 +655,11 @@ func TestHealthHandler(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, w.Code)
 		require.Contains(t, w.Body.String(), "healthy")
-		require.Contains(t, w.Body.String(), "jwe_enabled")
+		require.Contains(t, w.Body.String(), "per_request_credentials")
 	})
 
 	t.Run("clickhouse_connection_failure", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			config: config.Config{
 				ClickHouse: config.ClickHouseConfig{
@@ -612,6 +686,7 @@ func TestHealthHandler(t *testing.T) {
 	})
 
 	t.Run("clickhouse_ping_failure", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			config: config.Config{
 				ClickHouse: config.ClickHouseConfig{
@@ -639,6 +714,7 @@ func TestHealthHandler(t *testing.T) {
 	})
 
 	t.Run("successful_clickhouse_connection_with_testcontainer", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 
 		// Start ClickHouse container
@@ -651,7 +727,7 @@ func TestHealthHandler(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -700,7 +776,9 @@ func TestHealthHandler(t *testing.T) {
 
 // TestApplication tests application lifecycle methods
 func TestApplication(t *testing.T) {
+	t.Parallel()
 	t.Run("get_current_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host: "test-host",
@@ -715,6 +793,7 @@ func TestApplication(t *testing.T) {
 	})
 
 	t.Run("close", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
@@ -726,6 +805,7 @@ func TestApplication(t *testing.T) {
 	})
 
 	t.Run("close_without_config_reload", func(t *testing.T) {
+		t.Parallel()
 		app := &application{}
 
 		// This should not panic
@@ -735,7 +815,9 @@ func TestApplication(t *testing.T) {
 
 // TestConfigReloadLoop tests the configuration reload functionality
 func TestConfigReloadLoop(t *testing.T) {
+	t.Parallel()
 	t.Run("stop_via_channel", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
@@ -771,6 +853,7 @@ func TestConfigReloadLoop(t *testing.T) {
 	})
 
 	t.Run("stop_via_context", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			stopConfigReload: make(chan struct{}),
 			configFile:       "test.yaml",
@@ -807,7 +890,9 @@ func TestConfigReloadLoop(t *testing.T) {
 
 // TestReloadConfig tests configuration reloading
 func TestReloadConfig(t *testing.T) {
+	t.Parallel()
 	t.Run("nonexistent_file", func(t *testing.T) {
+		t.Parallel()
 		app := &application{
 			configFile: "/nonexistent/config.yaml",
 		}
@@ -824,7 +909,9 @@ func TestReloadConfig(t *testing.T) {
 
 // TestTestConnection tests the testConnection function
 func TestTestConnection(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid_config", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.ClickHouseConfig{
 			Host:     "nonexistent-host",
 			Port:     9999,
@@ -841,6 +928,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("context_cancellation", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.ClickHouseConfig{
 			Host:     "localhost",
 			Port:     8123,
@@ -859,6 +947,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("successful_connection_with_testcontainer", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 
 		// Start ClickHouse container
@@ -871,7 +960,7 @@ func TestTestConnection(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -906,6 +995,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("connection_with_tcp_protocol", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 
 		// Start ClickHouse container
@@ -918,7 +1008,7 @@ func TestTestConnection(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -953,6 +1043,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("connection_with_tls", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 		require.NoError(t, setupLogging("debug"))
 		// Generate self-signed certificate
@@ -1007,7 +1098,7 @@ func TestTestConnection(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -1046,6 +1137,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("connection_with_readonly_mode", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 
 		// Start ClickHouse container
@@ -1058,7 +1150,7 @@ func TestTestConnection(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -1094,6 +1186,7 @@ func TestTestConnection(t *testing.T) {
 	})
 
 	t.Run("connection_with_max_execution_time", func(t *testing.T) {
+		t.Parallel()
 		ctx := context.Background()
 
 		// Start ClickHouse container
@@ -1106,7 +1199,7 @@ func TestTestConnection(t *testing.T) {
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
 
-		clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: containerReq,
 			Started:          true,
 		})
@@ -1144,7 +1237,9 @@ func TestTestConnection(t *testing.T) {
 
 // TestRunServer tests the runServer function
 func TestRunServer(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid_config_file", func(t *testing.T) {
+		t.Parallel()
 		// Create a CLI command with invalid config file
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
@@ -1158,6 +1253,7 @@ func TestRunServer(t *testing.T) {
 	})
 
 	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		t.Parallel()
 		// Create a CLI command with invalid ClickHouse settings
 		cmd := &cli.Command{}
 		cmd.Flags = []cli.Flag{
@@ -1190,7 +1286,9 @@ func TestRunServer(t *testing.T) {
 
 // TestMainCLIApp tests the main CLI application
 func TestMainCLIApp(t *testing.T) {
+	t.Parallel()
 	t.Run("version_command", func(t *testing.T) {
+		t.Parallel()
 		app := &cli.Command{
 			Name:        "altinity-mcp",
 			Usage:       "Altinity MCP Server - ClickHouse Model Context Protocol Server",
@@ -1215,6 +1313,7 @@ func TestMainCLIApp(t *testing.T) {
 	})
 
 	t.Run("test_connection_command", func(t *testing.T) {
+		t.Parallel()
 		app := &cli.Command{
 			Name: "altinity-mcp",
 			Flags: []cli.Flag{
@@ -1254,7 +1353,9 @@ func TestMainCLIApp(t *testing.T) {
 
 // TestNewApplication tests the newApplication function
 func TestNewApplication(t *testing.T) {
+	t.Parallel()
 	t.Run("jwe_enabled_without_jwe_secret_key", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -1290,6 +1391,7 @@ func TestNewApplication(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled_without_jwt_secret_key", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -1354,6 +1456,7 @@ func TestNewApplication(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "localhost",
@@ -1390,6 +1493,7 @@ func TestNewApplication(t *testing.T) {
 	})
 
 	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "nonexistent-host",
@@ -1423,6 +1527,7 @@ func TestNewApplication(t *testing.T) {
 	})
 
 	t.Run("successful_creation_with_config_reload", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -1488,6 +1593,7 @@ server:
 	})
 
 	t.Run("clickhouse_ping_failure", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{
 				Host:     "127.0.0.1", // Use localhost IP
@@ -1522,7 +1628,9 @@ server:
 
 // TestBuildConfigWithFile tests configuration building with file
 func TestBuildConfigWithFile(t *testing.T) {
+	t.Parallel()
 	t.Run("with_valid_config_file", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -1600,6 +1708,7 @@ logging:
 	})
 
 	t.Run("with_http_headers_cli_override", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -1646,7 +1755,9 @@ clickhouse:
 
 // TestOverrideWithCLIFlagsExtended tests more CLI flag override scenarios
 func TestOverrideWithCLIFlagsExtended(t *testing.T) {
+	t.Parallel()
 	t.Run("all_clickhouse_flags", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"clickhouse-host":                     "test-host",
@@ -1703,6 +1814,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("clickhouse_http_headers_flag", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{},
 			setFlags: map[string]bool{
@@ -1728,6 +1840,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("clickhouse_http_headers_flag_empty", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags:    map[string]interface{}{},
 			setFlags: map[string]bool{},
@@ -1744,6 +1857,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("clickhouse_http_headers_flag_not_set", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags:      map[string]interface{}{},
 			setFlags:   map[string]bool{},
@@ -1759,6 +1873,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("clickhouse_http_headers_with_other_flags", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"clickhouse-host":     "test-host",
@@ -1790,6 +1905,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("all_server_flags", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"transport":            "sse",
@@ -1838,6 +1954,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("defaults_when_not_set", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags:      map[string]interface{}{},
 			setFlags:   map[string]bool{},
@@ -1864,6 +1981,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("invalid_protocol_defaults_to_http", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"clickhouse-protocol": "invalid",
@@ -1881,6 +1999,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("invalid_transport_defaults_to_stdio", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"transport": "invalid",
@@ -1898,6 +2017,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 	})
 
 	t.Run("invalid_log_level_defaults_to_info", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"log-level": "invalid",
@@ -1916,6 +2036,7 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 }
 
 func TestHeaderToSettingsCLIFlag(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		flagVal  string
@@ -1955,6 +2076,7 @@ func TestHeaderToSettingsCLIFlag(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cmd := &mockCommand{
 				flags:      map[string]interface{}{},
 				setFlags:   map[string]bool{},
@@ -1984,6 +2106,7 @@ func TestHeaderToSettingsCLIFlag(t *testing.T) {
 }
 
 func TestHeaderToSettingsConfigFile(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		yaml       string
@@ -2027,6 +2150,7 @@ server:
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(f, []byte(tc.yaml), 0o600))
 
@@ -2057,7 +2181,9 @@ server:
 
 // TestCORSSupport tests the CORS handler behavior
 func TestCORSSupport(t *testing.T) {
+	t.Parallel()
 	t.Run("cors_preflight_request", func(t *testing.T) {
+		t.Parallel()
 		for _, transport := range []config.MCPTransport{config.HTTPTransport, config.SSETransport} {
 			port, err := getFreeRandomPort()
 			require.NoError(t, err)
@@ -2141,7 +2267,9 @@ func getFreeRandomPort() (int, error) {
 
 // TestApplicationStart tests the application Start method
 func TestApplicationStart(t *testing.T) {
+	t.Parallel()
 	t.Run("unsupported_transport", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: "unsupported",
@@ -2158,6 +2286,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("stdio_transport", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.StdioTransport,
@@ -2192,6 +2321,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_invalid_port", func(t *testing.T) {
+		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				Transport: config.HTTPTransport,
@@ -2213,6 +2343,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_with_tls_missing_files", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2239,6 +2370,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_without_jwe", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2284,6 +2416,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_jwe", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2329,6 +2462,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_jwe_and_openapi", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2378,6 +2512,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_with_jwe_and_openapi", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2427,6 +2562,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_openapi_without_jwe", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2476,6 +2612,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_openapi_without_jwe", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2525,6 +2662,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("sse_transport_with_tls_invalid_config", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2555,6 +2693,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("build_server_tls_config_error", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2580,6 +2719,7 @@ func TestApplicationStart(t *testing.T) {
 	})
 
 	t.Run("http_transport_successful_start", func(t *testing.T) {
+		t.Parallel()
 		port, err := getFreeRandomPort()
 		require.NoError(t, err)
 
@@ -2624,6 +2764,7 @@ func TestApplicationStart(t *testing.T) {
 
 // TestReloadConfigWithValidFile tests config reloading with a valid file
 func TestReloadConfigWithValidFile(t *testing.T) {
+	t.Parallel()
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
@@ -2656,6 +2797,7 @@ logging:
 
 	// Verify reload time is preserved when not in new config
 	t.Run("reload_time_preserved_when_not_in_config", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -2725,6 +2867,7 @@ logging:
 
 // TestNewApplicationWithTestContainer tests newApplication with a real ClickHouse instance
 func TestNewApplicationWithTestContainer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// Start ClickHouse container
@@ -2737,7 +2880,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 		WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 	}
 
-	clickhouseContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: containerReq,
 		Started:          true,
 	})
@@ -2790,6 +2933,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 
 // TestRunServerWithValidConfig tests runServer with a valid configuration
 func TestRunServerWithValidConfig(t *testing.T) {
+	t.Parallel()
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
@@ -2860,13 +3004,16 @@ logging:
 
 // TestRun tests the main run function
 func TestRun(t *testing.T) {
+	t.Parallel()
 	t.Run("version_command", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "version"}
 		err := run(args)
 		require.NoError(t, err)
 	})
 
 	t.Run("test_connection_command_invalid_config", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "test-connection", "--clickhouse-host", "nonexistent-host", "--clickhouse-port", "9999"}
 		err := run(args)
 		require.Error(t, err)
@@ -2874,6 +3021,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("invalid_flag", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--invalid-flag"}
 		err := run(args)
 		require.Error(t, err)
@@ -2881,12 +3029,14 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("help_command", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--help"}
 		err := run(args)
 		require.NoError(t, err)
 	})
 
 	t.Run("invalid_log_level", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--log-level", "invalid"}
 		err := run(args)
 		require.Error(t, err)
@@ -2894,6 +3044,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled_without_secret", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-secret-key", ""}
 		err := run(args)
 		require.Error(t, err)
@@ -2901,6 +3052,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("invalid_config_file", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--config", "/nonexistent/config.yaml"}
 		err := run(args)
 		require.Error(t, err)
@@ -2908,6 +3060,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("invalid_clickhouse_connection", func(t *testing.T) {
+		t.Parallel()
 		args := []string{"altinity-mcp", "--clickhouse-host", "nonexistent-host", "--clickhouse-port", "9999"}
 		err := run(args)
 		require.Error(t, err)
@@ -2915,6 +3068,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
+		t.Parallel()
 		// This test will start the server, but we need to stop it quickly
 		args := []string{"altinity-mcp", "--allow-jwe-auth", "--jwe-secret-key", "test-secret", "--jwt-secret-key", "test-jwt-secret", "--transport", "stdio"}
 
@@ -2942,6 +3096,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("valid_config_file", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -2989,6 +3144,7 @@ logging:
 	})
 
 	t.Run("token_injection_middleware", func(t *testing.T) {
+		t.Parallel()
 		app := &application{}
 
 		// Create the token injector middleware
@@ -2996,12 +3152,13 @@ logging:
 
 		// Test with Bearer token
 		t.Run("bearer_token", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Bearer test-token-123")
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3017,12 +3174,13 @@ logging:
 
 		// Test with Basic token
 		t.Run("basic_token", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Basic test-token-456")
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3038,12 +3196,13 @@ logging:
 
 		// Test with x-altinity-mcp-key header
 		t.Run("altinity_header", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("x-altinity-mcp-key", "test-token-789")
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3059,12 +3218,13 @@ logging:
 
 		// Test with path token (fallback)
 		t.Run("path_token", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.SetPathValue("token", "test-token-path")
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3080,6 +3240,7 @@ logging:
 
 		// Test priority: Bearer > x-altinity-mcp-key > path
 		t.Run("token_priority", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 			req.Header.Set("Authorization", "Bearer bearer-token")
 			req.Header.Set("x-altinity-mcp-key", "header-token")
@@ -3087,7 +3248,7 @@ logging:
 
 			var capturedToken string
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				token := r.Context().Value("jwe_token")
+				token := r.Context().Value(altinitymcp.JWETokenKey)
 				if token != nil {
 					capturedToken, _ = token.(string)
 				}
@@ -3103,11 +3264,12 @@ logging:
 
 		// Test with no token
 		t.Run("no_token", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", "/test", nil)
 
 			tokenInContext := false
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, tokenInContext = r.Context().Value("jwe_token").(string)
+				_, tokenInContext = r.Context().Value(altinitymcp.JWETokenKey).(string)
 				w.WriteHeader(http.StatusOK)
 			})
 
@@ -3122,6 +3284,7 @@ logging:
 
 // TestJWETokenGeneratorHandler tests the JWE token generator endpoint.
 func TestJWETokenGeneratorHandler(t *testing.T) {
+	t.Parallel()
 	jweSecretKey := "a-secret-for-jwe-generation-test"
 	jwtSecretKey := "a-secret-for-jwt-generation-test"
 
@@ -3138,6 +3301,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	}
 
 	t.Run("successful_generation", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "localhost",
 			"port":     8123,
@@ -3167,6 +3331,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("jwe_disabled", func(t *testing.T) {
+		t.Parallel()
 		disabledApp := &application{
 			config: config.Config{
 				Server: config.ServerConfig{
@@ -3186,6 +3351,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
 		w := httptest.NewRecorder()
 
@@ -3194,6 +3360,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("invalid_request_body", func(t *testing.T) {
+		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", strings.NewReader("not-json"))
 		w := httptest.NewRecorder()
 
@@ -3203,6 +3370,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 
 	// Additional error test cases to increase coverage
 	t.Run("generate_token_failure", func(t *testing.T) {
+		t.Parallel()
 		// Create an app with invalid secret keys to force token generation failure
 		invalidApp := &application{
 			config: config.Config{
@@ -3234,6 +3402,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("default_expiry_when_not_provided", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "localhost",
 			"port":     8123,
@@ -3268,6 +3437,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("all_optional_fields", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":                     "localhost",
 			"port":                     8123,
@@ -3316,6 +3486,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	})
 
 	t.Run("tls_fields_without_tls_enabled", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":            "localhost",
 			"port":            8123,
@@ -3353,13 +3524,16 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 
 // TestMainFunctionality tests various main function scenarios
 func TestMainFunctionality(t *testing.T) {
+	t.Parallel()
 	t.Run("setup_logging_error", func(t *testing.T) {
+		t.Parallel()
 		err := setupLogging("invalid-level")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid log level")
 	})
 
 	t.Run("build_config_with_empty_values", func(t *testing.T) {
+		t.Parallel()
 		cmd := &mockCommand{
 			flags: map[string]interface{}{
 				"config":                        "",
@@ -3398,6 +3572,7 @@ func TestMainFunctionality(t *testing.T) {
 	})
 
 	t.Run("config_reload_with_logging_level_change", func(t *testing.T) {
+		t.Parallel()
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
@@ -3490,4 +3665,389 @@ func generateSelfSignedCert() ([]byte, []byte, error) {
 	})
 
 	return certPEM, privateKeyPEM, nil
+}
+
+func TestValidateOAuthRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: false}}}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("unsupported_mode", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "custom",
+			GatingSecretKey: "secret",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unsupported oauth mode")
+	})
+
+	t.Run("missing_gating_secret", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "gating",
+			GatingSecretKey: "",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "gating_secret_key is required")
+	})
+
+	t.Run("forward_mode_requires_http", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:         true,
+				Mode:            "forward",
+				GatingSecretKey: "secret",
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "requires clickhouse protocol http")
+	})
+
+	t.Run("valid_gating_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "gating",
+			GatingSecretKey: "secret",
+		}}}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("valid_forward_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:         true,
+				Mode:            "forward",
+				GatingSecretKey: "secret",
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+}
+
+func TestWarnOAuthMisconfiguration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_no_warn", func(t *testing.T) {
+		t.Parallel()
+		// Should not panic
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: false}}})
+	})
+
+	t.Run("gating_mode_missing_public_auth_server_url", func(t *testing.T) {
+		t.Parallel()
+		// Should log warning but not panic
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:            true,
+			Mode:               "gating",
+			Issuer:             "https://issuer.example.com",
+			PublicAuthServerURL: "",
+		}}})
+	})
+
+	t.Run("gating_mode_with_public_auth_server_url", func(t *testing.T) {
+		t.Parallel()
+		// Should not warn
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:            true,
+			Mode:               "gating",
+			Issuer:             "https://issuer.example.com",
+			PublicAuthServerURL: "https://public.example.com",
+		}}})
+	})
+}
+
+func TestTransportRoutePatterns(t *testing.T) {
+	t.Parallel()
+	t.Run("jwe_only", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, false, "http")
+		require.Equal(t, []string{"/{token}/http"}, patterns)
+	})
+	t.Run("jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, true, "http")
+		require.Equal(t, []string{"/{token}/http", "/http"}, patterns)
+	})
+	t.Run("no_jwe", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(false, false, "http")
+		require.Equal(t, []string{"/http"}, patterns)
+	})
+	t.Run("sse_transport", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(false, false, "sse")
+		require.Equal(t, []string{"/sse"}, patterns)
+	})
+}
+
+func TestOpenAPIRoutePatterns(t *testing.T) {
+	t.Parallel()
+	t.Run("jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(true, true)
+		require.Contains(t, patterns, "/{token}/openapi")
+		require.Contains(t, patterns, "/openapi/list_tables")
+		require.Contains(t, patterns, "/openapi/describe_table")
+		require.Contains(t, patterns, "/openapi/execute_query")
+	})
+	t.Run("jwe_only", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(true, false)
+		require.Equal(t, 5, len(patterns))
+		require.Contains(t, patterns, "/{token}/openapi")
+	})
+	t.Run("no_jwe", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(false, false)
+		require.Contains(t, patterns, "/openapi")
+		require.Contains(t, patterns, "/openapi/execute_query")
+	})
+}
+
+func TestStripTrailingSlash(t *testing.T) {
+	t.Parallel()
+	handler := stripTrailingSlash(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(r.URL.Path))
+	}))
+
+	t.Run("removes_trailing_slash", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/api/v1", rr.Body.String())
+	})
+	t.Run("root_path_unchanged", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/", rr.Body.String())
+	})
+	t.Run("no_trailing_slash_unchanged", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/api/v1", rr.Body.String())
+	})
+}
+
+func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	makeApp := func(jweEnabled bool, jweSecret string) *application {
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      jweEnabled,
+					JWESecretKey: jweSecret,
+					JWTSecretKey: "jwt-secret",
+				},
+			},
+		}
+		return &application{config: cfg}
+	}
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "secret")
+		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+
+	t.Run("jwe_not_enabled", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(false, "secret")
+		body := strings.NewReader(`{"host":"localhost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusForbidden, rr.Code)
+	})
+
+	t.Run("missing_jwe_secret", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "")
+		body := strings.NewReader(`{"host":"localhost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("invalid_body", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "secret")
+		body := strings.NewReader(`{invalid}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("success_generates_token", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"clickhouse.local","port":9000,"database":"default","username":"admin","password":"pass","protocol":"native","expiry":3600}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+		require.NotEmpty(t, resp["token"])
+	})
+
+	t.Run("success_with_tls_options", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"ch","tls_enabled":true,"tls_ca_cert":"ca","tls_client_cert":"cert","tls_client_key":"key","tls_insecure_skip_verify":true}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("default_expiry", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"ch"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
+func TestHealthHandler_JWEEnabled(t *testing.T) {
+	t.Parallel()
+	// When JWE is enabled, credentials are per-request, so no CH connection test
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: true, JWESecretKey: "secret"},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+
+	t.Run("get_returns_healthy", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		rr := httptest.NewRecorder()
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "healthy", body["status"])
+		require.Equal(t, "per_request_credentials", body["auth"])
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/health", nil)
+		rr := httptest.NewRecorder()
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+}
+
+func TestHealthHandler_OAuthForwardMode(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	app.healthHandler(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "per_request_credentials", body["auth"])
+}
+
+func TestHealthHandler_CHUnavailable(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		ClickHouse: config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     19999, // port with no server
+			Protocol: config.TCPProtocol,
+			Database: "default",
+			Username: "default",
+		},
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	app.healthHandler(rr, req)
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "unhealthy", body["status"])
+}
+
+func TestOAuthStateStoreEviction(t *testing.T) {
+	t.Parallel()
+	store := newOAuthStateStore()
+
+	// Fill pending auth to capacity
+	for i := 0; i < maxOAuthStateEntries; i++ {
+		store.putPendingAuth(fmt.Sprintf("pending-%d", i), oauthPendingAuth{
+			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	// Adding one more should evict the oldest
+	store.putPendingAuth("new-pending", oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)})
+	_, ok := store.consumePendingAuth("pending-0") // oldest should be evicted
+	require.False(t, ok)
+	_, ok = store.consumePendingAuth("new-pending")
+	require.True(t, ok)
+
+	// Fill auth codes to capacity
+	for i := 0; i < maxOAuthStateEntries; i++ {
+		store.putAuthCode(fmt.Sprintf("code-%d", i), oauthIssuedCode{
+			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	// Adding one more should evict the oldest
+	store.putAuthCode("new-code", oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)})
+	_, ok = store.consumeAuthCode("code-0")
+	require.False(t, ok)
+	_, ok = store.consumeAuthCode("new-code")
+	require.True(t, ok)
 }

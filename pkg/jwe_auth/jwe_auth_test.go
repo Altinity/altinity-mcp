@@ -18,6 +18,7 @@ func TestJWETokenGeneration(t *testing.T) {
 
 	// Test basic JWE token generation
 	t.Run("basic_token", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "localhost",
 			"port":     float64(8123),
@@ -41,6 +42,7 @@ func TestJWETokenGeneration(t *testing.T) {
 
 	// Test JWE token generation with empty JWT secret key
 	t.Run("empty_jwt_secret_key", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "localhost",
 			"port":     float64(8123),
@@ -101,10 +103,12 @@ func regenerateJWEForTesting(jweObject *jose.JSONWebEncryption, jweSecretKey []b
 
 // TestParseAndDecryptJWE tests JWE parsing and validation
 func TestParseAndDecryptJWE(t *testing.T) {
+	t.Parallel()
 	jweSecretKey := []byte("any-jwe-secret") // Will be hashed to 32 bytes
 	jwtSecretKey := []byte("any-jwt-secret") // Will be hashed to 32 bytes
 
 	t.Run("valid_token", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "test-host",
 			"port":     float64(9000),
@@ -123,11 +127,13 @@ func TestParseAndDecryptJWE(t *testing.T) {
 	})
 
 	t.Run("invalid_token", func(t *testing.T) {
+		t.Parallel()
 		_, err := jwe_auth.ParseAndDecryptJWE("invalid-token", jweSecretKey, jwtSecretKey)
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
 	t.Run("expired_token", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
@@ -142,6 +148,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test parsing with empty JWT secret key
 	t.Run("valid_token_empty_jwt_secret", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":     "test-host",
 			"port":     float64(9000),
@@ -163,6 +170,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test expired token with empty JWT secret key
 	t.Run("expired_token_empty_jwt_secret", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(-time.Hour).Unix(), // Expired
@@ -178,6 +186,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 	})
 
 	t.Run("invalid_jwe_content_type", func(t *testing.T) {
+		t.Parallel()
 		// Create a token with invalid content type manually
 		claims := map[string]interface{}{
 			"host": "test-host",
@@ -207,6 +216,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test with disallowed claim key
 	t.Run("disallowed_claim_key", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":    "test-host",
 			"invalid": "not-allowed", // This key is not in the whitelist
@@ -223,6 +233,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test with invalid expiration type
 	t.Run("invalid_exp_type", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  "not-a-number", // Invalid type for exp
@@ -237,6 +248,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test with disallowed claim key
 	t.Run("disallowed_claim_key", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host":    "test-host",
 			"invalid": "not-allowed", // This key is not in the whitelist
@@ -253,6 +265,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test with invalid expiration type
 	t.Run("invalid_exp_type", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  "not-a-number", // Invalid type for exp
@@ -267,6 +280,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test distinction between JWT-signed and JSON-encrypted tokens
 	t.Run("distinguish_jwt_and_json_tokens", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),
@@ -295,6 +309,7 @@ func TestParseAndDecryptJWE(t *testing.T) {
 
 	// Test JWT-signed token parsed without JWT secret key
 	t.Run("jwt_token_without_jwt_secret", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),
@@ -309,8 +324,39 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
+	// Test token without exp claim (validates no-exp branch in validateExpiration)
+	t.Run("no_exp_claim", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"host":     "test-host",
+			"database": "test-db",
+		}
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+	})
+
+	// Test token with int64 exp (covers int64 branch in validateExpiration)
+	t.Run("int64_exp_type", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  time.Now().Add(time.Hour).Unix(), // int64
+		}
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+	})
+
 	// Test JSON token parsed with JWT secret key
 	t.Run("json_token_with_jwt_secret", func(t *testing.T) {
+		t.Parallel()
 		claims := map[string]interface{}{
 			"host": "test-host",
 			"exp":  time.Now().Add(time.Hour).Unix(),

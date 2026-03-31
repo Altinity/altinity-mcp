@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,57 +17,44 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/docker/docker/api/types/container"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// TestOAuthE2EWithKeycloak is an end-to-end test that validates the full OAuth2 flow
+// TestOAuthE2EWithMockOIDC is an end-to-end test that validates the full OAuth2 flow
 // through real MCP client and OpenAPI endpoints:
-// 1. Keycloak as the OAuth2/OIDC provider (RS256 keys compatible with ClickHouse)
+// 1. A lightweight mock OIDC provider (in-process Go HTTP server)
 // 2. ClickHouse (Antalya build) with token_processors for JWT auth
 // 3. MCP server forwarding Bearer tokens to ClickHouse
-//
-// Reference setup: https://github.com/zvonand/grafana-oauth/tree/main/keycloak
-func TestOAuthE2EWithKeycloak(t *testing.T) {
+func TestOAuthE2EWithMockOIDC(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
 
 	ctx := context.Background()
-	const (
-		keycloakHostname   = "keycloak"
-		clickhouseHostname = "clickhouse"
-		realmName          = "mcp"
-		clientID           = "clickhouse-mcp"
-		testUserName       = "testuser"
-		testUserPassword   = "testpass123"
-	)
 
-	// Create a shared Docker network for container-to-container communication
-	net, err := tcnetwork.New(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = net.Remove(ctx) })
-
-	// ---------- Step 1: Start Keycloak with realm import ----------
-	realmJSON := generateKeycloakRealmJSON(realmName, clientID, testUserName, testUserPassword)
-	keycloakInternalURL, keycloakExternalURL := startKeycloakContainer(
-		t, ctx, net.Name, keycloakHostname, realmJSON,
-	)
-	t.Logf("Keycloak internal URL: %s", keycloakInternalURL)
-	t.Logf("Keycloak external URL: %s", keycloakExternalURL)
+	// ---------- Step 1: Start mock OIDC provider ----------
+	provider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
+	t.Logf("Mock OIDC provider URL (Docker): %s", dockerOIDCURL)
 
 	// ---------- Step 2: Start ClickHouse with token_processors ----------
-	tokenProcessorXML := generateClickHouseTokenProcessorConfig(keycloakInternalURL, realmName)
-	startupScriptsXML := generateClickHouseStartupScriptsConfig()
-	chConfig := startClickHouseContainer(t, ctx, net.Name, clickhouseHostname, tokenProcessorXML, startupScriptsXML)
+	chConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
 
-	// ---------- Step 3: Obtain OAuth2 token from Keycloak via password grant ----------
-	token := getKeycloakToken(t, keycloakExternalURL, realmName, clientID, testUserName, testUserPassword)
+	// ---------- Step 3: Issue a signed JWT ----------
+	const tokenSubject = "test-oauth-user"
+	token := provider.issueJWT(t, map[string]interface{}{
+		"sub": tokenSubject,
+		"iss": dockerOIDCURL,
+		"aud": "test-audience",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	})
 	require.NotEmpty(t, token, "OAuth token should not be empty")
-	t.Logf("Obtained OAuth token (first 50 chars): %.50s...", token)
 
 	// Verify it looks like a JWT
 	parts := strings.Split(token, ".")
@@ -72,14 +62,13 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 
 	// ---------- Step 4: Test via MCP Client (InMemoryTransports) ----------
 	t.Run("MCP_Client", func(t *testing.T) {
+		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:                    true,
-					ForwardToClickHouse:        true,
-					ForwardAccessToken:         true,
-					ClearClickHouseCredentials: true,
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")
@@ -88,8 +77,8 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 		clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
 		// Connect server with context containing the server instance and OAuth token
-		srvCtx := context.WithValue(ctx, "clickhouse_jwe_server", srv)
-		srvCtx = context.WithValue(srvCtx, "oauth_token", token)
+		srvCtx := context.WithValue(ctx, CHJWEServerKey, srv)
+		srvCtx = context.WithValue(srvCtx, OAuthTokenKey, token)
 		serverSession, err := srv.MCPServer.Connect(srvCtx, serverTransport, nil)
 		require.NoError(t, err, "Server connect should succeed")
 		defer serverSession.Close()
@@ -102,6 +91,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 		require.NoError(t, err, "Client connect should succeed")
 		defer clientSession.Close()
 
+		// NOTE: MCP subtests are NOT parallel — they share clientSession
 		// 4a. ListTools — verify execute_query is registered
 		t.Run("ListTools", func(t *testing.T) {
 			toolsResult, err := clientSession.ListTools(ctx, nil)
@@ -138,6 +128,7 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			rows, ok := queryResult["rows"].([]interface{})
 			require.True(t, ok, "Result should have Rows")
 			require.Greater(t, len(rows), 0, "Should have at least one row")
+			require.Equal(t, tokenSubject, firstStringCell(t, rows))
 		})
 
 		// 4c. ListResources — verify clickhouse://schema is registered
@@ -169,24 +160,24 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 
 	// ---------- Step 5: Test via OpenAPI Client (httptest) ----------
 	t.Run("OpenAPI_Client", func(t *testing.T) {
+		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
-					Enabled:                    true,
-					ForwardToClickHouse:        true,
-					ForwardAccessToken:         true,
-					ClearClickHouseCredentials: true,
+					Enabled: true,
+					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")
 
 		// 5a. Execute query via OpenAPI with Bearer token
 		t.Run("ExecuteQuery", func(t *testing.T) {
+			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user, 1 AS ok")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()
@@ -199,14 +190,16 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			rows, ok := result["rows"].([]interface{})
 			require.True(t, ok, "Result should have Rows")
 			require.Greater(t, len(rows), 0, "Should have at least one row")
+			require.Equal(t, tokenSubject, firstStringCell(t, rows))
 			t.Logf("OpenAPI result: %s", rr.Body.String())
 		})
 
 		// 5b. OpenAPI schema endpoint should work
 		t.Run("OpenAPISchema", func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), "clickhouse_jwe_server", srv)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
 			req = req.WithContext(reqCtx)
 
 			rr := httptest.NewRecorder()
@@ -216,134 +209,46 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 			require.Contains(t, rr.Body.String(), "execute_query", "Schema should contain execute_query")
 			t.Logf("OpenAPI schema (first 200 chars): %.200s...", rr.Body.String())
 		})
+
+		t.Run("ExecuteQuery_MissingBearerToken", func(t *testing.T) {
+			t.Parallel()
+			query := url.QueryEscape("SELECT currentUser() AS user")
+			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
+			req = req.WithContext(reqCtx)
+
+			rr := httptest.NewRecorder()
+			srv.OpenAPIHandler(rr, req)
+
+			require.Equal(t, http.StatusUnauthorized, rr.Code, "missing token should be rejected before ClickHouse query execution")
+			require.Contains(t, rr.Body.String(), "Missing authentication token")
+		})
+
+		t.Run("ExecuteQuery_InvalidBearerTokenRejectedByClickHouse", func(t *testing.T) {
+			t.Parallel()
+			query := url.QueryEscape("SELECT currentUser() AS user")
+			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
+			req.Header.Set("Authorization", "Bearer "+generateUnsignedJWT(t, map[string]any{
+				"sub":   "forged-user",
+				"iss":   "http://forged-issuer.invalid",
+				"aud":   []string{"forged-client"},
+				"exp":   time.Now().Add(10 * time.Minute).Unix(),
+				"scope": "openid",
+			}))
+			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
+			req = req.WithContext(reqCtx)
+
+			rr := httptest.NewRecorder()
+			srv.OpenAPIHandler(rr, req)
+
+			require.Equal(t, http.StatusInternalServerError, rr.Code, "forged token should fail during ClickHouse authentication")
+			require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client")
+			require.Contains(t, rr.Body.String(), "AUTHENTICATION_FAILED")
+		})
 	})
 }
 
 // ---------- Helper functions ----------
-
-func generateKeycloakRealmJSON(realmName, clientID, userName, userPassword string) string {
-	realm := map[string]interface{}{
-		"realm":                      realmName,
-		"enabled":                    true,
-		"sslRequired":                "none",
-		"registrationAllowed":        false,
-		"verifyEmail":                false,
-		"requiredActions":            []interface{}{},
-		"defaultDefaultClientScopes": []string{"web-origins", "acr", "profile", "roles", "email", "basic"},
-		"clients": []map[string]interface{}{
-			{
-				"clientId":                  clientID,
-				"name":                      "ClickHouse MCP",
-				"protocol":                  "openid-connect",
-				"publicClient":              true,
-				"directAccessGrantsEnabled": true,
-				"standardFlowEnabled":       true,
-				"redirectUris":              []string{"*"},
-			},
-		},
-		"users": []map[string]interface{}{
-			{
-				"username":        userName,
-				"enabled":         true,
-				"email":           userName + "@test.local",
-				"emailVerified":   true,
-				"firstName":       "Test",
-				"lastName":        "User",
-				"requiredActions": []string{},
-				"credentials": []map[string]interface{}{
-					{
-						"type":      "password",
-						"value":     userPassword,
-						"temporary": false,
-					},
-				},
-			},
-		},
-		"roles": map[string]interface{}{
-			"realm": []map[string]interface{}{
-				{"name": "default_role", "description": "Default role for token-authenticated users"},
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(realm, "", "  ")
-	return string(data)
-}
-
-func startKeycloakContainer(
-	t *testing.T, ctx context.Context, networkName, hostname, realmJSON string,
-) (internalURL, externalURL string) {
-	t.Helper()
-
-	realmFile := t.TempDir() + "/realm-export.json"
-	require.NoError(t, os.WriteFile(realmFile, []byte(realmJSON), 0644))
-
-	req := testcontainers.ContainerRequest{
-		Image:        "keycloak/keycloak:26.3",
-		ExposedPorts: []string{"8080/tcp"},
-		Cmd:          []string{"start-dev", "--import-realm", "--hostname-strict=false"},
-		Env: map[string]string{
-			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-			"KC_BOOTSTRAP_ADMIN_PASSWORD": "admin",
-		},
-		Networks: []string{networkName},
-		NetworkAliases: map[string][]string{
-			networkName: {hostname},
-		},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: realmFile, ContainerFilePath: "/opt/keycloak/data/import/realm-export.json", FileMode: 0644},
-		},
-		WaitingFor: wait.ForLog("Listening on:").WithStartupTimeout(180 * time.Second),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = container.Terminate(cleanupCtx)
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "8080")
-	require.NoError(t, err)
-
-	internalURL = fmt.Sprintf("http://%s:8080", hostname)
-	externalURL = fmt.Sprintf("http://%s:%s", host, port.Port())
-	return internalURL, externalURL
-}
-
-func generateClickHouseTokenProcessorConfig(keycloakURL, realmName string) string {
-	return fmt.Sprintf(`<?xml version="1.0"?>
-<clickhouse>
-    <token_processors>
-        <keycloak>
-            <type>openid</type>
-            <configuration_endpoint>%[1]s/realms/%[2]s/.well-known/openid-configuration</configuration_endpoint>
-            <token_cache_lifetime>60</token_cache_lifetime>
-        </keycloak>
-    </token_processors>
-    <!-- replace="replace" is needed because ClickHouse does not merge new children into user_directories from config.d -->
-    <user_directories replace="replace">
-        <users_xml>
-            <path>users.xml</path>
-        </users_xml>
-        <local_directory>
-            <path>/var/lib/clickhouse/access/</path>
-        </local_directory>
-        <token>
-            <processor>keycloak</processor>
-            <common_roles>
-                <default_role />
-            </common_roles>
-        </token>
-    </user_directories>
-</clickhouse>
-`, keycloakURL, realmName)
-}
 
 func generateClickHouseStartupScriptsConfig() string {
 	return `<?xml version="1.0"?>
@@ -360,10 +265,196 @@ func generateClickHouseStartupScriptsConfig() string {
 `
 }
 
-func startClickHouseContainer(
-	t *testing.T, ctx context.Context, networkName, hostname, tokenProcessorXML, startupScriptsXML string,
-) config.ClickHouseConfig {
+func extractJWTStringClaim(t *testing.T, token, claim string) string {
 	t.Helper()
+
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3, "token should have three JWT parts")
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+
+	var claims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &claims))
+
+	value, ok := claims[claim].(string)
+	require.True(t, ok, "token should include string %q claim", claim)
+
+	return value
+}
+
+func firstStringCell(t *testing.T, rows []interface{}) string {
+	t.Helper()
+
+	require.NotEmpty(t, rows, "expected at least one row")
+
+	row, ok := rows[0].([]interface{})
+	require.True(t, ok, "expected row to be an array")
+	require.NotEmpty(t, row, "expected row to have at least one column")
+
+	value, ok := row[0].(string)
+	require.True(t, ok, "expected first column to be a string")
+
+	return value
+}
+
+func generateUnsignedJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+
+	headerJSON, err := json.Marshal(map[string]string{
+		"alg": "none",
+		"typ": "JWT",
+	})
+	require.NoError(t, err)
+
+	payloadJSON, err := json.Marshal(claims)
+	require.NoError(t, err)
+
+	return fmt.Sprintf(
+		"%s.%s.",
+		base64.RawURLEncoding.EncodeToString(headerJSON),
+		base64.RawURLEncoding.EncodeToString(payloadJSON),
+	)
+}
+
+// getDockerHostIP returns the hostname reachable from Docker containers.
+// We always return "host.docker.internal" and rely on the ExtraHosts container setting
+// (host.docker.internal:host-gateway) so it resolves correctly on both macOS and Linux.
+func getDockerHostIP() string {
+	return "host.docker.internal"
+}
+
+// newTestOAuthProviderReachableFromDocker creates an OIDC provider bound to 0.0.0.0
+// so Docker containers can reach it. Returns (provider, dockerAccessURL).
+//
+// The discovery document, JWKS, and userinfo endpoints all use dockerURL directly,
+// so ClickHouse containers can reach all endpoints without any forwarding.
+func newTestOAuthProviderReachableFromDocker(t *testing.T, userInfoClaims map[string]interface{}) (*testOAuthProvider, string) {
+	t.Helper()
+
+	// Bind to all interfaces so Docker containers can reach us.
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	dockerURL := fmt.Sprintf("http://%s:%d", getDockerHostIP(), port)
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", port) // for host-side access in tests
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testOAuthProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		userInfoClaims: userInfoClaims,
+	}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		// Antalya CH requires a complete OIDC discovery document with introspection_endpoint
+		// (or userinfo_endpoint) plus the standard required OIDC fields. Without them CH
+		// silently ignores the document and logs "Cannot extract userinfo_endpoint or
+		// introspection_endpoint from OIDC configuration". Content-Length must be set
+		// explicitly so CH's HTTP client receives the full body over the OrbStack NAT.
+		doc := map[string]interface{}{
+			"issuer":                                dockerURL,
+			"authorization_endpoint":                dockerURL + "/auth",
+			"token_endpoint":                        dockerURL + "/token",
+			"jwks_uri":                              dockerURL + "/jwks",
+			"userinfo_endpoint":                     dockerURL + "/userinfo",
+			"introspection_endpoint":                dockerURL + "/introspect",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		}
+		body, _ := json.Marshal(doc)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		body, _ := json.Marshal(keySet)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.lastAuthorizationMu.Lock()
+		provider.lastAuthorization = r.Header.Get("Authorization")
+		provider.lastAuthorizationMu.Unlock()
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
+	})
+
+	// Use plain http.Serve (not httptest) — httptest replaces the listener
+	// in a way that breaks 0.0.0.0 binding needed for Docker-to-host connectivity.
+	httpSrv := &http.Server{Handler: mux}
+	go func() { _ = httpSrv.Serve(ln) }()
+	time.Sleep(50 * time.Millisecond) // ensure goroutine is scheduled before container starts
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	})
+
+	// Set a stub server so provider.server.URL works in test verification code.
+	stub := httptest.NewUnstartedServer(nil)
+	stub.Listener.Close() // free the auto-created listener immediately
+	stub.URL = localURL
+	provider.server = stub
+
+	return provider, dockerURL
+}
+
+// setupAntalyaClickHouseWithOIDC starts an Antalya ClickHouse container with token_processors
+// pointing at the given OIDC discovery URL.
+// On Linux, host.docker.internal is resolved via ExtraHosts (host-gateway).
+// On macOS/Docker Desktop/OrbStack it resolves automatically.
+func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDiscoveryURL string) config.ClickHouseConfig {
+	t.Helper()
+
+	tokenProcessorXML := fmt.Sprintf(`<?xml version="1.0"?>
+<clickhouse>
+    <token_processors>
+        <test_oidc>
+            <type>openid</type>
+            <configuration_endpoint>%s/.well-known/openid-configuration</configuration_endpoint>
+            <token_cache_lifetime>60</token_cache_lifetime>
+        </test_oidc>
+    </token_processors>
+    <user_directories replace="replace">
+        <users_xml>
+            <path>users.xml</path>
+        </users_xml>
+        <local_directory>
+            <path>/var/lib/clickhouse/access/</path>
+        </local_directory>
+        <token>
+            <processor>test_oidc</processor>
+            <common_roles>
+                <default_role />
+            </common_roles>
+        </token>
+    </user_directories>
+</clickhouse>
+`, oidcDiscoveryURL)
+	startupScriptsXML := generateClickHouseStartupScriptsConfig()
 
 	tmpDir := t.TempDir()
 	tokenProcessorFile := tmpDir + "/token_processor.xml"
@@ -372,12 +463,8 @@ func startClickHouseContainer(
 	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
 
 	req := testcontainers.ContainerRequest{
-		Image:        "altinity/clickhouse-server:25.8.14.20001.altinityantalya",
+		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Networks:     []string{networkName},
-		NetworkAliases: map[string][]string{
-			networkName: {hostname},
-		},
 		Files: []testcontainers.ContainerFile{
 			{HostFilePath: tokenProcessorFile, ContainerFilePath: "/etc/clickhouse-server/config.d/token_processor.xml", FileMode: 0644},
 			{HostFilePath: startupScriptsFile, ContainerFilePath: "/etc/clickhouse-server/config.d/startup_scripts.xml", FileMode: 0644},
@@ -389,11 +476,14 @@ func startClickHouseContainer(
 			"CLICKHOUSE_PASSWORD":                  "",
 			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
 		},
+		HostConfigModifier: func(hc *container.HostConfig) {
+			hc.ExtraHosts = append(hc.ExtraHosts, "host.docker.internal:host-gateway")
+		},
 		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
 			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
@@ -401,15 +491,15 @@ func startClickHouseContainer(
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = container.Terminate(cleanupCtx)
+		_ = ctr.Terminate(cleanupCtx)
 	})
 
-	host, err := container.Host(ctx)
+	host, err := ctr.Host(ctx)
 	require.NoError(t, err)
-	httpPort, err := container.MappedPort(ctx, "8123")
+	httpPort, err := ctr.MappedPort(ctx, "8123")
 	require.NoError(t, err)
 
-	t.Logf("ClickHouse HTTP at %s:%s", host, httpPort.Port())
+	t.Logf("Antalya ClickHouse HTTP at %s:%s", host, httpPort.Port())
 
 	return config.ClickHouseConfig{
 		Host:             host,
@@ -421,36 +511,4 @@ func startClickHouseContainer(
 		ReadOnly:         false,
 		MaxExecutionTime: 60,
 	}
-}
-
-func getKeycloakToken(
-	t *testing.T, keycloakURL, realmName, clientID, username, password string,
-) string {
-	t.Helper()
-
-	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", keycloakURL, realmName)
-	data := url.Values{
-		"grant_type": {"password"},
-		"client_id":  {clientID},
-		"username":   {username},
-		"password":   {password},
-		"scope":      {"openid"},
-	}
-
-	resp, err := http.PostForm(tokenURL, data)
-	require.NoError(t, err)
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	t.Logf("Token exchange (status=%d): %s", resp.StatusCode, string(body))
-	require.Equal(t, http.StatusOK, resp.StatusCode, "Token request should succeed: %s", string(body))
-
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		IDToken     string `json:"id_token"`
-		TokenType   string `json:"token_type"`
-	}
-	require.NoError(t, json.Unmarshal(body, &tokenResp))
-	require.NotEmpty(t, tokenResp.AccessToken, "Access token should not be empty")
-
-	return tokenResp.AccessToken
 }

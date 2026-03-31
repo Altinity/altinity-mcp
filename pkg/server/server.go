@@ -2,12 +2,11 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -19,6 +18,8 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 )
@@ -32,19 +33,40 @@ var (
 	ErrOAuthTokenExpired = errors.New("OAuth token expired")
 	// ErrOAuthInsufficientScopes is returned when token doesn't have required scopes
 	ErrOAuthInsufficientScopes = errors.New("insufficient OAuth scopes")
+	// ErrOAuthEmailNotVerified is returned when token email is not verified
+	ErrOAuthEmailNotVerified = errors.New("OAuth email is not verified")
+	// ErrOAuthUnauthorizedDomain is returned when token principal domain is not allowed
+	ErrOAuthUnauthorizedDomain = errors.New("OAuth identity domain is not allowed")
 )
+
+const (
+	oauthJWKSCacheTTL  = 5 * time.Minute
+	oauthHTTPTimeout   = 10 * time.Second
+	oauthClockSkewSecs = int64(60)
+)
+
+type openIDConfiguration struct {
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
+	UserInfoEndpoint      string `json:"userinfo_endpoint"`
+}
 
 // OAuthClaims represents the claims from an OAuth token
 type OAuthClaims struct {
-	Subject   string   `json:"sub"`
-	Issuer    string   `json:"iss"`
-	Audience  []string `json:"aud"`
-	ExpiresAt int64    `json:"exp"`
-	IssuedAt  int64    `json:"iat"`
-	Scopes    []string `json:"scope"`
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	Extra     map[string]interface{}
+	Subject       string   `json:"sub"`
+	Issuer        string   `json:"iss"`
+	Audience      []string `json:"aud"`
+	ExpiresAt     int64    `json:"exp"`
+	IssuedAt      int64    `json:"iat"`
+	NotBefore     int64    `json:"nbf,omitempty"`
+	Scopes        []string `json:"scope"`
+	Email         string   `json:"email,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	HostedDomain  string   `json:"hd,omitempty"`
+	EmailVerified bool     `json:"email_verified,omitempty"`
+	Extra         map[string]interface{}
 }
 
 // ClickHouseJWEServer extends MCPServer with JWE auth capabilities
@@ -57,9 +79,14 @@ type ClickHouseJWEServer struct {
 	dynamicToolsMu   sync.RWMutex
 	dynamicToolsInit bool
 	// JWKS cache for OAuth token validation
-	jwksCache     map[string]interface{}
-	jwksCacheMu   sync.RWMutex
-	jwksCacheTime time.Time
+	jwksCache          jose.JSONWebKeySet
+	jwksCacheURL       string
+	jwksCacheMu        sync.RWMutex
+	jwksCacheTime      time.Time
+	oidcConfigCache    openIDConfiguration
+	oidcConfigCacheURL string
+	oidcConfigMu       sync.RWMutex
+	oidcConfigTime     time.Time
 }
 
 type dynamicToolParam struct {
@@ -273,7 +300,7 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 
 // ExtractTokenFromCtx extracts a token from context
 func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
-	if tokenFromCtx := ctx.Value("jwe_token"); tokenFromCtx != nil {
+	if tokenFromCtx := ctx.Value(JWETokenKey); tokenFromCtx != nil {
 		if tokenStr, ok := tokenFromCtx.(string); ok {
 			return tokenStr
 		}
@@ -284,6 +311,11 @@ func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {
 // ExtractTokenFromRequest extracts a token from an HTTP request
 func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
 	var token string
+
+	// Prefer explicit path token when available to avoid conflicting with OAuth bearer auth.
+	if pathToken := r.PathValue("token"); pathToken != "" {
+		return pathToken
+	}
 
 	// Try Authorization header (Bearer or Basic)
 	authHeader := r.Header.Get("Authorization")
@@ -312,23 +344,47 @@ func (s *ClickHouseJWEServer) ExtractTokenFromRequest(r *http.Request) string {
 	return token
 }
 
-// ValidateJWEToken validates a JWE token if JWE auth is enabled
-func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
+func (s *ClickHouseJWEServer) parseJWEClaims(token string) (map[string]interface{}, error) {
 	if !s.Config.Server.JWE.Enabled {
-		return nil
+		return nil, nil
 	}
 
 	if token == "" {
-		return jwe_auth.ErrMissingToken
+		return nil, jwe_auth.ErrMissingToken
 	}
 
-	_, err := jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+	return jwe_auth.ParseAndDecryptJWE(token, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
+}
+
+// ParseJWEClaims parses and decrypts a JWE token into claims.
+func (s *ClickHouseJWEServer) ParseJWEClaims(token string) (map[string]interface{}, error) {
+	return s.parseJWEClaims(token)
+}
+
+// ValidateJWEToken validates a JWE token if JWE auth is enabled
+func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
+	_, err := s.parseJWEClaims(token)
 	if err != nil {
-		log.Error().Err(err).Str("token", token).Msg("JWE token validation failed")
+		log.Error().Err(err).Msg("JWE token validation failed")
 		return err
 	}
 
 	return nil
+}
+
+// JWEClaimsHaveCredentials returns true if the parsed JWE claims contain a username claim.
+func (s *ClickHouseJWEServer) JWEClaimsHaveCredentials(claims map[string]interface{}) bool {
+	username, _ := claims["username"].(string)
+	return username != ""
+}
+
+// JWETokenHasCredentials returns true if the JWE token contains a username claim
+func (s *ClickHouseJWEServer) JWETokenHasCredentials(token string) bool {
+	claims, err := s.parseJWEClaims(token)
+	if err != nil {
+		return false
+	}
+	return s.JWEClaimsHaveCredentials(claims)
 }
 
 // ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
@@ -354,12 +410,16 @@ func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) stri
 
 // ExtractOAuthTokenFromCtx extracts an OAuth token from context
 func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) string {
-	if tokenFromCtx := ctx.Value("oauth_token"); tokenFromCtx != nil {
+	if tokenFromCtx := ctx.Value(OAuthTokenKey); tokenFromCtx != nil {
 		if tokenStr, ok := tokenFromCtx.(string); ok {
 			return tokenStr
 		}
 	}
 	return ""
+}
+
+func (s *ClickHouseJWEServer) oauthRequiresLocalValidation() bool {
+	return s.Config.Server.OAuth.IsGatingMode()
 }
 
 // ValidateOAuthToken validates an OAuth token and returns claims
@@ -372,21 +432,41 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 		return nil, ErrMissingOAuthToken
 	}
 
-	// Parse the JWT token (without verification first to get claims)
-	claims, err := s.parseOAuthToken(token)
+	mode := s.Config.Server.OAuth.NormalizedMode()
+	var (
+		claims *OAuthClaims
+		err    error
+	)
+	if mode == "forward" {
+		claims, err = s.parseAndVerifyOAuthToken(token, s.Config.Server.OAuth.Audience)
+	} else {
+		claims, err = s.parseAndVerifySelfIssuedOAuthToken(token)
+	}
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to parse OAuth token")
-		return nil, ErrInvalidOAuthToken
+		log.Error().Err(err).Str("mode", mode).Msg("Failed to validate OAuth token")
+		return nil, err
 	}
 
+	return s.validateOAuthClaims(claims)
+}
+
+func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthClaims, error) {
+	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
+	if s.Config.Server.OAuth.IsGatingMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
+		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
+	}
 	// Validate issuer if configured
-	if s.Config.Server.OAuth.Issuer != "" && claims.Issuer != s.Config.Server.OAuth.Issuer {
-		log.Error().Str("expected", s.Config.Server.OAuth.Issuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
+	if expectedIssuer != "" && claims.Issuer != expectedIssuer {
+		log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
 		return nil, ErrInvalidOAuthToken
 	}
 
 	// Validate audience if configured
 	if s.Config.Server.OAuth.Audience != "" {
+		if len(claims.Audience) == 0 {
+			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Msg("OAuth token missing audience claim")
+			return nil, ErrInvalidOAuthToken
+		}
 		audienceValid := false
 		for _, aud := range claims.Audience {
 			if aud == s.Config.Server.OAuth.Audience {
@@ -400,13 +480,20 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 		}
 	}
 
-	// Validate expiration
-	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
+	now := time.Now().Unix()
+	if claims.ExpiresAt > 0 && now > claims.ExpiresAt+oauthClockSkewSecs {
 		log.Error().Int64("exp", claims.ExpiresAt).Msg("OAuth token expired")
 		return nil, ErrOAuthTokenExpired
 	}
+	if claims.NotBefore > 0 && now+oauthClockSkewSecs < claims.NotBefore {
+		log.Error().Int64("nbf", claims.NotBefore).Msg("OAuth token not yet valid")
+		return nil, ErrInvalidOAuthToken
+	}
+	if claims.IssuedAt > 0 && claims.IssuedAt > now+oauthClockSkewSecs {
+		log.Error().Int64("iat", claims.IssuedAt).Msg("OAuth token issued in the future")
+		return nil, ErrInvalidOAuthToken
+	}
 
-	// Validate required scopes
 	if len(s.Config.Server.OAuth.RequiredScopes) > 0 {
 		if !hasRequiredScopes(claims.Scopes, s.Config.Server.OAuth.RequiredScopes) {
 			log.Error().Strs("required", s.Config.Server.OAuth.RequiredScopes).Strs("got", claims.Scopes).Msg("OAuth token missing required scopes")
@@ -414,34 +501,282 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 		}
 	}
 
+	if err := s.validateOAuthIdentityPolicy(claims); err != nil {
+		return nil, err
+	}
+
 	return claims, nil
 }
 
-// parseOAuthToken parses a JWT token and extracts claims
-func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error) {
-	// Split the JWT token
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format")
+func (s *ClickHouseJWEServer) validateOAuthIdentityPolicy(claims *OAuthClaims) error {
+	oauthCfg := s.Config.Server.OAuth
+	if oauthCfg.RequireEmailVerified && claims.Email != "" && !claims.EmailVerified {
+		log.Error().Str("email", claims.Email).Msg("OAuth identity email is not verified")
+		return ErrOAuthEmailNotVerified
 	}
 
-	// Decode the payload (middle part)
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if len(oauthCfg.AllowedEmailDomains) > 0 {
+		domain := emailDomain(claims.Email)
+		if domain == "" || !containsDomain(oauthCfg.AllowedEmailDomains, domain) {
+			log.Error().Str("email", claims.Email).Strs("allowed_domains", oauthCfg.AllowedEmailDomains).Msg("OAuth identity email domain is not allowed")
+			return ErrOAuthUnauthorizedDomain
+		}
+	}
+
+	if len(oauthCfg.AllowedHostedDomains) > 0 {
+		if claims.HostedDomain == "" || !containsDomain(oauthCfg.AllowedHostedDomains, claims.HostedDomain) {
+			log.Error().Str("hosted_domain", claims.HostedDomain).Strs("allowed_hosted_domains", oauthCfg.AllowedHostedDomains).Msg("OAuth identity hosted domain is not allowed")
+			return ErrOAuthUnauthorizedDomain
+		}
+	}
+
+	return nil
+}
+
+// ValidateOAuthIdentityPolicyClaims applies configured post-verification identity policy checks.
+func (s *ClickHouseJWEServer) ValidateOAuthIdentityPolicyClaims(claims *OAuthClaims) error {
+	return s.validateOAuthIdentityPolicy(claims)
+}
+
+func emailDomain(email string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(email)), "@")
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
+func containsDomain(domains []string, target string) bool {
+	for _, domain := range domains {
+		if strings.EqualFold(strings.TrimSpace(domain), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeJWT(token string) bool {
+	return strings.Count(token, ".") == 2
+}
+
+func (s *ClickHouseJWEServer) parseAndVerifyOAuthToken(token string, expectedAudience string) (*OAuthClaims, error) {
+	if looksLikeJWT(token) {
+		return s.parseAndVerifyExternalJWT(token, expectedAudience)
+	}
+	return nil, fmt.Errorf("%w: opaque bearer tokens are not supported without token introspection", ErrInvalidOAuthToken)
+}
+
+func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAudience string) (*OAuthClaims, error) {
+	jwksURI, err := s.resolveOAuthJWKSURL()
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+		return nil, err
 	}
 
-	// Parse the payload as JSON
+	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{
+		jose.RS256, jose.RS384, jose.RS512,
+		jose.ES256, jose.ES384, jose.ES512,
+		jose.PS256, jose.PS384, jose.PS512,
+		jose.EdDSA,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse signed JWT: %w", err)
+	}
+	if len(parsed.Headers) == 0 {
+		return nil, fmt.Errorf("missing JWT header")
+	}
+
+	keySet, err := s.fetchOAuthJWKSet(jwksURI)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := keySet.Keys
+	keyID := parsed.Headers[0].KeyID
+	if keyID != "" {
+		keys = keySet.Key(keyID)
+		if len(keys) == 0 {
+			return nil, fmt.Errorf("no JWK found for kid %q", keyID)
+		}
+	}
+
+	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
+	var (
+		rawClaims         map[string]interface{}
+		signatureVerified bool
+		issuerRejected    bool
+		audienceRejected  bool
+	)
+	for _, key := range keys {
+		rawClaims = make(map[string]interface{})
+		if err := parsed.Claims(key.Key, &rawClaims); err != nil {
+			continue
+		}
+		signatureVerified = true
+		claims := oauthClaimsFromRawClaims(rawClaims)
+		if expectedIssuer != "" && claims.Issuer != expectedIssuer {
+			issuerRejected = true
+			continue
+		}
+		if expectedAudience != "" && !containsString(claims.Audience, expectedAudience) {
+			audienceRejected = true
+			continue
+		}
+		return claims, nil
+	}
+	if signatureVerified && (issuerRejected || audienceRejected) {
+		return nil, ErrInvalidOAuthToken
+	}
+
+	return nil, fmt.Errorf("failed to verify JWT signature with discovered JWKs")
+}
+
+func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
+	secret := strings.TrimSpace(s.Config.Server.OAuth.GatingSecretKey)
+	if secret == "" {
+		return nil, fmt.Errorf("oauth gating_secret_key is required in gating mode")
+	}
+	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
+
+	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.HS256})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse self-issued JWT: %w", err)
+	}
+
 	var rawClaims map[string]interface{}
-	if err := json.Unmarshal(payload, &rawClaims); err != nil {
-		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	if err := parsed.Claims(hashedSecret, &rawClaims); err != nil {
+		return nil, fmt.Errorf("failed to verify self-issued JWT: %w", err)
+	}
+	return oauthClaimsFromRawClaims(rawClaims), nil
+}
+
+func (s *ClickHouseJWEServer) ValidateUpstreamIdentityToken(token string, expectedAudience string) (*OAuthClaims, error) {
+	claims, err := s.parseAndVerifyExternalJWT(token, expectedAudience)
+	if err != nil {
+		return nil, err
+	}
+	return claims, s.ValidateOAuthIdentityPolicyClaims(claims)
+}
+
+func (s *ClickHouseJWEServer) resolveOAuthJWKSURL() (string, error) {
+	if strings.TrimSpace(s.Config.Server.OAuth.JWKSURL) != "" {
+		return strings.TrimSpace(s.Config.Server.OAuth.JWKSURL), nil
+	}
+	if strings.TrimSpace(s.Config.Server.OAuth.Issuer) == "" {
+		return "", fmt.Errorf("oauth issuer or jwks_url must be configured")
+	}
+	discovery, err := s.fetchOpenIDConfiguration(strings.TrimSpace(s.Config.Server.OAuth.Issuer))
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(discovery.JWKSURI) == "" {
+		return "", fmt.Errorf("openid discovery did not return jwks_uri")
+	}
+	return strings.TrimSpace(discovery.JWKSURI), nil
+}
+
+func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	if issuer == "" {
+		return nil, fmt.Errorf("issuer is required")
 	}
 
+	s.oidcConfigMu.RLock()
+	if s.oidcConfigCacheURL == issuer && !s.oidcConfigTime.IsZero() && s.oidcConfigTime.Add(oauthJWKSCacheTTL).After(time.Now()) && s.oidcConfigCache.Issuer != "" {
+		cached := s.oidcConfigCache
+		s.oidcConfigMu.RUnlock()
+		return &cached, nil
+	}
+	s.oidcConfigMu.RUnlock()
+
+	urls := []string{
+		issuer + "/.well-known/openid-configuration",
+	}
+	if !strings.Contains(issuer, "/.well-known/") {
+		urls = append(urls, issuer+"/.well-known/oauth-authorization-server")
+	}
+
+	client := &http.Client{Timeout: oauthHTTPTimeout}
+	for _, metadataURL := range urls {
+		resp, err := client.Get(metadataURL)
+		if err != nil {
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode >= 300 || readErr != nil {
+			continue
+		}
+		var discovery openIDConfiguration
+		if err := json.Unmarshal(body, &discovery); err == nil {
+			s.oidcConfigMu.Lock()
+			s.oidcConfigCache = discovery
+			s.oidcConfigCacheURL = issuer
+			s.oidcConfigTime = time.Now()
+			s.oidcConfigMu.Unlock()
+			return &discovery, nil
+		}
+	}
+
+	return nil, fmt.Errorf("failed to discover openid configuration for issuer %q", issuer)
+}
+
+// FetchOpenIDConfiguration returns the discovered OIDC metadata for the configured issuer.
+func (s *ClickHouseJWEServer) FetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+	return s.fetchOpenIDConfiguration(issuer)
+}
+
+func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKeySet, error) {
+	now := time.Now()
+
+	s.jwksCacheMu.RLock()
+	if len(s.jwksCache.Keys) > 0 && s.jwksCacheURL == jwksURI && s.jwksCacheTime.Add(oauthJWKSCacheTTL).After(now) {
+		cached := s.jwksCache
+		s.jwksCacheMu.RUnlock()
+		return &cached, nil
+	}
+	s.jwksCacheMu.RUnlock()
+
+	resp, err := (&http.Client{Timeout: oauthHTTPTimeout}).Get(jwksURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch jwks: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read jwks response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("jwks endpoint returned status %d", resp.StatusCode)
+	}
+
+	var keySet jose.JSONWebKeySet
+	if err := json.Unmarshal(body, &keySet); err != nil {
+		return nil, fmt.Errorf("failed to parse jwks response: %w", err)
+	}
+
+	s.jwksCacheMu.Lock()
+	s.jwksCache = keySet
+	s.jwksCacheURL = jwksURI
+	s.jwksCacheTime = now
+	s.jwksCacheMu.Unlock()
+
+	return &keySet, nil
+}
+
+func oauthClaimsFromRawClaims(rawClaims map[string]interface{}) *OAuthClaims {
 	claims := &OAuthClaims{
 		Extra: make(map[string]interface{}),
 	}
 
-	// Extract standard claims
 	if sub, ok := rawClaims["sub"].(string); ok {
 		claims.Subject = sub
 	}
@@ -451,8 +786,26 @@ func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error
 	if exp, ok := rawClaims["exp"].(float64); ok {
 		claims.ExpiresAt = int64(exp)
 	}
+	if exp, ok := rawClaims["exp"].(json.Number); ok {
+		if n, err := exp.Int64(); err == nil {
+			claims.ExpiresAt = n
+		}
+	}
 	if iat, ok := rawClaims["iat"].(float64); ok {
 		claims.IssuedAt = int64(iat)
+	}
+	if iat, ok := rawClaims["iat"].(json.Number); ok {
+		if n, err := iat.Int64(); err == nil {
+			claims.IssuedAt = n
+		}
+	}
+	if nbf, ok := rawClaims["nbf"].(float64); ok {
+		claims.NotBefore = int64(nbf)
+	}
+	if nbf, ok := rawClaims["nbf"].(json.Number); ok {
+		if n, err := nbf.Int64(); err == nil {
+			claims.NotBefore = n
+		}
 	}
 	if email, ok := rawClaims["email"].(string); ok {
 		claims.Email = email
@@ -460,8 +813,16 @@ func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error
 	if name, ok := rawClaims["name"].(string); ok {
 		claims.Name = name
 	}
+	if hd, ok := rawClaims["hd"].(string); ok {
+		claims.HostedDomain = hd
+	}
+	if emailVerified, ok := rawClaims["email_verified"].(bool); ok {
+		claims.EmailVerified = emailVerified
+	}
+	if emailVerified, ok := rawClaims["email_verified"].(string); ok {
+		claims.EmailVerified = strings.EqualFold(emailVerified, "true")
+	}
 
-	// Handle audience (can be string or array)
 	switch aud := rawClaims["aud"].(type) {
 	case string:
 		claims.Audience = []string{aud}
@@ -473,7 +834,6 @@ func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error
 		}
 	}
 
-	// Handle scope (can be string or array)
 	switch scope := rawClaims["scope"].(type) {
 	case string:
 		claims.Scopes = strings.Fields(scope)
@@ -485,15 +845,18 @@ func (s *ClickHouseJWEServer) parseOAuthToken(token string) (*OAuthClaims, error
 		}
 	}
 
-	// Store extra claims
-	standardClaims := map[string]bool{"sub": true, "iss": true, "aud": true, "exp": true, "iat": true, "nbf": true, "jti": true, "scope": true, "email": true, "name": true}
+	standardClaims := map[string]bool{
+		"sub": true, "iss": true, "aud": true, "exp": true, "iat": true, "nbf": true, "jti": true,
+		"scope": true, "email": true, "name": true, "hd": true, "email_verified": true,
+	}
 	for k, v := range rawClaims {
 		if !standardClaims[k] {
 			claims.Extra[k] = v
+			continue
 		}
 	}
 
-	return claims, nil
+	return claims
 }
 
 // hasRequiredScopes checks if all required scopes are present
@@ -518,9 +881,19 @@ func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*
 	return s.GetClickHouseClientWithOAuth(ctx, jweToken, oauthToken, oauthClaims)
 }
 
+// GetJWEClaimsFromCtx extracts parsed JWE claims from context.
+func (s *ClickHouseJWEServer) GetJWEClaimsFromCtx(ctx context.Context) map[string]interface{} {
+	if claims := ctx.Value(JWEClaimsKey); claims != nil {
+		if jweClaims, ok := claims.(map[string]interface{}); ok {
+			return jweClaims
+		}
+	}
+	return nil
+}
+
 // GetOAuthClaimsFromCtx extracts OAuth claims from context
 func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthClaims {
-	if claims := ctx.Value("oauth_claims"); claims != nil {
+	if claims := ctx.Value(OAuthClaimsKey); claims != nil {
 		if oauthClaims, ok := claims.(*OAuthClaims); ok {
 			return oauthClaims
 		}
@@ -530,23 +903,21 @@ func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthC
 
 // BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config
 func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, claims *OAuthClaims) map[string]string {
-	if !s.Config.Server.OAuth.ForwardToClickHouse {
+	if !s.Config.Server.OAuth.IsForwardMode() {
 		return nil
 	}
 
 	headers := make(map[string]string)
 
-	// Forward access token if configured
-	if s.Config.Server.OAuth.ForwardAccessToken {
-		headerName := s.Config.Server.OAuth.ClickHouseHeaderName
-		if headerName == "" {
-			headerName = "Authorization"
-		}
-		if headerName == "Authorization" {
-			headers[headerName] = "Bearer " + token
-		} else {
-			headers[headerName] = token
-		}
+	// Forward the access token (always in forward mode)
+	headerName := s.Config.Server.OAuth.ClickHouseHeaderName
+	if headerName == "" {
+		headerName = "Authorization"
+	}
+	if headerName == "Authorization" {
+		headers[headerName] = "Bearer " + token
+	} else {
+		headers[headerName] = token
 	}
 
 	// Map claims to headers if configured
@@ -562,6 +933,14 @@ func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, clai
 				value = claims.Email
 			case "name":
 				value = claims.Name
+			case "email_verified":
+				if claims.EmailVerified {
+					value = "true"
+				} else {
+					value = "false"
+				}
+			case "hd":
+				value = claims.HostedDomain
 			default:
 				// Check extra claims
 				if v, ok := claims.Extra[claimName]; ok {
@@ -584,74 +963,89 @@ func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, clai
 	return headers
 }
 
-// ValidateAuth validates authentication (supports both JWE and OAuth)
-// Returns nil error if at least one enabled auth method validates successfully
-func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, oauthToken string, oauthClaims *OAuthClaims, err error) {
+// ValidateAuth validates authentication using priority/fallback semantics.
+// JWE takes priority: if present and valid with credentials, OAuth is skipped.
+// If JWE is absent or has no credentials, falls through to OAuth.
+func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jweClaims map[string]interface{}, oauthToken string, oauthClaims *OAuthClaims, err error) {
 	jweEnabled := s.Config.Server.JWE.Enabled
 	oauthEnabled := s.Config.Server.OAuth.Enabled
 
 	// If neither auth method is enabled, no validation needed
 	if !jweEnabled && !oauthEnabled {
-		return "", "", nil, nil
+		return "", nil, "", nil, nil
 	}
 
-	// Extract tokens
-	jweToken = s.ExtractTokenFromRequest(r)
-	oauthToken = s.ExtractOAuthTokenFromRequest(r)
-
-	var jweErr, oauthErr error
-
-	// Validate JWE if enabled
-	if jweEnabled && jweToken != "" {
-		jweErr = s.ValidateJWEToken(jweToken)
-	} else if jweEnabled {
-		jweErr = jwe_auth.ErrMissingToken
-	}
-
-	// Validate OAuth if enabled
-	if oauthEnabled && oauthToken != "" {
-		oauthClaims, oauthErr = s.ValidateOAuthToken(oauthToken)
-	} else if oauthEnabled {
-		oauthErr = ErrMissingOAuthToken
-	}
-
-	// If both are enabled, at least one must succeed
-	if jweEnabled && oauthEnabled {
-		if jweErr == nil || oauthErr == nil {
-			return jweToken, oauthToken, oauthClaims, nil
-		}
-		// Both failed, return the most relevant error
-		if jweToken != "" && oauthToken != "" {
-			return "", "", nil, fmt.Errorf("both JWE and OAuth validation failed")
+	// Try JWE first
+	if jweEnabled {
+		if oauthEnabled {
+			// When OAuth is also enabled, only extract JWE from unambiguous sources
+			// (path value / x-altinity-mcp-key) to avoid conflicting with OAuth Bearer.
+			jweToken = r.PathValue("token")
+			if jweToken == "" {
+				jweToken = r.Header.Get("x-altinity-mcp-key")
+			}
+		} else {
+			jweToken = s.ExtractTokenFromRequest(r)
 		}
 		if jweToken != "" {
-			return "", "", nil, jweErr
+			jweClaims, err = s.ParseJWEClaims(jweToken)
+			if err != nil {
+				return "", nil, "", nil, err // JWE present but invalid → hard error
+			}
+			if s.JWEClaimsHaveCredentials(jweClaims) {
+				return jweToken, jweClaims, "", nil, nil // JWE sufficient, skip OAuth
+			}
 		}
-		if oauthToken != "" {
-			return "", "", nil, oauthErr
-		}
-		return "", "", nil, errors.New("authentication required (JWE or OAuth)")
 	}
 
-	// Only JWE enabled
-	if jweEnabled {
-		return jweToken, "", nil, jweErr
+	// Fall through to OAuth
+	if oauthEnabled {
+		oauthToken = s.ExtractOAuthTokenFromRequest(r)
+		if oauthToken == "" {
+			return jweToken, jweClaims, "", nil, ErrMissingOAuthToken
+		}
+		if s.oauthRequiresLocalValidation() {
+			oauthClaims, err = s.ValidateOAuthToken(oauthToken)
+			if err != nil {
+				return jweToken, jweClaims, "", nil, err
+			}
+		}
+		return jweToken, jweClaims, oauthToken, oauthClaims, nil
 	}
 
-	// Only OAuth enabled
-	return "", oauthToken, oauthClaims, oauthErr
+	// JWE enabled but no token and no OAuth
+	if jweEnabled && jweToken == "" {
+		return "", nil, "", nil, jwe_auth.ErrMissingToken
+	}
+
+	return jweToken, jweClaims, "", nil, nil
+}
+
+func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
+	if s.Config.Server.JWE.Enabled {
+		prefixes := []string{"/{jwe_token}"}
+		if s.Config.Server.OAuth.Enabled {
+			prefixes = append(prefixes, "")
+		}
+		return prefixes
+	}
+	return []string{""}
 }
 
 // GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
 func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
 	// Build base config
 	var chConfig config.ClickHouseConfig
+	var err error
 
 	// If JWE is enabled and token provided, use JWE config
 	if s.Config.Server.JWE.Enabled && jweToken != "" {
-		claims, err := jwe_auth.ParseAndDecryptJWE(jweToken, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse JWE token: %w", err)
+		claims := s.GetJWEClaimsFromCtx(ctx)
+		if claims == nil {
+			claims, err = s.ParseJWEClaims(jweToken)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse JWE token: %w", err)
+			}
 		}
 		chConfig, err = s.buildConfigFromClaims(claims)
 		if err != nil {
@@ -662,7 +1056,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	}
 
 	// Add OAuth headers if forwarding is enabled
-	if s.Config.Server.OAuth.ForwardToClickHouse && oauthToken != "" {
+	if s.Config.Server.OAuth.IsForwardMode() && oauthToken != "" {
 		oauthHeaders := s.BuildClickHouseHeadersFromOAuth(oauthToken, oauthClaims)
 		if len(oauthHeaders) > 0 {
 			if chConfig.HttpHeaders == nil {
@@ -672,10 +1066,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 				chConfig.HttpHeaders[k] = v
 			}
 		}
-		if s.Config.Server.OAuth.ClearClickHouseCredentials {
-			chConfig.Username = ""
-			chConfig.Password = ""
-		}
+		// In forward mode, always clear static credentials — ClickHouse authenticates via the token
+		chConfig.Username = ""
+		chConfig.Password = ""
 	}
 
 	// Merge forwarded HTTP headers from context (forward_http_headers)
@@ -896,14 +1289,19 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		return nil
 	}
 
-	// Check if we have a valid client/token to proceed
+	// Get ClickHouse client for view discovery.
+	// Try with the token from context first; if JWE is enabled but no token is present,
+	// fall back to the static config (e.g. open ClickHouse used for tool discovery).
 	token := s.ExtractTokenFromCtx(ctx)
-	// Get ClickHouse client
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
-		// If we can't get a client (e.g. missing token when JWE enabled), we can't register dynamic tools yet
-		// Return error so we retry later
-		return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
+			// No per-user token available; use static ClickHouse config for discovery.
+			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
+		}
+		if err != nil {
+			return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		}
 	}
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
@@ -1284,7 +1682,6 @@ func sqlLiteral(jsonType string, v interface{}) string {
 		}
 		return "0"
 	default: // string
-		// URL-escape then single-quote, minimal safety; ClickHouse expects single-quoted strings
 		s := ""
 		switch x := v.(type) {
 		case string:
@@ -1293,7 +1690,10 @@ func sqlLiteral(jsonType string, v interface{}) string {
 			b, _ := json.Marshal(v)
 			s = string(b)
 		}
-		return "'" + strings.ReplaceAll(url.QueryEscape(s), "'", "''") + "'"
+		// ClickHouse single-quoted string literal escaping: escape backslashes then single quotes
+		s = strings.ReplaceAll(s, "\\", "\\\\")
+		s = strings.ReplaceAll(s, "'", "\\'")
+		return "'" + s + "'"
 	}
 }
 
@@ -1420,7 +1820,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 
 // GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context
 func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer {
-	if srv := ctx.Value("clickhouse_jwe_server"); srv != nil {
+	if srv := ctx.Value(CHJWEServerKey); srv != nil {
 		if chJweServer, ok := srv.(*ClickHouseJWEServer); ok {
 			return chJweServer
 		}
@@ -1439,7 +1839,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Validate authentication (JWE and/or OAuth)
-	jweToken, oauthToken, oauthClaims, err := s.ValidateAuth(r)
+	jweToken, jweClaims, oauthToken, oauthClaims, err := s.ValidateAuth(r)
 	if err != nil {
 		if errors.Is(err, jwe_auth.ErrMissingToken) || errors.Is(err, ErrMissingOAuthToken) {
 			http.Error(w, "Missing authentication token", http.StatusUnauthorized)
@@ -1461,24 +1861,26 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Use JWE token as primary token for backward compatibility
-	token := jweToken
-	if token == "" && oauthToken != "" {
-		token = oauthToken
-	}
-
-	// Store OAuth claims in context if available
+	// Store validated auth data in context for downstream handlers.
 	ctx := r.Context()
+	if jweToken != "" {
+		ctx = context.WithValue(ctx, JWETokenKey, jweToken)
+		if jweClaims != nil {
+			ctx = context.WithValue(ctx, JWEClaimsKey, jweClaims)
+		}
+	}
+	if oauthToken != "" {
+		ctx = context.WithValue(ctx, OAuthTokenKey, oauthToken)
+	}
 	if oauthClaims != nil {
-		ctx = context.WithValue(ctx, "oauth_claims", oauthClaims)
-		ctx = context.WithValue(ctx, "oauth_token", oauthToken)
+		ctx = context.WithValue(ctx, OAuthClaimsKey, oauthClaims)
 	}
 	r = r.WithContext(ctx)
 
 	// Route to appropriate handler based on path suffix
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
-		s.handleExecuteQueryOpenAPI(w, r, token)
+		s.handleExecuteQueryOpenAPI(w, r)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
 		// Ensure dynamic tools are loaded
 		if err := s.EnsureDynamicTools(r.Context()); err != nil {
@@ -1495,7 +1897,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 			s.dynamicToolsMu.RUnlock()
 
 			if ok {
-				s.handleDynamicToolOpenAPI(w, r, token, meta)
+				s.handleDynamicToolOpenAPI(w, r, meta)
 				return
 			}
 		}
@@ -1518,6 +1920,22 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		protocol = "https"
 	}
 	hostURL := fmt.Sprintf("%s://%s", protocol, r.Host)
+	executeQueryProperties := map[string]interface{}{
+		"columns": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "string"},
+		},
+		"types": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "string"},
+		},
+		"rows": map[string]interface{}{
+			"type":  "array",
+			"items": map[string]interface{}{"type": "array"},
+		},
+		"count": map[string]interface{}{"type": "integer"},
+		"error": map[string]interface{}{"type": "string"},
+	}
 	schema := map[string]interface{}{
 		"openapi": "3.1.0",
 		"info": map[string]interface{}{
@@ -1534,120 +1952,113 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		"components": map[string]interface{}{
 			"schemas": map[string]interface{}{},
 		},
-		"paths": map[string]interface{}{
-			"/{jwe_token}/openapi/execute_query": map[string]interface{}{
-				"get": map[string]interface{}{
-					"operationId": "execute_query",
-					"summary":     "Execute a SQL query",
-					"parameters": []map[string]interface{}{
-						{
-							"name":        "jwe_token",
-							"in":          "path",
-							"required":    true,
-							"description": "JWE token for authentication.",
-							"schema": map[string]interface{}{
-								"type": "string",
+		"paths": map[string]interface{}{},
+	}
+
+	// add dynamic tool paths (POST)
+	paths := schema["paths"].(map[string]interface{})
+	for _, prefix := range s.openAPIPathPrefixes() {
+		parameters := []map[string]interface{}{}
+		if prefix != "" {
+			parameters = append(parameters, map[string]interface{}{
+				"name":        "jwe_token",
+				"in":          "path",
+				"required":    true,
+				"description": "JWE token for authentication.",
+				"schema": map[string]interface{}{
+					"type": "string",
+				},
+				"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
+				"default":    "default",
+			})
+		}
+		parameters = append(parameters,
+			map[string]interface{}{
+				"name":        "query",
+				"in":          "query",
+				"required":    true,
+				"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+				"schema":      map[string]interface{}{"type": "string"},
+			},
+			map[string]interface{}{
+				"name":        "limit",
+				"in":          "query",
+				"required":    false,
+				"description": "Optional max rows to return. If not specified, no limit is applied. If configured, cannot exceed server's maximum limit.",
+				"schema":      map[string]interface{}{"type": "integer"},
+			},
+		)
+
+		paths[prefix+"/openapi/execute_query"] = map[string]interface{}{
+			"get": map[string]interface{}{
+				"operationId": "execute_query",
+				"summary":     "Execute a SQL query",
+				"parameters":  parameters,
+				"responses": map[string]interface{}{
+					"200": map[string]interface{}{
+						"description": "Query result as JSON",
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":       "object",
+									"properties": executeQueryProperties,
+								},
 							},
-							"x-oai-meta": map[string]interface{}{"securityType": "user_api_key"},
-							"default":    "default",
 						},
-						{
-							"name":        "query",
-							"in":          "query",
-							"required":    true,
-							"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
-							"schema":      map[string]interface{}{"type": "string"},
-						},
-						{
-							"name":        "limit",
-							"in":          "query",
-							"required":    false,
-							"description": "Optional max rows to return. If not specified, no limit is applied. If configured, cannot exceed server's maximum limit.",
-							"schema":      map[string]interface{}{"type": "integer"},
+					},
+				},
+			},
+		}
+	}
+
+	s.dynamicToolsMu.RLock()
+	defer s.dynamicToolsMu.RUnlock()
+
+	for _, prefix := range s.openAPIPathPrefixes() {
+		for toolName, meta := range s.dynamicTools {
+			path := prefix + "/openapi/" + toolName
+			// request body schema
+			props := map[string]interface{}{}
+			required := []string{}
+			for _, p := range meta.Params {
+				prop := map[string]interface{}{"type": p.JSONType}
+				if p.JSONFormat != "" {
+					prop["format"] = p.JSONFormat
+				}
+				props[p.Name] = prop
+				if p.Required {
+					required = append(required, p.Name)
+				}
+			}
+			paths[path] = map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary": meta.Description,
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":       "object",
+									"properties": props,
+									"required":   required,
+								},
+							},
 						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "Query result as JSON",
+							"description": "Query result",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
 									"schema": map[string]interface{}{
 										"type": "object",
-										"properties": map[string]interface{}{
-											"columns": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "string"},
-											},
-											"types": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "string"},
-											},
-											"rows": map[string]interface{}{
-												"type":  "array",
-												"items": map[string]interface{}{"type": "array"},
-											},
-											"count": map[string]interface{}{"type": "integer"},
-											"error": map[string]interface{}{"type": "string"},
-										},
 									},
 								},
 							},
 						},
 					},
 				},
-			},
-		},
-	}
-
-	// add dynamic tool paths (POST)
-	paths := schema["paths"].(map[string]interface{})
-
-	s.dynamicToolsMu.RLock()
-	defer s.dynamicToolsMu.RUnlock()
-
-	for toolName, meta := range s.dynamicTools {
-		path := "/{jwe_token}/openapi/" + toolName
-		// request body schema
-		props := map[string]interface{}{}
-		required := []string{}
-		for _, p := range meta.Params {
-			prop := map[string]interface{}{"type": p.JSONType}
-			if p.JSONFormat != "" {
-				prop["format"] = p.JSONFormat
 			}
-			props[p.Name] = prop
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		paths[path] = map[string]interface{}{
-			"post": map[string]interface{}{
-				"summary": meta.Description,
-				"requestBody": map[string]interface{}{
-					"required": true,
-					"content": map[string]interface{}{
-						"application/json": map[string]interface{}{
-							"schema": map[string]interface{}{
-								"type":       "object",
-								"properties": props,
-								"required":   required,
-							},
-						},
-					},
-				},
-				"responses": map[string]interface{}{
-					"200": map[string]interface{}{
-						"description": "Query result",
-						"content": map[string]interface{}{
-							"application/json": map[string]interface{}{
-								"schema": map[string]interface{}{
-									"type": "object",
-								},
-							},
-						},
-					},
-				},
-			},
 		}
 	}
 
@@ -1657,7 +2068,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	}
 }
 
-func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request, token string) {
+func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1692,7 +2103,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	ctx := r.Context()
 
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
@@ -1718,7 +2129,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 }
 
-func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r *http.Request, token string, meta dynamicToolMeta) {
+func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r *http.Request, meta dynamicToolMeta) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1731,7 +2142,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		return
 	}
 
-	ctx := context.WithValue(r.Context(), "jwe_token", token)
+	ctx := r.Context()
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -1776,9 +2187,15 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 }
 
 // Helper functions
+
+var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
+var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+
 func isSelectQuery(query string) bool {
+	query = multiLineCommentRE.ReplaceAllString(query, "")
+	query = singleLineCommentRE.ReplaceAllString(query, "")
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH")
+	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
 }
 
 func hasLimitClause(query string) bool {
@@ -1790,6 +2207,15 @@ func hasLimitClause(query string) bool {
 type contextKey string
 
 const forwardedHeadersKey contextKey = "forwarded_http_headers"
+
+// Auth context keys
+const (
+	JWETokenKey    contextKey = "jwe_token"
+	JWEClaimsKey   contextKey = "jwe_claims"
+	OAuthTokenKey  contextKey = "oauth_token"
+	OAuthClaimsKey contextKey = "oauth_claims"
+	CHJWEServerKey contextKey = "clickhouse_jwe_server"
+)
 
 // sensitiveHeaders are excluded from wildcard pattern matching to prevent
 // accidental credential leakage. A user can still forward these by naming

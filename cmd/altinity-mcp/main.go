@@ -237,13 +237,6 @@ func run(args []string) error {
 				Value:   "*",
 				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
 			},
-			// OAuth configuration flags
-			&cli.BoolFlag{
-				Name:    "oauth-clear-clickhouse-credentials",
-				Usage:   "Clear ClickHouse credentials when forwarding OAuth token",
-				Value:   false,
-				Sources: cli.EnvVars("OAUTH_CLEAR_CLICKHOUSE_CREDENTIALS"),
-			},
 			&cli.StringFlag{
 				Name:    "forward-http-headers",
 				Usage:   "Comma-separated header name patterns forwarded from incoming requests to ClickHouse (supports * wildcard, e.g. X-*,X-Custom-Header)",
@@ -344,7 +337,12 @@ func (a *application) createTokenInjector() func(http.Handler) http.Handler {
 
 			// Inject token into request context if found
 			if token != "" {
-				ctx := context.WithValue(r.Context(), "jwe_token", token)
+				ctx := context.WithValue(r.Context(), altinitymcp.JWETokenKey, token)
+				if a.mcpServer != nil {
+					if claims, err := a.mcpServer.ParseJWEClaims(token); err == nil && claims != nil {
+						ctx = context.WithValue(ctx, altinitymcp.JWEClaimsKey, claims)
+					}
+				}
 				r = r.WithContext(ctx)
 			}
 			next.ServeHTTP(w, r)
@@ -371,6 +369,45 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func transportRoutePatterns(jweEnabled, oauthEnabled bool, transport string) []string {
+	if jweEnabled {
+		patterns := []string{"/{token}/" + transport}
+		if oauthEnabled {
+			patterns = append(patterns, "/"+transport)
+		}
+		return patterns
+	}
+	return []string{"/" + transport}
+}
+
+func openAPIRoutePatterns(jweEnabled, oauthEnabled bool) []string {
+	tokenized := []string{
+		"/{token}/openapi",
+		"/{token}/openapi/",
+		"/{token}/openapi/list_tables",
+		"/{token}/openapi/describe_table",
+		"/{token}/openapi/execute_query",
+	}
+	pathless := []string{
+		"/openapi",
+		"/openapi/",
+		"/openapi/list_tables",
+		"/openapi/describe_table",
+		"/openapi/execute_query",
+	}
+
+	switch {
+	case jweEnabled && oauthEnabled:
+		// Exact /openapi remains unauthenticated schema discovery in combined mode.
+		// Skip /openapi/ (index 1) — stripTrailingSlash handles it, and it conflicts with /{token}/openapi/.
+		return append(tokenized, pathless[2:]...)
+	case jweEnabled:
+		return tokenized
+	default:
+		return pathless
+	}
 }
 
 // jweTokenGeneratorHandler handles requests for generating JWE tokens.
@@ -505,7 +542,7 @@ func (a *application) startSTDIOServer(mcpServer *mcp.Server) error {
 	log.Info().Msg("Starting MCP server with STDIO transport")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	ctx = context.WithValue(ctx, "clickhouse_jwe_server", a.mcpServer)
+	ctx = context.WithValue(ctx, altinitymcp.CHJWEServerKey, a.mcpServer)
 	defer cancel()
 
 	// Set up signal handling
@@ -540,19 +577,26 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
 	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
+	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
+	}
+	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
+		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
@@ -584,20 +628,28 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 			return mcpServer
 		}, nil)
 
-		// Register custom handlers to ensure token is in the path and inject it into context
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/http", serverInjector(tokenInjector(dtInjector(httpServer))))
+		transportHandler := serverInjector(tokenInjector(dtInjector(httpServer)))
+		if cfg.Server.OAuth.Enabled {
+			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+			mux.Handle(pattern, transportHandler)
+		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
+			mux.HandleFunc("/openapi", serverInjectorSchema)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
+			openAPIPath := "/{token}/openapi"
+			if cfg.Server.OAuth.Enabled {
+				openAPIPath = "/openapi"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
@@ -606,17 +658,22 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/http", serverInjector(dtInjector(httpServer)))
+		transportHandler := serverInjector(dtInjector(httpServer))
+		if cfg.Server.OAuth.Enabled {
+			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+			mux.Handle(pattern, transportHandler)
+		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
@@ -640,19 +697,26 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 	fwdPatterns := cfg.Server.ForwardHTTPHeaders
 	h2sMapping := cfg.Server.HeaderToSettings
 	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
+	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), "clickhouse_jwe_server", a.mcpServer)
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
 		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
+	}
+	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
+		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
+		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
 	}
 
 	// CORS handler
@@ -692,18 +756,27 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 
 		mux := http.NewServeMux()
-		mux.Handle("/{token}/sse", serverInjector(tokenInjector(dtInjector(sseServer))))
+		transportHandler := serverInjector(tokenInjector(dtInjector(sseServer)))
+		if cfg.Server.OAuth.Enabled {
+			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
+			mux.Handle(pattern, transportHandler)
+		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", a.mcpServer.ServeOpenAPISchema)
-			mux.HandleFunc("/{token}/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/{token}/openapi/execute_query", serverInjectorOpenAPI)
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/{token}/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
+			mux.HandleFunc("/openapi", serverInjectorSchema)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
+			openAPIPath := "/{token}/openapi"
+			if cfg.Server.OAuth.Enabled {
+				openAPIPath = "/openapi"
+			}
+			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use SSEHandler for legacy SSE transport
@@ -712,17 +785,22 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		}, nil)
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
-		mux.Handle("/sse", serverInjector(dtInjector(sseServer)))
+		transportHandler := serverInjector(dtInjector(sseServer))
+		if cfg.Server.OAuth.Enabled {
+			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
+		}
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
+			mux.Handle(pattern, transportHandler)
+		}
 		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/list_tables", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/describe_table", serverInjectorOpenAPI)
-			mux.HandleFunc("/openapi/execute_query", serverInjectorOpenAPI)
+			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
+				mux.HandleFunc(pattern, serverInjectorOpenAPI)
+			}
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
 	}
 
@@ -758,8 +836,10 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 	}
 
-	// If JWE auth is disabled, test ClickHouse connection for readiness
-	if !cfg.Server.JWE.Enabled {
+	// Test ClickHouse connection for readiness, unless credentials are per-request
+	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
+	if !credentialsArePerRequest {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
 			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
@@ -788,7 +868,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 		status["clickhouse"] = "connected"
 	} else {
-		status["auth"] = "jwe_enabled"
+		status["auth"] = "per_request_credentials"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1050,11 +1130,6 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		}
 	}
 
-	// Override OAuth config with CLI flags
-	if cmd.IsSet("oauth-clear-clickhouse-credentials") {
-		cfg.Server.OAuth.ClearClickHouseCredentials = cmd.Bool("oauth-clear-clickhouse-credentials")
-	}
-
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {
 		cfg.ReloadTime = cmd.Int("config-reload-time")
 	}
@@ -1082,6 +1157,20 @@ func buildServerTLSConfig(cfg *config.ServerTLSConfig) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// warnOAuthMisconfiguration logs warnings for OAuth configurations that are
+// technically valid but likely unintended.
+func warnOAuthMisconfiguration(cfg config.Config) {
+	oauth := cfg.Server.OAuth
+	if !oauth.Enabled {
+		return
+	}
+	if oauth.IsGatingMode() && strings.TrimSpace(oauth.PublicAuthServerURL) == "" && strings.TrimSpace(oauth.Issuer) != "" {
+		log.Warn().Msg("OAuth gating mode: public_auth_server_url is not set — " +
+			"minted tokens will use the request Host as issuer, but validation expects the configured issuer; " +
+			"set public_auth_server_url to match, or leave issuer empty to skip issuer validation")
+	}
 }
 
 // testConnection tests the connection to ClickHouse
@@ -1147,6 +1236,8 @@ func runServer(ctx context.Context, cmd *cli.Command) error {
 		Str("build_date", date).
 		Msg("Starting Altinity MCP Server")
 
+	warnOAuthMisconfiguration(cfg)
+
 	app, err := newApplication(ctx, cfg, cmd)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to initialize application")
@@ -1162,6 +1253,8 @@ type application struct {
 	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
 	httpSrvMutex     sync.RWMutex
+	oauthState       *oauthStateStore
+	oauthStateMu     sync.Mutex
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
@@ -1181,9 +1274,26 @@ func (a *application) getHTTPServer() *http.Server {
 	return a.httpSrv
 }
 
+func (a *application) getOAuthStateStore() *oauthStateStore {
+	a.oauthStateMu.Lock()
+	defer a.oauthStateMu.Unlock()
+	if a.oauthState == nil {
+		a.oauthState = newOAuthStateStore()
+	}
+	return a.oauthState
+}
+
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
-	// Test connection to ClickHouse if JWE auth is not enabled
-	if !cfg.Server.JWE.Enabled {
+	if err := validateOAuthRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	// Test connection to ClickHouse at startup, unless credentials are dynamic:
+	// - JWE: each request carries its own ClickHouse credentials
+	// - OAuth forward mode: static creds are cleared; bearer token arrives per-request
+	skipStartupPing := cfg.Server.JWE.Enabled ||
+		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
+	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
@@ -1210,12 +1320,12 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 			return nil, fmt.Errorf("can't close clickhouse connection after ping: %w", closeErr)
 		}
 	} else {
-		log.Debug().Msg("JWE encryption enabled, skipping default ClickHouse connection test")
+		log.Debug().Msg("Skipping startup ClickHouse connection test (credentials are per-request)")
+	}
 
-		// Validate JWE secret key is set when JWE auth is enabled
-		if cfg.Server.JWE.JWESecretKey == "" {
-			return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
-		}
+	// Validate JWE secret key is set when JWE auth is enabled
+	if cfg.Server.JWE.Enabled && cfg.Server.JWE.JWESecretKey == "" {
+		return nil, fmt.Errorf("JWE encryption is enabled but no JWE secret key is provided")
 	}
 
 	// Create MCP server
@@ -1228,6 +1338,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	app := &application{
 		config:           cfg,
 		mcpServer:        mcpServer,
+		oauthState:       newOAuthStateStore(),
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
 	}
@@ -1238,6 +1349,28 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	}
 
 	return app, nil
+}
+
+func validateOAuthRuntimeConfig(cfg config.Config) error {
+	if !cfg.Server.OAuth.Enabled {
+		return nil
+	}
+
+	switch cfg.Server.OAuth.NormalizedMode() {
+	case "forward", "gating":
+	default:
+		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
+	}
+
+	if strings.TrimSpace(cfg.Server.OAuth.GatingSecretKey) == "" {
+		return fmt.Errorf("oauth gating_secret_key is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
+	}
+
+	if cfg.Server.OAuth.IsForwardMode() && cfg.ClickHouse.Protocol != config.HTTPProtocol {
+		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
+	}
+
+	return nil
 }
 
 func (a *application) Close() {

@@ -14,7 +14,9 @@ AGENTS.md
 .claude/
 build/
 dist/
+/altinity-mcp
 coverage.out
+results.xml
 go-carpet*
 .mcp.json
 .gocache/

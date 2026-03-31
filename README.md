@@ -29,8 +29,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - [OAuth 2.0 Authorization](#oauth-20-authorization)
 - [JWE Authentication](#jwe-authentication)
 - [TLS Configuration](#tls-configuration)
-- [Testing](#testing)
-- [Development](#development)
+- [Development & Testing](#development--testing)
 - [CLI Reference](#cli-reference)
 - [Contributing](#contributing)
 - [License](#license)
@@ -334,13 +333,17 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 > **Note**: For Altinity Cloud deployments, use the provided endpoint URL with your organization-specific token.
 
-## OAuth 2.0 Authorization
+## Authentication and Authorization
 
-The MCP server supports OAuth 2.0 / OpenID Connect authentication with token forwarding to ClickHouse. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and have their Bearer tokens forwarded to ClickHouse for token-based authentication via `token_processors`.
+JWE takes priority — if present and valid and has valid credentials, use it and skip OAuth. If JWE is absent or has no credentials, fall through to OAuth. 
+
+### OAuth 2.0 Authorization
+
+The MCP server supports OAuth 2.0/OpenID Connect authentication, with token forwarding to ClickHouse or token verification locally. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and have their Bearer tokens forwarded to ClickHouse for token-based authentication via `token_processors`.
 
 For full setup instructions, provider-specific guides, and ClickHouse configuration, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
 
-## JWE Authentication
+### JWE Authentication
 
 When JWE authentication is enabled, the server expects tokens encrypted using AES Key Wrap (A256KW) and AES-GCM (A256GCM). These tokens contain ClickHouse® connection parameters:
 
@@ -393,54 +396,11 @@ More details in [jwe_authentication.md](docs/jwe_authentication.md)
   --server-tls-key-file /path/to/server.key
 ```
 
-## Testing
+## Development & Testing
 
-### Test ClickHouse® Connection
+Development workflow, build commands, test tiers, and the optional OAuth Docker e2e flow are documented in [docs/development_and_testing.md](docs/development_and_testing.md).
 
-```bash
-./altinity-mcp test-connection \
-  --clickhouse-host localhost \
-  --clickhouse-port 8123 \
-  --clickhouse-database default
-```
-
-### Run Tests
-
-```bash
-go test ./...
-```
-
-### Integration Tests
-
-Integration tests use Docker containers and require Docker to be running:
-
-```bash
-go test -v ./cmd/altinity-mcp/...
-```
-
-## Development
-
-### Prerequisites
-
-- Go 1.24 or later
-- Docker (for integration tests)
-- ClickHouse® server (for development)
-
-### Building
-
-```bash
-go build -o altinity-mcp ./cmd/altinity-mcp
-```
-
-### Running Tests
-
-```bash
-# Unit tests
-go test ./pkg/...
-
-# Integration tests (requires Docker)
-go test -v ./cmd/altinity-mcp/...
-```
+For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
 
 ## CLI Reference
 
