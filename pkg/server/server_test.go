@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -3816,9 +3815,6 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
-		if os.Getenv("RUN_OAUTH_E2E") == "" {
-			t.Skip("set RUN_OAUTH_E2E=1 to run Docker-based OAuth E2E test")
-		}
 		ctx := context.Background()
 		dockerProvider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
 		dockerChConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)

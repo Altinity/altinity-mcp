@@ -5,7 +5,7 @@ This document collects the local development workflow and the repository's test 
 ## Prerequisites
 
 - Go 1.25 or later
-- Docker, for integration tests and the optional OAuth e2e test
+- Docker, for integration tests (including OAuth e2e tests)
 - A local or reachable ClickHouse server, if you want to run `test-connection` manually
 
 ## Build
@@ -71,25 +71,11 @@ Several tests start temporary ClickHouse containers with `testcontainers-go`. Be
 
 If Docker is unavailable, the default suite will not be reliable.
 
-## OAuth End-to-End Test
+## OAuth End-to-End Tests
 
-The repository includes an opt-in OAuth e2e test for bearer-token forwarding to ClickHouse:
+OAuth e2e tests validate bearer-token forwarding through MCP to ClickHouse. They use a lightweight in-process mock OIDC provider and an `altinity/clickhouse-server:25.8.16.20001.altinityantalya` container (required for `token_processors` support — standard ClickHouse images do not include it).
 
-- Keycloak acts as the OIDC provider
-- `altinity/clickhouse-server:25.8.16.20001.altinityantalya` provides `token_processors`
-- `altinity-mcp` runs in OAuth forward mode
-
-Run it explicitly:
-
-```bash
-RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
-```
-
-Notes:
-
-- The test is skipped unless `RUN_OAUTH_E2E=1` is set.
-- It is also skipped when running `go test -short`.
-- The Antalya image is required because standard upstream ClickHouse images do not include the bearer-token authentication support used by this test.
+These tests run automatically as part of `go test ./...` (skipped with `-short`).
 
 For configuration background and provider-specific setup, see [oauth_authorization.md](./oauth_authorization.md).
 
@@ -100,7 +86,7 @@ For a typical code change:
 1. Build the binary with `go build -o altinity-mcp ./cmd/altinity-mcp`
 2. Run focused tests for the area you changed
 3. Run `go test ./...`
-4. Run the opt-in OAuth e2e test when touching OAuth forwarding or gating flow behavior
+4. OAuth e2e tests run automatically — no extra flags needed
 
 ## Troubleshooting
 
@@ -110,14 +96,6 @@ For a typical code change:
 - Verify container pulls are allowed from the current environment
 - Re-run the failing package with `-v` to see which container-backed test failed
 
-### OAuth E2E Test Is Skipped
+### OAuth E2E Test Fails with Standard ClickHouse Images
 
-Set `RUN_OAUTH_E2E=1` explicitly:
-
-```bash
-RUN_OAUTH_E2E=1 go test ./pkg/server -run TestOAuthE2EWithKeycloak -count=1 -v
-```
-
-### ClickHouse OAuth E2E Fails with Standard ClickHouse Images
-
-Use the Antalya build referenced above. The standard upstream image does not provide the `token_processors` support this test depends on.
+The OAuth e2e tests require the Antalya ClickHouse build (`altinity/clickhouse-server:25.8.16.20001.altinityantalya`). Standard upstream images do not provide the `token_processors` support these tests depend on. The test pulls this image automatically via testcontainers.

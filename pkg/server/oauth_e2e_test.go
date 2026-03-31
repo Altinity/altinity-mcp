@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,67 +17,47 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/docker/docker/api/types/container"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// TestOAuthE2EWithKeycloak is an end-to-end test that validates the full OAuth2 flow
+// TestOAuthE2EWithMockOIDC is an end-to-end test that validates the full OAuth2 flow
 // through real MCP client and OpenAPI endpoints:
-// 1. Keycloak as the OAuth2/OIDC provider (RS256 keys compatible with ClickHouse)
+// 1. A lightweight mock OIDC provider (in-process Go HTTP server)
 // 2. ClickHouse (Antalya build) with token_processors for JWT auth
 // 3. MCP server forwarding Bearer tokens to ClickHouse
-//
-// Reference setup: https://github.com/zvonand/grafana-oauth/tree/main/keycloak
-func TestOAuthE2EWithKeycloak(t *testing.T) {
+func TestOAuthE2EWithMockOIDC(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
-	if os.Getenv("RUN_OAUTH_E2E") == "" {
-		t.Skip("set RUN_OAUTH_E2E=1 to run Docker-based OAuth E2E test")
-	}
 
 	ctx := context.Background()
-	const (
-		keycloakHostname   = "keycloak"
-		clickhouseHostname = "clickhouse"
-		realmName          = "mcp"
-		clientID           = "clickhouse-mcp"
-		testUserName       = "testuser"
-		testUserPassword   = "testpass123"
-	)
 
-	// Create a shared Docker network for container-to-container communication
-	net, err := tcnetwork.New(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = net.Remove(ctx) })
-
-	// ---------- Step 1: Start Keycloak with realm import ----------
-	realmJSON := generateKeycloakRealmJSON(realmName, clientID, testUserName, testUserPassword)
-	keycloakInternalURL, keycloakExternalURL := startKeycloakContainer(
-		t, ctx, net.Name, keycloakHostname, realmJSON,
-	)
-	t.Logf("Keycloak internal URL: %s", keycloakInternalURL)
-	t.Logf("Keycloak external URL: %s", keycloakExternalURL)
+	// ---------- Step 1: Start mock OIDC provider ----------
+	provider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
+	t.Logf("Mock OIDC provider URL (Docker): %s", dockerOIDCURL)
 
 	// ---------- Step 2: Start ClickHouse with token_processors ----------
-	tokenProcessorXML := generateClickHouseTokenProcessorConfig(keycloakInternalURL, realmName)
-	startupScriptsXML := generateClickHouseStartupScriptsConfig()
-	chConfig := startClickHouseContainer(t, ctx, net.Name, clickhouseHostname, tokenProcessorXML, startupScriptsXML)
+	chConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
 
-	// ---------- Step 3: Obtain OAuth2 token from Keycloak via password grant ----------
-	token := getKeycloakToken(t, keycloakExternalURL, realmName, clientID, testUserName, testUserPassword)
+	// ---------- Step 3: Issue a signed JWT ----------
+	const tokenSubject = "test-oauth-user"
+	token := provider.issueJWT(t, map[string]interface{}{
+		"sub": tokenSubject,
+		"iss": dockerOIDCURL,
+		"aud": "test-audience",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	})
 	require.NotEmpty(t, token, "OAuth token should not be empty")
-	t.Logf("Obtained OAuth token (first 50 chars): %.50s...", token)
 
 	// Verify it looks like a JWT
 	parts := strings.Split(token, ".")
 	require.Equal(t, 3, len(parts), "Token should be a JWT with 3 parts")
-	tokenSubject := extractJWTStringClaim(t, token, "sub")
-	require.NotEmpty(t, tokenSubject, "access token should include a subject claim")
 
 	// ---------- Step 4: Test via MCP Client (InMemoryTransports) ----------
 	t.Run("MCP_Client", func(t *testing.T) {
@@ -263,130 +242,6 @@ func TestOAuthE2EWithKeycloak(t *testing.T) {
 
 // ---------- Helper functions ----------
 
-func generateKeycloakRealmJSON(realmName, clientID, userName, userPassword string) string {
-	realm := map[string]interface{}{
-		"realm":                      realmName,
-		"enabled":                    true,
-		"sslRequired":                "none",
-		"registrationAllowed":        false,
-		"verifyEmail":                false,
-		"requiredActions":            []interface{}{},
-		"defaultDefaultClientScopes": []string{"web-origins", "acr", "profile", "roles", "email", "basic"},
-		"clients": []map[string]interface{}{
-			{
-				"clientId":                  clientID,
-				"name":                      "ClickHouse MCP",
-				"protocol":                  "openid-connect",
-				"publicClient":              true,
-				"directAccessGrantsEnabled": true,
-				"standardFlowEnabled":       true,
-				"redirectUris":              []string{"*"},
-			},
-		},
-		"users": []map[string]interface{}{
-			{
-				"username":        userName,
-				"enabled":         true,
-				"email":           userName + "@test.local",
-				"emailVerified":   true,
-				"firstName":       "Test",
-				"lastName":        "User",
-				"requiredActions": []string{},
-				"credentials": []map[string]interface{}{
-					{
-						"type":      "password",
-						"value":     userPassword,
-						"temporary": false,
-					},
-				},
-			},
-		},
-		"roles": map[string]interface{}{
-			"realm": []map[string]interface{}{
-				{"name": "default_role", "description": "Default role for token-authenticated users"},
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(realm, "", "  ")
-	return string(data)
-}
-
-func startKeycloakContainer(
-	t *testing.T, ctx context.Context, networkName, hostname, realmJSON string,
-) (internalURL, externalURL string) {
-	t.Helper()
-
-	realmFile := t.TempDir() + "/realm-export.json"
-	require.NoError(t, os.WriteFile(realmFile, []byte(realmJSON), 0644))
-
-	req := testcontainers.ContainerRequest{
-		Image:        "keycloak/keycloak:26.3",
-		ExposedPorts: []string{"8080/tcp"},
-		Cmd:          []string{"start-dev", "--import-realm", "--hostname-strict=false"},
-		Env: map[string]string{
-			"KC_BOOTSTRAP_ADMIN_USERNAME": "admin",
-			"KC_BOOTSTRAP_ADMIN_PASSWORD": "admin",
-		},
-		Networks: []string{networkName},
-		NetworkAliases: map[string][]string{
-			networkName: {hostname},
-		},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: realmFile, ContainerFilePath: "/opt/keycloak/data/import/realm-export.json", FileMode: 0644},
-		},
-		WaitingFor: wait.ForLog("Listening on:").WithStartupTimeout(180 * time.Second),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = container.Terminate(cleanupCtx)
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "8080")
-	require.NoError(t, err)
-
-	internalURL = fmt.Sprintf("http://%s:8080", hostname)
-	externalURL = fmt.Sprintf("http://%s:%s", host, port.Port())
-	return internalURL, externalURL
-}
-
-func generateClickHouseTokenProcessorConfig(keycloakURL, realmName string) string {
-	return fmt.Sprintf(`<?xml version="1.0"?>
-<clickhouse>
-    <token_processors>
-        <keycloak>
-            <type>openid</type>
-            <configuration_endpoint>%[1]s/realms/%[2]s/.well-known/openid-configuration</configuration_endpoint>
-            <token_cache_lifetime>60</token_cache_lifetime>
-        </keycloak>
-    </token_processors>
-    <!-- replace="replace" is needed because ClickHouse does not merge new children into user_directories from config.d -->
-    <user_directories replace="replace">
-        <users_xml>
-            <path>users.xml</path>
-        </users_xml>
-        <local_directory>
-            <path>/var/lib/clickhouse/access/</path>
-        </local_directory>
-        <token>
-            <processor>keycloak</processor>
-            <common_roles>
-                <default_role />
-            </common_roles>
-        </token>
-    </user_directories>
-</clickhouse>
-`, keycloakURL, realmName)
-}
-
 func generateClickHouseStartupScriptsConfig() string {
 	return `<?xml version="1.0"?>
 <clickhouse>
@@ -400,101 +255,6 @@ func generateClickHouseStartupScriptsConfig() string {
     </startup_scripts>
 </clickhouse>
 `
-}
-
-func startClickHouseContainer(
-	t *testing.T, ctx context.Context, networkName, hostname, tokenProcessorXML, startupScriptsXML string,
-) config.ClickHouseConfig {
-	t.Helper()
-
-	tmpDir := t.TempDir()
-	tokenProcessorFile := tmpDir + "/token_processor.xml"
-	require.NoError(t, os.WriteFile(tokenProcessorFile, []byte(tokenProcessorXML), 0644))
-	startupScriptsFile := tmpDir + "/startup_scripts.xml"
-	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
-
-	req := testcontainers.ContainerRequest{
-		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Networks:     []string{networkName},
-		NetworkAliases: map[string][]string{
-			networkName: {hostname},
-		},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: tokenProcessorFile, ContainerFilePath: "/etc/clickhouse-server/config.d/token_processor.xml", FileMode: 0644},
-			{HostFilePath: startupScriptsFile, ContainerFilePath: "/etc/clickhouse-server/config.d/startup_scripts.xml", FileMode: 0644},
-		},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
-			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
-	}
-
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = container.Terminate(cleanupCtx)
-	})
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	httpPort, err := container.MappedPort(ctx, "8123")
-	require.NoError(t, err)
-
-	t.Logf("ClickHouse HTTP at %s:%s", host, httpPort.Port())
-
-	return config.ClickHouseConfig{
-		Host:             host,
-		Port:             httpPort.Int(),
-		Database:         "default",
-		Username:         "default",
-		Password:         "",
-		Protocol:         config.HTTPProtocol,
-		ReadOnly:         false,
-		MaxExecutionTime: 60,
-	}
-}
-
-func getKeycloakToken(
-	t *testing.T, keycloakURL, realmName, clientID, username, password string,
-) string {
-	t.Helper()
-
-	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", keycloakURL, realmName)
-	data := url.Values{
-		"grant_type": {"password"},
-		"client_id":  {clientID},
-		"username":   {username},
-		"password":   {password},
-		"scope":      {"openid"},
-	}
-
-	resp, err := http.PostForm(tokenURL, data)
-	require.NoError(t, err)
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	t.Logf("Token exchange (status=%d): %s", resp.StatusCode, string(body))
-	require.Equal(t, http.StatusOK, resp.StatusCode, "Token request should succeed: %s", string(body))
-
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		IDToken     string `json:"id_token"`
-		TokenType   string `json:"token_type"`
-	}
-	require.NoError(t, json.Unmarshal(body, &tokenResp))
-	require.NotEmpty(t, tokenResp.AccessToken, "Access token should not be empty")
-
-	return tokenResp.AccessToken
 }
 
 func extractJWTStringClaim(t *testing.T, token, claim string) string {
@@ -656,8 +416,8 @@ func newTestOAuthProviderReachableFromDocker(t *testing.T, userInfoClaims map[st
 
 // setupAntalyaClickHouseWithOIDC starts an Antalya ClickHouse container with token_processors
 // pointing at the given OIDC discovery URL.
-// Requires host.docker.internal to resolve inside the container (automatic on macOS/OrbStack
-// and Docker Desktop; on Linux add --add-host=host.docker.internal:host-gateway to Docker daemon).
+// On Linux, host.docker.internal is resolved via ExtraHosts (host-gateway).
+// On macOS/Docker Desktop/OrbStack it resolves automatically.
 func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDiscoveryURL string) config.ClickHouseConfig {
 	t.Helper()
 
@@ -708,11 +468,14 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 			"CLICKHOUSE_PASSWORD":                  "",
 			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
 		},
+		HostConfigModifier: func(hc *container.HostConfig) {
+			hc.ExtraHosts = append(hc.ExtraHosts, "host.docker.internal:host-gateway")
+		},
 		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
 			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
@@ -720,12 +483,12 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = container.Terminate(cleanupCtx)
+		_ = ctr.Terminate(cleanupCtx)
 	})
 
-	host, err := container.Host(ctx)
+	host, err := ctr.Host(ctx)
 	require.NoError(t, err)
-	httpPort, err := container.MappedPort(ctx, "8123")
+	httpPort, err := ctr.MappedPort(ctx, "8123")
 	require.NoError(t, err)
 
 	t.Logf("Antalya ClickHouse HTTP at %s:%s", host, httpPort.Port())
