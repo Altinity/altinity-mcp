@@ -353,10 +353,6 @@ func (a *application) resourceBaseURL(r *http.Request) string {
 	return a.schemeAndHost(r) + a.resourcePrefix(r)
 }
 
-func (a *application) publicBaseURL(r *http.Request) string {
-	return a.resourceBaseURL(r)
-}
-
 func (a *application) oauthAuthorizationServerBaseURL(r *http.Request) string {
 	if configured := normalizeURL(a.GetCurrentConfig().Server.OAuth.PublicAuthServerURL); configured != "" {
 		return configured

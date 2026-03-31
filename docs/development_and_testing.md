@@ -4,7 +4,7 @@ This document collects the local development workflow and the repository's test 
 
 ## Prerequisites
 
-- Go 1.24 or later
+- Go 1.25 or later
 - Docker, for integration tests and the optional OAuth e2e test
 - A local or reachable ClickHouse server, if you want to run `test-connection` manually
 
@@ -100,7 +100,7 @@ For a typical code change:
 1. Build the binary with `go build -o altinity-mcp ./cmd/altinity-mcp`
 2. Run focused tests for the area you changed
 3. Run `go test ./...`
-4. Run the opt-in OAuth e2e test when touching OAuth forwarding or broker flow behavior
+4. Run the opt-in OAuth e2e test when touching OAuth forwarding or gating flow behavior
 
 ## Troubleshooting
 
