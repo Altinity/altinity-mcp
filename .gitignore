@@ -20,3 +20,5 @@ go-carpet*
 .gocache/
 .gomodcache/
 .tmp/
+resutls.xml
+push-action
