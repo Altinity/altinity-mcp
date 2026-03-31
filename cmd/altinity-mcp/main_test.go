@@ -3666,3 +3666,388 @@ func generateSelfSignedCert() ([]byte, []byte, error) {
 
 	return certPEM, privateKeyPEM, nil
 }
+
+func TestValidateOAuthRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: false}}}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("unsupported_mode", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "custom",
+			GatingSecretKey: "secret",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unsupported oauth mode")
+	})
+
+	t.Run("missing_gating_secret", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "gating",
+			GatingSecretKey: "",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "gating_secret_key is required")
+	})
+
+	t.Run("forward_mode_requires_http", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:         true,
+				Mode:            "forward",
+				GatingSecretKey: "secret",
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "requires clickhouse protocol http")
+	})
+
+	t.Run("valid_gating_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:         true,
+			Mode:            "gating",
+			GatingSecretKey: "secret",
+		}}}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("valid_forward_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:         true,
+				Mode:            "forward",
+				GatingSecretKey: "secret",
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+}
+
+func TestWarnOAuthMisconfiguration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_no_warn", func(t *testing.T) {
+		t.Parallel()
+		// Should not panic
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: false}}})
+	})
+
+	t.Run("gating_mode_missing_public_auth_server_url", func(t *testing.T) {
+		t.Parallel()
+		// Should log warning but not panic
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:            true,
+			Mode:               "gating",
+			Issuer:             "https://issuer.example.com",
+			PublicAuthServerURL: "",
+		}}})
+	})
+
+	t.Run("gating_mode_with_public_auth_server_url", func(t *testing.T) {
+		t.Parallel()
+		// Should not warn
+		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:            true,
+			Mode:               "gating",
+			Issuer:             "https://issuer.example.com",
+			PublicAuthServerURL: "https://public.example.com",
+		}}})
+	})
+}
+
+func TestTransportRoutePatterns(t *testing.T) {
+	t.Parallel()
+	t.Run("jwe_only", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, false, "http")
+		require.Equal(t, []string{"/{token}/http"}, patterns)
+	})
+	t.Run("jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, true, "http")
+		require.Equal(t, []string{"/{token}/http", "/http"}, patterns)
+	})
+	t.Run("no_jwe", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(false, false, "http")
+		require.Equal(t, []string{"/http"}, patterns)
+	})
+	t.Run("sse_transport", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(false, false, "sse")
+		require.Equal(t, []string{"/sse"}, patterns)
+	})
+}
+
+func TestOpenAPIRoutePatterns(t *testing.T) {
+	t.Parallel()
+	t.Run("jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(true, true)
+		require.Contains(t, patterns, "/{token}/openapi")
+		require.Contains(t, patterns, "/openapi/list_tables")
+		require.Contains(t, patterns, "/openapi/describe_table")
+		require.Contains(t, patterns, "/openapi/execute_query")
+	})
+	t.Run("jwe_only", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(true, false)
+		require.Equal(t, 5, len(patterns))
+		require.Contains(t, patterns, "/{token}/openapi")
+	})
+	t.Run("no_jwe", func(t *testing.T) {
+		t.Parallel()
+		patterns := openAPIRoutePatterns(false, false)
+		require.Contains(t, patterns, "/openapi")
+		require.Contains(t, patterns, "/openapi/execute_query")
+	})
+}
+
+func TestStripTrailingSlash(t *testing.T) {
+	t.Parallel()
+	handler := stripTrailingSlash(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(r.URL.Path))
+	}))
+
+	t.Run("removes_trailing_slash", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/api/v1", rr.Body.String())
+	})
+	t.Run("root_path_unchanged", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/", rr.Body.String())
+	})
+	t.Run("no_trailing_slash_unchanged", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, "/api/v1", rr.Body.String())
+	})
+}
+
+func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	makeApp := func(jweEnabled bool, jweSecret string) *application {
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{
+					Enabled:      jweEnabled,
+					JWESecretKey: jweSecret,
+					JWTSecretKey: "jwt-secret",
+				},
+			},
+		}
+		return &application{config: cfg}
+	}
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "secret")
+		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+
+	t.Run("jwe_not_enabled", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(false, "secret")
+		body := strings.NewReader(`{"host":"localhost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusForbidden, rr.Code)
+	})
+
+	t.Run("missing_jwe_secret", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "")
+		body := strings.NewReader(`{"host":"localhost"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("invalid_body", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "secret")
+		body := strings.NewReader(`{invalid}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("success_generates_token", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"clickhouse.local","port":9000,"database":"default","username":"admin","password":"pass","protocol":"native","expiry":3600}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+		require.NotEmpty(t, resp["token"])
+	})
+
+	t.Run("success_with_tls_options", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"ch","tls_enabled":true,"tls_ca_cert":"ca","tls_client_cert":"cert","tls_client_key":"key","tls_insecure_skip_verify":true}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("default_expiry", func(t *testing.T) {
+		t.Parallel()
+		app := makeApp(true, "my-secret-key")
+		body := strings.NewReader(`{"host":"ch"}`)
+		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		rr := httptest.NewRecorder()
+		app.jweTokenGeneratorHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
+func TestHealthHandler_JWEEnabled(t *testing.T) {
+	t.Parallel()
+	// When JWE is enabled, credentials are per-request, so no CH connection test
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: true, JWESecretKey: "secret"},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+
+	t.Run("get_returns_healthy", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		rr := httptest.NewRecorder()
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "healthy", body["status"])
+		require.Equal(t, "per_request_credentials", body["auth"])
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/health", nil)
+		rr := httptest.NewRecorder()
+		app.healthHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+}
+
+func TestHealthHandler_OAuthForwardMode(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	app.healthHandler(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "per_request_credentials", body["auth"])
+}
+
+func TestHealthHandler_CHUnavailable(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		ClickHouse: config.ClickHouseConfig{
+			Host:     "localhost",
+			Port:     19999, // port with no server
+			Protocol: config.TCPProtocol,
+			Database: "default",
+			Username: "default",
+		},
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{Enabled: false},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	app.healthHandler(rr, req)
+	require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "unhealthy", body["status"])
+}
+
+func TestOAuthStateStoreEviction(t *testing.T) {
+	t.Parallel()
+	store := newOAuthStateStore()
+
+	// Fill pending auth to capacity
+	for i := 0; i < maxOAuthStateEntries; i++ {
+		store.putPendingAuth(fmt.Sprintf("pending-%d", i), oauthPendingAuth{
+			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	// Adding one more should evict the oldest
+	store.putPendingAuth("new-pending", oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)})
+	_, ok := store.consumePendingAuth("pending-0") // oldest should be evicted
+	require.False(t, ok)
+	_, ok = store.consumePendingAuth("new-pending")
+	require.True(t, ok)
+
+	// Fill auth codes to capacity
+	for i := 0; i < maxOAuthStateEntries; i++ {
+		store.putAuthCode(fmt.Sprintf("code-%d", i), oauthIssuedCode{
+			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	// Adding one more should evict the oldest
+	store.putAuthCode("new-code", oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)})
+	_, ok = store.consumeAuthCode("code-0")
+	require.False(t, ok)
+	_, ok = store.consumeAuthCode("new-code")
+	require.True(t, ok)
+}

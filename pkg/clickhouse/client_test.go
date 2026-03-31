@@ -361,4 +361,82 @@ func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
 		require.Nil(t, getJWT)
 		require.Equal(t, "Basic abc", headers["Authorization"])
 	})
+
+	t.Run("no_headers_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+		}
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, headers)
+		require.Nil(t, getJWT)
+	})
+
+	t.Run("tcp_protocol_keeps_all_headers", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.ClickHouseConfig{
+			Protocol: config.TCPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"Authorization": "Bearer secret-token",
+			},
+		}
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, getJWT)
+		require.Equal(t, "Bearer secret-token", headers["Authorization"])
+	})
+
+	t.Run("empty_bearer_token_kept_as_header", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"Authorization": "Bearer ",
+			},
+		}
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, getJWT)
+		require.Equal(t, "Bearer ", headers["Authorization"])
+	})
+
+	t.Run("no_authorization_header_with_tls", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"X-Custom": "value",
+			},
+		}
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.Nil(t, getJWT)
+		require.Equal(t, "value", headers["X-Custom"])
+	})
+
+	t.Run("case_insensitive_authorization", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.ClickHouseConfig{
+			Protocol: config.HTTPProtocol,
+			TLS: config.TLSConfig{
+				Enabled: true,
+			},
+			HttpHeaders: map[string]string{
+				"authorization": "Bearer my-token",
+			},
+		}
+		headers, getJWT := prepareHTTPAuthForClickHouse(cfg)
+		require.NotNil(t, getJWT)
+		_, hasAuth := headers["authorization"]
+		require.False(t, hasAuth)
+		token, err := getJWT(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, "my-token", token)
+	})
 }

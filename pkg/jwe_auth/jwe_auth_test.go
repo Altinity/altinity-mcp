@@ -324,6 +324,36 @@ func TestParseAndDecryptJWE(t *testing.T) {
 		require.Equal(t, jwe_auth.ErrInvalidToken, err)
 	})
 
+	// Test token without exp claim (validates no-exp branch in validateExpiration)
+	t.Run("no_exp_claim", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"host":     "test-host",
+			"database": "test-db",
+		}
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+	})
+
+	// Test token with int64 exp (covers int64 branch in validateExpiration)
+	t.Run("int64_exp_type", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"host": "test-host",
+			"exp":  time.Now().Add(time.Hour).Unix(), // int64
+		}
+		tokenString, err := jwe_auth.GenerateJWEToken(claims, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+
+		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(tokenString, jweSecretKey, jwtSecretKey)
+		require.NoError(t, err)
+		require.Equal(t, "test-host", parsedClaims["host"])
+	})
+
 	// Test JSON token parsed with JWT secret key
 	t.Run("json_token_with_jwt_secret", func(t *testing.T) {
 		t.Parallel()

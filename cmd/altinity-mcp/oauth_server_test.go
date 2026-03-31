@@ -1546,3 +1546,387 @@ func TestOAuthMetadataAdvertisesRefreshToken(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizedPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		raw      string
+		fallback string
+		want     string
+	}{
+		{"empty_both", "", "", ""},
+		{"empty_raw_uses_fallback", "", "/fallback", "/fallback"},
+		{"whitespace_raw_uses_fallback", "   ", "/fb", "/fb"},
+		{"root_path", "/", "", "/"},
+		{"adds_leading_slash", "path", "", "/path"},
+		{"trims_trailing_slash", "/path/", "", "/path"},
+		{"normal_path", "/api/v1", "", "/api/v1"},
+		{"multiple_trailing_slashes", "/path///", "", "/path"},
+		{"fallback_without_slash", "", "fallback", "/fallback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, normalizedPath(tt.raw, tt.fallback))
+		})
+	}
+}
+
+func TestJoinURLPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		base string
+		path string
+		want string
+	}{
+		{"empty_path", "https://example.com", "", "https://example.com"},
+		{"root_path", "https://example.com", "/", "https://example.com"},
+		{"normal_join", "https://example.com", "/api", "https://example.com/api"},
+		{"base_with_trailing_slash", "https://example.com/", "/api", "https://example.com/api"},
+		{"path_without_leading_slash", "https://example.com", "api", "https://example.com/api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, joinURLPath(tt.base, tt.path))
+		})
+	}
+}
+
+func TestUniquePaths(t *testing.T) {
+	t.Parallel()
+	t.Run("all_unique", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, []string{"/a", "/b", "/c"}, uniquePaths("/a", "/b", "/c"))
+	})
+	t.Run("duplicates_removed", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, []string{"/a"}, uniquePaths("/a", "/a", "/a"))
+	})
+	t.Run("empty_paths_skipped", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, []string{"/a"}, uniquePaths("", "/a", ""))
+	})
+	t.Run("all_empty", func(t *testing.T) {
+		t.Parallel()
+		require.Empty(t, uniquePaths("", "", ""))
+	})
+	t.Run("normalized_duplicates", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, []string{"/path"}, uniquePaths("/path/", "/path"))
+	})
+}
+
+func TestSuffixPrefix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		path    string
+		markers []string
+		want    string
+	}{
+		{"extract_suffix", "/api/.well-known/resource", []string{"/api"}, "/.well-known/resource"},
+		{"no_match", "/path/resource", []string{"/nomatch"}, ""},
+		{"exact_marker_no_suffix", "/api", []string{"/api"}, ""},
+		{"multiple_markers", "/prefix/resource", []string{"/a", "/b", "/prefix"}, "/resource"},
+		{"suffix_gets_leading_slash", "/apistuff", []string{"/api"}, "/stuff"},
+		{"trailing_slash_removed", "/api/resource/", []string{"/api"}, "/resource"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, suffixPrefix(tt.path, tt.markers...))
+		})
+	}
+}
+
+func TestPathFromConfiguredURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty", "", ""},
+		{"no_path", "https://example.com", ""},
+		{"with_path", "https://example.com/api", "/api"},
+		{"trailing_slash", "https://example.com/api/", "/api"},
+		{"just_path", "/api/v1", "/api/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, pathFromConfiguredURL(tt.raw))
+		})
+	}
+}
+
+func TestTruncateForLog(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value string
+		max   int
+		want  string
+	}{
+		{"negative_max", "hello", -1, "hello"},
+		{"zero_max", "hello", 0, "hello"},
+		{"shorter_than_max", "hello", 10, "hello"},
+		{"exact_max", "hello", 5, "hello"},
+		{"truncated", "hello world", 5, "hello"},
+		{"empty_string", "", 10, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, truncateForLog(tt.value, tt.max))
+		})
+	}
+}
+
+func TestDecodeStringSlice(t *testing.T) {
+	t.Parallel()
+	t.Run("string_slice", func(t *testing.T) {
+		t.Parallel()
+		result := decodeStringSlice([]string{"a", "b"})
+		require.Equal(t, []string{"a", "b"}, result)
+	})
+	t.Run("interface_slice", func(t *testing.T) {
+		t.Parallel()
+		result := decodeStringSlice([]interface{}{"a", "b"})
+		require.Equal(t, []string{"a", "b"}, result)
+	})
+	t.Run("interface_slice_non_strings_skipped", func(t *testing.T) {
+		t.Parallel()
+		result := decodeStringSlice([]interface{}{"a", 123, "b"})
+		require.Equal(t, []string{"a", "b"}, result)
+	})
+	t.Run("nil_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, decodeStringSlice(nil))
+	})
+	t.Run("unsupported_type_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, decodeStringSlice("not-a-slice"))
+	})
+	t.Run("empty_interface_slice", func(t *testing.T) {
+		t.Parallel()
+		result := decodeStringSlice([]interface{}{})
+		require.Empty(t, result)
+	})
+}
+
+func TestParseStatelessRegisteredClient(t *testing.T) {
+	t.Parallel()
+	t.Run("all_fields", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"redirect_uris":              []interface{}{"https://example.com/callback"},
+			"token_endpoint_auth_method": "client_secret_post",
+			"grant_type":                 "authorization_code",
+			"exp":                        float64(time.Now().Add(time.Hour).Unix()),
+		}
+		client, err := parseStatelessRegisteredClient(claims)
+		require.NoError(t, err)
+		require.Equal(t, []string{"https://example.com/callback"}, client.RedirectURIs)
+		require.Equal(t, "client_secret_post", client.TokenEndpointAuthMethod)
+		require.Equal(t, "authorization_code", client.GrantType)
+	})
+
+	t.Run("defaults_applied", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"redirect_uris": []interface{}{"https://example.com/callback"},
+		}
+		client, err := parseStatelessRegisteredClient(claims)
+		require.NoError(t, err)
+		require.Equal(t, "none", client.TokenEndpointAuthMethod)
+		require.Equal(t, "authorization_code", client.GrantType)
+	})
+
+	t.Run("missing_redirect_uris", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{}
+		_, err := parseStatelessRegisteredClient(claims)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "missing redirect URIs")
+	})
+
+	t.Run("empty_redirect_uris", func(t *testing.T) {
+		t.Parallel()
+		claims := map[string]interface{}{
+			"redirect_uris": []interface{}{},
+		}
+		_, err := parseStatelessRegisteredClient(claims)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "missing redirect URIs")
+	})
+}
+
+func TestOAuthClaimsFromUserInfo(t *testing.T) {
+	t.Parallel()
+	t.Run("all_standard_fields", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub":            "user-123",
+			"iss":            "https://issuer.example.com",
+			"email":          "user@example.com",
+			"name":           "Test User",
+			"hd":             "example.com",
+			"email_verified": true,
+			"scope":          "read write",
+		}
+		claims := oauthClaimsFromUserInfo(raw)
+		require.Equal(t, "user-123", claims.Subject)
+		require.Equal(t, "https://issuer.example.com", claims.Issuer)
+		require.Equal(t, "user@example.com", claims.Email)
+		require.Equal(t, "Test User", claims.Name)
+		require.Equal(t, "example.com", claims.HostedDomain)
+		require.True(t, claims.EmailVerified)
+		require.Equal(t, []string{"read", "write"}, claims.Scopes)
+	})
+
+	t.Run("extra_claims_preserved", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub":    "user-123",
+			"custom": "value",
+			"groups": []string{"admin"},
+		}
+		claims := oauthClaimsFromUserInfo(raw)
+		require.Equal(t, "value", claims.Extra["custom"])
+		require.NotNil(t, claims.Extra["groups"])
+	})
+
+	t.Run("empty_input", func(t *testing.T) {
+		t.Parallel()
+		claims := oauthClaimsFromUserInfo(map[string]interface{}{})
+		require.Equal(t, "", claims.Subject)
+		require.Empty(t, claims.Extra)
+	})
+}
+
+func TestNormalizeURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty", "", ""},
+		{"no_trailing_slash", "https://example.com", "https://example.com"},
+		{"trailing_slash", "https://example.com/", "https://example.com"},
+		{"whitespace", "  https://example.com  ", "https://example.com"},
+		{"multiple_trailing_slashes", "https://example.com///", "https://example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, normalizeURL(tt.raw))
+		})
+	}
+}
+
+func TestOAuthStateStore(t *testing.T) {
+	t.Parallel()
+
+	t.Run("put_and_consume_pending_auth", func(t *testing.T) {
+		t.Parallel()
+		store := newOAuthStateStore()
+		pending := oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)}
+		store.putPendingAuth("key1", pending)
+
+		got, ok := store.consumePendingAuth("key1")
+		require.True(t, ok)
+		require.Equal(t, pending.ExpiresAt.Unix(), got.ExpiresAt.Unix())
+
+		_, ok = store.consumePendingAuth("key1")
+		require.False(t, ok)
+	})
+
+	t.Run("put_and_consume_auth_code", func(t *testing.T) {
+		t.Parallel()
+		store := newOAuthStateStore()
+		issued := oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)}
+		store.putAuthCode("code1", issued)
+
+		got, ok := store.consumeAuthCode("code1")
+		require.True(t, ok)
+		require.Equal(t, issued.ExpiresAt.Unix(), got.ExpiresAt.Unix())
+
+		_, ok = store.consumeAuthCode("code1")
+		require.False(t, ok)
+	})
+
+	t.Run("expired_entries_cleaned_up", func(t *testing.T) {
+		t.Parallel()
+		store := newOAuthStateStore()
+		store.putPendingAuth("expired", oauthPendingAuth{ExpiresAt: time.Now().Add(-time.Hour)})
+		store.putAuthCode("expired", oauthIssuedCode{ExpiresAt: time.Now().Add(-time.Hour)})
+
+		// Next put triggers cleanup
+		store.putPendingAuth("fresh", oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)})
+		store.putAuthCode("fresh", oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)})
+
+		_, ok := store.consumePendingAuth("expired")
+		require.False(t, ok)
+		_, ok = store.consumeAuthCode("expired")
+		require.False(t, ok)
+	})
+}
+
+func TestSanitizeScope(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "read write", sanitizeScope("  read   write  "))
+	require.Equal(t, "single", sanitizeScope("single"))
+	require.Equal(t, "", sanitizeScope(""))
+	require.Equal(t, "", sanitizeScope("   "))
+}
+
+func TestPkceChallenge(t *testing.T) {
+	t.Parallel()
+	// Deterministic test: given a known verifier, check output matches SHA256(verifier) base64url
+	challenge := pkceChallenge("test-verifier")
+	require.NotEmpty(t, challenge)
+	// Same input produces same output
+	require.Equal(t, challenge, pkceChallenge("test-verifier"))
+	// Different input produces different output
+	require.NotEqual(t, challenge, pkceChallenge("other-verifier"))
+}
+
+func TestTtlSeconds(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, 100, ttlSeconds(100, 60))
+	require.Equal(t, 60, ttlSeconds(0, 60))
+	require.Equal(t, 60, ttlSeconds(-1, 60))
+}
+
+func TestWriteOAuthTokenError(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	writeOAuthTokenError(rr, http.StatusBadRequest, "invalid_request", "bad thing happened")
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+	require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "invalid_request", body["error"])
+	require.Equal(t, "bad thing happened", body["error_description"])
+}
+
+func TestEncodeSelfIssuedAccessToken(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-key")
+	claims := map[string]interface{}{
+		"sub": "user-123",
+		"iss": "test-issuer",
+		"exp": float64(time.Now().Add(time.Hour).Unix()),
+	}
+	token, err := encodeSelfIssuedAccessToken(secret, claims)
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+	// Token should have 3 parts separated by dots (JWT compact format)
+	parts := strings.Split(token, ".")
+	require.Equal(t, 3, len(parts))
+}

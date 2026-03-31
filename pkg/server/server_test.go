@@ -4514,3 +4514,1345 @@ func TestGatingModeIdentityPolicy(t *testing.T) {
 		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
 	})
 }
+
+// ---------- coverage gap tests ----------
+
+func TestEmailDomain(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{"normal", "user@example.com", "example.com"},
+		{"uppercase", "User@EXAMPLE.COM", "example.com"},
+		{"whitespace", "  user@example.com  ", "example.com"},
+		{"no_at", "noatsign", ""},
+		{"empty", "", ""},
+		{"multiple_at", "a@b@c", ""},
+		{"just_at", "@", ""},
+		{"domain_only", "@domain.com", "domain.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, emailDomain(tt.email))
+		})
+	}
+}
+
+func TestCapitalize(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, in, want string
+	}{
+		{"empty", "", ""},
+		{"single_char", "a", "A"},
+		{"already_upper", "A", "A"},
+		{"word", "hello", "Hello"},
+		{"all_caps", "HELLO", "Hello"},
+		{"unicode", "ñoño", "Ñoño"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, capitalize(tt.in))
+		})
+	}
+}
+
+func TestOAuthClaimsFromRawClaims(t *testing.T) {
+	t.Parallel()
+
+	t.Run("all_standard_fields", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub":            "user123",
+			"iss":            "https://auth.example.com",
+			"exp":            float64(1700000000),
+			"iat":            float64(1699999000),
+			"nbf":            float64(1699998000),
+			"email":          "user@example.com",
+			"name":           "Test User",
+			"hd":             "example.com",
+			"email_verified": true,
+			"aud":            "my-api",
+			"scope":          "read write",
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.Equal(t, "user123", claims.Subject)
+		require.Equal(t, "https://auth.example.com", claims.Issuer)
+		require.Equal(t, int64(1700000000), claims.ExpiresAt)
+		require.Equal(t, int64(1699999000), claims.IssuedAt)
+		require.Equal(t, int64(1699998000), claims.NotBefore)
+		require.Equal(t, "user@example.com", claims.Email)
+		require.Equal(t, "Test User", claims.Name)
+		require.Equal(t, "example.com", claims.HostedDomain)
+		require.True(t, claims.EmailVerified)
+		require.Equal(t, []string{"my-api"}, claims.Audience)
+		require.Equal(t, []string{"read", "write"}, claims.Scopes)
+	})
+
+	t.Run("json_number_fields", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub": "user",
+			"exp": json.Number("1700000000"),
+			"iat": json.Number("1699999000"),
+			"nbf": json.Number("1699998000"),
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.Equal(t, int64(1700000000), claims.ExpiresAt)
+		require.Equal(t, int64(1699999000), claims.IssuedAt)
+		require.Equal(t, int64(1699998000), claims.NotBefore)
+	})
+
+	t.Run("audience_array", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"aud": []interface{}{"api1", "api2"},
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.Equal(t, []string{"api1", "api2"}, claims.Audience)
+	})
+
+	t.Run("scope_array", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"scope": []interface{}{"read", "write", "admin"},
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.Equal(t, []string{"read", "write", "admin"}, claims.Scopes)
+	})
+
+	t.Run("email_verified_string", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"email_verified": "true",
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.True(t, claims.EmailVerified)
+
+		raw2 := map[string]interface{}{
+			"email_verified": "false",
+		}
+		claims2 := oauthClaimsFromRawClaims(raw2)
+		require.False(t, claims2.EmailVerified)
+	})
+
+	t.Run("extra_claims_preserved", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub":       "user",
+			"custom1":   "value1",
+			"custom_num": float64(42),
+		}
+		claims := oauthClaimsFromRawClaims(raw)
+		require.Equal(t, "value1", claims.Extra["custom1"])
+		require.Equal(t, float64(42), claims.Extra["custom_num"])
+		_, hasSub := claims.Extra["sub"]
+		require.False(t, hasSub)
+	})
+
+	t.Run("empty_claims", func(t *testing.T) {
+		t.Parallel()
+		claims := oauthClaimsFromRawClaims(map[string]interface{}{})
+		require.NotNil(t, claims)
+		require.Empty(t, claims.Subject)
+		require.NotNil(t, claims.Extra)
+	})
+}
+
+func TestJWETokenHasCredentials(t *testing.T) {
+	t.Parallel()
+	jweKey := "test-jwe-secret-key-for-test!!"
+	jwtKey := "test-jwt-secret-key-for-test!!"
+
+	srv := NewClickHouseMCPServer(config.Config{
+		Server: config.ServerConfig{
+			JWE: config.JWEConfig{
+				Enabled:      true,
+				JWESecretKey: jweKey,
+				JWTSecretKey: jwtKey,
+			},
+		},
+	}, "test")
+
+	t.Run("has_credentials", func(t *testing.T) {
+		t.Parallel()
+		token := generateJWEToken(t, map[string]interface{}{
+			"username": "admin",
+			"password": "secret",
+		}, []byte(jweKey), []byte(jwtKey))
+		require.True(t, srv.JWETokenHasCredentials(token))
+	})
+
+	t.Run("no_credentials", func(t *testing.T) {
+		t.Parallel()
+		token := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost",
+		}, []byte(jweKey), []byte(jwtKey))
+		require.False(t, srv.JWETokenHasCredentials(token))
+	})
+
+	t.Run("invalid_token", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, srv.JWETokenHasCredentials("not-a-valid-token"))
+	})
+
+	t.Run("jwe_disabled", func(t *testing.T) {
+		t.Parallel()
+		srvDisabled := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+			},
+		}, "test")
+		require.False(t, srvDisabled.JWETokenHasCredentials("any-token"))
+	})
+}
+
+func TestBuildClickHouseHeadersFromOAuth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("gating_mode_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{Enabled: true, Mode: "gating"},
+			},
+		}, "test")
+		headers := srv.BuildClickHouseHeadersFromOAuth("token123", &OAuthClaims{Subject: "user"})
+		require.Nil(t, headers)
+	})
+
+	t.Run("forward_mode_default_header", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+			},
+		}, "test")
+		headers := srv.BuildClickHouseHeadersFromOAuth("token123", nil)
+		require.Equal(t, "Bearer token123", headers["Authorization"])
+	})
+
+	t.Run("forward_mode_custom_header", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:              true,
+					Mode:                 "forward",
+					ClickHouseHeaderName: "X-Token",
+				},
+			},
+		}, "test")
+		headers := srv.BuildClickHouseHeadersFromOAuth("token123", nil)
+		require.Equal(t, "token123", headers["X-Token"])
+	})
+
+	t.Run("forward_with_claims_to_headers", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled: true,
+					Mode:    "forward",
+					ClaimsToHeaders: map[string]string{
+						"sub":            "X-User-ID",
+						"email":          "X-Email",
+						"name":           "X-Name",
+						"email_verified": "X-Verified",
+						"hd":             "X-Domain",
+						"iss":            "X-Issuer",
+						"custom_claim":   "X-Custom",
+					},
+				},
+			},
+		}, "test")
+		claims := &OAuthClaims{
+			Subject:       "user123",
+			Issuer:        "https://auth.example.com",
+			Email:         "user@example.com",
+			Name:          "Test User",
+			EmailVerified: true,
+			HostedDomain:  "example.com",
+			Extra:         map[string]interface{}{"custom_claim": "custom_value"},
+		}
+		headers := srv.BuildClickHouseHeadersFromOAuth("tok", claims)
+		require.Equal(t, "user123", headers["X-User-ID"])
+		require.Equal(t, "user@example.com", headers["X-Email"])
+		require.Equal(t, "Test User", headers["X-Name"])
+		require.Equal(t, "true", headers["X-Verified"])
+		require.Equal(t, "example.com", headers["X-Domain"])
+		require.Equal(t, "https://auth.example.com", headers["X-Issuer"])
+		require.Equal(t, "custom_value", headers["X-Custom"])
+	})
+
+	t.Run("forward_with_non_string_extra_claim", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:         true,
+					Mode:            "forward",
+					ClaimsToHeaders: map[string]string{"roles": "X-Roles"},
+				},
+			},
+		}, "test")
+		claims := &OAuthClaims{
+			Extra: map[string]interface{}{"roles": []string{"admin", "user"}},
+		}
+		headers := srv.BuildClickHouseHeadersFromOAuth("tok", claims)
+		require.Contains(t, headers["X-Roles"], "admin")
+	})
+
+	t.Run("forward_email_verified_false", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:         true,
+					Mode:            "forward",
+					ClaimsToHeaders: map[string]string{"email_verified": "X-V"},
+				},
+			},
+		}, "test")
+		claims := &OAuthClaims{EmailVerified: false}
+		headers := srv.BuildClickHouseHeadersFromOAuth("tok", claims)
+		require.Equal(t, "false", headers["X-V"])
+	})
+}
+
+func TestMatchesAnyPattern_SensitiveHeaders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wildcard_skips_authorization", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("Authorization", []string{"*"}))
+	})
+
+	t.Run("wildcard_skips_cookie", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("Cookie", []string{"*"}))
+	})
+
+	t.Run("wildcard_skips_set_cookie", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("Set-Cookie", []string{"*"}))
+	})
+
+	t.Run("wildcard_skips_host", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("Host", []string{"*"}))
+	})
+
+	t.Run("wildcard_skips_proxy_authorization", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("Proxy-Authorization", []string{"*"}))
+	})
+
+	t.Run("explicit_match_allows_authorization", func(t *testing.T) {
+		t.Parallel()
+		require.True(t, matchesAnyPattern("Authorization", []string{"authorization"}))
+	})
+
+	t.Run("prefix_wildcard_matches_custom", func(t *testing.T) {
+		t.Parallel()
+		require.True(t, matchesAnyPattern("X-Custom-Header", []string{"x-custom-*"}))
+	})
+
+	t.Run("prefix_wildcard_no_match", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("X-Other-Header", []string{"x-custom-*"}))
+	})
+
+	t.Run("empty_patterns", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("X-Test", []string{}))
+	})
+
+	t.Run("empty_pattern_element", func(t *testing.T) {
+		t.Parallel()
+		require.False(t, matchesAnyPattern("X-Test", []string{"", "  "}))
+	})
+}
+
+func TestWarnOnCatchAllPattern(t *testing.T) {
+	t.Parallel()
+	// Just verify it doesn't panic; the actual log output is a side effect
+	WarnOnCatchAllPattern([]string{"X-Custom"})
+	WarnOnCatchAllPattern([]string{"*"})
+	WarnOnCatchAllPattern([]string{" * "})
+	WarnOnCatchAllPattern(nil)
+	WarnOnCatchAllPattern([]string{})
+}
+
+func TestContextWithForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("extracts_matching_headers", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Tenant-Id", "tenant1")
+		req.Header.Set("X-Other", "value")
+
+		ctx := ContextWithForwardedHeaders(req.Context(), req, []string{"X-Tenant-Id"})
+		headers := ForwardedHeadersFromContext(ctx)
+		require.Equal(t, "tenant1", headers["X-Tenant-Id"])
+		_, hasOther := headers["X-Other"]
+		require.False(t, hasOther)
+	})
+
+	t.Run("no_match_returns_original_ctx", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Other", "value")
+
+		ctx := ContextWithForwardedHeaders(req.Context(), req, []string{"X-Tenant-Id"})
+		headers := ForwardedHeadersFromContext(ctx)
+		require.Nil(t, headers)
+	})
+
+	t.Run("nil_request", func(t *testing.T) {
+		t.Parallel()
+		ctx := ContextWithForwardedHeaders(context.Background(), nil, []string{"X-Tenant-Id"})
+		headers := ForwardedHeadersFromContext(ctx)
+		require.Nil(t, headers)
+	})
+
+	t.Run("empty_patterns", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Tenant-Id", "tenant1")
+
+		ctx := ContextWithForwardedHeaders(req.Context(), req, nil)
+		headers := ForwardedHeadersFromContext(ctx)
+		require.Nil(t, headers)
+	})
+}
+
+func TestContextWithHeaderSettings(t *testing.T) {
+	t.Parallel()
+
+	t.Run("maps_headers_to_settings", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Tenant", "acme")
+
+		mapping := map[string]string{"X-Tenant": "custom_tenant"}
+		ctx := ContextWithHeaderSettings(req.Context(), req, mapping)
+		settings := HeaderSettingsFromContext(ctx)
+		require.Equal(t, "acme", settings["custom_tenant"])
+	})
+
+	t.Run("missing_header_skipped", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+		mapping := map[string]string{"X-Tenant": "custom_tenant"}
+		ctx := ContextWithHeaderSettings(req.Context(), req, mapping)
+		settings := HeaderSettingsFromContext(ctx)
+		require.Nil(t, settings)
+	})
+
+	t.Run("nil_request", func(t *testing.T) {
+		t.Parallel()
+		ctx := ContextWithHeaderSettings(context.Background(), nil, map[string]string{"X-Tenant": "custom_tenant"})
+		settings := HeaderSettingsFromContext(ctx)
+		require.Nil(t, settings)
+	})
+
+	t.Run("empty_mapping", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Tenant", "acme")
+
+		ctx := ContextWithHeaderSettings(req.Context(), req, nil)
+		settings := HeaderSettingsFromContext(ctx)
+		require.Nil(t, settings)
+	})
+}
+
+func TestValidateHeaderToSettings_Blocked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("blocked_setting", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateHeaderToSettings(map[string]string{"X-RO": "readonly"})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "blocked")
+	})
+
+	t.Run("sensitive_header", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateHeaderToSettings(map[string]string{"Authorization": "custom_auth"})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "sensitive")
+	})
+
+	t.Run("valid_custom_setting", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateHeaderToSettings(map[string]string{"X-Tenant": "custom_tenant"})
+		require.NoError(t, err)
+	})
+
+	t.Run("non_custom_prefix_warns_but_succeeds", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateHeaderToSettings(map[string]string{"X-Tenant": "tenant_id"})
+		require.NoError(t, err) // only warning, not error
+	})
+}
+
+func TestParseJWEClaims(t *testing.T) {
+	t.Parallel()
+
+	t.Run("jwe_disabled", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		claims, err := srv.ParseJWEClaims("some-token")
+		require.NoError(t, err)
+		require.Nil(t, claims)
+	})
+
+	t.Run("empty_token", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			Server: config.ServerConfig{JWE: config.JWEConfig{
+				Enabled:      true,
+				JWESecretKey: "test-key",
+			}},
+		}, "test")
+		_, err := srv.ParseJWEClaims("")
+		require.Error(t, err)
+	})
+}
+
+func TestLooksLikeJWT(t *testing.T) {
+	t.Parallel()
+	require.True(t, looksLikeJWT("a.b.c"))
+	require.False(t, looksLikeJWT("not-a-jwt"))
+	require.False(t, looksLikeJWT("a.b"))
+	require.False(t, looksLikeJWT("a.b.c.d"))
+}
+
+func TestParseDynamicToolComment(t *testing.T) {
+	t.Parallel()
+	t.Run("empty_string", func(t *testing.T) {
+		t.Parallel()
+		_, ok := parseDynamicToolComment("")
+		require.False(t, ok)
+	})
+	t.Run("whitespace_only", func(t *testing.T) {
+		t.Parallel()
+		_, ok := parseDynamicToolComment("   ")
+		require.False(t, ok)
+	})
+	t.Run("non_json_text", func(t *testing.T) {
+		t.Parallel()
+		_, ok := parseDynamicToolComment("just a plain comment")
+		require.False(t, ok)
+	})
+	t.Run("valid_json_metadata", func(t *testing.T) {
+		t.Parallel()
+		meta, ok := parseDynamicToolComment(`{"title":"My Tool","description":"Does stuff"}`)
+		require.True(t, ok)
+		require.Equal(t, "My Tool", meta.Title)
+		require.Equal(t, "Does stuff", meta.Description)
+	})
+	t.Run("invalid_json", func(t *testing.T) {
+		t.Parallel()
+		_, ok := parseDynamicToolComment(`{invalid json}`)
+		require.False(t, ok)
+	})
+	t.Run("json_with_annotations", func(t *testing.T) {
+		t.Parallel()
+		meta, ok := parseDynamicToolComment(`{"title":"T","annotations":{"openWorldHint":true}}`)
+		require.True(t, ok)
+		require.Equal(t, "T", meta.Title)
+		require.NotNil(t, meta.Annotations)
+		require.True(t, *meta.Annotations.OpenWorldHint)
+	})
+}
+
+func TestBuildDynamicToolDescription(t *testing.T) {
+	t.Parallel()
+	t.Run("metadata_description_takes_priority", func(t *testing.T) {
+		t.Parallel()
+		desc := buildDynamicToolDescription("comment", "db", "tbl", "Meta desc", false)
+		require.Equal(t, "Meta desc", desc)
+	})
+	t.Run("comment_used_when_no_metadata", func(t *testing.T) {
+		t.Parallel()
+		desc := buildDynamicToolDescription("my comment", "db", "tbl", "", false)
+		require.Equal(t, "my comment", desc)
+	})
+	t.Run("structured_metadata_overrides_comment", func(t *testing.T) {
+		t.Parallel()
+		desc := buildDynamicToolDescription("my comment", "db", "tbl", "", true)
+		require.Equal(t, "Read-only tool to query data from db.tbl", desc)
+	})
+	t.Run("fallback_when_all_empty", func(t *testing.T) {
+		t.Parallel()
+		desc := buildDynamicToolDescription("", "db", "tbl", "", false)
+		require.Equal(t, "Read-only tool to query data from db.tbl", desc)
+	})
+	t.Run("whitespace_metadata_description_ignored", func(t *testing.T) {
+		t.Parallel()
+		desc := buildDynamicToolDescription("comment", "db", "tbl", "   ", false)
+		require.Equal(t, "comment", desc)
+	})
+}
+
+func TestValidateOAuthClaims(t *testing.T) {
+	t.Parallel()
+
+	t.Run("issuer_mismatch", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Issuer: "https://expected.example.com",
+		}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://wrong.example.com"})
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("audience_missing_when_required", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Audience: "my-audience",
+		}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{})
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("audience_mismatch", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Audience: "my-audience",
+		}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{Audience: []string{"wrong-audience"}})
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("token_expired", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{ExpiresAt: time.Now().Unix() - 300})
+		require.ErrorIs(t, err, ErrOAuthTokenExpired)
+	})
+
+	t.Run("not_yet_valid", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{NotBefore: time.Now().Unix() + 300})
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("issued_in_future", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{IssuedAt: time.Now().Unix() + 300})
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("missing_required_scopes", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			RequiredScopes: []string{"admin"},
+		}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{Scopes: []string{"read"}})
+		require.ErrorIs(t, err, ErrOAuthInsufficientScopes)
+	})
+
+	t.Run("valid_claims", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Issuer:         "https://issuer.example.com",
+			Audience:       "my-aud",
+			RequiredScopes: []string{"read"},
+		}}}}
+		claims, err := s.validateOAuthClaims(&OAuthClaims{
+			Issuer:    "https://issuer.example.com",
+			Audience:  []string{"my-aud"},
+			ExpiresAt: time.Now().Unix() + 300,
+			Scopes:    []string{"read", "write"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, "https://issuer.example.com", claims.Issuer)
+	})
+
+	t.Run("gating_mode_uses_public_auth_server_url_as_issuer", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Mode:               "gating",
+			Issuer:             "https://original-issuer.com",
+			PublicAuthServerURL: "https://public-auth.com",
+		}}}}
+		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://public-auth.com"})
+		require.NoError(t, err)
+	})
+}
+
+func TestParseAndVerifySelfIssuedOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing_secret", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			GatingSecretKey: "",
+		}}}}
+		_, err := s.parseAndVerifySelfIssuedOAuthToken("some.jwt.token")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "gating_secret_key is required")
+	})
+
+	t.Run("invalid_jwt_format", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			GatingSecretKey: "my-secret",
+		}}}}
+		_, err := s.parseAndVerifySelfIssuedOAuthToken("not-a-jwt")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to parse self-issued JWT")
+	})
+}
+
+func TestHasRequiredScopes(t *testing.T) {
+	t.Parallel()
+	require.True(t, hasRequiredScopes([]string{"read", "write", "admin"}, []string{"read", "write"}))
+	require.False(t, hasRequiredScopes([]string{"read"}, []string{"read", "admin"}))
+	require.True(t, hasRequiredScopes([]string{"read"}, []string{}))
+	require.True(t, hasRequiredScopes([]string{}, []string{}))
+	require.False(t, hasRequiredScopes([]string{}, []string{"read"}))
+}
+
+func TestCORSAllowHeadersExtended(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wildcard_pattern_adds_star", func(t *testing.T) {
+		t.Parallel()
+		headers := CORSAllowHeaders([]string{"X-*"}, nil)
+		require.Contains(t, headers, "*")
+	})
+
+	t.Run("header_to_settings_included", func(t *testing.T) {
+		t.Parallel()
+		headers := CORSAllowHeaders(nil, map[string]string{"X-Tenant": "custom_tenant"})
+		require.Contains(t, headers, "X-Tenant")
+	})
+
+	t.Run("combined_patterns_and_settings", func(t *testing.T) {
+		t.Parallel()
+		headers := CORSAllowHeaders(
+			[]string{"X-Custom-Header"},
+			map[string]string{"X-Region": "custom_region"},
+		)
+		require.Contains(t, headers, "X-Custom-Header")
+		require.Contains(t, headers, "X-Region")
+	})
+}
+
+// --- Pure function unit tests ---
+
+func TestMapCHType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		chType     string
+		wantType   string
+		wantFormat string
+	}{
+		{"UInt64", "integer", "int64"},
+		{"UInt8", "integer", "int64"},
+		{"Int32", "integer", "int64"},
+		{"Float64", "number", "double"},
+		{"Float32", "number", "double"},
+		{"Decimal(18,2)", "number", "double"},
+		{"Bool", "boolean", ""},
+		{"Date", "string", "date"},
+		{"Date32", "string", "date"},
+		{"DateTime", "string", "date-time"},
+		{"DateTime64(3)", "string", "date-time"},
+		{"UUID", "string", "uuid"},
+		{"String", "string", ""},
+		{"FixedString(10)", "string", ""},
+		{"Enum8('a'=1)", "string", ""},
+		{"Array(UInt64)", "string", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.chType, func(t *testing.T) {
+			t.Parallel()
+			gotType, gotFormat := mapCHType(tt.chType)
+			require.Equal(t, tt.wantType, gotType)
+			require.Equal(t, tt.wantFormat, gotFormat)
+		})
+	}
+}
+
+func TestSqlLiteral(t *testing.T) {
+	t.Parallel()
+	t.Run("integer_float64", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "42", sqlLiteral("integer", float64(42)))
+	})
+	t.Run("integer_int64", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "99", sqlLiteral("integer", int64(99)))
+	})
+	t.Run("integer_int", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "7", sqlLiteral("integer", int(7)))
+	})
+	t.Run("integer_unsupported_type", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "0", sqlLiteral("integer", "not-a-number"))
+	})
+	t.Run("number_float64", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "3.14", sqlLiteral("number", float64(3.14)))
+	})
+	t.Run("number_unsupported_type", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "0", sqlLiteral("number", "not-a-number"))
+	})
+	t.Run("boolean_true", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "1", sqlLiteral("boolean", true))
+	})
+	t.Run("boolean_false", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "0", sqlLiteral("boolean", false))
+	})
+	t.Run("boolean_non_bool", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "0", sqlLiteral("boolean", "yes"))
+	})
+	t.Run("string_value", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "'hello'", sqlLiteral("string", "hello"))
+	})
+	t.Run("string_with_single_quote", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "'it\\'s'", sqlLiteral("string", "it's"))
+	})
+	t.Run("string_with_backslash", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "'a\\\\b'", sqlLiteral("string", "a\\b"))
+	})
+	t.Run("string_non_string_value", func(t *testing.T) {
+		t.Parallel()
+		result := sqlLiteral("string", 42)
+		require.Equal(t, "'42'", result)
+	})
+}
+
+func TestSnakeCase(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "hello", "hello"},
+		{"camel_case", "helloWorld", "helloworld"},
+		{"with_spaces", "hello world", "hello_world"},
+		{"with_hyphens", "hello-world", "hello_world"},
+		{"consecutive_special", "hello--world", "hello_world"},
+		{"leading_trailing_special", "--hello--", "hello"},
+		{"empty", "", ""},
+		{"numbers", "test123value", "test123value"},
+		{"mixed", "my View-Name 123", "my_view_name_123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, snakeCase(tt.input))
+		})
+	}
+}
+
+func TestParseViewParams(t *testing.T) {
+	t.Parallel()
+	t.Run("single_param", func(t *testing.T) {
+		t.Parallel()
+		params := parseViewParams("SELECT * FROM t WHERE id = {id: UInt64}")
+		require.Len(t, params, 1)
+		require.Equal(t, "id", params[0].Name)
+		require.Equal(t, "UInt64", params[0].CHType)
+		require.Equal(t, "integer", params[0].JSONType)
+		require.Equal(t, "int64", params[0].JSONFormat)
+		require.True(t, params[0].Required)
+	})
+	t.Run("multiple_params", func(t *testing.T) {
+		t.Parallel()
+		params := parseViewParams("SELECT * FROM t WHERE id = {id: UInt64} AND name = {name: String}")
+		require.Len(t, params, 2)
+		require.Equal(t, "id", params[0].Name)
+		require.Equal(t, "name", params[1].Name)
+	})
+	t.Run("no_params", func(t *testing.T) {
+		t.Parallel()
+		params := parseViewParams("SELECT * FROM t")
+		require.Empty(t, params)
+	})
+	t.Run("no_spaces", func(t *testing.T) {
+		t.Parallel()
+		params := parseViewParams("SELECT * FROM t WHERE id={id:UInt64}")
+		require.Len(t, params, 1)
+		require.Equal(t, "id", params[0].Name)
+		require.Equal(t, "UInt64", params[0].CHType)
+	})
+	t.Run("date_type", func(t *testing.T) {
+		t.Parallel()
+		params := parseViewParams("WHERE dt = {dt: DateTime}")
+		require.Len(t, params, 1)
+		require.Equal(t, "string", params[0].JSONType)
+		require.Equal(t, "date-time", params[0].JSONFormat)
+	})
+}
+
+func TestHumanizeToolName(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "My Tool", humanizeToolName("my_tool"))
+	require.Equal(t, "Abc Def", humanizeToolName("abc-def"))
+	require.Equal(t, "Hello World", humanizeToolName("hello.world"))
+	require.Equal(t, "Single", humanizeToolName("single"))
+	require.Equal(t, "", humanizeToolName(""))
+}
+
+func TestBuildTitle(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "Custom Title", buildTitle("my_tool", "Custom Title"))
+	require.Equal(t, "My Tool", buildTitle("my_tool", ""))
+	require.Equal(t, "My Tool", buildTitle("my_tool", "  "))
+}
+
+func TestBuildDescription_Wrapper(t *testing.T) {
+	t.Parallel()
+	desc := buildDescription("some comment", "db", "tbl")
+	require.Equal(t, "some comment", desc)
+	desc = buildDescription("", "db", "tbl")
+	require.Equal(t, "Read-only tool to query data from db.tbl", desc)
+}
+
+func TestBuildDynamicToolAnnotations(t *testing.T) {
+	t.Parallel()
+	t.Run("nil_annotations", func(t *testing.T) {
+		t.Parallel()
+		annotations := buildDynamicToolAnnotations(nil)
+		require.True(t, annotations.ReadOnlyHint)
+		require.False(t, *annotations.DestructiveHint)
+		require.False(t, *annotations.OpenWorldHint)
+	})
+	t.Run("open_world_true", func(t *testing.T) {
+		t.Parallel()
+		owTrue := true
+		annotations := buildDynamicToolAnnotations(&dynamicToolCommentAnnotations{OpenWorldHint: &owTrue})
+		require.True(t, *annotations.OpenWorldHint)
+	})
+}
+
+func TestGetClickHouseJWEServerFromContext_WrongType(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, "not-a-server")
+	require.Nil(t, GetClickHouseJWEServerFromContext(ctx))
+}
+
+func TestExtractTokenFromRequest_AllSources(t *testing.T) {
+	t.Parallel()
+	s := &ClickHouseJWEServer{}
+
+	t.Run("basic_auth", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Basic abc123")
+		require.Equal(t, "abc123", s.ExtractTokenFromRequest(req))
+	})
+	t.Run("custom_header", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("x-altinity-mcp-key", "custom-key")
+		require.Equal(t, "custom-key", s.ExtractTokenFromRequest(req))
+	})
+	t.Run("openapi_path", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/my-token/openapi/execute_query", nil)
+		require.Equal(t, "my-token", s.ExtractTokenFromRequest(req))
+	})
+	t.Run("no_token", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		require.Equal(t, "", s.ExtractTokenFromRequest(req))
+	})
+}
+
+func TestValidateJWEToken(t *testing.T) {
+	t.Parallel()
+	jweKey := "test-jwe-key-12345"
+	jwtKey := "test-jwt-key-12345"
+
+	s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{
+		Enabled:      true,
+		JWESecretKey: jweKey,
+		JWTSecretKey: jwtKey,
+	}}}}
+
+	t.Run("valid_token", func(t *testing.T) {
+		t.Parallel()
+		token := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost",
+			"exp":  float64(time.Now().Add(time.Hour).Unix()),
+		}, []byte(jweKey), []byte(jwtKey))
+		require.NoError(t, s.ValidateJWEToken(token))
+	})
+
+	t.Run("invalid_token", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, s.ValidateJWEToken("invalid-token"))
+	})
+
+	t.Run("expired_token", func(t *testing.T) {
+		t.Parallel()
+		token := generateJWEToken(t, map[string]interface{}{
+			"host": "localhost",
+			"exp":  float64(time.Now().Add(-time.Hour).Unix()),
+		}, []byte(jweKey), []byte(jwtKey))
+		require.Error(t, s.ValidateJWEToken(token))
+	})
+
+	t.Run("jwe_disabled", func(t *testing.T) {
+		t.Parallel()
+		s2 := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}}
+		require.NoError(t, s2.ValidateJWEToken("anything"))
+	})
+}
+
+func TestGetClickHouseClientWithHeaders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("jwe_disabled_uses_default", func(t *testing.T) {
+		t.Parallel()
+		chConfig := setupClickHouseContainer(t)
+		s := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		client, err := s.GetClickHouseClientWithHeaders(context.Background(), "", nil, nil)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NoError(t, client.Close())
+	})
+
+	t.Run("jwe_enabled_missing_token", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{
+			Enabled:      true,
+			JWESecretKey: "secret",
+		}}}}
+		_, err := s.GetClickHouseClientWithHeaders(context.Background(), "", nil, nil)
+		require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+	})
+
+	t.Run("jwe_enabled_invalid_token", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{
+			Enabled:      true,
+			JWESecretKey: "secret",
+		}}}}
+		_, err := s.GetClickHouseClientWithHeaders(context.Background(), "invalid-token", nil, nil)
+		require.Error(t, err)
+	})
+
+	t.Run("with_extra_headers", func(t *testing.T) {
+		t.Parallel()
+		chConfig := setupClickHouseContainer(t)
+		s := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		headers := map[string]string{"X-Custom": "val"}
+		client, err := s.GetClickHouseClientWithHeaders(context.Background(), "", headers, nil)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NoError(t, client.Close())
+	})
+}
+
+// --- E2E tests with ClickHouse container ---
+
+func TestHandleSchemaResourceE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	result, err := HandleSchemaResource(ctx, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Contents, 1)
+	require.Contains(t, result.Contents[0].Text, "test")
+	require.Equal(t, "application/json", result.Contents[0].MIMEType)
+}
+
+func TestHandleSchemaResourceE2E_NoServer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := HandleSchemaResource(ctx, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "can't get JWEServer from context")
+}
+
+func TestHandleTableResourceE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	t.Run("valid_table", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "clickhouse://table/default/test"}}
+		result, err := HandleTableResource(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Contents, 1)
+		require.Contains(t, result.Contents[0].Text, "id")
+	})
+
+	t.Run("invalid_uri_format", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "invalid-uri"}}
+		_, err := HandleTableResource(ctx, req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid table URI format")
+	})
+
+	t.Run("empty_database", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "clickhouse://table//test"}}
+		_, err := HandleTableResource(ctx, req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid table URI format")
+	})
+
+	t.Run("nonexistent_table", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "clickhouse://table/default/nonexistent_table_xyz"}}
+		_, err := HandleTableResource(ctx, req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to get table structure")
+	})
+
+	t.Run("no_server_in_context", func(t *testing.T) {
+		req := &mcp.ReadResourceRequest{Params: &mcp.ReadResourceParams{URI: "clickhouse://table/default/test"}}
+		_, err := HandleTableResource(context.Background(), req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "can't get JWEServer from context")
+	})
+}
+
+func TestHandleExecuteQueryE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	t.Run("select_query", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test"}`)}}
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.IsError)
+	})
+
+	t.Run("missing_query_param", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{}`)}}
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+	})
+
+	t.Run("empty_query", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":""}`)}}
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+	})
+
+	t.Run("invalid_query", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"INVALID SQL SYNTAX HERE 123"}`)}}
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+	})
+
+	t.Run("with_limit", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test","limit":1}`)}}
+		result, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.False(t, result.IsError)
+	})
+
+	t.Run("limit_exceeds_max", func(t *testing.T) {
+		srvLimited := NewClickHouseMCPServer(config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     chConfig.Host,
+				Port:     chConfig.Port,
+				Database: chConfig.Database,
+				Username: chConfig.Username,
+				Protocol: chConfig.Protocol,
+				Limit:    10,
+			},
+			Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		ctxLimited := context.WithValue(context.Background(), CHJWEServerKey, srvLimited)
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test","limit":100}`)}}
+		result, err := HandleExecuteQuery(ctxLimited, req)
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+	})
+
+	t.Run("no_server_in_context", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT 1"}`)}}
+		_, err := HandleExecuteQuery(context.Background(), req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "can't get JWEServer from context")
+	})
+}
+
+func TestEnsureDynamicToolsE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	t.Run("no_dynamic_tools_config", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		err := srv.EnsureDynamicTools(context.Background())
+		require.NoError(t, err)
+	})
+
+	t.Run("with_dynamic_tools_pattern", func(t *testing.T) {
+		t.Parallel()
+		// Create a view first
+		ctx := context.Background()
+		client, err := clickhouse.NewClient(ctx, *chConfig)
+		require.NoError(t, err)
+		_, err = client.ExecuteQuery(ctx, "CREATE OR REPLACE VIEW default.mcp_test_view AS SELECT 1 AS value")
+		require.NoError(t, err)
+		require.NoError(t, client.Close())
+
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server: config.ServerConfig{
+				JWE: config.JWEConfig{Enabled: false},
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: "^mcp_"},
+				},
+			},
+		}, "test")
+		err = srv.EnsureDynamicTools(ctx)
+		require.NoError(t, err)
+	})
+}
+
+func TestOpenAPIHandlerE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: *chConfig,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+
+	t.Run("no_context_server", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("schema_endpoint", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+		rr := httptest.NewRecorder()
+		srv.OpenAPIHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("get_method_serves_schema", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
+		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+		rr := httptest.NewRecorder()
+		srv.ServeOpenAPISchema(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "execute_query")
+	})
+}
+
+func TestGetClickHouseClientWithOAuthE2E(t *testing.T) {
+	t.Parallel()
+	chConfig := setupClickHouseContainer(t)
+
+	t.Run("default_config_no_oauth", func(t *testing.T) {
+		t.Parallel()
+		srv := NewClickHouseMCPServer(config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		}, "test")
+		client, err := srv.GetClickHouseClientWithOAuth(context.Background(), "", "", nil)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NoError(t, client.Close())
+	})
+
+	t.Run("jwe_enabled_invalid_token", func(t *testing.T) {
+		t.Parallel()
+		srv := &ClickHouseJWEServer{Config: config.Config{
+			ClickHouse: *chConfig,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "secret"}},
+		}}
+		_, err := srv.GetClickHouseClientWithOAuth(context.Background(), "bad-token", "", nil)
+		require.Error(t, err)
+	})
+}
+
+func TestNewClickHouseMCPServerVersionField(t *testing.T) {
+	t.Parallel()
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: config.ClickHouseConfig{Host: "localhost", Port: 9000},
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "1.0.0")
+	require.NotNil(t, srv)
+	require.NotNil(t, srv.MCPServer)
+	require.Equal(t, "1.0.0", srv.Version)
+	require.NotNil(t, srv.dynamicTools)
+}
+
+func TestRegisterToolsAndResources(t *testing.T) {
+	t.Parallel()
+	capture := &captureServer{}
+	RegisterTools(capture, config.Config{})
+	require.Len(t, capture.tools, 1)
+	require.Equal(t, "execute_query", capture.tools[0].Name)
+
+	// These just verify no panic
+	RegisterResources(capture)
+	RegisterPrompts(capture)
+}
