@@ -210,9 +210,11 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 		chConfig = s.Config.ClickHouse
 	} else {
 		if tokenParam == "" {
+			// JWE auth is enabled but no token provided
 			return nil, jwe_auth.ErrMissingToken
 		}
 
+		// Parse and validate JWE token
 		claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
 		if err != nil {
 			log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
@@ -220,6 +222,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 		}
 
 		var buildErr error
+		// Create ClickHouse config from JWE claims
 		chConfig, buildErr = s.buildConfigFromClaims(claims)
 		if buildErr != nil {
 			return nil, buildErr
@@ -1431,19 +1434,16 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 			return nil, fmt.Errorf("can't get JWEServer from context")
 		}
 
-		// Get arguments from request
 		arguments := getArgumentsMap(req)
 
-		// Extract tool-input settings if configured
 		if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
-			if settings, settingsErr := extractToolInputSettings(arguments, chJweServer.Config.Server.ToolInputSettings); settingsErr != nil {
-				return NewToolResultError(fmt.Sprintf("Invalid settings: %v", settingsErr)), nil
-			} else if settings != nil {
-				ctx = ContextWithToolInputSettings(ctx, settings)
+			var errResult *mcp.CallToolResult
+			ctx, errResult = applyToolInputSettings(ctx, arguments, chJweServer.Config.Server.ToolInputSettings)
+			if errResult != nil {
+				return errResult, nil
 			}
 		}
 
-		// Get ClickHouse client (handles both JWE and OAuth from context)
 		chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
@@ -1788,16 +1788,14 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
-	// Extract tool-input settings if configured
 	if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
-		if settings, settingsErr := extractToolInputSettings(arguments, chJweServer.Config.Server.ToolInputSettings); settingsErr != nil {
-			return NewToolResultError(fmt.Sprintf("Invalid settings: %v", settingsErr)), nil
-		} else if settings != nil {
-			ctx = ContextWithToolInputSettings(ctx, settings)
+		var errResult *mcp.CallToolResult
+		ctx, errResult = applyToolInputSettings(ctx, arguments, chJweServer.Config.Server.ToolInputSettings)
+		if errResult != nil {
+			return errResult, nil
 		}
 	}
 
-	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
@@ -2186,12 +2184,13 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 
 	ctx := r.Context()
 
-	// Extract tool input settings from request body
 	if len(s.Config.Server.ToolInputSettings) > 0 {
-		if settings, settingsErr := extractToolInputSettings(body, s.Config.Server.ToolInputSettings); settingsErr != nil {
+		settings, settingsErr := extractToolInputSettings(body, s.Config.Server.ToolInputSettings)
+		if settingsErr != nil {
 			http.Error(w, fmt.Sprintf("Invalid settings: %v", settingsErr), http.StatusBadRequest)
 			return
-		} else if settings != nil {
+		}
+		if settings != nil {
 			ctx = ContextWithToolInputSettings(ctx, settings)
 		}
 	}
@@ -2428,6 +2427,20 @@ func ToolInputSettingsFromContext(ctx context.Context) map[string]string {
 		return settings
 	}
 	return nil
+}
+
+// applyToolInputSettings extracts and validates tool-input settings from MCP
+// tool arguments and stores them in context. Returns an error tool result
+// if validation fails.
+func applyToolInputSettings(ctx context.Context, arguments map[string]any, allowlist []string) (context.Context, *mcp.CallToolResult) {
+	settings, err := extractToolInputSettings(arguments, allowlist)
+	if err != nil {
+		return ctx, NewToolResultError(fmt.Sprintf("Invalid settings: %v", err))
+	}
+	if settings != nil {
+		ctx = ContextWithToolInputSettings(ctx, settings)
+	}
+	return ctx, nil
 }
 
 // extractToolInputSettings parses the "settings" key from tool arguments,

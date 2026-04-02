@@ -237,16 +237,14 @@ func run(args []string) error {
 				Value:   "*",
 				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
 			},
-			&cli.StringFlag{
+			&cli.StringSliceFlag{
 				Name:    "tool-input-settings",
-				Usage:   "Comma-separated list of ClickHouse setting names allowed in tool arguments (e.g. custom_tenant_id,custom_org_id)",
-				Value:   "",
+				Usage:   "ClickHouse setting names allowed in tool arguments (e.g. --tool-input-settings custom_tenant_id --tool-input-settings custom_org_id)",
 				Sources: cli.EnvVars("TOOL_INPUT_SETTINGS"),
 			},
-			&cli.StringFlag{
+			&cli.StringSliceFlag{
 				Name:    "blocked-query-clauses",
-				Usage:   "Comma-separated SQL clauses to block in user queries (e.g. SETTINGS,FORMAT,SET,INTO OUTFILE,EXPLAIN)",
-				Value:   "",
+				Usage:   "SQL clauses to block in user queries (e.g. --blocked-query-clauses SETTINGS --blocked-query-clauses FORMAT)",
 				Sources: cli.EnvVars("BLOCKED_QUERY_CLAUSES"),
 			},
 		},
@@ -881,6 +879,7 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 type CommandInterface interface {
 	StringMap(name string) map[string]string
 	String(name string) string
+	StringSlice(name string) []string
 	Int(name string) int
 	Bool(name string) bool
 	IsSet(name string) bool
@@ -1066,39 +1065,17 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.CORSOrigin = "*"
 	}
 
-	// Override tool-input-settings with CLI flags
 	if cmd.IsSet("tool-input-settings") {
-		raw := cmd.String("tool-input-settings")
-		if raw != "" {
-			settings := strings.Split(raw, ",")
-			for i := range settings {
-				settings[i] = strings.TrimSpace(settings[i])
-			}
-			cfg.Server.ToolInputSettings = settings
-		} else {
-			cfg.Server.ToolInputSettings = nil
-		}
+		cfg.Server.ToolInputSettings = cmd.StringSlice("tool-input-settings")
 	}
-
-	// Validate tool_input_settings at startup
 	if len(cfg.Server.ToolInputSettings) > 0 {
 		if err := altinitymcp.ValidateToolInputSettings(cfg.Server.ToolInputSettings); err != nil {
 			log.Fatal().Err(err).Msg("invalid tool_input_settings configuration")
 		}
 	}
 
-	// Override blocked-query-clauses with CLI flags
 	if cmd.IsSet("blocked-query-clauses") {
-		raw := cmd.String("blocked-query-clauses")
-		if raw != "" {
-			clauses := strings.Split(raw, ",")
-			for i := range clauses {
-				clauses[i] = strings.TrimSpace(clauses[i])
-			}
-			cfg.Server.BlockedQueryClauses = clauses
-		} else {
-			cfg.Server.BlockedQueryClauses = nil
-		}
+		cfg.Server.BlockedQueryClauses = cmd.StringSlice("blocked-query-clauses")
 	}
 
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {

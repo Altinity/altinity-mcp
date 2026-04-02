@@ -334,6 +334,15 @@ func (m *mockCommand) String(name string) string {
 	return ""
 }
 
+func (m *mockCommand) StringSlice(name string) []string {
+	if val, ok := m.flags[name]; ok {
+		if ss, ok := val.([]string); ok {
+			return ss
+		}
+	}
+	return nil
+}
+
 func (m *mockCommand) Int(name string) int {
 	if val, ok := m.flags[name]; ok {
 		if i, ok := val.(int); ok {
@@ -3911,35 +3920,26 @@ func TestOAuthStateStoreEviction(t *testing.T) {
 func TestToolInputSettingsCLIFlag(t *testing.T) {
 	cases := []struct {
 		name     string
-		flagVal  string
+		flagVal  []string
 		flagSet  bool
 		initList []string
 		wantLen  int
-		wantNil  bool
 		wantList []string
 	}{
 		{
-			name: "parses_comma_separated", flagVal: "custom_tenant_id,custom_org_id",
+			name:    "multiple_settings",
+			flagVal: []string{"custom_tenant_id", "custom_org_id"},
 			flagSet: true, wantLen: 2,
 			wantList: []string{"custom_tenant_id", "custom_org_id"},
 		},
 		{
-			name: "single_setting", flagVal: "custom_tenant_id",
+			name:    "single_setting",
+			flagVal: []string{"custom_tenant_id"},
 			flagSet: true, wantLen: 1,
 			wantList: []string{"custom_tenant_id"},
 		},
 		{
-			name: "handles_spaces", flagVal: " custom_tenant_id , custom_org_id ",
-			flagSet: true, wantLen: 2,
-			wantList: []string{"custom_tenant_id", "custom_org_id"},
-		},
-		{
-			name: "empty_string_clears", flagVal: "",
-			flagSet: true, initList: []string{"custom_old"},
-			wantNil: true,
-		},
-		{
-			name: "not_set_preserves_config",
+			name:    "not_set_preserves_config",
 			flagSet: false, initList: []string{"custom_tenant_id"},
 			wantLen:  1,
 			wantList: []string{"custom_tenant_id"},
@@ -3964,14 +3964,8 @@ func TestToolInputSettingsCLIFlag(t *testing.T) {
 			}
 			overrideWithCLIFlags(cfg, cmd)
 
-			if tc.wantNil {
-				require.Nil(t, cfg.Server.ToolInputSettings)
-				return
-			}
 			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
-			for i, want := range tc.wantList {
-				require.Equal(t, want, cfg.Server.ToolInputSettings[i])
-			}
+			require.Equal(t, tc.wantList, cfg.Server.ToolInputSettings)
 		})
 	}
 }
@@ -3980,7 +3974,7 @@ func TestToolInputSettingsConfigFile(t *testing.T) {
 	cases := []struct {
 		name      string
 		yaml      string
-		cliFlag   string
+		cliFlags  []string
 		wantLen   int
 		wantList  []string
 		wantEmpty bool
@@ -4004,7 +3998,7 @@ server:
     - custom_tenant_id
     - custom_org_id
 `,
-			cliFlag:  "custom_region",
+			cliFlags: []string{"custom_region"},
 			wantLen:  1,
 			wantList: []string{"custom_region"},
 		},
@@ -4028,8 +4022,8 @@ server:
 				setFlags:   map[string]bool{"config": true},
 				stringMaps: make(map[string]map[string]string),
 			}
-			if tc.cliFlag != "" {
-				cmd.flags["tool-input-settings"] = tc.cliFlag
+			if tc.cliFlags != nil {
+				cmd.flags["tool-input-settings"] = tc.cliFlags
 				cmd.setFlags["tool-input-settings"] = true
 			}
 
@@ -4041,9 +4035,7 @@ server:
 				return
 			}
 			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
-			for i, want := range tc.wantList {
-				require.Equal(t, want, cfg.Server.ToolInputSettings[i])
-			}
+			require.Equal(t, tc.wantList, cfg.Server.ToolInputSettings)
 		})
 	}
 }
