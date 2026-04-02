@@ -244,7 +244,7 @@ func run(args []string) error {
 			},
 			&cli.StringSliceFlag{
 				Name:    "blocked-query-clauses",
-				Usage:   "SQL clauses to block in user queries (e.g. --blocked-query-clauses SETTINGS --blocked-query-clauses FORMAT)",
+				Usage:   "AST clause kinds to block (parser-derived names: WHERE, SETTINGS, FORMAT, …; see config desc)",
 				Sources: cli.EnvVars("BLOCKED_QUERY_CLAUSES"),
 			},
 		},

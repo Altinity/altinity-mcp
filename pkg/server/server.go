@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
@@ -87,7 +89,7 @@ type ClickHouseJWEServer struct {
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
-	blockedClausePatterns []blockedClause
+	blockedClauses map[string]bool
 }
 
 type dynamicToolParam struct {
@@ -155,7 +157,7 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		Config:                cfg,
 		Version:               version,
 		dynamicTools:          make(map[string]dynamicToolMeta),
-		blockedClausePatterns: CompileBlockedClauses(cfg.Server.BlockedQueryClauses),
+		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
 	// Register tools, resources, and prompts
@@ -1758,8 +1760,9 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
-	// Block queries containing disallowed SQL clauses
-	if clause := checkBlockedClauses(query, chJweServer.blockedClausePatterns); clause != "" {
+	if clause, err := checkBlockedClauses(query, chJweServer.blockedClauses); err != nil {
+		return NewToolResultError(fmt.Sprintf("Query rejected: %v", err)), nil
+	} else if clause != "" {
 		return NewToolResultError(fmt.Sprintf("Query rejected: %s clause is not allowed", clause)), nil
 	}
 
@@ -2101,8 +2104,10 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		return
 	}
 
-	// Block queries containing disallowed SQL clauses
-	if clause := checkBlockedClauses(query, s.blockedClausePatterns); clause != "" {
+	if clause, err := checkBlockedClauses(query, s.blockedClauses); err != nil {
+		http.Error(w, fmt.Sprintf("Query rejected: %v", err), http.StatusBadRequest)
+		return
+	} else if clause != "" {
 		http.Error(w, fmt.Sprintf("Query rejected: %s clause is not allowed", clause), http.StatusBadRequest)
 		return
 	}
@@ -2255,65 +2260,131 @@ func hasLimitClause(query string) bool {
 	return hasLimit
 }
 
-// --- blocked_query_clauses: block specific SQL clauses in user queries ---
-//
-// TODO: consider replacing regex-based detection with AST-based parsing via
-// github.com/AfterShip/clickhouse-sql-parser for zero false-positive clause
-// detection (e.g. distinguishing a column named "settings" from a SETTINGS clause).
-
-type blockedClause struct {
-	Name    string
-	Pattern *regexp.Regexp
-}
-
-// knownClausePatterns maps clause names (upper-cased) to context-aware regex
-// patterns that avoid false positives on column/table names.
-// Unknown clause names fall back to a generic word-boundary match.
-var knownClausePatterns = map[string]string{
-	"SETTINGS":     `(?i)\bSETTINGS\s+\w+\s*=`,
-	"FORMAT":       `(?i)\bFORMAT\s+[A-Za-z]\w*\s*$`,
-	"INTO OUTFILE": `(?i)\bINTO\s+OUTFILE\b`,
-	"SET":          `(?i)^\s*SET\b`,
-	"EXPLAIN":      `(?i)^\s*EXPLAIN\b`,
-}
-
-// CompileBlockedClauses converts a list of clause names into compiled regex
-// patterns. Known clauses get context-aware patterns; unknown names fall back
-// to a generic word-boundary match.
-func CompileBlockedClauses(clauses []string) []blockedClause {
+// NormalizeBlockedClauses converts a list of clause names into a normalized
+// set (upper-cased). Returns nil for empty input.
+func NormalizeBlockedClauses(clauses []string) map[string]bool {
 	if len(clauses) == 0 {
 		return nil
 	}
-	compiled := make([]blockedClause, 0, len(clauses))
+	set := make(map[string]bool, len(clauses))
 	for _, name := range clauses {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" {
 			continue
 		}
-		upper := strings.ToUpper(trimmed)
-		pattern, ok := knownClausePatterns[upper]
-		if !ok {
-			escaped := regexp.QuoteMeta(trimmed)
-			escaped = strings.ReplaceAll(escaped, " ", `\s+`)
-			pattern = `(?i)\b` + escaped + `\b`
-		}
-		compiled = append(compiled, blockedClause{
-			Name:    upper,
-			Pattern: regexp.MustCompile(pattern),
-		})
+		set[strings.ToUpper(trimmed)] = true
 	}
-	return compiled
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }
 
-// checkBlockedClauses returns the name of the first blocked clause found
-// in the query, or "" if none match.
-func checkBlockedClauses(query string, patterns []blockedClause) string {
-	for _, bc := range patterns {
-		if bc.Pattern.MatchString(query) {
-			return bc.Name
+// checkBlockedClauses parses the query with the ClickHouse SQL AST parser and
+// checks whether it contains any blocked clauses. If parsing fails, the query
+// is rejected (no heuristic fallback): the parser must understand the SQL
+// before clause blocking can be applied safely.
+func checkBlockedClauses(query string, blocked map[string]bool) (blockedClause string, err error) {
+	if len(blocked) == 0 {
+		return "", nil
+	}
+
+	p := chparser.NewParser(query)
+	stmts, parseErr := p.ParseStmts()
+	if parseErr != nil {
+		return "", fmt.Errorf("SQL could not be parsed for blocked-clause validation: %w", parseErr)
+	}
+
+	for _, stmt := range stmts {
+		if name := findBlockedClauseInAST(stmt, blocked); name != "" {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// blockedASTStructuralMatchers cover SQL constructs that are not represented
+// by a dedicated AST type whose Go name maps cleanly to a single keyword (see
+// astTypeNamesForBlockedLookup). Add rows here only for those cases; everything
+// else is derived from concrete *parser types during the walk (e.g. WhereClause
+// → WHERE, SettingsClause → SETTINGS).
+var blockedASTStructuralMatchers = []struct {
+	name  string
+	match func(n chparser.Expr) bool
+}{
+	{
+		name: "INTO OUTFILE",
+		match: func(n chparser.Expr) bool {
+			s, ok := n.(*chparser.ShowStmt)
+			return ok && s.OutFile != nil
+		},
+	},
+}
+
+// astTypeNamesForBlockedLookup maps a concrete AST struct name from
+// github.com/AfterShip/clickhouse-sql-parser to config keys operators may list
+// in blocked_query_clauses (compared case-insensitively; stored upper-case).
+//
+// Examples: SettingsClause→SETTINGS, SetStmt→SET, SelectQuery→SELECT, FormatClause→FORMAT.
+// The full type name (e.g. SETTINGSCLAUSE) is also accepted.
+func astTypeNamesForBlockedLookup(typeName string) []string {
+	if typeName == "" {
+		return nil
+	}
+	u := strings.ToUpper(typeName)
+	var out []string
+	switch {
+	case strings.HasSuffix(typeName, "Clause"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Clause")))
+		out = append(out, u)
+	case strings.HasSuffix(typeName, "Stmt"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Stmt")))
+		out = append(out, u)
+	case strings.HasSuffix(typeName, "Query"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Query")))
+		out = append(out, u)
+	default:
+		out = append(out, u)
+	}
+	return out
+}
+
+func matchBlockedClauseAtNode(n chparser.Expr, blocked map[string]bool) string {
+	if n == nil {
+		return ""
+	}
+	for _, m := range blockedASTStructuralMatchers {
+		if blocked[m.name] && m.match(n) {
+			return m.name
+		}
+	}
+	rv := reflect.ValueOf(n)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return ""
+	}
+	for _, key := range astTypeNamesForBlockedLookup(rv.Elem().Type().Name()) {
+		if blocked[key] {
+			return key
 		}
 	}
 	return ""
+}
+
+// findBlockedClauseInAST walks the tree and returns the first blocked name that
+// matches a structural rule or an AST concrete type (via reflection).
+func findBlockedClauseInAST(root chparser.Expr, blocked map[string]bool) string {
+	var found string
+	chparser.Walk(root, func(n chparser.Expr) bool {
+		if found != "" {
+			return false
+		}
+		if name := matchBlockedClauseAtNode(n, blocked); name != "" {
+			found = name
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // contextKey avoids collisions with other packages using context.WithValue.

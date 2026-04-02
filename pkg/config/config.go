@@ -211,7 +211,7 @@ type ServerConfig struct {
 	OpenAPI            OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
 	CORSOrigin        string   `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
 	ToolInputSettings []string `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
-	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"SQL clauses to block in user queries (e.g. SETTINGS, FORMAT, SET, INTO OUTFILE, EXPLAIN)"`
+	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }
