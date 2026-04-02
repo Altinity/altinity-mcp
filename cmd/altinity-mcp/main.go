@@ -237,17 +237,15 @@ func run(args []string) error {
 				Value:   "*",
 				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
 			},
-			&cli.StringFlag{
-				Name:    "forward-http-headers",
-				Usage:   "Comma-separated header name patterns forwarded from incoming requests to ClickHouse (supports * wildcard, e.g. X-*,X-Custom-Header)",
-				Value:   "",
-				Sources: cli.EnvVars("FORWARD_HTTP_HEADERS"),
+			&cli.StringSliceFlag{
+				Name:    "tool-input-settings",
+				Usage:   "ClickHouse setting names allowed in tool arguments (e.g. --tool-input-settings custom_tenant_id --tool-input-settings custom_org_id)",
+				Sources: cli.EnvVars("TOOL_INPUT_SETTINGS"),
 			},
-			&cli.StringFlag{
-				Name:    "header-to-settings",
-				Usage:   "Comma-separated header=setting pairs mapping HTTP headers to ClickHouse settings (e.g. X-User-Id=custom_user_id)",
-				Value:   "",
-				Sources: cli.EnvVars("HEADER_TO_SETTINGS"),
+			&cli.StringSliceFlag{
+				Name:    "blocked-query-clauses",
+				Usage:   "AST clause kinds to block (parser-derived names: WHERE, SETTINGS, FORMAT, …; see config desc)",
+				Sources: cli.EnvVars("BLOCKED_QUERY_CLAUSES"),
 			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
@@ -573,42 +571,29 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		openAPIProtocol = "https"
 	}
 
-	// Create a middleware to inject the ClickHouseJWEServer into context
-	fwdPatterns := cfg.Server.ForwardHTTPHeaders
-	h2sMapping := cfg.Server.HeaderToSettings
-	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
 	}
 
-	// CORS handler
-	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
-			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Max-Age", "86400")
 
-			// Handle preflight requests
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
@@ -693,42 +678,29 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		Str("address", addr).
 		Msg("Starting MCP server with SSE transport")
 
-	// Create a middleware to inject the ClickHouseJWEServer into context
-	fwdPatterns := cfg.Server.ForwardHTTPHeaders
-	h2sMapping := cfg.Server.HeaderToSettings
-	altinitymcp.WarnOnCatchAllPattern(fwdPatterns)
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-			ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-			ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
 	}
 	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		ctx = altinitymcp.ContextWithForwardedHeaders(ctx, r, fwdPatterns)
-		ctx = altinitymcp.ContextWithHeaderSettings(ctx, r, h2sMapping)
 		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
 	}
 
-	// CORS handler
-	corsAllowHeaders := altinitymcp.CORSAllowHeaders(fwdPatterns, h2sMapping)
 	corsHandler := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
-			w.Header().Set("Access-Control-Max-Age", "86400") // 24 hours
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Max-Age", "86400")
 
-			// Handle preflight requests
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
@@ -907,6 +879,7 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 type CommandInterface interface {
 	StringMap(name string) map[string]string
 	String(name string) string
+	StringSlice(name string) []string
 	Int(name string) int
 	Bool(name string) bool
 	IsSet(name string) bool
@@ -1092,42 +1065,17 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.CORSOrigin = "*"
 	}
 
-	// Override forward-http-headers with CLI flags
-	if cmd.IsSet("forward-http-headers") {
-		raw := cmd.String("forward-http-headers")
-		if raw != "" {
-			patterns := strings.Split(raw, ",")
-			for i := range patterns {
-				patterns[i] = strings.TrimSpace(patterns[i])
-			}
-			cfg.Server.ForwardHTTPHeaders = patterns
-		} else {
-			cfg.Server.ForwardHTTPHeaders = nil
+	if cmd.IsSet("tool-input-settings") {
+		cfg.Server.ToolInputSettings = cmd.StringSlice("tool-input-settings")
+	}
+	if len(cfg.Server.ToolInputSettings) > 0 {
+		if err := altinitymcp.ValidateToolInputSettings(cfg.Server.ToolInputSettings); err != nil {
+			log.Fatal().Err(err).Msg("invalid tool_input_settings configuration")
 		}
 	}
 
-	// Override header-to-settings with CLI flags
-	if cmd.IsSet("header-to-settings") {
-		raw := cmd.String("header-to-settings")
-		if raw != "" {
-			mapping := make(map[string]string)
-			for _, pair := range strings.Split(raw, ",") {
-				pair = strings.TrimSpace(pair)
-				if k, v, ok := strings.Cut(pair, "="); ok {
-					mapping[strings.TrimSpace(k)] = strings.TrimSpace(v)
-				}
-			}
-			cfg.Server.HeaderToSettings = mapping
-		} else {
-			cfg.Server.HeaderToSettings = nil
-		}
-	}
-
-	// Validate header_to_settings at startup
-	if len(cfg.Server.HeaderToSettings) > 0 {
-		if err := altinitymcp.ValidateHeaderToSettings(cfg.Server.HeaderToSettings); err != nil {
-			log.Fatal().Err(err).Msg("invalid header_to_settings configuration")
-		}
+	if cmd.IsSet("blocked-query-clauses") {
+		cfg.Server.BlockedQueryClauses = cmd.StringSlice("blocked-query-clauses")
 	}
 
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {

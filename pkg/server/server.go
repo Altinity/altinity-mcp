@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
@@ -87,6 +89,7 @@ type ClickHouseJWEServer struct {
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
+	blockedClauses map[string]bool
 }
 
 type dynamicToolParam struct {
@@ -150,10 +153,11 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	}, opts)
 
 	chJweServer := &ClickHouseJWEServer{
-		MCPServer:    srv,
-		Config:       cfg,
-		Version:      version,
-		dynamicTools: make(map[string]dynamicToolMeta),
+		MCPServer:             srv,
+		Config:                cfg,
+		Version:               version,
+		dynamicTools:          make(map[string]dynamicToolMeta),
+		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
 	// Register tools, resources, and prompts
@@ -201,14 +205,7 @@ func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandle
 }
 
 // GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config.
-// Also forwards any HTTP headers and header-to-settings stored in context by the middleware.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	return s.GetClickHouseClientWithHeaders(ctx, tokenParam, ForwardedHeadersFromContext(ctx), HeaderSettingsFromContext(ctx))
-}
-
-// GetClickHouseClientWithHeaders creates a ClickHouse client, merging optional per-request
-// HTTP headers (e.g. X-Tenant-Id) and ClickHouse settings into the config before connecting.
-func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context, tokenParam string, extraHeaders map[string]string, extraSettings map[string]string) (*clickhouse.Client, error) {
 	var chConfig config.ClickHouseConfig
 
 	if !s.Config.Server.JWE.Enabled {
@@ -234,14 +231,6 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithHeaders(ctx context.Context
 		}
 	}
 
-	if len(extraHeaders) > 0 {
-		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
-	}
-	if len(extraSettings) > 0 {
-		chConfig = mergeExtraSettings(chConfig, extraSettings)
-	}
-
-	// Create client with the configured parameters
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
@@ -1071,14 +1060,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		chConfig.Password = ""
 	}
 
-	// Merge forwarded HTTP headers from context (forward_http_headers)
-	if extraHeaders := ForwardedHeadersFromContext(ctx); len(extraHeaders) > 0 {
-		chConfig.HttpHeaders = mergeHTTPHeaders(chConfig.HttpHeaders, extraHeaders)
-	}
-
-	// Merge header-to-settings from context (header_to_settings)
-	if extraSettings := HeaderSettingsFromContext(ctx); len(extraSettings) > 0 {
-		chConfig = mergeExtraSettings(chConfig, extraSettings)
+	// Merge tool-input settings from context (tool_input_settings)
+	if toolSettings := ToolInputSettingsFromContext(ctx); len(toolSettings) > 0 {
+		chConfig = mergeExtraSettings(chConfig, toolSettings)
 	}
 
 	// Create client
@@ -1094,27 +1078,33 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
-// RegisterTools adds the ClickHouse tools to the MCP server
+// RegisterTools adds the ClickHouse tools to the MCP server.
+// When cfg.Server.ToolInputSettings is non-empty, a "settings" property is
+// added to every query-executing tool's schema.
 func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
-	// Execute Query Tool - InputSchema must be type "object" per MCP spec
+	properties := map[string]any{
+		"query": map[string]any{
+			"type":        "string",
+			"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+		},
+		"limit": map[string]any{
+			"type":        "number",
+			"description": "Maximum number of rows to return (default: 100000)",
+		},
+	}
+	if settingsSchema := buildToolInputSettingsSchema(cfg.Server.ToolInputSettings); settingsSchema != nil {
+		properties["settings"] = settingsSchema
+	}
+
 	executeQueryTool := &mcp.Tool{
 		Name:        "execute_query",
 		Title:       "Execute SQL Query",
 		Description: "Executes a SQL query against ClickHouse and returns the results",
 		Annotations: makeExecuteQueryAnnotations(cfg.ClickHouse.ReadOnly),
 		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
-				},
-				"limit": map[string]any{
-					"type":        "number",
-					"description": "Maximum number of rows to return (default: 100000)",
-				},
-			},
-			"required": []string{"query"},
+			"type":       "object",
+			"properties": properties,
+			"required":   []string{"query"},
 		},
 	}
 
@@ -1402,6 +1392,9 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 			}
 			props[p.Name] = prop
 		}
+		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
+			props["settings"] = settingsSchema
+		}
 
 		tool := &mcp.Tool{
 			Name:        toolName,
@@ -1442,7 +1435,17 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		if chJweServer == nil {
 			return nil, fmt.Errorf("can't get JWEServer from context")
 		}
-		// Get ClickHouse client (handles both JWE and OAuth from context)
+
+		arguments := getArgumentsMap(req)
+
+		if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
+			var errResult *mcp.CallToolResult
+			ctx, errResult = applyToolInputSettings(ctx, arguments, chJweServer.Config.Server.ToolInputSettings)
+			if errResult != nil {
+				return errResult, nil
+			}
+		}
+
 		chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
@@ -1453,9 +1456,6 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 				log.Error().Err(closeErr).Str("tool", meta.ToolName).Msg("dynamic_tools: close client failed")
 			}
 		}()
-
-		// Get arguments from request
-		arguments := getArgumentsMap(req)
 
 		// build param list
 		args := make([]string, 0, len(meta.Params))
@@ -1760,6 +1760,12 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
+	if clause, err := checkBlockedClauses(query, chJweServer.blockedClauses); err != nil {
+		return NewToolResultError(fmt.Sprintf("Query rejected: %v", err)), nil
+	} else if clause != "" {
+		return NewToolResultError(fmt.Sprintf("Query rejected: %s clause is not allowed", clause)), nil
+	}
+
 	// Get optional limit parameter
 	var limit float64
 	hasLimit := false
@@ -1785,7 +1791,14 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
-	// Get ClickHouse client (handles both JWE and OAuth from context)
+	if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
+		var errResult *mcp.CallToolResult
+		ctx, errResult = applyToolInputSettings(ctx, arguments, chJweServer.Config.Server.ToolInputSettings)
+		if errResult != nil {
+			return errResult, nil
+		}
+	}
+
 	chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get ClickHouse client")
@@ -1988,6 +2001,15 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				"schema":      map[string]interface{}{"type": "integer"},
 			},
 		)
+		for _, setting := range s.Config.Server.ToolInputSettings {
+			parameters = append(parameters, map[string]interface{}{
+				"name":        setting,
+				"in":          "query",
+				"required":    false,
+				"description": fmt.Sprintf("ClickHouse setting: %s", setting),
+				"schema":      map[string]interface{}{"type": "string"},
+			})
+		}
 
 		paths[prefix+"/openapi/execute_query"] = map[string]interface{}{
 			"get": map[string]interface{}{
@@ -2017,7 +2039,6 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	for _, prefix := range s.openAPIPathPrefixes() {
 		for toolName, meta := range s.dynamicTools {
 			path := prefix + "/openapi/" + toolName
-			// request body schema
 			props := map[string]interface{}{}
 			required := []string{}
 			for _, p := range meta.Params {
@@ -2029,6 +2050,9 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				if p.Required {
 					required = append(required, p.Name)
 				}
+			}
+			if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
+				props["settings"] = settingsSchema
 			}
 			paths[path] = map[string]interface{}{
 				"post": map[string]interface{}{
@@ -2080,6 +2104,14 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		return
 	}
 
+	if clause, err := checkBlockedClauses(query, s.blockedClauses); err != nil {
+		http.Error(w, fmt.Sprintf("Query rejected: %v", err), http.StatusBadRequest)
+		return
+	} else if clause != "" {
+		http.Error(w, fmt.Sprintf("Query rejected: %s clause is not allowed", clause), http.StatusBadRequest)
+		return
+	}
+
 	limitStr := r.URL.Query().Get("limit")
 	var limit int
 	hasLimit := false
@@ -2104,6 +2136,19 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	ctx := r.Context()
+
+	// Extract tool input settings from query parameters
+	if len(s.Config.Server.ToolInputSettings) > 0 {
+		toolSettings := make(map[string]string)
+		for _, name := range s.Config.Server.ToolInputSettings {
+			if val := r.URL.Query().Get(name); val != "" {
+				toolSettings[name] = val
+			}
+		}
+		if len(toolSettings) > 0 {
+			ctx = ContextWithToolInputSettings(ctx, toolSettings)
+		}
+	}
 
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
@@ -2143,6 +2188,18 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 	}
 
 	ctx := r.Context()
+
+	if len(s.Config.Server.ToolInputSettings) > 0 {
+		settings, settingsErr := extractToolInputSettings(body, s.Config.Server.ToolInputSettings)
+		if settingsErr != nil {
+			http.Error(w, fmt.Sprintf("Invalid settings: %v", settingsErr), http.StatusBadRequest)
+			return
+		}
+		if settings != nil {
+			ctx = ContextWithToolInputSettings(ctx, settings)
+		}
+	}
+
 	// Get ClickHouse client (handles both JWE and OAuth from context)
 	chClient, err := s.GetClickHouseClientFromCtx(ctx)
 	if err != nil {
@@ -2203,10 +2260,135 @@ func hasLimitClause(query string) bool {
 	return hasLimit
 }
 
+// NormalizeBlockedClauses converts a list of clause names into a normalized
+// set (upper-cased). Returns nil for empty input.
+func NormalizeBlockedClauses(clauses []string) map[string]bool {
+	if len(clauses) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(clauses))
+	for _, name := range clauses {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		set[strings.ToUpper(trimmed)] = true
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// checkBlockedClauses parses the query with the ClickHouse SQL AST parser and
+// checks whether it contains any blocked clauses. If parsing fails, the query
+// is rejected (no heuristic fallback): the parser must understand the SQL
+// before clause blocking can be applied safely.
+func checkBlockedClauses(query string, blocked map[string]bool) (blockedClause string, err error) {
+	if len(blocked) == 0 {
+		return "", nil
+	}
+
+	p := chparser.NewParser(query)
+	stmts, parseErr := p.ParseStmts()
+	if parseErr != nil {
+		return "", fmt.Errorf("SQL could not be parsed for blocked-clause validation: %w", parseErr)
+	}
+
+	for _, stmt := range stmts {
+		if name := findBlockedClauseInAST(stmt, blocked); name != "" {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+// blockedASTStructuralMatchers cover SQL constructs that are not represented
+// by a dedicated AST type whose Go name maps cleanly to a single keyword (see
+// astTypeNamesForBlockedLookup). Add rows here only for those cases; everything
+// else is derived from concrete *parser types during the walk (e.g. WhereClause
+// → WHERE, SettingsClause → SETTINGS).
+var blockedASTStructuralMatchers = []struct {
+	name  string
+	match func(n chparser.Expr) bool
+}{
+	{
+		name: "INTO OUTFILE",
+		match: func(n chparser.Expr) bool {
+			s, ok := n.(*chparser.ShowStmt)
+			return ok && s.OutFile != nil
+		},
+	},
+}
+
+// astTypeNamesForBlockedLookup maps a concrete AST struct name from
+// github.com/AfterShip/clickhouse-sql-parser to config keys operators may list
+// in blocked_query_clauses (compared case-insensitively; stored upper-case).
+//
+// Examples: SettingsClause→SETTINGS, SetStmt→SET, SelectQuery→SELECT, FormatClause→FORMAT.
+// The full type name (e.g. SETTINGSCLAUSE) is also accepted.
+func astTypeNamesForBlockedLookup(typeName string) []string {
+	if typeName == "" {
+		return nil
+	}
+	u := strings.ToUpper(typeName)
+	var out []string
+	switch {
+	case strings.HasSuffix(typeName, "Clause"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Clause")))
+		out = append(out, u)
+	case strings.HasSuffix(typeName, "Stmt"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Stmt")))
+		out = append(out, u)
+	case strings.HasSuffix(typeName, "Query"):
+		out = append(out, strings.ToUpper(strings.TrimSuffix(typeName, "Query")))
+		out = append(out, u)
+	default:
+		out = append(out, u)
+	}
+	return out
+}
+
+func matchBlockedClauseAtNode(n chparser.Expr, blocked map[string]bool) string {
+	if n == nil {
+		return ""
+	}
+	for _, m := range blockedASTStructuralMatchers {
+		if blocked[m.name] && m.match(n) {
+			return m.name
+		}
+	}
+	rv := reflect.ValueOf(n)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return ""
+	}
+	for _, key := range astTypeNamesForBlockedLookup(rv.Elem().Type().Name()) {
+		if blocked[key] {
+			return key
+		}
+	}
+	return ""
+}
+
+// findBlockedClauseInAST walks the tree and returns the first blocked name that
+// matches a structural rule or an AST concrete type (via reflection).
+func findBlockedClauseInAST(root chparser.Expr, blocked map[string]bool) string {
+	var found string
+	chparser.Walk(root, func(n chparser.Expr) bool {
+		if found != "" {
+			return false
+		}
+		if name := matchBlockedClauseAtNode(n, blocked); name != "" {
+			found = name
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // contextKey avoids collisions with other packages using context.WithValue.
 type contextKey string
-
-const forwardedHeadersKey contextKey = "forwarded_http_headers"
 
 // Auth context keys
 const (
@@ -2217,122 +2399,8 @@ const (
 	CHJWEServerKey contextKey = "clickhouse_jwe_server"
 )
 
-// sensitiveHeaders are excluded from wildcard pattern matching to prevent
-// accidental credential leakage. A user can still forward these by naming
-// them explicitly (e.g. --forward-http-headers "Authorization").
-var sensitiveHeaders = map[string]bool{
-	"Authorization":       true,
-	"Cookie":              true,
-	"Set-Cookie":          true,
-	"Host":                true,
-	"Proxy-Authorization": true,
-}
-
-// WarnOnCatchAllPattern logs a warning if any pattern is a bare "*",
-// which would forward all non-sensitive headers to ClickHouse. Call
-// once at startup after parsing the config.
-func WarnOnCatchAllPattern(patterns []string) {
-	for _, p := range patterns {
-		if strings.TrimSpace(p) == "*" {
-			log.Warn().Msg("forward-http-headers contains \"*\": all headers (except Authorization, Cookie, Host, Set-Cookie, Proxy-Authorization) will be forwarded to ClickHouse; sensitive headers require an explicit pattern")
-			return
-		}
-	}
-}
-
-// ContextWithForwardedHeaders extracts headers matching the given patterns
-// from the incoming HTTP request and stores them in context. This makes
-// forwarded headers available to every handler path (OpenAPI, MCP JSON-RPC,
-// dynamic tools) without coupling to *http.Request.
-func ContextWithForwardedHeaders(ctx context.Context, r *http.Request, patterns []string) context.Context {
-	if headers := extractForwardHeaders(r, patterns); headers != nil {
-		return context.WithValue(ctx, forwardedHeadersKey, headers)
-	}
-	return ctx
-}
-
-// ForwardedHeadersFromContext retrieves forwarded HTTP headers previously
-// stored by ContextWithForwardedHeaders. Returns nil when no headers are
-// available (e.g. STDIO transport).
-func ForwardedHeadersFromContext(ctx context.Context) map[string]string {
-	if headers, ok := ctx.Value(forwardedHeadersKey).(map[string]string); ok {
-		return headers
-	}
-	return nil
-}
-
-// extractForwardHeaders returns headers matching any of the given patterns.
-// Patterns support trailing * wildcard (e.g. "X-*" matches all X-prefixed
-// headers) and exact matches (e.g. "X-Tenant-Id"). Matching is
-// case-insensitive. Sensitive headers (Authorization, Cookie, …) are
-// excluded from wildcard matches but can be forwarded via an explicit
-// exact-match pattern.
-func extractForwardHeaders(r *http.Request, patterns []string) map[string]string {
-	if r == nil || len(patterns) == 0 {
-		return nil
-	}
-	headers := make(map[string]string)
-	for name := range r.Header {
-		canonical := http.CanonicalHeaderKey(name)
-		if matchesAnyPattern(canonical, patterns) {
-			headers[canonical] = r.Header.Get(name)
-		}
-	}
-	if len(headers) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(headers))
-	for k := range headers {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	log.Debug().Int("count", len(headers)).Strs("header_names", names).Msg("forwarding HTTP headers to ClickHouse")
-	return headers
-}
-
-// mergeHTTPHeaders merges extra per-request headers into a base header map,
-// returning a new map without mutating either input.
-func mergeHTTPHeaders(base, extra map[string]string) map[string]string {
-	merged := make(map[string]string, len(base)+len(extra))
-	for k, v := range base {
-		merged[k] = v
-	}
-	for k, v := range extra {
-		merged[k] = v
-	}
-	return merged
-}
-
-// CORSAllowHeaders builds the Access-Control-Allow-Headers value by combining
-// a base set of standard headers with the configured forward patterns and
-// header_to_settings source headers. Wildcard patterns (e.g. "X-*") are
-// expanded to the CORS spec wildcard "*" since browsers don't support prefix
-// wildcards in Access-Control-Allow-Headers.
-func CORSAllowHeaders(forwardPatterns []string, headerToSettings map[string]string) string {
-	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
-	hasWildcard := false
-	for _, p := range forwardPatterns {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.HasSuffix(p, "*") {
-			hasWildcard = true
-			continue
-		}
-		base += ", " + p
-	}
-	for header := range headerToSettings {
-		base += ", " + header
-	}
-	if hasWildcard {
-		base += ", *"
-	}
-	return base
-}
-
 // blockedSettings contains ClickHouse settings that must never be overridden
-// via header_to_settings to prevent privilege escalation or DoS.
+// via tool_input_settings to prevent privilege escalation or DoS.
 var blockedSettings = map[string]bool{
 	"readonly":                      true,
 	"allow_ddl":                     true,
@@ -2346,87 +2414,6 @@ var blockedSettings = map[string]bool{
 	"password":                      true,
 	"user":                          true,
 	"database":                      true,
-}
-
-const headerSettingsKey contextKey = "header_to_settings"
-
-// ValidateHeaderToSettings checks the mapping at startup and returns an error
-// if any entry targets a blocked ClickHouse setting. Logs a warning when a
-// target setting does not start with "custom_" (requires custom_settings_prefixes
-// on the ClickHouse server).
-func ValidateHeaderToSettings(mapping map[string]string) error {
-	warnings, err := validateHeaderToSettings(mapping)
-	for _, w := range warnings {
-		log.Warn().Msg(w)
-	}
-	return err
-}
-
-// validateHeaderToSettings is the testable core: returns (warnings, error).
-func validateHeaderToSettings(mapping map[string]string) (warnings []string, err error) {
-	for header, setting := range mapping {
-		lower := strings.ToLower(setting)
-		if blockedSettings[lower] {
-			return nil, fmt.Errorf("header_to_settings: header %q maps to blocked ClickHouse setting %q", header, setting)
-		}
-		canonical := http.CanonicalHeaderKey(header)
-		if sensitiveHeaders[canonical] {
-			return nil, fmt.Errorf("header_to_settings: sensitive header %q cannot be used as a source", header)
-		}
-		if !strings.HasPrefix(lower, "custom_") {
-			warnings = append(warnings, fmt.Sprintf(
-				"header_to_settings: header %q maps to setting %q which does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
-				header, setting,
-			))
-		}
-	}
-	return warnings, nil
-}
-
-// ContextWithHeaderSettings extracts headers listed in the mapping from the
-// incoming HTTP request, converts them to ClickHouse settings, and stores the
-// result in context.
-func ContextWithHeaderSettings(ctx context.Context, r *http.Request, mapping map[string]string) context.Context {
-	if settings := extractHeaderSettings(r, mapping); settings != nil {
-		return context.WithValue(ctx, headerSettingsKey, settings)
-	}
-	return ctx
-}
-
-// HeaderSettingsFromContext retrieves per-request ClickHouse settings
-// previously stored by ContextWithHeaderSettings. Returns nil when no
-// settings are available (e.g. STDIO transport or no mapping configured).
-func HeaderSettingsFromContext(ctx context.Context) map[string]string {
-	if settings, ok := ctx.Value(headerSettingsKey).(map[string]string); ok {
-		return settings
-	}
-	return nil
-}
-
-// extractHeaderSettings reads headers according to the mapping and returns
-// the corresponding ClickHouse settings. Headers absent from the request are
-// silently skipped. Only header names are logged, never values.
-func extractHeaderSettings(r *http.Request, mapping map[string]string) map[string]string {
-	if r == nil || len(mapping) == 0 {
-		return nil
-	}
-	settings := make(map[string]string)
-	for header, setting := range mapping {
-		canonical := http.CanonicalHeaderKey(header)
-		if val := r.Header.Get(canonical); val != "" {
-			settings[setting] = val
-		}
-	}
-	if len(settings) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(settings))
-	for k := range settings {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("mapping HTTP headers to ClickHouse settings")
-	return settings
 }
 
 // mergeExtraSettings copies per-request settings into a ClickHouseConfig,
@@ -2443,27 +2430,129 @@ func mergeExtraSettings(cfg config.ClickHouseConfig, settings map[string]string)
 	return cfg
 }
 
-// matchesAnyPattern returns true if header matches at least one pattern.
-// Supports trailing * wildcard (e.g. "X-*", "X-Tenant-*") and exact match.
-// Comparison is case-insensitive. Wildcard patterns skip sensitive headers;
-// only an explicit exact-match pattern can forward them.
-func matchesAnyPattern(header string, patterns []string) bool {
-	lower := strings.ToLower(header)
-	for _, p := range patterns {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
+// --- tool_input_settings: allow tool callers to pass ClickHouse settings via arguments ---
+
+const toolInputSettingsKey contextKey = "tool_input_settings"
+
+// ValidateToolInputSettings checks the allowlist at startup and returns an error
+// if any entry targets a blocked ClickHouse setting. Logs a warning when a
+// setting does not start with "custom_".
+func ValidateToolInputSettings(settings []string) error {
+	warnings, err := validateToolInputSettings(settings)
+	for _, w := range warnings {
+		log.Warn().Msg(w)
+	}
+	return err
+}
+
+// validateToolInputSettings is the testable core: returns (warnings, error).
+func validateToolInputSettings(settings []string) (warnings []string, err error) {
+	seen := make(map[string]bool, len(settings))
+	for _, setting := range settings {
+		lower := strings.ToLower(setting)
+		if blockedSettings[lower] {
+			return nil, fmt.Errorf("tool_input_settings: setting %q is blocked", setting)
 		}
-		if strings.HasSuffix(p, "*") {
-			if sensitiveHeaders[http.CanonicalHeaderKey(header)] {
-				continue
-			}
-			if strings.HasPrefix(lower, p[:len(p)-1]) {
-				return true
-			}
-		} else if lower == p {
-			return true
+		if seen[lower] {
+			return nil, fmt.Errorf("tool_input_settings: duplicate setting %q", setting)
+		}
+		seen[lower] = true
+		if !strings.HasPrefix(lower, "custom_") {
+			warnings = append(warnings, fmt.Sprintf(
+				"tool_input_settings: setting %q does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				setting,
+			))
 		}
 	}
-	return false
+	return warnings, nil
 }
+
+// buildToolInputSettingsSchema returns the JSON Schema fragment for the
+// "settings" tool parameter, or nil when no settings are configured.
+func buildToolInputSettingsSchema(settings []string) map[string]any {
+	if len(settings) == 0 {
+		return nil
+	}
+	props := make(map[string]any, len(settings))
+	for _, s := range settings {
+		props[s] = map[string]any{"type": "string"}
+	}
+	return map[string]any{
+		"type":                 "object",
+		"description":         fmt.Sprintf("Optional ClickHouse settings to apply to this query. Allowed: %s", strings.Join(settings, ", ")),
+		"properties":          props,
+		"additionalProperties": false,
+	}
+}
+
+// ContextWithToolInputSettings stores per-request ClickHouse settings
+// extracted from MCP tool arguments into context.
+func ContextWithToolInputSettings(ctx context.Context, settings map[string]string) context.Context {
+	return context.WithValue(ctx, toolInputSettingsKey, settings)
+}
+
+// ToolInputSettingsFromContext retrieves per-request ClickHouse settings
+// previously stored by ContextWithToolInputSettings. Returns nil when none.
+func ToolInputSettingsFromContext(ctx context.Context) map[string]string {
+	if settings, ok := ctx.Value(toolInputSettingsKey).(map[string]string); ok {
+		return settings
+	}
+	return nil
+}
+
+// applyToolInputSettings extracts and validates tool-input settings from MCP
+// tool arguments and stores them in context. Returns an error tool result
+// if validation fails.
+func applyToolInputSettings(ctx context.Context, arguments map[string]any, allowlist []string) (context.Context, *mcp.CallToolResult) {
+	settings, err := extractToolInputSettings(arguments, allowlist)
+	if err != nil {
+		return ctx, NewToolResultError(fmt.Sprintf("Invalid settings: %v", err))
+	}
+	if settings != nil {
+		ctx = ContextWithToolInputSettings(ctx, settings)
+	}
+	return ctx, nil
+}
+
+// extractToolInputSettings parses the "settings" key from tool arguments,
+// validates each entry against the admin-configured allowlist and the
+// blockedSettings denylist, and returns the resulting map.
+func extractToolInputSettings(arguments map[string]any, allowlist []string) (map[string]string, error) {
+	settingsRaw, ok := arguments["settings"]
+	if !ok {
+		return nil, nil
+	}
+	settingsMap, ok := settingsRaw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("settings must be an object")
+	}
+	if len(settingsMap) == 0 {
+		return nil, nil
+	}
+	allowSet := make(map[string]bool, len(allowlist))
+	for _, s := range allowlist {
+		allowSet[s] = true
+	}
+	settings := make(map[string]string, len(settingsMap))
+	for k, v := range settingsMap {
+		if !allowSet[k] {
+			return nil, fmt.Errorf("setting %q is not allowed; allowed settings: %s", k, strings.Join(allowlist, ", "))
+		}
+		if blockedSettings[strings.ToLower(k)] {
+			return nil, fmt.Errorf("setting %q is blocked", k)
+		}
+		strVal, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("setting %q value must be a string", k)
+		}
+		settings[k] = strVal
+	}
+	names := make([]string, 0, len(settings))
+	for k := range settings {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("tool input settings extracted from arguments")
+	return settings, nil
+}
+

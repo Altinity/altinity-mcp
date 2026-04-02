@@ -2299,250 +2299,6 @@ func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	require.False(t, result.IsError)
 }
 
-func TestExtractForwardHeaders(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Custom-Header", "value_a")
-	req.Header.Set("X-Request-Id", "abc-123")
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Cookie", "session=abc")
-
-	t.Run("wildcard pattern forwards matching, excludes non-matching", func(t *testing.T) {
-		t.Parallel()
-		headers := extractForwardHeaders(req, []string{"X-*"})
-		require.Len(t, headers, 2)
-		require.Equal(t, "value_a", headers["X-Custom-Header"])
-		require.Equal(t, "abc-123", headers["X-Request-Id"])
-	})
-
-	t.Run("exact pattern restricts to named header only", func(t *testing.T) {
-		t.Parallel()
-		headers := extractForwardHeaders(req, []string{"X-Custom-Header"})
-		require.Len(t, headers, 1)
-		require.Equal(t, "value_a", headers["X-Custom-Header"])
-	})
-
-	t.Run("empty patterns forwards nothing", func(t *testing.T) {
-		t.Parallel()
-		require.Nil(t, extractForwardHeaders(req, nil))
-	})
-
-	t.Run("wildcard excludes sensitive headers", func(t *testing.T) {
-		t.Parallel()
-		headers := extractForwardHeaders(req, []string{"*"})
-		require.NotNil(t, headers)
-		require.Equal(t, "value_a", headers["X-Custom-Header"])
-		require.Equal(t, "abc-123", headers["X-Request-Id"])
-		require.Empty(t, headers["Authorization"], "Authorization must be blocked by wildcard")
-		require.Empty(t, headers["Cookie"], "Cookie must be blocked by wildcard")
-	})
-
-	t.Run("explicit pattern forwards sensitive header", func(t *testing.T) {
-		t.Parallel()
-		headers := extractForwardHeaders(req, []string{"Authorization"})
-		require.Len(t, headers, 1)
-		require.Equal(t, "Bearer secret", headers["Authorization"])
-	})
-}
-
-func TestContextForwardedHeaders_RoundTrip(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Y-Custom-Header", "value_a")
-	req.Header.Set("X-Request-Id", "req-42")
-	req.Header.Set("Authorization", "Bearer secret")
-
-	ctx := ContextWithForwardedHeaders(context.Background(), req, []string{"*"})
-	headers := ForwardedHeadersFromContext(ctx)
-
-	require.Equal(t, "value_a", headers["Y-Custom-Header"])
-	require.Equal(t, "req-42", headers["X-Request-Id"])
-	require.Empty(t, headers["Authorization"], "wildcard must not forward sensitive headers")
-	require.Nil(t, ForwardedHeadersFromContext(context.Background()))
-}
-
-func TestCORSAllowHeaders(t *testing.T) {
-	t.Parallel()
-	base := "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent"
-	cases := []struct {
-		name             string
-		patterns         []string
-		headerToSettings map[string]string
-		contains         []string
-		hasWildcard      bool
-	}{
-		{"empty", nil, nil, []string{base}, false},
-		{"single_fwd", []string{"X-Custom-Header"}, nil, []string{base, "X-Custom-Header"}, false},
-		{"wildcard", []string{"X-*"}, nil, []string{base, "*"}, true},
-		{"h2s_only", nil, map[string]string{"X-Tenant-Id": "custom_tenant_id"}, []string{base, "X-Tenant-Id"}, false},
-		{"fwd_and_h2s", []string{"X-Req-Id"}, map[string]string{"X-Tenant-Id": "custom_tenant_id"}, []string{base, "X-Req-Id", "X-Tenant-Id"}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			actual := CORSAllowHeaders(c.patterns, c.headerToSettings)
-			for _, s := range c.contains {
-				require.Contains(t, actual, s)
-			}
-			if c.hasWildcard {
-				require.Contains(t, actual, "*")
-			}
-		})
-	}
-}
-
-// TestMergeHTTPHeaders verifies that mergeHTTPHeaders produces a correct union
-// where extra values override base values, and neither input map is mutated.
-func TestMergeHTTPHeaders(t *testing.T) {
-	t.Parallel()
-	base := map[string]string{"X-Base": "base", "X-Shared": "from-base"}
-	extra := map[string]string{"X-Extra": "extra", "X-Shared": "from-extra"}
-
-	merged := mergeHTTPHeaders(base, extra)
-
-	require.Equal(t, "base", merged["X-Base"])
-	require.Equal(t, "extra", merged["X-Extra"])
-	require.Equal(t, "from-extra", merged["X-Shared"])
-
-	require.Equal(t, "from-base", base["X-Shared"], "base map must not be mutated")
-	require.Empty(t, base["X-Extra"], "base map must not be mutated")
-}
-
-// TestMergeHTTPHeaders_NilBase verifies merging into a nil base map works.
-func TestMergeHTTPHeaders_NilBase(t *testing.T) {
-	t.Parallel()
-	extra := map[string]string{"X-Extra": "extra"}
-	merged := mergeHTTPHeaders(nil, extra)
-	require.Equal(t, "extra", merged["X-Extra"])
-	require.Len(t, merged, 1)
-}
-
-// ---------------------------------------------------------------------------
-// header_to_settings tests
-// ---------------------------------------------------------------------------
-
-func TestValidateHeaderToSettings(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name         string
-		mapping      map[string]string
-		wantErr      string // substring expected in error, empty = no error
-		wantWarnings int    // expected warning count
-		warnContains string // substring expected in first warning
-	}{
-		// valid mappings — no errors, no warnings
-		{"valid_custom_prefix", map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-User-Id": "custom_user_id"}, "", 0, ""},
-		{"case_insensitive_custom_prefix", map[string]string{"X-Tenant-Id": "Custom_Tenant"}, "", 0, ""},
-		{"empty_nil", nil, "", 0, ""},
-		{"empty_map", map[string]string{}, "", 0, ""},
-
-		// blocked target settings
-		{"blocked_readonly", map[string]string{"X-A": "readonly"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_READONLY_case", map[string]string{"X-A": "READONLY"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_max_execution_time", map[string]string{"X-A": "max_execution_time"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_allow_ddl", map[string]string{"X-A": "allow_ddl"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_password", map[string]string{"X-A": "password"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_database", map[string]string{"X-A": "database"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_max_memory_usage", map[string]string{"X-A": "max_memory_usage"}, "blocked ClickHouse setting", 0, ""},
-		{"blocked_user", map[string]string{"X-A": "user"}, "blocked ClickHouse setting", 0, ""},
-
-		// sensitive source headers
-		{"sensitive_authorization", map[string]string{"Authorization": "custom_auth"}, "sensitive header", 0, ""},
-		{"sensitive_cookie", map[string]string{"Cookie": "custom_cookie"}, "sensitive header", 0, ""},
-		{"sensitive_proxy_auth", map[string]string{"Proxy-Authorization": "custom_proxy"}, "sensitive header", 0, ""},
-		{"sensitive_host", map[string]string{"Host": "custom_host"}, "sensitive header", 0, ""},
-		{"sensitive_set_cookie", map[string]string{"Set-Cookie": "custom_sc"}, "sensitive header", 0, ""},
-
-		// non-custom_ prefix warnings
-		{"warn_non_custom_prefix", map[string]string{"X-Tenant-Id": "my_tenant_id"}, "", 1, "does not start with 'custom_'"},
-		{"warn_mixed_custom_and_non", map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-Region": "region_code"}, "", 1, "region_code"},
-		{"warn_multiple_non_custom", map[string]string{"X-Env": "env_name", "X-Region": "region_code"}, "", 2, ""},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			warnings, err := validateHeaderToSettings(tc.mapping)
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			require.Len(t, warnings, tc.wantWarnings)
-			if tc.warnContains != "" && len(warnings) > 0 {
-				require.Contains(t, warnings[0], tc.warnContains)
-			}
-		})
-	}
-
-	t.Run("public_api_delegates_correctly", func(t *testing.T) {
-		t.Parallel()
-		require.NoError(t, ValidateHeaderToSettings(map[string]string{"X-Tenant-Id": "custom_tenant_id"}))
-		require.Error(t, ValidateHeaderToSettings(map[string]string{"X-Bad": "readonly"}))
-	})
-}
-
-func TestExtractHeaderSettings(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Tenant-Id", "tenant_a")
-	req.Header.Set("X-User-Id", "user_42")
-
-	t.Run("maps_present_headers", func(t *testing.T) {
-		t.Parallel()
-		mapping := map[string]string{
-			"X-Tenant-Id": "custom_tenant_id",
-			"X-User-Id":   "custom_user_id",
-		}
-		settings := extractHeaderSettings(req, mapping)
-		require.Len(t, settings, 2)
-		require.Equal(t, "tenant_a", settings["custom_tenant_id"])
-		require.Equal(t, "user_42", settings["custom_user_id"])
-	})
-
-	t.Run("skips_absent_header", func(t *testing.T) {
-		t.Parallel()
-		mapping := map[string]string{
-			"X-Tenant-Id": "custom_tenant_id",
-			"X-Missing":   "custom_missing",
-		}
-		settings := extractHeaderSettings(req, mapping)
-		require.Len(t, settings, 1)
-		require.Equal(t, "tenant_a", settings["custom_tenant_id"])
-		require.Empty(t, settings["custom_missing"])
-	})
-
-	t.Run("nil_request_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		require.Nil(t, extractHeaderSettings(nil, map[string]string{"X-Tenant-Id": "custom_tenant_id"}))
-	})
-
-	t.Run("empty_mapping_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		require.Nil(t, extractHeaderSettings(req, nil))
-		require.Nil(t, extractHeaderSettings(req, map[string]string{}))
-	})
-
-	t.Run("all_headers_absent_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		mapping := map[string]string{"X-Nonexistent": "custom_none"}
-		require.Nil(t, extractHeaderSettings(req, mapping))
-	})
-}
-
-func TestContextHeaderSettings_RoundTrip(t *testing.T) {
-	t.Parallel()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("X-Tenant-Id", "tenant_b")
-
-	mapping := map[string]string{"X-Tenant-Id": "custom_tenant_id"}
-	ctx := ContextWithHeaderSettings(context.Background(), req, mapping)
-	settings := HeaderSettingsFromContext(ctx)
-
-	require.Equal(t, "tenant_b", settings["custom_tenant_id"])
-	require.Nil(t, HeaderSettingsFromContext(context.Background()))
-}
-
 func TestMergeExtraSettings(t *testing.T) {
 	t.Parallel()
 	base := config.ClickHouseConfig{
@@ -4824,186 +4580,6 @@ func TestBuildClickHouseHeadersFromOAuth(t *testing.T) {
 	})
 }
 
-func TestMatchesAnyPattern_SensitiveHeaders(t *testing.T) {
-	t.Parallel()
-
-	t.Run("wildcard_skips_authorization", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("Authorization", []string{"*"}))
-	})
-
-	t.Run("wildcard_skips_cookie", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("Cookie", []string{"*"}))
-	})
-
-	t.Run("wildcard_skips_set_cookie", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("Set-Cookie", []string{"*"}))
-	})
-
-	t.Run("wildcard_skips_host", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("Host", []string{"*"}))
-	})
-
-	t.Run("wildcard_skips_proxy_authorization", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("Proxy-Authorization", []string{"*"}))
-	})
-
-	t.Run("explicit_match_allows_authorization", func(t *testing.T) {
-		t.Parallel()
-		require.True(t, matchesAnyPattern("Authorization", []string{"authorization"}))
-	})
-
-	t.Run("prefix_wildcard_matches_custom", func(t *testing.T) {
-		t.Parallel()
-		require.True(t, matchesAnyPattern("X-Custom-Header", []string{"x-custom-*"}))
-	})
-
-	t.Run("prefix_wildcard_no_match", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("X-Other-Header", []string{"x-custom-*"}))
-	})
-
-	t.Run("empty_patterns", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("X-Test", []string{}))
-	})
-
-	t.Run("empty_pattern_element", func(t *testing.T) {
-		t.Parallel()
-		require.False(t, matchesAnyPattern("X-Test", []string{"", "  "}))
-	})
-}
-
-func TestWarnOnCatchAllPattern(t *testing.T) {
-	t.Parallel()
-	// Just verify it doesn't panic; the actual log output is a side effect
-	WarnOnCatchAllPattern([]string{"X-Custom"})
-	WarnOnCatchAllPattern([]string{"*"})
-	WarnOnCatchAllPattern([]string{" * "})
-	WarnOnCatchAllPattern(nil)
-	WarnOnCatchAllPattern([]string{})
-}
-
-func TestContextWithForwardedHeaders(t *testing.T) {
-	t.Parallel()
-
-	t.Run("extracts_matching_headers", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Tenant-Id", "tenant1")
-		req.Header.Set("X-Other", "value")
-
-		ctx := ContextWithForwardedHeaders(req.Context(), req, []string{"X-Tenant-Id"})
-		headers := ForwardedHeadersFromContext(ctx)
-		require.Equal(t, "tenant1", headers["X-Tenant-Id"])
-		_, hasOther := headers["X-Other"]
-		require.False(t, hasOther)
-	})
-
-	t.Run("no_match_returns_original_ctx", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Other", "value")
-
-		ctx := ContextWithForwardedHeaders(req.Context(), req, []string{"X-Tenant-Id"})
-		headers := ForwardedHeadersFromContext(ctx)
-		require.Nil(t, headers)
-	})
-
-	t.Run("nil_request", func(t *testing.T) {
-		t.Parallel()
-		ctx := ContextWithForwardedHeaders(context.Background(), nil, []string{"X-Tenant-Id"})
-		headers := ForwardedHeadersFromContext(ctx)
-		require.Nil(t, headers)
-	})
-
-	t.Run("empty_patterns", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Tenant-Id", "tenant1")
-
-		ctx := ContextWithForwardedHeaders(req.Context(), req, nil)
-		headers := ForwardedHeadersFromContext(ctx)
-		require.Nil(t, headers)
-	})
-}
-
-func TestContextWithHeaderSettings(t *testing.T) {
-	t.Parallel()
-
-	t.Run("maps_headers_to_settings", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Tenant", "acme")
-
-		mapping := map[string]string{"X-Tenant": "custom_tenant"}
-		ctx := ContextWithHeaderSettings(req.Context(), req, mapping)
-		settings := HeaderSettingsFromContext(ctx)
-		require.Equal(t, "acme", settings["custom_tenant"])
-	})
-
-	t.Run("missing_header_skipped", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-
-		mapping := map[string]string{"X-Tenant": "custom_tenant"}
-		ctx := ContextWithHeaderSettings(req.Context(), req, mapping)
-		settings := HeaderSettingsFromContext(ctx)
-		require.Nil(t, settings)
-	})
-
-	t.Run("nil_request", func(t *testing.T) {
-		t.Parallel()
-		ctx := ContextWithHeaderSettings(context.Background(), nil, map[string]string{"X-Tenant": "custom_tenant"})
-		settings := HeaderSettingsFromContext(ctx)
-		require.Nil(t, settings)
-	})
-
-	t.Run("empty_mapping", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("X-Tenant", "acme")
-
-		ctx := ContextWithHeaderSettings(req.Context(), req, nil)
-		settings := HeaderSettingsFromContext(ctx)
-		require.Nil(t, settings)
-	})
-}
-
-func TestValidateHeaderToSettings_Blocked(t *testing.T) {
-	t.Parallel()
-
-	t.Run("blocked_setting", func(t *testing.T) {
-		t.Parallel()
-		err := ValidateHeaderToSettings(map[string]string{"X-RO": "readonly"})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "blocked")
-	})
-
-	t.Run("sensitive_header", func(t *testing.T) {
-		t.Parallel()
-		err := ValidateHeaderToSettings(map[string]string{"Authorization": "custom_auth"})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "sensitive")
-	})
-
-	t.Run("valid_custom_setting", func(t *testing.T) {
-		t.Parallel()
-		err := ValidateHeaderToSettings(map[string]string{"X-Tenant": "custom_tenant"})
-		require.NoError(t, err)
-	})
-
-	t.Run("non_custom_prefix_warns_but_succeeds", func(t *testing.T) {
-		t.Parallel()
-		err := ValidateHeaderToSettings(map[string]string{"X-Tenant": "tenant_id"})
-		require.NoError(t, err) // only warning, not error
-	})
-}
-
 func TestParseJWEClaims(t *testing.T) {
 	t.Parallel()
 
@@ -5226,32 +4802,6 @@ func TestHasRequiredScopes(t *testing.T) {
 	require.True(t, hasRequiredScopes([]string{"read"}, []string{}))
 	require.True(t, hasRequiredScopes([]string{}, []string{}))
 	require.False(t, hasRequiredScopes([]string{}, []string{"read"}))
-}
-
-func TestCORSAllowHeadersExtended(t *testing.T) {
-	t.Parallel()
-
-	t.Run("wildcard_pattern_adds_star", func(t *testing.T) {
-		t.Parallel()
-		headers := CORSAllowHeaders([]string{"X-*"}, nil)
-		require.Contains(t, headers, "*")
-	})
-
-	t.Run("header_to_settings_included", func(t *testing.T) {
-		t.Parallel()
-		headers := CORSAllowHeaders(nil, map[string]string{"X-Tenant": "custom_tenant"})
-		require.Contains(t, headers, "X-Tenant")
-	})
-
-	t.Run("combined_patterns_and_settings", func(t *testing.T) {
-		t.Parallel()
-		headers := CORSAllowHeaders(
-			[]string{"X-Custom-Header"},
-			map[string]string{"X-Region": "custom_region"},
-		)
-		require.Contains(t, headers, "X-Custom-Header")
-		require.Contains(t, headers, "X-Region")
-	})
 }
 
 // --- Pure function unit tests ---
@@ -5525,57 +5075,6 @@ func TestValidateJWEToken(t *testing.T) {
 		t.Parallel()
 		s2 := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}}}}
 		require.NoError(t, s2.ValidateJWEToken("anything"))
-	})
-}
-
-func TestGetClickHouseClientWithHeaders(t *testing.T) {
-	t.Parallel()
-
-	t.Run("jwe_disabled_uses_default", func(t *testing.T) {
-		t.Parallel()
-		chConfig := setupClickHouseContainer(t)
-		s := NewClickHouseMCPServer(config.Config{
-			ClickHouse: *chConfig,
-			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
-		}, "test")
-		client, err := s.GetClickHouseClientWithHeaders(context.Background(), "", nil, nil)
-		require.NoError(t, err)
-		require.NotNil(t, client)
-		require.NoError(t, client.Close())
-	})
-
-	t.Run("jwe_enabled_missing_token", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: "secret",
-		}}}}
-		_, err := s.GetClickHouseClientWithHeaders(context.Background(), "", nil, nil)
-		require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
-	})
-
-	t.Run("jwe_enabled_invalid_token", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{
-			Enabled:      true,
-			JWESecretKey: "secret",
-		}}}}
-		_, err := s.GetClickHouseClientWithHeaders(context.Background(), "invalid-token", nil, nil)
-		require.Error(t, err)
-	})
-
-	t.Run("with_extra_headers", func(t *testing.T) {
-		t.Parallel()
-		chConfig := setupClickHouseContainer(t)
-		s := NewClickHouseMCPServer(config.Config{
-			ClickHouse: *chConfig,
-			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
-		}, "test")
-		headers := map[string]string{"X-Custom": "val"}
-		client, err := s.GetClickHouseClientWithHeaders(context.Background(), "", headers, nil)
-		require.NoError(t, err)
-		require.NotNil(t, client)
-		require.NoError(t, client.Close())
 	})
 }
 
@@ -5856,3 +5355,381 @@ func TestRegisterToolsAndResources(t *testing.T) {
 	RegisterResources(capture)
 	RegisterPrompts(capture)
 }
+
+// --- tool_input_settings tests ---
+
+func TestValidateToolInputSettings(t *testing.T) {
+	cases := []struct {
+		name         string
+		settings     []string
+		wantErr      string
+		wantWarnings int
+		warnContains string
+	}{
+		{"valid_custom_prefix", []string{"custom_tenant_id", "custom_user_id"}, "", 0, ""},
+		{"nil_settings", nil, "", 0, ""},
+		{"empty_settings", []string{}, "", 0, ""},
+		{"blocked_readonly", []string{"readonly"}, "blocked", 0, ""},
+		{"blocked_READONLY_case", []string{"READONLY"}, "blocked", 0, ""},
+		{"blocked_max_execution_time", []string{"max_execution_time"}, "blocked", 0, ""},
+		{"blocked_password", []string{"password"}, "blocked", 0, ""},
+		{"blocked_database", []string{"database"}, "blocked", 0, ""},
+		{"blocked_user", []string{"user"}, "blocked", 0, ""},
+		{"duplicate_setting", []string{"custom_a", "custom_a"}, "duplicate", 0, ""},
+		{"duplicate_case_insensitive", []string{"Custom_A", "custom_a"}, "duplicate", 0, ""},
+		{"warn_non_custom_prefix", []string{"my_setting"}, "", 1, "does not start with 'custom_'"},
+		{"warn_mixed", []string{"custom_ok", "not_custom"}, "", 1, "not_custom"},
+		{"warn_multiple_non_custom", []string{"env_name", "region_code"}, "", 2, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings, err := validateToolInputSettings(tc.settings)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, warnings, tc.wantWarnings)
+			if tc.warnContains != "" && len(warnings) > 0 {
+				require.Contains(t, warnings[0], tc.warnContains)
+			}
+		})
+	}
+
+	t.Run("public_api_delegates_correctly", func(t *testing.T) {
+		require.NoError(t, ValidateToolInputSettings([]string{"custom_tenant_id"}))
+		require.Error(t, ValidateToolInputSettings([]string{"readonly"}))
+	})
+}
+
+func TestBuildToolInputSettingsSchema(t *testing.T) {
+	t.Run("nil_for_empty", func(t *testing.T) {
+		require.Nil(t, buildToolInputSettingsSchema(nil))
+		require.Nil(t, buildToolInputSettingsSchema([]string{}))
+	})
+
+	t.Run("builds_schema_with_properties", func(t *testing.T) {
+		schema := buildToolInputSettingsSchema([]string{"custom_tenant_id", "custom_org_id"})
+		require.NotNil(t, schema)
+		require.Equal(t, "object", schema["type"])
+		require.False(t, schema["additionalProperties"].(bool))
+
+		props := schema["properties"].(map[string]any)
+		require.Len(t, props, 2)
+		require.Equal(t, map[string]any{"type": "string"}, props["custom_tenant_id"])
+		require.Equal(t, map[string]any{"type": "string"}, props["custom_org_id"])
+	})
+
+	t.Run("description_lists_settings", func(t *testing.T) {
+		schema := buildToolInputSettingsSchema([]string{"custom_a"})
+		desc := schema["description"].(string)
+		require.Contains(t, desc, "custom_a")
+	})
+}
+
+func TestExtractToolInputSettings(t *testing.T) {
+	allowlist := []string{"custom_tenant_id", "custom_org_id"}
+
+	t.Run("extracts_valid_settings", func(t *testing.T) {
+		args := map[string]any{
+			"query": "SELECT 1",
+			"settings": map[string]any{
+				"custom_tenant_id": "123",
+				"custom_org_id":    "abc",
+			},
+		}
+		settings, err := extractToolInputSettings(args, allowlist)
+		require.NoError(t, err)
+		require.Len(t, settings, 2)
+		require.Equal(t, "123", settings["custom_tenant_id"])
+		require.Equal(t, "abc", settings["custom_org_id"])
+	})
+
+	t.Run("nil_when_no_settings_key", func(t *testing.T) {
+		args := map[string]any{"query": "SELECT 1"}
+		settings, err := extractToolInputSettings(args, allowlist)
+		require.NoError(t, err)
+		require.Nil(t, settings)
+	})
+
+	t.Run("nil_for_empty_settings_object", func(t *testing.T) {
+		args := map[string]any{"settings": map[string]any{}}
+		settings, err := extractToolInputSettings(args, allowlist)
+		require.NoError(t, err)
+		require.Nil(t, settings)
+	})
+
+	t.Run("error_on_non_object_settings", func(t *testing.T) {
+		args := map[string]any{"settings": "not_an_object"}
+		_, err := extractToolInputSettings(args, allowlist)
+		require.ErrorContains(t, err, "settings must be an object")
+	})
+
+	t.Run("error_on_disallowed_setting", func(t *testing.T) {
+		args := map[string]any{
+			"settings": map[string]any{"custom_unknown": "val"},
+		}
+		_, err := extractToolInputSettings(args, allowlist)
+		require.ErrorContains(t, err, "not allowed")
+		require.ErrorContains(t, err, "custom_unknown")
+	})
+
+	t.Run("error_on_blocked_setting", func(t *testing.T) {
+		args := map[string]any{
+			"settings": map[string]any{"readonly": "1"},
+		}
+		_, err := extractToolInputSettings(args, []string{"readonly"})
+		require.ErrorContains(t, err, "blocked")
+	})
+
+	t.Run("error_on_non_string_value", func(t *testing.T) {
+		args := map[string]any{
+			"settings": map[string]any{"custom_tenant_id": 123},
+		}
+		_, err := extractToolInputSettings(args, allowlist)
+		require.ErrorContains(t, err, "must be a string")
+	})
+
+	t.Run("partial_settings_ok", func(t *testing.T) {
+		args := map[string]any{
+			"settings": map[string]any{"custom_tenant_id": "only_one"},
+		}
+		settings, err := extractToolInputSettings(args, allowlist)
+		require.NoError(t, err)
+		require.Len(t, settings, 1)
+		require.Equal(t, "only_one", settings["custom_tenant_id"])
+	})
+}
+
+func TestContextToolInputSettings_RoundTrip(t *testing.T) {
+	t.Run("stores_and_retrieves", func(t *testing.T) {
+		settings := map[string]string{"custom_tenant_id": "t1"}
+		ctx := ContextWithToolInputSettings(context.Background(), settings)
+		got := ToolInputSettingsFromContext(ctx)
+		require.Equal(t, "t1", got["custom_tenant_id"])
+	})
+
+	t.Run("nil_from_empty_context", func(t *testing.T) {
+		require.Nil(t, ToolInputSettingsFromContext(context.Background()))
+	})
+}
+
+func TestToolInputSettingsPriority(t *testing.T) {
+	base := config.ClickHouseConfig{
+		ExtraSettings: map[string]string{"custom_tenant_id": "from_config"},
+	}
+
+	// Simulate header-to-settings layer
+	afterHeaders := mergeExtraSettings(base, map[string]string{"custom_tenant_id": "from_header"})
+	require.Equal(t, "from_header", afterHeaders.ExtraSettings["custom_tenant_id"])
+
+	// Simulate tool-input layer (highest priority)
+	afterTool := mergeExtraSettings(afterHeaders, map[string]string{"custom_tenant_id": "from_tool"})
+	require.Equal(t, "from_tool", afterTool.ExtraSettings["custom_tenant_id"])
+
+	// Ensure base was never mutated
+	require.Equal(t, "from_config", base.ExtraSettings["custom_tenant_id"])
+}
+
+func TestRegisterToolsWithSettings(t *testing.T) {
+	t.Run("no_settings_property_when_empty", func(t *testing.T) {
+		var registeredTools []*mcp.Tool
+		mock := &mockMCPServer{
+			addToolFn: func(tool *mcp.Tool, handler ToolHandlerFunc) {
+				registeredTools = append(registeredTools, tool)
+			},
+		}
+		RegisterTools(mock, config.Config{})
+		require.Len(t, registeredTools, 1)
+		schema := registeredTools[0].InputSchema.(map[string]any)
+		props := schema["properties"].(map[string]any)
+		_, hasSettings := props["settings"]
+		require.False(t, hasSettings)
+	})
+
+	t.Run("settings_property_added_when_configured", func(t *testing.T) {
+		var registeredTools []*mcp.Tool
+		mock := &mockMCPServer{
+			addToolFn: func(tool *mcp.Tool, handler ToolHandlerFunc) {
+				registeredTools = append(registeredTools, tool)
+			},
+		}
+		RegisterTools(mock, config.Config{
+			Server: config.ServerConfig{
+				ToolInputSettings: []string{"custom_tenant_id", "custom_org_id"},
+			},
+		})
+		require.Len(t, registeredTools, 1)
+
+		schema := registeredTools[0].InputSchema.(map[string]any)
+		props := schema["properties"].(map[string]any)
+		settingsSchema, ok := props["settings"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "object", settingsSchema["type"])
+		require.False(t, settingsSchema["additionalProperties"].(bool))
+
+		innerProps := settingsSchema["properties"].(map[string]any)
+		require.Len(t, innerProps, 2)
+		require.Contains(t, innerProps, "custom_tenant_id")
+		require.Contains(t, innerProps, "custom_org_id")
+	})
+}
+
+func TestNormalizeBlockedClauses(t *testing.T) {
+	t.Run("nil_for_empty", func(t *testing.T) {
+		require.Nil(t, NormalizeBlockedClauses(nil))
+		require.Nil(t, NormalizeBlockedClauses([]string{}))
+	})
+
+	t.Run("normalizes_clauses", func(t *testing.T) {
+		set := NormalizeBlockedClauses([]string{"SETTINGS", "FORMAT", "SET", "INTO OUTFILE", "EXPLAIN"})
+		require.Len(t, set, 5)
+		require.True(t, set["SETTINGS"])
+		require.True(t, set["FORMAT"])
+		require.True(t, set["SET"])
+		require.True(t, set["INTO OUTFILE"])
+		require.True(t, set["EXPLAIN"])
+	})
+
+	t.Run("uppercases_names", func(t *testing.T) {
+		set := NormalizeBlockedClauses([]string{"settings", "Format"})
+		require.Len(t, set, 2)
+		require.True(t, set["SETTINGS"])
+		require.True(t, set["FORMAT"])
+	})
+
+	t.Run("skips_empty_entries", func(t *testing.T) {
+		set := NormalizeBlockedClauses([]string{"SETTINGS", "", "  "})
+		require.Len(t, set, 1)
+		require.True(t, set["SETTINGS"])
+	})
+}
+
+func TestCheckBlockedClauses(t *testing.T) {
+	allBlocked := NormalizeBlockedClauses([]string{"SETTINGS", "FORMAT", "SET", "INTO OUTFILE", "EXPLAIN"})
+
+	cases := []struct {
+		name         string
+		query        string
+		wantBlocked  string
+		wantParseErr bool
+	}{
+		// Clean queries — should pass
+		{"plain_select", "SELECT * FROM events", "", false},
+		{"select_with_limit", "SELECT * FROM events LIMIT 10", "", false},
+		{"select_with_where", "SELECT * FROM events WHERE tenant_id = 'a'", "", false},
+		{"show_tables", "SHOW TABLES", "", false},
+		{"describe_table", "DESCRIBE events", "", false},
+		{"table_named_settings_compound", "SELECT * FROM settings_table", "", false},
+		{"table_named_nosettings", "SELECT * FROM nosettings", "", false},
+		{"offset_not_set", "SELECT * FROM t LIMIT 10 OFFSET 5", "", false},
+
+		// Column/function names that match clause keywords — should NOT be blocked
+		{"column_named_format", "SELECT format FROM t", "", false},
+		{"function_format", "SELECT format('hello {0}', name) FROM t", "", false},
+		{"column_named_settings", "SELECT settings FROM t", "", false},
+		{"select_explain_column", "SELECT explain_col FROM t", "", false},
+
+		// SETTINGS injection — detected by AST
+		{"settings_override", "SELECT * FROM events SETTINGS custom_tenant_id='evil'", "SETTINGS", false},
+		{"settings_lowercase", "select * from events settings custom_tenant_id = 'x'", "SETTINGS", false},
+		{"settings_mixed_case", "SELECT 1 Settings max_threads=2", "SETTINGS", false},
+
+		// FORMAT — detected by AST
+		{"format_json", "SELECT * FROM events FORMAT JSON", "FORMAT", false},
+		{"format_csv", "SELECT * FROM events FORMAT CSV", "FORMAT", false},
+		{"format_lowercase", "select 1 format tabseparated", "FORMAT", false},
+
+		// SET — detected by AST
+		{"set_statement", "SET custom_tenant_id = 'evil'", "SET", false},
+		{"set_lowercase", "set max_threads = 1", "SET", false},
+
+		// INTO OUTFILE on SELECT — parser does not support this syntax; query is rejected (parse error)
+		{"into_outfile_parse_error", "SELECT * FROM events INTO OUTFILE '/tmp/data.csv'", "", true},
+		{"into_outfile_lowercase_parse_error", "select 1 into outfile '/tmp/x'", "", true},
+
+		// EXPLAIN — forms the parser understands
+		{"explain_ast_select", "EXPLAIN AST SELECT * FROM events", "EXPLAIN", false},
+		{"explain_syntax", "EXPLAIN SYNTAX SELECT 1", "EXPLAIN", false},
+
+		// Plain EXPLAIN / EXPLAIN PLAN — parser error; reject without substring heuristics
+		{"explain_plan_parse_error", "EXPLAIN PLAN SELECT 1", "", true},
+		{"explain_select_parse_error", "EXPLAIN SELECT * FROM events", "", true},
+		{"explain_lowercase_parse_error", "explain select 1", "", true},
+
+		// Multi-statement — SET after semicolon (detected by AST)
+		{"multi_stmt_set", "SELECT 1; SET max_threads=1", "SET", false},
+
+		// SHOW with INTO OUTFILE — detected by AST
+		{"show_outfile", "SHOW DATABASES INTO OUTFILE '/tmp/databases.txt'", "INTO OUTFILE", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := checkBlockedClauses(tc.query, allBlocked)
+			if tc.wantParseErr {
+				require.Error(t, err, "query: %s", tc.query)
+				require.Empty(t, got)
+				return
+			}
+			require.NoError(t, err, "query: %s", tc.query)
+			require.Equal(t, tc.wantBlocked, got, "query: %s", tc.query)
+		})
+	}
+}
+
+func TestCheckBlockedClauses_Empty(t *testing.T) {
+	clause, err := checkBlockedClauses("SELECT 1 SETTINGS x=1", nil)
+	require.NoError(t, err)
+	require.Empty(t, clause)
+	clause, err = checkBlockedClauses("SET x=1", map[string]bool{})
+	require.NoError(t, err)
+	require.Empty(t, clause)
+}
+
+// TestCheckBlockedClauses_ASTTypeMapping checks that blocking uses parser type
+// stems (not a fixed hand-maintained list), so new clause kinds work from config alone.
+func TestCheckBlockedClauses_ASTTypeMapping(t *testing.T) {
+	t.Parallel()
+
+	t.Run("where_clause", func(t *testing.T) {
+		blocked := NormalizeBlockedClauses([]string{"WHERE"})
+		clause, err := checkBlockedClauses("SELECT 1 WHERE 1", blocked)
+		require.NoError(t, err)
+		require.Equal(t, "WHERE", clause)
+	})
+
+	t.Run("whereclause_full_type_name", func(t *testing.T) {
+		blocked := NormalizeBlockedClauses([]string{"WHERECLAUSE"})
+		clause, err := checkBlockedClauses("SELECT 1 WHERE 1", blocked)
+		require.NoError(t, err)
+		require.Equal(t, "WHERECLAUSE", clause)
+	})
+
+	t.Run("having_clause", func(t *testing.T) {
+		blocked := NormalizeBlockedClauses([]string{"HAVING"})
+		clause, err := checkBlockedClauses("SELECT count() FROM t GROUP BY x HAVING count() > 0", blocked)
+		require.NoError(t, err)
+		require.Equal(t, "HAVING", clause)
+	})
+
+	t.Run("prewhere_not_where", func(t *testing.T) {
+		blocked := NormalizeBlockedClauses([]string{"PREWHERE"})
+		clause, err := checkBlockedClauses("SELECT * FROM t PREWHERE x = 1", blocked)
+		require.NoError(t, err)
+		require.Equal(t, "PREWHERE", clause)
+	})
+}
+
+type mockMCPServer struct {
+	addToolFn func(tool *mcp.Tool, handler ToolHandlerFunc)
+}
+
+func (m *mockMCPServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
+	if m.addToolFn != nil {
+		m.addToolFn(tool, handler)
+	}
+}
+func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)             {}
+func (m *mockMCPServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
+func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                   {}

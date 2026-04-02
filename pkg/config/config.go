@@ -42,7 +42,7 @@ type ClickHouseConfig struct {
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" desc:"ClickHouse max execution time in seconds"`
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Maximum limit for query results (0 means no limit)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
-	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by header_to_settings"`
+	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -209,9 +209,9 @@ type ServerConfig struct {
 	JWE                JWEConfig         `json:"jwe" yaml:"jwe"`
 	OAuth              OAuthConfig       `json:"oauth" yaml:"oauth"`
 	OpenAPI            OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin         string            `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
-	ForwardHTTPHeaders []string          `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
-	HeaderToSettings   map[string]string `json:"header_to_settings" yaml:"header_to_settings" desc:"Map incoming HTTP headers to ClickHouse settings"`
+	CORSOrigin        string   `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ToolInputSettings []string `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
+	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
 }

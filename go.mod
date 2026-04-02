@@ -3,6 +3,7 @@ module github.com/altinity/altinity-mcp
 go 1.25.6
 
 require (
+	github.com/AfterShip/clickhouse-sql-parser v0.5.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
 	github.com/go-jose/go-jose/v4 v4.1.3
 	github.com/modelcontextprotocol/go-sdk v1.4.1

@@ -334,6 +334,15 @@ func (m *mockCommand) String(name string) string {
 	return ""
 }
 
+func (m *mockCommand) StringSlice(name string) []string {
+	if val, ok := m.flags[name]; ok {
+		if ss, ok := val.([]string); ok {
+			return ss
+		}
+	}
+	return nil
+}
+
 func (m *mockCommand) Int(name string) int {
 	if val, ok := m.flags[name]; ok {
 		if i, ok := val.(int); ok {
@@ -2033,150 +2042,6 @@ func TestOverrideWithCLIFlagsExtended(t *testing.T) {
 
 		require.Equal(t, config.InfoLevel, cfg.Logging.Level)
 	})
-}
-
-func TestHeaderToSettingsCLIFlag(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name     string
-		flagVal  string
-		flagSet  bool
-		initMap  map[string]string // pre-existing HeaderToSettings before override
-		wantLen  int
-		wantNil  bool
-		wantPair map[string]string // key-value pairs expected in result
-	}{
-		{
-			name: "parses_comma_separated_pairs", flagVal: "X-Tenant-Id=custom_tenant_id,X-User-Id=custom_user_id",
-			flagSet: true, wantLen: 2,
-			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-User-Id": "custom_user_id"},
-		},
-		{
-			name: "single_pair", flagVal: "X-Tenant-Id=custom_tenant_id",
-			flagSet: true, wantLen: 1,
-			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id"},
-		},
-		{
-			name: "handles_spaces_in_pairs", flagVal: " X-Tenant-Id = custom_tenant_id , X-User-Id = custom_user_id ",
-			flagSet: true, wantLen: 2,
-			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-User-Id": "custom_user_id"},
-		},
-		{
-			name: "empty_string_clears_mapping", flagVal: "",
-			flagSet: true, initMap: map[string]string{"X-Old": "custom_old"},
-			wantNil: true,
-		},
-		{
-			name:    "not_set_preserves_config_file_value",
-			flagSet: false, initMap: map[string]string{"X-Tenant-Id": "custom_tenant_id"},
-			wantLen:  1,
-			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id"},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cmd := &mockCommand{
-				flags:      map[string]interface{}{},
-				setFlags:   map[string]bool{},
-				stringMaps: make(map[string]map[string]string),
-			}
-			if tc.flagSet {
-				cmd.flags["header-to-settings"] = tc.flagVal
-				cmd.setFlags["header-to-settings"] = true
-			}
-
-			cfg := &config.Config{}
-			if tc.initMap != nil {
-				cfg.Server.HeaderToSettings = tc.initMap
-			}
-			overrideWithCLIFlags(cfg, cmd)
-
-			if tc.wantNil {
-				require.Nil(t, cfg.Server.HeaderToSettings)
-				return
-			}
-			require.Len(t, cfg.Server.HeaderToSettings, tc.wantLen)
-			for k, v := range tc.wantPair {
-				require.Equal(t, v, cfg.Server.HeaderToSettings[k])
-			}
-		})
-	}
-}
-
-func TestHeaderToSettingsConfigFile(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		yaml       string
-		cliFlagH2S string // if non-empty, also set header-to-settings CLI flag
-		wantLen    int
-		wantPair   map[string]string
-		wantEmpty  bool // when expecting nil/empty map
-	}{
-		{
-			name: "parses_yaml_mapping",
-			yaml: `
-server:
-  header_to_settings:
-    X-Tenant-Id: custom_tenant_id
-    X-User-Id: custom_user_id
-`,
-			wantLen:  2,
-			wantPair: map[string]string{"X-Tenant-Id": "custom_tenant_id", "X-User-Id": "custom_user_id"},
-		},
-		{
-			name: "cli_flag_overrides_config_file",
-			yaml: `
-server:
-  header_to_settings:
-    X-Tenant-Id: custom_tenant_id
-    X-User-Id: custom_user_id
-`,
-			cliFlagH2S: "X-Region=custom_region",
-			wantLen:    1,
-			wantPair:   map[string]string{"X-Region": "custom_region"},
-		},
-		{
-			name: "empty_mapping_in_config_file",
-			yaml: `
-server:
-  header_to_settings: {}
-`,
-			wantEmpty: true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			f := filepath.Join(t.TempDir(), "config.yaml")
-			require.NoError(t, os.WriteFile(f, []byte(tc.yaml), 0o600))
-
-			cmd := &mockCommand{
-				flags:      map[string]interface{}{"config": f},
-				setFlags:   map[string]bool{"config": true},
-				stringMaps: make(map[string]map[string]string),
-			}
-			if tc.cliFlagH2S != "" {
-				cmd.flags["header-to-settings"] = tc.cliFlagH2S
-				cmd.setFlags["header-to-settings"] = true
-			}
-
-			cfg, err := buildConfig(cmd)
-			require.NoError(t, err)
-
-			if tc.wantEmpty {
-				require.Empty(t, cfg.Server.HeaderToSettings)
-				return
-			}
-			require.Len(t, cfg.Server.HeaderToSettings, tc.wantLen)
-			for k, v := range tc.wantPair {
-				require.Equal(t, v, cfg.Server.HeaderToSettings[k])
-			}
-		})
-	}
 }
 
 // TestCORSSupport tests the CORS handler behavior
@@ -4050,4 +3915,127 @@ func TestOAuthStateStoreEviction(t *testing.T) {
 	require.False(t, ok)
 	_, ok = store.consumeAuthCode("new-code")
 	require.True(t, ok)
+}
+
+func TestToolInputSettingsCLIFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		flagVal  []string
+		flagSet  bool
+		initList []string
+		wantLen  int
+		wantList []string
+	}{
+		{
+			name:    "multiple_settings",
+			flagVal: []string{"custom_tenant_id", "custom_org_id"},
+			flagSet: true, wantLen: 2,
+			wantList: []string{"custom_tenant_id", "custom_org_id"},
+		},
+		{
+			name:    "single_setting",
+			flagVal: []string{"custom_tenant_id"},
+			flagSet: true, wantLen: 1,
+			wantList: []string{"custom_tenant_id"},
+		},
+		{
+			name:    "not_set_preserves_config",
+			flagSet: false, initList: []string{"custom_tenant_id"},
+			wantLen:  1,
+			wantList: []string{"custom_tenant_id"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &mockCommand{
+				flags:      map[string]interface{}{},
+				setFlags:   map[string]bool{},
+				stringMaps: make(map[string]map[string]string),
+			}
+			if tc.flagSet {
+				cmd.flags["tool-input-settings"] = tc.flagVal
+				cmd.setFlags["tool-input-settings"] = true
+			}
+
+			cfg := &config.Config{}
+			if tc.initList != nil {
+				cfg.Server.ToolInputSettings = tc.initList
+			}
+			overrideWithCLIFlags(cfg, cmd)
+
+			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
+			require.Equal(t, tc.wantList, cfg.Server.ToolInputSettings)
+		})
+	}
+}
+
+func TestToolInputSettingsConfigFile(t *testing.T) {
+	cases := []struct {
+		name      string
+		yaml      string
+		cliFlags  []string
+		wantLen   int
+		wantList  []string
+		wantEmpty bool
+	}{
+		{
+			name: "parses_yaml_list",
+			yaml: `
+server:
+  tool_input_settings:
+    - custom_tenant_id
+    - custom_org_id
+`,
+			wantLen:  2,
+			wantList: []string{"custom_tenant_id", "custom_org_id"},
+		},
+		{
+			name: "cli_flag_overrides_config_file",
+			yaml: `
+server:
+  tool_input_settings:
+    - custom_tenant_id
+    - custom_org_id
+`,
+			cliFlags: []string{"custom_region"},
+			wantLen:  1,
+			wantList: []string{"custom_region"},
+		},
+		{
+			name: "empty_list_in_config_file",
+			yaml: `
+server:
+  tool_input_settings: []
+`,
+			wantEmpty: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(f, []byte(tc.yaml), 0o600))
+
+			cmd := &mockCommand{
+				flags:      map[string]interface{}{"config": f},
+				setFlags:   map[string]bool{"config": true},
+				stringMaps: make(map[string]map[string]string),
+			}
+			if tc.cliFlags != nil {
+				cmd.flags["tool-input-settings"] = tc.cliFlags
+				cmd.setFlags["tool-input-settings"] = true
+			}
+
+			cfg, err := buildConfig(cmd)
+			require.NoError(t, err)
+
+			if tc.wantEmpty {
+				require.Empty(t, cfg.Server.ToolInputSettings)
+				return
+			}
+			require.Len(t, cfg.Server.ToolInputSettings, tc.wantLen)
+			require.Equal(t, tc.wantList, cfg.Server.ToolInputSettings)
+		})
+	}
 }
