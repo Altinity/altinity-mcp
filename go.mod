@@ -5,7 +5,8 @@ go 1.25.6
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
-	github.com/go-jose/go-jose/v4 v4.1.3
+	github.com/docker/docker v28.5.2+incompatible
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/rs/zerolog v1.35.0
 	github.com/stretchr/testify v1.11.1
@@ -30,7 +31,6 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
