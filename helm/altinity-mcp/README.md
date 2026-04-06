@@ -52,6 +52,7 @@ A Helm chart for Altinity MCP Server
 | config.server.tls.enabled | bool | `false` |  |
 | config.server.tls.key_file | string | `""` |  |
 | config.server.transport | string | `"http"` |  |
+| env | list | `[]` | Environment variables for the main container (e.g. `CLICKHOUSE_PASSWORD` via `valueFrom.secretKeyRef`) |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | image.pullPolicy | string | `"IfNotPresent"` | Container image pull policy |
 | image.repository | string | `"ghcr.io/altinity/altinity-mcp"` | Container image repository |

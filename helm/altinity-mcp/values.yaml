@@ -109,6 +109,17 @@ tolerations: []
 # -- Affinity settings for pod assignment
 affinity: {}
 
+# -- Environment variables for the main container (supports `value`, `valueFrom`, etc.).
+# The application reads `CLICKHOUSE_PASSWORD` from the environment and it overrides the config file value.
+# Example (Kubernetes `secretKeyRef`):
+# env:
+#   - name: CLICKHOUSE_PASSWORD
+#     valueFrom:
+#       secretKeyRef:
+#         name: my-secret
+#         key: password
+env: []
+
 # Configuration for the altinity-mcp application
 config:
   clickhouse:
