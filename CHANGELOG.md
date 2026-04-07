@@ -1,3 +1,8 @@
+# v1.4.1
+
+IMPROVEMENTS
+- helm: add `env` support for container secrets (e.g. `CLICKHOUSE_PASSWORD`) (PR #77)
+
 # v1.4.0
 
 FEATURES
