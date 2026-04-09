@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -545,7 +546,31 @@ func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRe
 	return client, nil
 }
 
-func oauthClaimsFromUserInfo(raw map[string]interface{}) *altinitymcp.OAuthClaims {
+// applyClaimsMapping remaps keys in raw according to mapping.
+// A mapping like {"id": "sub"} copies raw["id"] to raw["sub"] if raw["sub"] is not already set.
+// Numeric values (float64 from JSON) are converted to strings for standard OIDC string claims.
+func applyClaimsMapping(raw map[string]interface{}, mapping map[string]string) {
+	if len(mapping) == 0 {
+		return
+	}
+	for srcKey, dstKey := range mapping {
+		val, ok := raw[srcKey]
+		if !ok {
+			continue
+		}
+		if _, exists := raw[dstKey]; exists {
+			continue
+		}
+		if f, ok := val.(float64); ok {
+			raw[dstKey] = strconv.FormatInt(int64(f), 10)
+		} else {
+			raw[dstKey] = val
+		}
+	}
+}
+
+func oauthClaimsFromUserInfo(raw map[string]interface{}, claimsMapping map[string]string) *altinitymcp.OAuthClaims {
+	applyClaimsMapping(raw, claimsMapping)
 	claims := &altinitymcp.OAuthClaims{Extra: make(map[string]interface{})}
 	if sub, ok := raw["sub"].(string); ok {
 		claims.Subject = sub
@@ -595,6 +620,9 @@ func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaim
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if acceptHeader := strings.TrimSpace(cfg.UserInfoAcceptHeader); acceptHeader != "" {
+		req.Header.Set("Accept", acceptHeader)
+	}
 
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
@@ -613,11 +641,73 @@ func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaim
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
-	claims := oauthClaimsFromUserInfo(raw)
+	claims := oauthClaimsFromUserInfo(raw, cfg.UserInfoClaimsMapping)
 	if claims.Issuer == "" {
 		claims.Issuer = cfg.Issuer
 	}
+	if strings.TrimSpace(cfg.UserInfoEmailURL) != "" && (claims.Email == "" || !claims.EmailVerified) {
+		if verifiedEmail, err := a.fetchVerifiedEmail(accessToken); err == nil {
+			claims.Email = verifiedEmail
+			claims.EmailVerified = true
+		} else {
+			log.Debug().Err(err).Msg("Failed to fetch verified email from secondary endpoint")
+		}
+	}
 	return claims, a.mcpServer.ValidateOAuthIdentityPolicyClaims(claims)
+}
+
+// fetchVerifiedEmail calls a secondary email endpoint (e.g. GitHub /user/emails)
+// and returns the first verified, primary email address found.
+func (a *application) fetchVerifiedEmail(accessToken string) (string, error) {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	emailURL := strings.TrimSpace(cfg.UserInfoEmailURL)
+	if emailURL == "" {
+		return "", fmt.Errorf("userinfo_email_url is not configured")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, emailURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if acceptHeader := strings.TrimSpace(cfg.UserInfoAcceptHeader); acceptHeader != "" {
+		req.Header.Set("Accept", acceptHeader)
+	}
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("email endpoint returned status %d", resp.StatusCode)
+	}
+
+	var emails []struct {
+		Email    string `json:"email"`
+		Verified bool   `json:"verified"`
+		Primary  bool   `json:"primary"`
+	}
+	if err := json.Unmarshal(body, &emails); err != nil {
+		return "", err
+	}
+	var fallback string
+	for _, e := range emails {
+		if e.Verified && e.Primary {
+			return e.Email, nil
+		}
+		if e.Verified && fallback == "" {
+			fallback = e.Email
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("no verified email found")
 }
 
 func (a *application) resolveUpstreamAuthURL() (string, error) {
@@ -887,7 +977,17 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to resolve upstream token endpoint", http.StatusBadGateway)
 		return
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(tokenURL, form)
+	tokenReq, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to create token exchange request")
+		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
+		return
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if acceptHeader := strings.TrimSpace(cfg.Server.OAuth.TokenRequestAcceptHeader); acceptHeader != "" {
+		tokenReq.Header.Set("Accept", acceptHeader)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(tokenReq)
 	if err != nil {
 		log.Error().Err(err).Str("token_url", tokenURL).Msg("Upstream OAuth token exchange request failed")
 		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)

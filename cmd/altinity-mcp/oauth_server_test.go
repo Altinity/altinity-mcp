@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -338,9 +339,16 @@ type testForwardModeOIDCProvider struct {
 
 	tokenResponse    map[string]interface{}
 	userInfoClaims   map[string]interface{}
+	emailsResponse   []map[string]interface{}
 	lastUserInfoAuth string
 	userInfoCalls    int
-	mu               sync.Mutex
+
+	lastUserInfoAccept string
+	lastEmailsAccept   string
+	lastTokenAccept    string
+	emailsCalls        int
+
+	mu sync.Mutex
 }
 
 func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]interface{}, userInfoClaims map[string]interface{}) *testForwardModeOIDCProvider {
@@ -367,6 +375,9 @@ func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]inter
 
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
+		provider.mu.Lock()
+		provider.lastTokenAccept = r.Header.Get("Accept")
+		provider.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(provider.tokenResponse))
 	})
@@ -388,6 +399,7 @@ func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]inter
 		provider.mu.Lock()
 		provider.userInfoCalls++
 		provider.lastUserInfoAuth = r.Header.Get("Authorization")
+		provider.lastUserInfoAccept = r.Header.Get("Accept")
 		provider.mu.Unlock()
 
 		if provider.userInfoClaims == nil {
@@ -397,6 +409,21 @@ func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]inter
 
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(provider.userInfoClaims))
+	})
+
+	mux.HandleFunc("/user/emails", func(w http.ResponseWriter, r *http.Request) {
+		provider.mu.Lock()
+		provider.emailsCalls++
+		provider.lastEmailsAccept = r.Header.Get("Accept")
+		provider.mu.Unlock()
+
+		if provider.emailsResponse == nil {
+			http.Error(w, "emails not configured", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(provider.emailsResponse))
 	})
 
 	return provider
@@ -432,6 +459,12 @@ func (p *testForwardModeOIDCProvider) userInfoRequest() (int, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.userInfoCalls, p.lastUserInfoAuth
+}
+
+func (p *testForwardModeOIDCProvider) acceptHeaders() (userInfo, emails, token string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastUserInfoAccept, p.lastEmailsAccept, p.lastTokenAccept
 }
 
 func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *application {
@@ -1778,7 +1811,7 @@ func TestOAuthClaimsFromUserInfo(t *testing.T) {
 			"email_verified": true,
 			"scope":          "read write",
 		}
-		claims := oauthClaimsFromUserInfo(raw)
+		claims := oauthClaimsFromUserInfo(raw, nil)
 		require.Equal(t, "user-123", claims.Subject)
 		require.Equal(t, "https://issuer.example.com", claims.Issuer)
 		require.Equal(t, "user@example.com", claims.Email)
@@ -1795,16 +1828,52 @@ func TestOAuthClaimsFromUserInfo(t *testing.T) {
 			"custom": "value",
 			"groups": []string{"admin"},
 		}
-		claims := oauthClaimsFromUserInfo(raw)
+		claims := oauthClaimsFromUserInfo(raw, nil)
 		require.Equal(t, "value", claims.Extra["custom"])
 		require.NotNil(t, claims.Extra["groups"])
 	})
 
 	t.Run("empty_input", func(t *testing.T) {
 		t.Parallel()
-		claims := oauthClaimsFromUserInfo(map[string]interface{}{})
+		claims := oauthClaimsFromUserInfo(map[string]interface{}{}, nil)
 		require.Equal(t, "", claims.Subject)
 		require.Empty(t, claims.Extra)
+	})
+
+	t.Run("claims_mapping_renames_fields", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"id":    float64(12345),
+			"login": "octocat",
+		}
+		mapping := map[string]string{
+			"id":    "sub",
+			"login": "name",
+		}
+		claims := oauthClaimsFromUserInfo(raw, mapping)
+		require.Equal(t, "12345", claims.Subject)
+		require.Equal(t, "octocat", claims.Name)
+	})
+
+	t.Run("claims_mapping_does_not_overwrite_existing", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"sub": "original-sub",
+			"id":  float64(99999),
+		}
+		mapping := map[string]string{"id": "sub"}
+		claims := oauthClaimsFromUserInfo(raw, mapping)
+		require.Equal(t, "original-sub", claims.Subject)
+	})
+
+	t.Run("numeric_id_to_string_conversion", func(t *testing.T) {
+		t.Parallel()
+		raw := map[string]interface{}{
+			"id": float64(1.23456789e8),
+		}
+		mapping := map[string]string{"id": "sub"}
+		claims := oauthClaimsFromUserInfo(raw, mapping)
+		require.Equal(t, "123456789", claims.Subject)
 	})
 }
 
@@ -1913,6 +1982,201 @@ func TestWriteOAuthTokenError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 	require.Equal(t, "invalid_request", body["error"])
 	require.Equal(t, "bad thing happened", body["error_description"])
+}
+
+func TestFetchVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
+	t.Run("primary_verified_email_returned", func(t *testing.T) {
+		t.Parallel()
+		emailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"email": "secondary@example.com", "verified": true, "primary": false},
+				{"email": "primary@example.com", "verified": true, "primary": true},
+			})
+		}))
+		t.Cleanup(emailServer.Close)
+
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						UserInfoEmailURL: emailServer.URL,
+					},
+				},
+			},
+		}
+		email, err := app.fetchVerifiedEmail("test-token")
+		require.NoError(t, err)
+		require.Equal(t, "primary@example.com", email)
+	})
+
+	t.Run("fallback_to_non_primary_verified", func(t *testing.T) {
+		t.Parallel()
+		emailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"email": "unverified@example.com", "verified": false, "primary": true},
+				{"email": "verified@example.com", "verified": true, "primary": false},
+			})
+		}))
+		t.Cleanup(emailServer.Close)
+
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						UserInfoEmailURL: emailServer.URL,
+					},
+				},
+			},
+		}
+		email, err := app.fetchVerifiedEmail("test-token")
+		require.NoError(t, err)
+		require.Equal(t, "verified@example.com", email)
+	})
+
+	t.Run("no_verified_email_returns_error", func(t *testing.T) {
+		t.Parallel()
+		emailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"email": "user@example.com", "verified": false, "primary": true},
+			})
+		}))
+		t.Cleanup(emailServer.Close)
+
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						UserInfoEmailURL: emailServer.URL,
+					},
+				},
+			},
+		}
+		_, err := app.fetchVerifiedEmail("test-token")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no verified email found")
+	})
+
+	t.Run("accept_header_sent", func(t *testing.T) {
+		t.Parallel()
+		var receivedAccept string
+		emailServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedAccept = r.Header.Get("Accept")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"email": "user@example.com", "verified": true, "primary": true},
+			})
+		}))
+		t.Cleanup(emailServer.Close)
+
+		app := &application{
+			config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						UserInfoEmailURL:     emailServer.URL,
+						UserInfoAcceptHeader: "application/json",
+					},
+				},
+			},
+		}
+		_, err := app.fetchVerifiedEmail("test-token")
+		require.NoError(t, err)
+		require.Equal(t, "application/json", receivedAccept)
+	})
+}
+
+func TestOAuthCallbackGitHubLikeProvider(t *testing.T) {
+	t.Parallel()
+
+	// Set up a mock provider that behaves like GitHub:
+	// - Token endpoint returns opaque access token (no id_token)
+	// - Userinfo returns {id: number, login: string} (no sub, no email)
+	// - Emails endpoint returns verified email array
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "gho_test_opaque_token",
+		"token_type":   "bearer",
+		"scope":        "read:user,user:email",
+	}, map[string]interface{}{
+		"id":    float64(12345),
+		"login": "octocat",
+		"name":  "The Octocat",
+	})
+	provider.emailsResponse = []map[string]interface{}{
+		{"email": "octocat@github.com", "verified": true, "primary": true},
+		{"email": "octocat+noreply@users.github.com", "verified": true, "primary": false},
+	}
+
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                  true,
+				Mode:                     "gating",
+				Issuer:                   provider.server.URL,
+				JWKSURL:                  provider.server.URL + "/jwks",
+				AuthURL:                  provider.server.URL + "/authorize",
+				TokenURL:                 provider.server.URL + "/token",
+				UserInfoURL:              provider.server.URL + "/userinfo",
+				UserInfoEmailURL:         provider.server.URL + "/user/emails",
+				UserInfoAcceptHeader:     "application/json",
+				TokenRequestAcceptHeader: "application/json",
+				UserInfoClaimsMapping: map[string]string{
+					"id":    "sub",
+					"login": "preferred_username",
+				},
+				ClientID:               "github-client-id",
+				ClientSecret:           "github-client-secret",
+				Scopes:                 []string{"read:user", "user:email"},
+				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				AccessTokenTTLSeconds:  300,
+				RefreshTokenTTLSeconds: 86400,
+			},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+
+	redirectURI := "http://localhost:9999/callback"
+	codeVerifier := "test-verifier-for-github-flow-1234567890"
+
+	// Run the full gating auth code flow
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+
+	// The response should contain a self-issued access token
+	accessToken, ok := resp["access_token"].(string)
+	require.True(t, ok, "expected access_token in response")
+	require.NotEmpty(t, accessToken)
+
+	// Verify the self-issued JWT contains the mapped claims
+	parts := strings.Split(accessToken, ".")
+	require.Equal(t, 3, len(parts), "access token should be a JWT")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var tokenClaims map[string]interface{}
+	require.NoError(t, json.Unmarshal(payload, &tokenClaims))
+	require.Equal(t, "12345", tokenClaims["sub"])
+	require.Equal(t, "octocat@github.com", tokenClaims["email"])
+
+	// Verify Accept headers were sent to all endpoints
+	userInfoAccept, emailsAccept, tokenAccept := provider.acceptHeaders()
+	require.Equal(t, "application/json", userInfoAccept)
+	require.Equal(t, "application/json", emailsAccept)
+	require.Equal(t, "application/json", tokenAccept)
+
+	// Verify userinfo was called (since there's no id_token)
+	userInfoCalls, _ := provider.userInfoRequest()
+	require.Equal(t, 1, userInfoCalls)
+
+	// Verify emails endpoint was called (since userinfo has no email)
+	provider.mu.Lock()
+	emailsCalls := provider.emailsCalls
+	provider.mu.Unlock()
+	require.Equal(t, 1, emailsCalls)
 }
 
 func TestEncodeSelfIssuedAccessToken(t *testing.T) {

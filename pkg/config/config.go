@@ -116,6 +116,24 @@ type OAuthConfig struct {
 	// If empty, it will be discovered from issuer metadata when needed.
 	UserInfoURL string `json:"userinfo_url" yaml:"userinfo_url" flag:"oauth-userinfo-url" desc:"OAuth/OpenID Connect userinfo endpoint URL"`
 
+	// UserInfoClaimsMapping maps upstream userinfo field names to standard OIDC claim names.
+	// Example: {"id": "sub", "login": "preferred_username"} remaps GitHub's non-standard fields.
+	// Numeric values (e.g. GitHub's integer id) are automatically converted to strings.
+	UserInfoClaimsMapping map[string]string `json:"userinfo_claims_mapping" yaml:"userinfo_claims_mapping" desc:"Map upstream userinfo fields to standard OIDC claim names"`
+
+	// UserInfoEmailURL is a secondary endpoint to fetch a verified email address.
+	// Called when the primary userinfo response has no email or email_verified is false.
+	// Example: "https://api.github.com/user/emails" for GitHub private emails.
+	UserInfoEmailURL string `json:"userinfo_email_url" yaml:"userinfo_email_url" flag:"oauth-userinfo-email-url" desc:"Secondary endpoint to fetch verified email"`
+
+	// UserInfoAcceptHeader overrides the Accept header sent to the userinfo endpoint.
+	// Set to "application/json" for providers like GitHub that require explicit Accept headers.
+	UserInfoAcceptHeader string `json:"userinfo_accept_header" yaml:"userinfo_accept_header" flag:"oauth-userinfo-accept-header" desc:"Accept header for userinfo requests"`
+
+	// TokenRequestAcceptHeader overrides the Accept header on the token exchange POST.
+	// Set to "application/json" for GitHub, which defaults to application/x-www-form-urlencoded.
+	TokenRequestAcceptHeader string `json:"token_request_accept_header" yaml:"token_request_accept_header" flag:"oauth-token-request-accept-header" desc:"Accept header for token exchange requests"`
+
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
 

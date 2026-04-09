@@ -737,6 +737,47 @@ logging:
 		require.Equal(t, "X-User-Name", cfg.Server.OAuth.ClaimsToHeaders["name"])
 	})
 
+	t.Run("oauth_non_oidc_provider_fields", func(t *testing.T) {
+		t.Parallel()
+		yamlContent := `
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+server:
+  oauth:
+    enabled: true
+    mode: "gating"
+    issuer: "https://github.com"
+    client_id: "gh-client-id"
+    client_secret: "gh-client-secret"
+    auth_url: "https://github.com/login/oauth/authorize"
+    token_url: "https://github.com/login/oauth/access_token"
+    userinfo_url: "https://api.github.com/user"
+    userinfo_email_url: "https://api.github.com/user/emails"
+    userinfo_accept_header: "application/json"
+    token_request_accept_header: "application/json"
+    userinfo_claims_mapping:
+      id: "sub"
+      login: "preferred_username"
+    scopes:
+      - "read:user"
+      - "user:email"
+`
+		tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+		err := os.WriteFile(tmpFile, []byte(yamlContent), 0644)
+		require.NoError(t, err)
+
+		cfg, err := LoadConfigFromFile(tmpFile)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		require.Equal(t, "https://api.github.com/user/emails", cfg.Server.OAuth.UserInfoEmailURL)
+		require.Equal(t, "application/json", cfg.Server.OAuth.UserInfoAcceptHeader)
+		require.Equal(t, "application/json", cfg.Server.OAuth.TokenRequestAcceptHeader)
+		require.Equal(t, map[string]string{"id": "sub", "login": "preferred_username"}, cfg.Server.OAuth.UserInfoClaimsMapping)
+	})
+
 	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {
 		t.Parallel()
 		yamlContent := `
