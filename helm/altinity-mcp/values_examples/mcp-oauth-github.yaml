@@ -1,0 +1,47 @@
+# Example values for altinity-mcp with OAuth + GitHub
+# GitHub issues opaque tokens, so gating mode is required.
+# altinity-mcp validates the user's identity via GitHub's API and
+# issues its own JWTs for ClickHouse.
+#
+# Create a GitHub OAuth App at:
+#   Settings → Developer settings → OAuth Apps → New OAuth App
+# Set the callback URL to: https://<your-mcp-server>/oauth/callback
+
+image:
+  tag: "main"
+  pullPolicy: Always
+
+config:
+  clickhouse:
+    host: "clickhouse.default.svc.cluster.local"
+    port: 8123
+    protocol: "http"
+    username: "default"
+    password: ""
+    read_only: true
+
+  server:
+    transport: "http"
+    oauth:
+      enabled: true
+      mode: "gating"
+      gating_secret_key: "<RANDOM_SECRET>"
+      issuer: "https://github.com"
+      client_id: "<GITHUB_CLIENT_ID>"
+      client_secret: "<GITHUB_CLIENT_SECRET>"
+      auth_url: "https://github.com/login/oauth/authorize"
+      token_url: "https://github.com/login/oauth/access_token"
+      userinfo_url: "https://api.github.com/user"
+      userinfo_email_url: "https://api.github.com/user/emails"
+      userinfo_accept_header: "application/json"
+      token_request_accept_header: "application/json"
+      scopes:
+        - "read:user"
+        - "user:email"
+      userinfo_claims_mapping:
+        id: "sub"
+        login: "preferred_username"
+      require_email_verified: true
+
+  logging:
+    level: "info"

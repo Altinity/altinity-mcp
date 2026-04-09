@@ -606,6 +606,53 @@ AWS Cognito uses the standard `openid` token processor type:
 - [Amazon Cognito - How to use OAuth 2.0](https://aws.amazon.com/blogs/security/how-to-use-oauth-2-0-in-amazon-cognito-learn-about-the-different-oauth-2-0-grants/)
 - [Amazon Cognito - Identity provider endpoints](https://docs.aws.amazon.com/cognito/latest/developerguide/federation-endpoints.html)
 
+## Non-OIDC Providers (e.g. GitHub)
+
+Some OAuth providers do not follow the standard OIDC specification. GitHub, for example, issues opaque access tokens (not JWTs), uses non-standard claim names (`id`/`login` instead of `sub`), lacks `email_verified`, and may hide the user's email behind a separate API endpoint.
+
+Four provider-agnostic configuration fields handle these differences without any provider-specific code:
+
+| Field | Purpose |
+|-------|---------|
+| `userinfo_claims_mapping` | Maps upstream field names to standard OIDC claims. Example: `{"id": "sub", "login": "preferred_username"}` |
+| `userinfo_email_url` | Secondary endpoint to fetch verified email when the primary userinfo response lacks one (e.g. `https://api.github.com/user/emails`) |
+| `userinfo_accept_header` | Accept header for userinfo/email requests (e.g. `application/json`) |
+| `token_request_accept_header` | Accept header for token exchange requests (e.g. `application/json`) |
+
+Numeric IDs (like GitHub's integer `id`) are automatically converted to strings when mapped to string-typed OIDC claims like `sub`.
+
+### GitHub Configuration
+
+> **Note:** Gating mode is required because GitHub issues opaque tokens that ClickHouse cannot validate directly.
+
+```yaml
+server:
+  oauth:
+    enabled: true
+    mode: "gating"
+    gating_secret_key: "<RANDOM_SECRET>"
+    issuer: "https://github.com"
+    client_id: "<GITHUB_CLIENT_ID>"
+    client_secret: "<GITHUB_CLIENT_SECRET>"
+    auth_url: "https://github.com/login/oauth/authorize"
+    token_url: "https://github.com/login/oauth/access_token"
+    userinfo_url: "https://api.github.com/user"
+    userinfo_email_url: "https://api.github.com/user/emails"
+    userinfo_accept_header: "application/json"
+    token_request_accept_header: "application/json"
+    scopes:
+      - "read:user"
+      - "user:email"
+    userinfo_claims_mapping:
+      id: "sub"
+      login: "preferred_username"
+    require_email_verified: true
+```
+
+**Important:** `token_request_accept_header: "application/json"` is mandatory for GitHub. Without it, GitHub's token endpoint returns `application/x-www-form-urlencoded` responses, which the JSON parser cannot decode.
+
+To create a GitHub OAuth App, go to **Settings → Developer settings → OAuth Apps → New OAuth App**. Set the Authorization callback URL to your MCP server's callback path (e.g. `https://your-mcp-server/oauth/callback`).
+
 ## Helm Chart Deployment
 
 The Helm chart supports all OAuth configuration options under `config.server.oauth`:
@@ -619,6 +666,7 @@ Example values files are provided for each provider:
 - `values_examples/mcp-oauth-keycloak.yaml` - Keycloak / generic OIDC
 - `values_examples/mcp-oauth-azure.yaml` - Azure AD (Microsoft Entra ID)
 - `values_examples/mcp-oauth-google.yaml` - Google Cloud Identity
+- `values_examples/mcp-oauth-github.yaml` - GitHub (non-OIDC)
 
 ## Security Considerations
 
