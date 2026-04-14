@@ -52,6 +52,12 @@ service:
   port: 8080
   # -- Service annotations
   annotations: {}
+  # -- Session affinity type. Set to "ClientIP" to enable sticky sessions.
+  # sessionAffinity: ClientIP
+  # -- Session affinity configuration (only used when sessionAffinity is set)
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800
 
 ingress:
   # -- Enable ingress controller resource

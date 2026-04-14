@@ -74,6 +74,8 @@ A Helm chart for Altinity MCP Server
 | securityContext | object | `{}` | Container security context |
 | service.annotations | object | `{}` | Service annotations |
 | service.port | int | `8080` | Service port |
+| service.sessionAffinity | string | `nil` | Session affinity type. Set to "ClientIP" to enable sticky sessions. |
+| service.sessionAffinityConfig | object | `nil` | Session affinity configuration (only used when sessionAffinity is set) |
 | service.type | string | `"ClusterIP"` | Service type |
 | serviceAccount.annotations | object | `{}` | Annotations to add to the service account |
 | serviceAccount.create | bool | `true` | Specifies whether a service account should be created |
