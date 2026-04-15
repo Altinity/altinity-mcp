@@ -1115,11 +1115,11 @@ func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
 
 // RegisterResources adds ClickHouse resources to the MCP server
 func RegisterResources(srv AltinityMCPServer) {
-	// Database Schema Resource
+	// Database catalog resource
 	schemaResource := &mcp.Resource{
 		URI:         "clickhouse://schema",
-		Name:        "Database Schema",
-		Description: "Complete schema information for the ClickHouse database",
+		Name:        "Database Catalog",
+		Description: "Inventory of visible ClickHouse tables and views with database and engine information",
 		MIMEType:    "application/json",
 	}
 
@@ -1129,7 +1129,7 @@ func RegisterResources(srv AltinityMCPServer) {
 	tableTemplate := &mcp.ResourceTemplate{
 		URITemplate: "clickhouse://table/{database}/{table_name}",
 		Name:        "Table Structure",
-		Description: "Detailed structure information for a specific table",
+		Description: "Detailed column-level schema information for a specific table",
 		MIMEType:    "application/json",
 	}
 
@@ -2555,4 +2555,3 @@ func extractToolInputSettings(arguments map[string]any, allowlist []string) (map
 	log.Debug().Int("count", len(settings)).Strs("setting_names", names).Msg("tool input settings extracted from arguments")
 	return settings, nil
 }
-
