@@ -633,6 +633,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
@@ -657,6 +658,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
 		httpHandler = stripTrailingSlash(corsHandler(mux))
@@ -747,6 +749,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
@@ -771,6 +774,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
 		}
 		mux.HandleFunc("/health", a.healthHandler)
+		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
 		sseHandler = stripTrailingSlash(corsHandler(mux))
@@ -784,7 +788,23 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 	return a.startHTTPServerWithTLS(cfg, addr, "sse")
 }
 
-// healthHandler provides a health check endpoint for Kubernetes probes
+// livenessHandler provides a process-level health check endpoint for liveness probes.
+func (a *application) livenessHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "alive",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"version":   version,
+	})
+}
+
+// healthHandler provides a readiness check endpoint for Kubernetes probes.
 func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
