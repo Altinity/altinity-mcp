@@ -1417,7 +1417,12 @@ func RegisterPrompts(srv AltinityMCPServer) {
 	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
 }
 
-// EnsureDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools
+// EnsureDynamicTools discovers ClickHouse views and registers MCP/OpenAPI tools.
+// It is called on every request via middleware. Discovery is deferred until
+// credentials are available — in forward-OAuth mode, the Bearer token only
+// arrives with the first authenticated tool call, not during tools/list.
+// The MCP SDK automatically sends notifications/tools/list_changed when
+// AddTool is called, so the client re-fetches the tool list after discovery.
 func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 	s.dynamicToolsMu.Lock()
 	defer s.dynamicToolsMu.Unlock()
@@ -1428,6 +1433,15 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 
 	if len(s.Config.Server.DynamicTools) == 0 {
 		s.dynamicToolsInit = true
+		return nil
+	}
+
+	// Check if we have any credentials to connect to ClickHouse.
+	// In forward-OAuth mode with blank static creds, the OAuth token
+	// may not be available yet (e.g., during tools/list handshake).
+	// Skip gracefully — we'll retry on the next request when the token arrives.
+	if !s.hasDiscoveryCredentials(ctx) {
+		log.Debug().Msg("dynamic_tools: no credentials available yet, deferring discovery")
 		return nil
 	}
 
@@ -1442,10 +1456,35 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		return err
 	}
 
-	// Register both read and write tools
+	// Register both read and write tools.
+	// AddTool sends notifications/tools/list_changed automatically.
 	s.registerDynamicTools(readTools, writeTools)
 	s.dynamicToolsInit = true
 	return nil
+}
+
+// hasDiscoveryCredentials checks if the current context has any form of
+// credentials that can be used to query ClickHouse for tool discovery.
+func (s *ClickHouseJWEServer) hasDiscoveryCredentials(ctx context.Context) bool {
+	// JWE token in context
+	if s.ExtractTokenFromCtx(ctx) != "" {
+		return true
+	}
+	// OAuth token in context (forward mode)
+	if s.ExtractOAuthTokenFromCtx(ctx) != "" {
+		return true
+	}
+	// Static credentials configured
+	if s.Config.ClickHouse.Username != "" {
+		return true
+	}
+	return false
+}
+
+// getDiscoveryClient returns a ClickHouse client suitable for tool discovery.
+// It uses GetClickHouseClientFromCtx which handles JWE, OAuth, and static credentials.
+func (s *ClickHouseJWEServer) getDiscoveryClient(ctx context.Context) (*clickhouse.Client, error) {
+	return s.GetClickHouseClientFromCtx(ctx)
 }
 
 // discoverReadTools discovers read-only tools from views
@@ -1455,15 +1494,9 @@ func (s *ClickHouseJWEServer) discoverReadTools(ctx context.Context) (map[string
 		return make(map[string]dynamicToolMeta), nil
 	}
 
-	token := s.ExtractTokenFromCtx(ctx)
-	chClient, err := s.GetClickHouseClient(ctx, token)
+	chClient, err := s.getDiscoveryClient(ctx)
 	if err != nil {
-		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
-			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
-		}
+		return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
 	defer chClient.Close()
 
@@ -1546,15 +1579,9 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 		return make(map[string]dynamicToolMeta), nil
 	}
 
-	token := s.ExtractTokenFromCtx(ctx)
-	chClient, err := s.GetClickHouseClient(ctx, token)
+	chClient, err := s.getDiscoveryClient(ctx)
 	if err != nil {
-		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
-			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
-		}
+		return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
 	defer chClient.Close()
 
