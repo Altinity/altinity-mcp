@@ -844,10 +844,12 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		t.Parallel()
 		srv := &captureServer{}
 
-		RegisterTools(srv, config.Config{
+		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{ReadOnly: true},
-		})
+		}
+		RegisterTools(srv, &cfg)
 
+		// In read-only mode, only execute_query is registered (write_query is skipped)
 		require.Len(t, srv.tools, 1)
 		tool := srv.tools[0]
 		require.Equal(t, "execute_query", tool.Name)
@@ -864,18 +866,43 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		t.Parallel()
 		srv := &captureServer{}
 
-		RegisterTools(srv, config.Config{
+		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{ReadOnly: false},
-		})
+		}
+		RegisterTools(srv, &cfg)
 
-		require.Len(t, srv.tools, 1)
-		tool := srv.tools[0]
-		require.NotNil(t, tool.Annotations)
-		require.False(t, tool.Annotations.ReadOnlyHint)
-		require.NotNil(t, tool.Annotations.DestructiveHint)
-		require.True(t, *tool.Annotations.DestructiveHint)
-		require.NotNil(t, tool.Annotations.OpenWorldHint)
-		require.False(t, *tool.Annotations.OpenWorldHint)
+		// Default config registers both execute_query and write_query
+		require.Len(t, srv.tools, 2)
+
+		// Find execute_query tool
+		var eqTool *mcp.Tool
+		for _, t := range srv.tools {
+			if t.Name == "execute_query" {
+				eqTool = t
+				break
+			}
+		}
+		require.NotNil(t, eqTool, "execute_query tool should be registered")
+		require.NotNil(t, eqTool.Annotations)
+		require.False(t, eqTool.Annotations.ReadOnlyHint)
+		require.NotNil(t, eqTool.Annotations.DestructiveHint)
+		require.True(t, *eqTool.Annotations.DestructiveHint)
+		require.NotNil(t, eqTool.Annotations.OpenWorldHint)
+		require.False(t, *eqTool.Annotations.OpenWorldHint)
+
+		// Find write_query tool
+		var wqTool *mcp.Tool
+		for _, t := range srv.tools {
+			if t.Name == "write_query" {
+				wqTool = t
+				break
+			}
+		}
+		require.NotNil(t, wqTool, "write_query tool should be registered")
+		require.NotNil(t, wqTool.Annotations)
+		require.False(t, wqTool.Annotations.ReadOnlyHint)
+		require.NotNil(t, wqTool.Annotations.DestructiveHint)
+		require.True(t, *wqTool.Annotations.DestructiveHint)
 	})
 }
 
@@ -5848,9 +5875,12 @@ func TestNewClickHouseMCPServerVersionField(t *testing.T) {
 func TestRegisterToolsAndResources(t *testing.T) {
 	t.Parallel()
 	capture := &captureServer{}
-	RegisterTools(capture, config.Config{})
-	require.Len(t, capture.tools, 1)
+	cfg := config.Config{}
+	RegisterTools(capture, &cfg)
+	// Default config registers both execute_query and write_query
+	require.Len(t, capture.tools, 2)
 	require.Equal(t, "execute_query", capture.tools[0].Name)
+	require.Equal(t, "write_query", capture.tools[1].Name)
 
 	// These just verify no panic
 	RegisterResources(capture)

@@ -1375,8 +1375,6 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	protectedResourceAliases := uniquePaths(
 		protectedResourceMetadataPath,
 		defaultProtectedResourceMetadataPath,
-		"/.well-known/oauth-protected-resource/http",
-		"/http/.well-known/oauth-protected-resource",
 	)
 	for _, path := range protectedResourceAliases {
 		mux.HandleFunc(path, a.handleOAuthProtectedResource)
@@ -1386,9 +1384,7 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	authMetadataAliases := uniquePaths(
 		authMetadataPath,
 		defaultAuthorizationServerMetadataPath,
-		"/.well-known/oauth-authorization-server/http",
 		"/.well-known/oauth-authorization-server/oauth",
-		"/http/.well-known/oauth-authorization-server",
 		"/oauth/.well-known/oauth-authorization-server",
 	)
 	for _, path := range authMetadataAliases {
@@ -1399,9 +1395,7 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	openIDAliases := uniquePaths(
 		openIDConfigurationPath,
 		defaultOpenIDConfigurationPath,
-		"/.well-known/openid-configuration/http",
 		"/.well-known/openid-configuration/oauth",
-		"/http/.well-known/openid-configuration",
 		"/oauth/.well-known/openid-configuration",
 	)
 	for _, path := range openIDAliases {

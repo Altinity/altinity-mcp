@@ -372,14 +372,22 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 }
 
 func transportRoutePatterns(jweEnabled, oauthEnabled bool, transport string) []string {
+	var base, tokenBase string
+	if transport == "" {
+		base = "/"
+		tokenBase = "/{token}"
+	} else {
+		base = "/" + transport
+		tokenBase = "/{token}/" + transport
+	}
 	if jweEnabled {
-		patterns := []string{"/{token}/" + transport}
+		patterns := []string{tokenBase}
 		if oauthEnabled {
-			patterns = append(patterns, "/"+transport)
+			patterns = append(patterns, base)
 		}
 		return patterns
 	}
-	return []string{"/" + transport}
+	return []string{base}
 }
 
 func openAPIRoutePatterns(jweEnabled, oauthEnabled bool) []string {
@@ -508,10 +516,17 @@ func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Re
 
 // startHTTPServerWithTLS starts the HTTP server with or without TLS
 func (a *application) startHTTPServerWithTLS(cfg config.Config, addr, transport string) error {
-	if cfg.Server.JWE.Enabled {
-		addr += "/{token}/" + transport
+	if transport == "http" {
+		// HTTP transport is served at root
+		if cfg.Server.JWE.Enabled {
+			addr += "/{token}"
+		}
 	} else {
-		addr += "/" + transport
+		if cfg.Server.JWE.Enabled {
+			addr += "/{token}/" + transport
+		} else {
+			addr += "/" + transport
+		}
 	}
 	if !cfg.Server.TLS.Enabled {
 		protocol := "http"
@@ -633,7 +648,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		if cfg.Server.OAuth.Enabled {
 			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
 		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "") {
 			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {
@@ -662,7 +677,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		if cfg.Server.OAuth.Enabled {
 			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
 		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "http") {
+		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "") {
 			mux.Handle(pattern, transportHandler)
 		}
 		if cfg.Server.OpenAPI.Enabled {

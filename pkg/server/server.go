@@ -159,8 +159,9 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		dynamicTools: make(map[string]dynamicToolMeta),
 	}
 
-	// Register tools, resources, and prompts
-	RegisterTools(chJweServer, cfg)
+	// Register tools, resources, and prompts.
+	// Pass pointer to server's Config so dynamic tool rules are stored for EnsureDynamicTools.
+	RegisterTools(chJweServer, &chJweServer.Config)
 	// dynamic tools registered lazily via EnsureDynamicTools
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
@@ -1097,8 +1098,10 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
-// RegisterTools adds the ClickHouse tools to the MCP server
-func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
+// RegisterTools adds the ClickHouse tools to the MCP server.
+// cfg is a pointer so that converted dynamic tool rules are stored
+// back for EnsureDynamicTools to discover later.
+func RegisterTools(srv AltinityMCPServer, cfg *config.Config) {
 	var toolsToRegister []config.ToolDefinition
 
 	// Determine which tools to register: new unified config, old config, or defaults
@@ -1143,8 +1146,9 @@ func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
 
 		// Static tool: has Name, no Regexp
 		if toolDef.Name != "" && toolDef.Regexp == "" {
-			registerStaticTool(srv, toolDef, cfg.ClickHouse.ReadOnly)
-			staticToolCount++
+			if registerStaticTool(srv, toolDef, cfg.ClickHouse.ReadOnly) {
+				staticToolCount++
+			}
 		} else if toolDef.Regexp != "" {
 			// Dynamic tool: has Regexp (Name is optional)
 			// Validate type and mode for write tools
@@ -1166,8 +1170,9 @@ func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
 	log.Info().Int("static_tool_count", staticToolCount).Int("dynamic_tool_rules", len(dynamicToolRules)).Msg("ClickHouse tools registered")
 }
 
-// registerStaticTool registers a static tool (not discovered, explicitly configured)
-func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, readOnly bool) {
+// registerStaticTool registers a static tool (not discovered, explicitly configured).
+// Returns true if the tool was actually registered.
+func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, readOnly bool) bool {
 	switch toolDef.Type {
 	case "read":
 		if toolDef.Name == "execute_query" {
@@ -1193,15 +1198,16 @@ func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, re
 			}
 			srv.AddTool(executeQueryTool, HandleExecuteQuery)
 			log.Info().Str("tool", "execute_query").Msg("Static read tool registered")
-		} else {
-			log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static read tool name")
+			return true
 		}
+		log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static read tool name")
+		return false
 
 	case "write":
 		if toolDef.Name == "write_query" {
 			if readOnly {
 				log.Info().Str("tool", "write_query").Msg("Write tool skipped (read-only mode)")
-				return
+				return false
 			}
 			writeQueryTool := &mcp.Tool{
 				Name:        "write_query",
@@ -1228,12 +1234,14 @@ func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, re
 			}
 			srv.AddTool(writeQueryTool, HandleExecuteQuery)
 			log.Info().Str("tool", "write_query").Msg("Static write tool registered")
-		} else {
-			log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static write tool name")
+			return true
 		}
+		log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static write tool name")
+		return false
 
 	default:
 		log.Error().Str("type", toolDef.Type).Msg("Unknown tool type")
+		return false
 	}
 }
 
