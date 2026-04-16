@@ -1,0 +1,212 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: altinity-mcp-config
+  namespace: default
+data:
+  config.yaml: |
+    # Altinity MCP Server Configuration for Issue #35 Testing
+    # Unified tools configuration with dynamic read/write tool discovery
+
+    logging:
+      level: info
+
+    clickhouse:
+      # ClickHouse connection settings
+      host: clickhouse
+      port: 9000
+      database: default
+      username: default
+      password: ""
+      protocol: native  # or "http"
+
+      # Read-only mode (disable write tools)
+      read_only: false
+
+    server:
+      # Transport mode
+      transport: stdio
+
+      # Unified tools configuration
+      tools:
+        # Static read-only tool
+        - type: "read"
+          name: "execute_query"
+
+        # Static write tool (generic, can be hidden via config)
+        - type: "write"
+          name: "write_query"
+
+        # Dynamic read tools from views
+        - type: "read"
+          regexp: "^.*_view$"
+          prefix: "view_"
+
+        # Dynamic write tools from tables
+        # Excludes: alias, materialized, virtual columns
+        # Excludes: tables starting with "system."
+        - type: "write"
+          regexp: "^(?!system\\.).*_table$"
+          prefix: "insert_"
+          mode: "insert"  # Only INSERT supported; UPDATE/UPSERT not yet implemented
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: altinity-mcp
+  namespace: default
+  labels:
+    app: altinity-mcp
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: altinity-mcp
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: altinity-mcp
+  namespace: default
+  labels:
+    app: altinity-mcp
+    version: issue35
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: altinity-mcp
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: altinity-mcp
+        version: issue35
+      annotations:
+        description: "Altinity MCP Server - Issue #35 Implementation"
+        features: "Unified tools config, dynamic write tool discovery, column filtering"
+    spec:
+      serviceAccountName: altinity-mcp
+      containers:
+      - name: altinity-mcp
+        image: ghcr.io/altinity/altinity-mcp:issue35
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+
+        # Environment variables
+        env:
+        - name: LOG_LEVEL
+          value: "info"
+        - name: CLICKHOUSE_HOST
+          value: "clickhouse"
+        - name: CLICKHOUSE_PORT
+          value: "9000"
+        - name: CLICKHOUSE_DATABASE
+          value: "default"
+        - name: CLICKHOUSE_USERNAME
+          value: "default"
+        - name: CLICKHOUSE_PASSWORD
+          value: ""
+
+        # Volume mount for config
+        volumeMounts:
+        - name: config
+          mountPath: /etc/altinity-mcp
+          readOnly: true
+
+        # Liveness probe
+        livenessProbe:
+          exec:
+            command:
+            - /bin/altinity-mcp
+            - --help
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Readiness probe
+        readinessProbe:
+          exec:
+            command:
+            - /bin/altinity-mcp
+            - --help
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Resource limits
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+        # Security context
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: config
+        configMap:
+          name: altinity-mcp-config
+          defaultMode: 0644
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: altinity-mcp
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: altinity-mcp
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: altinity-mcp
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: altinity-mcp
+subjects:
+- kind: ServiceAccount
+  name: altinity-mcp
+  namespace: default
