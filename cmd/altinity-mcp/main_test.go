@@ -3837,6 +3837,43 @@ func TestHealthHandler_JWEEnabled(t *testing.T) {
 	})
 }
 
+func TestLivenessHandler(t *testing.T) {
+	t.Parallel()
+
+	app := &application{
+		config: config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Host:     "nonexistent-host",
+				Port:     9999,
+				Database: "default",
+				Username: "default",
+				Protocol: config.HTTPProtocol,
+			},
+		},
+	}
+
+	t.Run("get_returns_alive_without_clickhouse_check", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+		rr := httptest.NewRecorder()
+		app.livenessHandler(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "alive", body["status"])
+		_, hasClickHouse := body["clickhouse"]
+		require.False(t, hasClickHouse)
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/livez", nil)
+		rr := httptest.NewRecorder()
+		app.livenessHandler(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+}
+
 func TestHealthHandler_OAuthForwardMode(t *testing.T) {
 	t.Parallel()
 	cfg := config.Config{
