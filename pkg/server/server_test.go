@@ -862,7 +862,7 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		require.False(t, *tool.Annotations.OpenWorldHint)
 	})
 
-	t.Run("read_write_server_marks_execute_query_risky", func(t *testing.T) {
+	t.Run("read_write_server_execute_query_always_safe", func(t *testing.T) {
 		t.Parallel()
 		srv := &captureServer{}
 
@@ -874,7 +874,7 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		// Default config registers both execute_query and write_query
 		require.Len(t, srv.tools, 2)
 
-		// Find execute_query tool
+		// execute_query is always read-only, even when server allows writes
 		var eqTool *mcp.Tool
 		for _, t := range srv.tools {
 			if t.Name == "execute_query" {
@@ -884,13 +884,13 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		}
 		require.NotNil(t, eqTool, "execute_query tool should be registered")
 		require.NotNil(t, eqTool.Annotations)
-		require.False(t, eqTool.Annotations.ReadOnlyHint)
+		require.True(t, eqTool.Annotations.ReadOnlyHint)
 		require.NotNil(t, eqTool.Annotations.DestructiveHint)
-		require.True(t, *eqTool.Annotations.DestructiveHint)
+		require.False(t, *eqTool.Annotations.DestructiveHint)
 		require.NotNil(t, eqTool.Annotations.OpenWorldHint)
 		require.False(t, *eqTool.Annotations.OpenWorldHint)
 
-		// Find write_query tool
+		// write_query is destructive
 		var wqTool *mcp.Tool
 		for _, t := range srv.tools {
 			if t.Name == "write_query" {

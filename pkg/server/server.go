@@ -1179,14 +1179,18 @@ func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, re
 			executeQueryTool := &mcp.Tool{
 				Name:        "execute_query",
 				Title:       "Execute SQL Query",
-				Description: "Executes a SQL query against ClickHouse and returns the results",
-				Annotations: makeExecuteQueryAnnotations(readOnly),
+				Description: "Executes a read-only SQL query against ClickHouse and returns the results. Only SELECT, WITH, SHOW, DESCRIBE, EXISTS, and EXPLAIN statements are allowed.",
+				Annotations: &mcp.ToolAnnotations{
+					ReadOnlyHint:    true,
+					DestructiveHint: boolPtr(false),
+					OpenWorldHint:   boolPtr(false),
+				},
 				InputSchema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"query": map[string]any{
 							"type":        "string",
-							"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+							"description": "Read-only SQL query (SELECT/WITH/SHOW/DESCRIBE/EXISTS/EXPLAIN).",
 						},
 						"limit": map[string]any{
 							"type":        "number",
@@ -1196,7 +1200,7 @@ func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, re
 					"required": []string{"query"},
 				},
 			}
-			srv.AddTool(executeQueryTool, HandleExecuteQuery)
+			srv.AddTool(executeQueryTool, HandleReadOnlyQuery)
 			log.Info().Str("tool", "execute_query").Msg("Static read tool registered")
 			return true
 		}
@@ -2017,20 +2021,22 @@ func buildDynamicToolAnnotations(commentAnnotations *dynamicToolCommentAnnotatio
 	return annotations
 }
 
-func makeExecuteQueryAnnotations(readOnly bool) *mcp.ToolAnnotations {
-	if readOnly {
-		return &mcp.ToolAnnotations{
-			ReadOnlyHint:    true,
-			DestructiveHint: boolPtr(false),
-			OpenWorldHint:   boolPtr(false),
-		}
+// HandleReadOnlyQuery wraps HandleExecuteQuery with a read-only check.
+// Only SELECT, WITH, SHOW, DESCRIBE, EXISTS, and EXPLAIN are allowed.
+func HandleReadOnlyQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	arguments := getArgumentsMap(req)
+	queryArg, ok := arguments["query"]
+	if !ok {
+		return NewToolResultError("query parameter is required"), nil
 	}
-
-	return &mcp.ToolAnnotations{
-		ReadOnlyHint:    false,
-		DestructiveHint: boolPtr(true),
-		OpenWorldHint:   boolPtr(false),
+	query, ok := queryArg.(string)
+	if !ok || query == "" {
+		return NewToolResultError("query parameter must be a non-empty string"), nil
 	}
+	if !isSelectQuery(query) {
+		return NewToolResultError("execute_query only accepts read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN). Use write_query for write operations."), nil
+	}
+	return HandleExecuteQuery(ctx, req)
 }
 
 func humanizeToolName(toolName string) string {
