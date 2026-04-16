@@ -1648,8 +1648,9 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 
 // getTableColumnsForMode retrieves and filters table columns for a specific write mode
 func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClient *clickhouse.Client, db, table, mode string) ([]dynamicToolParam, error) {
-	// Query column information
-	q := fmt.Sprintf("SELECT name, type, column_type, default_kind, comment FROM system.columns WHERE database='%s' AND table='%s' ORDER BY position",
+	// Query column information. Avoid column_type which doesn't exist in all
+	// ClickHouse versions; default_kind covers the same exclusion cases.
+	q := fmt.Sprintf("SELECT name, type, default_kind, comment FROM system.columns WHERE database='%s' AND table='%s' ORDER BY position",
 		db, table)
 	result, err := chClient.ExecuteQuery(ctx, q)
 	if err != nil {
@@ -1658,18 +1659,14 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 
 	params := make([]dynamicToolParam, 0)
 	for _, row := range result.Rows {
-		if len(row) < 4 {
+		if len(row) < 3 {
 			continue
 		}
 		name, _ := row[0].(string)
 		chType, _ := row[1].(string)
-		columnType, _ := row[2].(string)
-		defaultKind, _ := row[3].(string)
+		defaultKind, _ := row[2].(string)
 
-		// Skip certain column types
-		if columnType == "alias" || columnType == "materialized" || columnType == "virtual" {
-			continue
-		}
+		// Skip computed columns: MATERIALIZED (auto-computed) and ALIAS (virtual)
 		if defaultKind == "MATERIALIZED" || defaultKind == "ALIAS" {
 			continue
 		}
