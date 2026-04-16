@@ -105,6 +105,9 @@ type dynamicToolMeta struct {
 	Description string
 	Annotations *mcp.ToolAnnotations
 	Params      []dynamicToolParam
+	ToolType    string // "read" or "write"
+	WriteMode   string // "insert", "update", "upsert" (for write tools)
+	IsStatic    bool   // true if static tool, false if dynamic
 }
 
 type dynamicToolCommentMetadata struct {
@@ -1096,31 +1099,162 @@ var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
 // RegisterTools adds the ClickHouse tools to the MCP server
 func RegisterTools(srv AltinityMCPServer, cfg config.Config) {
-	// Execute Query Tool - InputSchema must be type "object" per MCP spec
-	executeQueryTool := &mcp.Tool{
-		Name:        "execute_query",
-		Title:       "Execute SQL Query",
-		Description: "Executes a SQL query against ClickHouse and returns the results",
-		Annotations: makeExecuteQueryAnnotations(cfg.ClickHouse.ReadOnly),
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
-				},
-				"limit": map[string]any{
-					"type":        "number",
-					"description": "Maximum number of rows to return (default: 100000)",
-				},
-			},
-			"required": []string{"query"},
-		},
+	var toolsToRegister []config.ToolDefinition
+
+	// Determine which tools to register: new unified config, old config, or defaults
+	if len(cfg.Server.Tools) > 0 {
+		// New unified tools config
+		toolsToRegister = cfg.Server.Tools
+	} else if len(cfg.Server.DynamicTools) > 0 {
+		// Old format: convert DynamicTools to ToolDefinition for backwards compatibility
+		log.Warn().Msg("dynamic_tools config is deprecated, use tools instead")
+		for _, oldRule := range cfg.Server.DynamicTools {
+			toolDef := config.ToolDefinition{
+				Type:   oldRule.Type,
+				Name:   oldRule.Name,
+				Regexp: oldRule.Regexp,
+				Prefix: oldRule.Prefix,
+				Mode:   oldRule.Mode,
+			}
+			// Default type to "read" if not specified (backwards compat)
+			if toolDef.Type == "" && toolDef.Regexp != "" {
+				toolDef.Type = "read"
+			}
+			toolsToRegister = append(toolsToRegister, toolDef)
+		}
+	} else {
+		// Default: register static tools only
+		toolsToRegister = []config.ToolDefinition{
+			{Type: "read", Name: "execute_query"},
+			{Type: "write", Name: "write_query"},
+		}
 	}
 
-	srv.AddTool(executeQueryTool, HandleExecuteQuery)
+	// Process tools: separate static and dynamic
+	staticToolCount := 0
+	dynamicToolRules := make([]config.ToolDefinition, 0)
 
-	log.Info().Int("tool_count", 1).Msg("ClickHouse tools registered")
+	for _, toolDef := range toolsToRegister {
+		// Validate tool definition
+		if toolDef.Type != "read" && toolDef.Type != "write" {
+			log.Error().Str("type", toolDef.Type).Msg("Invalid tool type, must be 'read' or 'write'")
+			continue
+		}
+
+		// Static tool: has Name, no Regexp
+		if toolDef.Name != "" && toolDef.Regexp == "" {
+			registerStaticTool(srv, toolDef, cfg.ClickHouse.ReadOnly)
+			staticToolCount++
+		} else if toolDef.Regexp != "" {
+			// Dynamic tool: has Regexp (Name is optional)
+			// Validate type and mode for write tools
+			if toolDef.Type == "write" && toolDef.Mode == "" {
+				log.Error().Str("regexp", toolDef.Regexp).Msg("Write tool must specify mode (insert, update, upsert)")
+				continue
+			}
+			dynamicToolRules = append(dynamicToolRules, toolDef)
+		} else {
+			log.Error().Str("name", toolDef.Name).Str("regexp", toolDef.Regexp).Msg("Tool definition must have either name (static) or regexp (dynamic)")
+			continue
+		}
+	}
+
+	// Store dynamic tool rules for later discovery in EnsureDynamicTools
+	// Clear old DynamicTools and populate from new format
+	cfg.Server.DynamicTools = convertToOldFormat(dynamicToolRules)
+
+	log.Info().Int("static_tool_count", staticToolCount).Int("dynamic_tool_rules", len(dynamicToolRules)).Msg("ClickHouse tools registered")
+}
+
+// registerStaticTool registers a static tool (not discovered, explicitly configured)
+func registerStaticTool(srv AltinityMCPServer, toolDef config.ToolDefinition, readOnly bool) {
+	switch toolDef.Type {
+	case "read":
+		if toolDef.Name == "execute_query" {
+			executeQueryTool := &mcp.Tool{
+				Name:        "execute_query",
+				Title:       "Execute SQL Query",
+				Description: "Executes a SQL query against ClickHouse and returns the results",
+				Annotations: makeExecuteQueryAnnotations(readOnly),
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "SQL query to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+						},
+						"limit": map[string]any{
+							"type":        "number",
+							"description": "Maximum number of rows to return (default: 100000)",
+						},
+					},
+					"required": []string{"query"},
+				},
+			}
+			srv.AddTool(executeQueryTool, HandleExecuteQuery)
+			log.Info().Str("tool", "execute_query").Msg("Static read tool registered")
+		} else {
+			log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static read tool name")
+		}
+
+	case "write":
+		if toolDef.Name == "write_query" {
+			if readOnly {
+				log.Info().Str("tool", "write_query").Msg("Write tool skipped (read-only mode)")
+				return
+			}
+			writeQueryTool := &mcp.Tool{
+				Name:        "write_query",
+				Title:       "Execute Write Query",
+				Description: "Executes a write query (INSERT, UPDATE, DELETE, ALTER) against ClickHouse",
+				Annotations: &mcp.ToolAnnotations{
+					ReadOnlyHint:    false,
+					DestructiveHint: boolPtr(true),
+				},
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "SQL write query to execute (INSERT, UPDATE, DELETE, ALTER)",
+						},
+						"limit": map[string]any{
+							"type":        "number",
+							"description": "Maximum number of rows to return for queries with result sets",
+						},
+					},
+					"required": []string{"query"},
+				},
+			}
+			srv.AddTool(writeQueryTool, HandleExecuteQuery)
+			log.Info().Str("tool", "write_query").Msg("Static write tool registered")
+		} else {
+			log.Warn().Str("tool_name", toolDef.Name).Msg("Unknown static write tool name")
+		}
+
+	default:
+		log.Error().Str("type", toolDef.Type).Msg("Unknown tool type")
+	}
+}
+
+// convertToOldFormat converts ToolDefinition array back to DynamicToolRule format for EnsureDynamicTools
+func convertToOldFormat(toolDefs []config.ToolDefinition) []config.DynamicToolRule {
+	rules := make([]config.DynamicToolRule, len(toolDefs))
+	for i, toolDef := range toolDefs {
+		rules[i] = config.DynamicToolRule{
+			Type:   toolDef.Type,
+			Name:   toolDef.Name,
+			Regexp: toolDef.Regexp,
+			Prefix: toolDef.Prefix,
+			Mode:   toolDef.Mode,
+		}
+	}
+	return rules
+}
+
+// boolPtr returns a pointer to a boolean value
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 // RegisterResources adds ClickHouse resources to the MCP server
@@ -1289,62 +1423,65 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		return nil
 	}
 
-	// Get ClickHouse client for view discovery.
-	// Try with the token from context first; if JWE is enabled but no token is present,
-	// fall back to the static config (e.g. open ClickHouse used for tool discovery).
+	// Discover and register dynamic tools (both read and write)
+	readTools, err := s.discoverReadTools(ctx)
+	if err != nil {
+		return err
+	}
+
+	writeTools, err := s.discoverWriteTools(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Register both read and write tools
+	s.registerDynamicTools(readTools, writeTools)
+	s.dynamicToolsInit = true
+	return nil
+}
+
+// discoverReadTools discovers read-only tools from views
+func (s *ClickHouseJWEServer) discoverReadTools(ctx context.Context) (map[string]dynamicToolMeta, error) {
+	readRules := filterRulesByType(s.Config.Server.DynamicTools, "read")
+	if len(readRules) == 0 {
+		return make(map[string]dynamicToolMeta), nil
+	}
+
 	token := s.ExtractTokenFromCtx(ctx)
 	chClient, err := s.GetClickHouseClient(ctx, token)
 	if err != nil {
 		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
-			// No per-user token available; use static ClickHouse config for discovery.
 			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
 		}
 		if err != nil {
-			return fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+			return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 		}
 	}
-	defer func() {
-		if closeErr := chClient.Close(); closeErr != nil {
-			log.Error().Err(closeErr).Msg("dynamic_tools: can't close clickhouse")
-		}
-	}()
+	defer chClient.Close()
 
-	// fetch views
 	q := "SELECT database, name, create_table_query, comment FROM system.tables WHERE engine='View'"
 	result, err := chClient.ExecuteQuery(ctx, q)
 	if err != nil {
-		return fmt.Errorf("dynamic_tools: failed to list views: %w", err)
+		return nil, fmt.Errorf("dynamic_tools: failed to list views: %w", err)
 	}
 
-	// compile regex rules
+	tools := make(map[string]dynamicToolMeta)
 	type ruleCompiled struct {
 		r      *regexp.Regexp
 		prefix string
 		name   string
 	}
-	rules := make([]ruleCompiled, 0, len(s.Config.Server.DynamicTools))
-	for _, rule := range s.Config.Server.DynamicTools {
+	rules := make([]ruleCompiled, 0)
+	for _, rule := range readRules {
 		if rule.Regexp == "" {
 			continue
 		}
-		compiled, compErr := regexp.Compile(rule.Regexp)
-		if compErr != nil {
-			log.Error().Err(compErr).Str("regexp", rule.Regexp).Msg("dynamic_tools: invalid regexp, skipping rule")
+		compiled, err := regexp.Compile(rule.Regexp)
+		if err != nil {
+			log.Error().Err(err).Str("regexp", rule.Regexp).Msg("dynamic_tools: invalid regexp")
 			continue
 		}
 		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix, name: rule.Name})
-	}
-
-	// detect overlaps: map view -> matched rule indexes
-	overlaps := false
-	dynamicCount := 0
-
-	// Track matches for rules with name field to ensure they match exactly once
-	namedRuleMatches := make(map[int][]string) // rule index -> matched views
-	for i, rc := range rules {
-		if rc.name != "" {
-			namedRuleMatches[i] = make([]string, 0)
-		}
 	}
 
 	for _, row := range result.Rows {
@@ -1361,48 +1498,216 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		for i, rc := range rules {
 			if rc.r.MatchString(full) {
 				matched = append(matched, i)
-				// Track named rule matches
-				if rc.name != "" {
-					namedRuleMatches[i] = append(namedRuleMatches[i], full)
-				}
 			}
 		}
 		if len(matched) == 0 {
 			continue
 		}
 		if len(matched) > 1 {
-			log.Error().Str("view", full).Msg("dynamic_tools: overlap between rules detected for view")
-			overlaps = true
+			log.Error().Str("view", full).Msg("dynamic_tools: overlap between rules")
 			continue
 		}
 
-		// single rule match -> register tool
 		rc := rules[matched[0]]
-
-		// Determine tool name
 		var toolName string
 		if rc.name != "" {
-			// Use explicit name if provided
 			toolName = snakeCase(rc.prefix + rc.name)
 		} else {
-			// Generate from view name
 			toolName = snakeCase(rc.prefix + full)
 		}
 
 		params := parseViewParams(create)
 		meta := buildDynamicToolMeta(toolName, db, name, comment, params)
-		s.dynamicTools[toolName] = meta
+		meta.ToolType = "read"
+		tools[toolName] = meta
+	}
 
-		// create MCP tool with parameters using map[string]any for InputSchema
+	log.Info().Int("tool_count", len(tools)).Msg("Dynamic read tools discovered")
+	return tools, nil
+}
+
+// discoverWriteTools discovers write tools from tables
+func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[string]dynamicToolMeta, error) {
+	if s.Config.ClickHouse.ReadOnly {
+		log.Info().Msg("Write tools disabled in read-only mode")
+		return make(map[string]dynamicToolMeta), nil
+	}
+
+	writeRules := filterRulesByType(s.Config.Server.DynamicTools, "write")
+	if len(writeRules) == 0 {
+		return make(map[string]dynamicToolMeta), nil
+	}
+
+	token := s.ExtractTokenFromCtx(ctx)
+	chClient, err := s.GetClickHouseClient(ctx, token)
+	if err != nil {
+		if errors.Is(err, jwe_auth.ErrMissingToken) && s.Config.Server.JWE.Enabled {
+			chClient, err = clickhouse.NewClient(ctx, s.Config.ClickHouse)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
+		}
+	}
+	defer chClient.Close()
+
+	// Query tables (excluding system tables)
+	q := "SELECT database, name, comment FROM system.tables WHERE engine NOT IN ('View', 'MaterializedView', 'Alias') AND database NOT IN ('system', 'INFORMATION_SCHEMA')"
+	result, err := chClient.ExecuteQuery(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic_tools: failed to list tables: %w", err)
+	}
+
+	tools := make(map[string]dynamicToolMeta)
+	type ruleCompiled struct {
+		r      *regexp.Regexp
+		prefix string
+		name   string
+		mode   string
+	}
+	rules := make([]ruleCompiled, 0)
+	for _, rule := range writeRules {
+		if rule.Regexp == "" {
+			continue
+		}
+		compiled, err := regexp.Compile(rule.Regexp)
+		if err != nil {
+			log.Error().Err(err).Str("regexp", rule.Regexp).Msg("dynamic_tools: invalid regexp for write tool")
+			continue
+		}
+		rules = append(rules, ruleCompiled{r: compiled, prefix: rule.Prefix, name: rule.Name, mode: rule.Mode})
+	}
+
+	for _, row := range result.Rows {
+		if len(row) < 3 {
+			continue
+		}
+		db, _ := row[0].(string)
+		name, _ := row[1].(string)
+		comment, _ := row[2].(string)
+		full := db + "." + name
+
+		matched := make([]int, 0)
+		for i, rc := range rules {
+			if rc.r.MatchString(full) {
+				matched = append(matched, i)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		if len(matched) > 1 {
+			log.Error().Str("table", full).Msg("dynamic_tools: overlap between rules for write tool")
+			continue
+		}
+
+		rc := rules[matched[0]]
+
+		// Get table columns
+		cols, err := s.getTableColumnsForMode(ctx, chClient, db, name, rc.mode)
+		if err != nil {
+			log.Warn().Str("table", full).Err(err).Msg("dynamic_tools: failed to get columns for write tool")
+			continue
+		}
+
+		var toolName string
+		if rc.name != "" {
+			toolName = snakeCase(rc.prefix + rc.name)
+		} else {
+			toolName = snakeCase(rc.prefix + full)
+		}
+
+		// Build metadata for write tool
+		meta := dynamicToolMeta{
+			ToolName:    toolName,
+			Title:       humanizeToolName(toolName),
+			Database:    db,
+			Table:       name,
+			Description: buildWriteToolDescription(comment, db, name, rc.mode),
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    false,
+				DestructiveHint: boolPtr(true),
+			},
+			Params:    cols,
+			ToolType:  "write",
+			WriteMode: rc.mode,
+		}
+		tools[toolName] = meta
+	}
+
+	log.Info().Int("tool_count", len(tools)).Msg("Dynamic write tools discovered")
+	return tools, nil
+}
+
+// getTableColumnsForMode retrieves and filters table columns for a specific write mode
+func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClient *clickhouse.Client, db, table, mode string) ([]dynamicToolParam, error) {
+	// Query column information
+	q := fmt.Sprintf("SELECT name, type, column_type, default_kind, comment FROM system.columns WHERE database='%s' AND table='%s' ORDER BY position",
+		db, table)
+	result, err := chClient.ExecuteQuery(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	params := make([]dynamicToolParam, 0)
+	for _, row := range result.Rows {
+		if len(row) < 4 {
+			continue
+		}
+		name, _ := row[0].(string)
+		chType, _ := row[1].(string)
+		columnType, _ := row[2].(string)
+		defaultKind, _ := row[3].(string)
+
+		// Skip certain column types
+		if columnType == "alias" || columnType == "materialized" || columnType == "virtual" {
+			continue
+		}
+		if defaultKind == "MATERIALIZED" || defaultKind == "ALIAS" {
+			continue
+		}
+
+		// Determine if column is required
+		required := defaultKind == ""
+
+		jsonType, jsonFmt := mapCHType(chType)
+
+		params = append(params, dynamicToolParam{
+			Name:       name,
+			CHType:     chType,
+			JSONType:   jsonType,
+			JSONFormat: jsonFmt,
+			Required:   required,
+		})
+	}
+
+	return params, nil
+}
+
+// buildWriteToolDescription generates description for write tools
+func buildWriteToolDescription(comment, db, table, mode string) string {
+	if comment == "" {
+		modeDesc := "Insert data"
+		if mode == "update" {
+			modeDesc = "Update data"
+		} else if mode == "upsert" {
+			modeDesc = "Insert or update data"
+		}
+		return fmt.Sprintf("%s in %s.%s", modeDesc, db, table)
+	}
+	return comment
+}
+
+// registerDynamicTools registers discovered tools with the MCP server
+func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[string]dynamicToolMeta) {
+	for toolName, meta := range readTools {
+		s.dynamicTools[toolName] = meta
 		props := make(map[string]any)
 		for _, p := range meta.Params {
-			prop := map[string]any{
+			props[p.Name] = map[string]any{
 				"type":        p.JSONType,
 				"description": p.CHType,
 			}
-			props[p.Name] = prop
 		}
-
 		tool := &mcp.Tool{
 			Name:        toolName,
 			Title:       meta.Title,
@@ -1414,28 +1719,50 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 			},
 		}
 		s.AddTool(tool, makeDynamicToolHandler(meta))
-		dynamicCount++
 	}
 
-	// Validate named rules matched exactly once
-	for i, matches := range namedRuleMatches {
-		rc := rules[i]
-		if len(matches) == 0 {
-			log.Error().Str("name", rc.name).Str("regexp", rc.r.String()).Msg("dynamic_tools: named rule matched no views")
-		} else if len(matches) > 1 {
-			log.Error().Str("name", rc.name).Str("regexp", rc.r.String()).Strs("matched_views", matches).Msg("dynamic_tools: named rule matched multiple views, expected exactly one")
+	for toolName, meta := range writeTools {
+		s.dynamicTools[toolName] = meta
+		props := make(map[string]any)
+		for _, p := range meta.Params {
+			props[p.Name] = map[string]any{
+				"type":        p.JSONType,
+				"description": p.CHType,
+			}
 		}
+		tool := &mcp.Tool{
+			Name:        toolName,
+			Title:       meta.Title,
+			Description: meta.Description,
+			Annotations: meta.Annotations,
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": props,
+			},
+		}
+		s.AddTool(tool, makeDynamicWriteToolHandler(meta))
 	}
 
-	if overlaps {
-		log.Error().Msg("dynamic_tools: overlaps detected; conflicting views were skipped as per policy 'error on overlap'")
-	}
-	log.Info().Int("tool_count", dynamicCount).Msg("Dynamic ClickHouse view tools registered")
-
-	s.dynamicToolsInit = true
-	return nil
+	log.Info().Int("read_tools", len(readTools)).Int("write_tools", len(writeTools)).Msg("Dynamic tools registered")
 }
 
+// filterRulesByType filters dynamic tool rules by type (read or write)
+func filterRulesByType(rules []config.DynamicToolRule, toolType string) []config.DynamicToolRule {
+	filtered := make([]config.DynamicToolRule, 0)
+	for _, rule := range rules {
+		// Default type to "read" if not specified (backwards compat)
+		ruleType := rule.Type
+		if ruleType == "" && rule.Regexp != "" {
+			ruleType = "read"
+		}
+		if ruleType == toolType {
+			filtered = append(filtered, rule)
+		}
+	}
+	return filtered
+}
+
+// makeDynamicToolHandler creates a handler for read-only dynamic tools
 func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		chJweServer := GetClickHouseJWEServerFromContext(ctx)
@@ -1483,6 +1810,89 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		}
 		return NewToolResultText(string(jsonData)), nil
 	}
+}
+
+// makeDynamicWriteToolHandler creates a handler for write dynamic tools
+func makeDynamicWriteToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		chJweServer := GetClickHouseJWEServerFromContext(ctx)
+		if chJweServer == nil {
+			return nil, fmt.Errorf("can't get JWEServer from context")
+		}
+
+		// Check read-only mode
+		if chJweServer.Config.ClickHouse.ReadOnly {
+			return NewToolResultError("Write operations disabled in read-only mode"), nil
+		}
+
+		chClient, err := chJweServer.GetClickHouseClientFromCtx(ctx)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: GetClickHouseClient failed")
+			return NewToolResultError(fmt.Sprintf("Failed to get ClickHouse client: %v", err)), nil
+		}
+		defer chClient.Close()
+
+		arguments := getArgumentsMap(req)
+
+		// Build query based on write mode
+		query, err := buildDynamicWriteQuery(meta, arguments)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: failed to build write query")
+			return NewToolResultError(fmt.Sprintf("Failed to build query: %v", err)), nil
+		}
+
+		log.Debug().Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: executing write query")
+		_, err = chClient.ExecuteQuery(ctx, query)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: write query failed")
+			return NewToolResultError(fmt.Sprintf("Query failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		}
+
+		return NewToolResultText(fmt.Sprintf("Successfully executed %s", meta.ToolName)), nil
+	}
+}
+
+// buildDynamicWriteQuery builds a SQL write query from tool parameters
+func buildDynamicWriteQuery(meta dynamicToolMeta, args map[string]interface{}) (string, error) {
+	switch meta.WriteMode {
+	case "insert":
+		return buildInsertQuery(meta, args)
+	case "update":
+		// UPDATE not yet implemented
+		return "", fmt.Errorf("UPDATE mode not yet implemented; use write_query tool instead")
+	case "upsert":
+		// UPSERT not yet implemented
+		return "", fmt.Errorf("UPSERT mode not yet implemented; use write_query tool instead")
+	default:
+		return "", fmt.Errorf("unknown write mode: %s", meta.WriteMode)
+	}
+}
+
+// buildInsertQuery builds an INSERT query from tool parameters
+func buildInsertQuery(meta dynamicToolMeta, args map[string]interface{}) (string, error) {
+	cols := make([]string, 0)
+	vals := make([]string, 0)
+
+	for _, param := range meta.Params {
+		val, ok := args[param.Name]
+		if ok {
+			cols = append(cols, param.Name)
+			literal := sqlLiteral(param.JSONType, val)
+			vals = append(vals, literal)
+		} else if param.Required {
+			return "", fmt.Errorf("required parameter missing: %s", param.Name)
+		}
+	}
+
+	if len(cols) == 0 {
+		return "", fmt.Errorf("no columns provided")
+	}
+
+	colList := strings.Join(cols, ", ")
+	valList := strings.Join(vals, ", ")
+	query := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
+		meta.Database, meta.Table, colList, valList)
+	return query, nil
 }
 
 // getArgumentsMap extracts arguments from a CallToolRequest as a map
@@ -1589,10 +1999,6 @@ func makeExecuteQueryAnnotations(readOnly bool) *mcp.ToolAnnotations {
 		DestructiveHint: boolPtr(true),
 		OpenWorldHint:   boolPtr(false),
 	}
-}
-
-func boolPtr(v bool) *bool {
-	return &v
 }
 
 func humanizeToolName(toolName string) string {

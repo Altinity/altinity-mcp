@@ -230,8 +230,11 @@ type ServerConfig struct {
 	CORSOrigin         string            `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
 	ForwardHTTPHeaders []string          `json:"forward_http_headers" yaml:"forward_http_headers" desc:"Header name patterns forwarded to ClickHouse (supports * wildcard)"`
 	HeaderToSettings   map[string]string `json:"header_to_settings" yaml:"header_to_settings" desc:"Map incoming HTTP headers to ClickHouse settings"`
+	// Tools defines tool configuration (static and dynamic tools in unified structure)
+	Tools []ToolDefinition `json:"tools" yaml:"tools" desc:"Tool definitions (static and dynamic)"`
 	// DynamicTools defines rules for generating tools from ClickHouse views
-	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
+	// DEPRECATED: Use Tools instead. Kept for backwards compatibility.
+	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools" desc:"(Deprecated: use tools instead) Rules for generating tools from ClickHouse views"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration
@@ -240,11 +243,25 @@ type OpenAPIConfig struct {
 	TLS     bool `json:"tls" yaml:"tls" desc:"Use TLS (https) for OpenAPI endpoints"`
 }
 
+// ToolDefinition describes a tool definition (static or dynamic)
+// Static tools: type + name (no regexp)
+// Dynamic tools: type + regexp + prefix + mode
+type ToolDefinition struct {
+	Type   string `json:"type" yaml:"type"`     // "read" or "write"
+	Name   string `json:"name" yaml:"name"`     // Static tool name (optional, if no regexp)
+	Regexp string `json:"regexp" yaml:"regexp"` // Dynamic discovery pattern (optional)
+	Prefix string `json:"prefix" yaml:"prefix"` // Tool prefix for discovered tools
+	Mode   string `json:"mode" yaml:"mode"`     // For write: "insert", "update", "upsert"
+}
+
 // DynamicToolRule describes a rule to create dynamic tools from views
+// DEPRECATED: Use ToolDefinition instead. Kept for backwards compatibility.
 type DynamicToolRule struct {
 	Name   string `json:"name" yaml:"name"`
 	Regexp string `json:"regexp" yaml:"regexp"`
 	Prefix string `json:"prefix" yaml:"prefix"`
+	Type   string `json:"type" yaml:"type"`     // "read" or "write" (added for compatibility)
+	Mode   string `json:"mode" yaml:"mode"`     // For write: "insert", "update", "upsert"
 }
 
 // LogLevel defines the logging level
