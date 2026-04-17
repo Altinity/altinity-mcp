@@ -1083,6 +1083,25 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
+// maxClientErrorLen caps error messages returned to MCP clients.
+// ClickHouse errors can include full SQL + stack traces that exceed tens of KB.
+// The full error is always logged server-side; clients only need enough to
+// understand what went wrong.
+const maxClientErrorLen = 2000
+
+// truncateErrForClient returns a client-safe error message from err, applying
+// JSON-safe escaping and truncating to maxClientErrorLen characters.
+func truncateErrForClient(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := ErrJSONEscaper.Replace(err.Error())
+	if len(msg) > maxClientErrorLen {
+		msg = msg[:maxClientErrorLen] + "… (truncated)"
+	}
+	return msg
+}
+
 // RegisterTools adds ClickHouse tools to the MCP server. It accepts either
 // the new unified Tools configuration or the legacy DynamicTools form
 // (deprecated; converted automatically with a warning). With no config,
@@ -1434,7 +1453,7 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 			Str("table", tableName).
 			Str("resource", "table_structure").
 			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
+		return nil, fmt.Errorf("failed to get table structure: %s", truncateErrForClient(err))
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")
@@ -1950,7 +1969,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 		}
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -2330,6 +2349,11 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
+	// Reject oversize queries before they reach ClickHouse or the SQL parser.
+	if max := chJweServer.Config.ClickHouse.EffectiveMaxQueryLength(); max > 0 && len(query) > max {
+		return NewToolResultError(fmt.Sprintf("query exceeds max length (%d bytes, limit %d)", len(query), max)), nil
+	}
+
 	if clause, err := checkBlockedClauses(query, chJweServer.blockedClauses); err != nil {
 		return NewToolResultError(fmt.Sprintf("Query rejected: %v", err)), nil
 	} else if clause != "" {
@@ -2390,7 +2414,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")
@@ -2803,7 +2827,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 
 	result, err := chClient.ExecuteQuery(ctx, query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error())), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err)), http.StatusInternalServerError)
 		return
 	}
 

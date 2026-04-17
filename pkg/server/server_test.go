@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -6083,4 +6084,126 @@ func TestBuildWriteToolDescription(t *testing.T) {
 	require.Equal(t, "Insert data in db.t", buildWriteToolDescription("", "db", "t", "insert"))
 	require.Equal(t, "Update data in db.t", buildWriteToolDescription("", "db", "t", "update"))
 	require.Equal(t, "Insert or update data in db.t", buildWriteToolDescription("", "db", "t", "upsert"))
+}
+
+// TestTruncateErrForClient covers the error-truncation helper.
+func TestTruncateErrForClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_returns_empty", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "", truncateErrForClient(nil))
+	})
+
+	t.Run("short_error_unchanged", func(t *testing.T) {
+		t.Parallel()
+		err := errors.New("boom")
+		require.Equal(t, "boom", truncateErrForClient(err))
+	})
+
+	t.Run("long_error_truncated", func(t *testing.T) {
+		t.Parallel()
+		big := strings.Repeat("x", maxClientErrorLen+500)
+		err := errors.New(big)
+		out := truncateErrForClient(err)
+		require.Less(t, len(out), len(big))
+		require.Greater(t, len(out), maxClientErrorLen)
+		require.Contains(t, out, "(truncated)")
+	})
+
+	t.Run("passes_through_existing_escaper", func(t *testing.T) {
+		t.Parallel()
+		err := errors.New("quoted 'x'")
+		out := truncateErrForClient(err)
+		// The function applies ErrJSONEscaper (pre-existing behavior) — we just
+		// verify the message is preserved without adding new artifacts.
+		require.Equal(t, ErrJSONEscaper.Replace("quoted 'x'"), out)
+	})
+}
+
+// TestHandleExecuteQuery_MaxQueryLength covers query-size limiting.
+func TestHandleExecuteQuery_MaxQueryLength(t *testing.T) {
+	t.Parallel()
+
+	callExec := func(t *testing.T, cfg config.Config, query string) *mcp.CallToolResult {
+		srv := &ClickHouseJWEServer{Config: cfg}
+		ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+		args, _ := json.Marshal(map[string]any{"query": query})
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: args}}
+		res, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		return res
+	}
+
+	t.Run("within_default_limit_passes_size_check", func(t *testing.T) {
+		t.Parallel()
+		// With no ClickHouse reachable, the query will fail later — but we only care
+		// that it doesn't fail with the length error.
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 1}}
+		res := callExec(t, cfg, "SELECT 1")
+		require.True(t, res.IsError)
+		require.NotContains(t, textOf(res), "exceeds max length")
+	})
+
+	t.Run("oversize_query_rejected_with_default_limit", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{}} // default 10MB
+		big := "SELECT '" + strings.Repeat("x", 11*1024*1024) + "'"
+		res := callExec(t, cfg, big)
+		require.True(t, res.IsError)
+		require.Contains(t, textOf(res), "exceeds max length")
+	})
+
+	t.Run("custom_limit_enforced", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{MaxQueryLength: 100}}
+		big := strings.Repeat("X", 150)
+		res := callExec(t, cfg, "SELECT '"+big+"'")
+		require.True(t, res.IsError)
+		require.Contains(t, textOf(res), "exceeds max length")
+		require.Contains(t, textOf(res), "limit 100")
+	})
+
+	t.Run("limit_disabled_with_negative", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{MaxQueryLength: -1, Host: "127.0.0.1", Port: 1}}
+		big := strings.Repeat("x", 2*1024*1024) // 2 MB — over default, under nothing
+		res := callExec(t, cfg, "SELECT '"+big+"'")
+		require.True(t, res.IsError)
+		require.NotContains(t, textOf(res), "exceeds max length")
+	})
+}
+
+// textOf extracts text content from the first content block of a tool result.
+func textOf(res *mcp.CallToolResult) string {
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			return tc.Text
+		}
+	}
+	return ""
+}
+
+// TestEffectiveMaxQueryLength covers the config helper.
+func TestEffectiveMaxQueryLength(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"zero_uses_default", 0, 10 * 1024 * 1024},
+		{"positive_used_as_is", 1024, 1024},
+		{"negative_disables", -1, 0},
+		{"negative_large", -1000, 0},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := config.ClickHouseConfig{MaxQueryLength: tc.set}
+			require.Equal(t, tc.want, c.EffectiveMaxQueryLength())
+		})
+	}
 }
