@@ -75,12 +75,59 @@ Notes:
 
 ## Write dynamic tools (Tables)
 
+If you need to insert single row to the table, constructing INSERT statement would burn some amount of tokens.  Having a tool is more economical.   
+
 For `type: write` with `mode: insert`, the tool accepts one row at a time. Its parameters are built from `system.columns`:
 
 - Included: columns with `default_kind = ''` (no DEFAULT, MATERIALIZED, EPHEMERAL, or ALIAS).
 - Excluded: columns with any default expression.
 
 The tool inserts a single row using the provided values. Bulk or streaming inserts are not supported through this mode.
+
+---
+
+## Parameter descriptions
+
+Every dynamic-tool parameter carries a human-readable `description` in its JSON Schema. It is resolved in this order:
+
+1. **Tool-level JSON `COMMENT` with a `params` map** — works for both views and tables. Highest priority.
+2. **Column-level `COMMENT` from `system.columns`** — applies to write tools (tables); each column's comment becomes its parameter description.
+3. **ClickHouse type string** — final fallback (e.g. `"UInt64"`, `"DateTime"`).
+
+View parameters (`{name: Type}` slots in the SELECT body) aren't real columns, so level 2 doesn't apply to them — use the JSON `COMMENT` `params` map to describe them.
+
+### View example (JSON `params` map is the only source)
+
+```sql
+CREATE VIEW analytics.user_sessions AS
+SELECT user_id, session_start
+FROM sessions
+WHERE user_id = {user_id: UInt64}
+  AND session_start >= {since: Date}
+COMMENT '{
+  "description": "Get user sessions for a given date range",
+  "params": {
+    "user_id": "User ID to fetch",
+    "since":   "Start of date range (inclusive)"
+  }
+}';
+```
+
+### Table example (column comments + optional JSON override)
+
+```sql
+CREATE TABLE events.clicks (
+    user_id UInt64 COMMENT 'User who clicked',
+    target  String COMMENT 'URL clicked'
+) ENGINE = Log
+COMMENT '{
+  "params": {
+    "target": "Full target URL including query string"
+  }
+}';
+```
+
+Here `user_id` uses its column comment (`"User who clicked"`) and `target` is overridden by the tool-level JSON (`"Full target URL including query string"`). Columns without comments fall back to the ClickHouse type string.
 
 ---
 

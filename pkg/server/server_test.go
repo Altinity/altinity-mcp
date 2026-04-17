@@ -4700,6 +4700,86 @@ func TestParseDynamicToolComment(t *testing.T) {
 		require.NotNil(t, meta.Annotations)
 		require.True(t, *meta.Annotations.OpenWorldHint)
 	})
+	t.Run("json_with_params", func(t *testing.T) {
+		t.Parallel()
+		meta, ok := parseDynamicToolComment(`{"params":{"user_id":"The user ID","ts":"Event timestamp"}}`)
+		require.True(t, ok)
+		require.Equal(t, "The user ID", meta.Params["user_id"])
+		require.Equal(t, "Event timestamp", meta.Params["ts"])
+	})
+}
+
+func TestApplyCommentParamOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_params_is_noop", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		applyCommentParamOverrides(params, dynamicToolCommentMetadata{})
+		require.Equal(t, "col-level", params[0].Description)
+	})
+	t.Run("json_overrides_existing_description", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "json-override"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "json-override", params[0].Description)
+	})
+	t.Run("json_fills_missing_description", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "from-json"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "from-json", params[0].Description)
+	})
+	t.Run("whitespace_only_override_ignored", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "   "}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "col-level", params[0].Description)
+	})
+	t.Run("unmatched_params_preserved", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "A"}, {Name: "b"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"c": "nope"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "A", params[0].Description)
+		require.Equal(t, "", params[1].Description)
+	})
+}
+
+func TestBuildParamSchema(t *testing.T) {
+	t.Parallel()
+
+	t.Run("description_used_when_set", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "uid", CHType: "UInt64", JSONType: "integer", Description: "user id"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "integer", schema["type"])
+		require.Equal(t, "user id", schema["description"])
+	})
+	t.Run("fallback_to_chtype_when_empty", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "uid", CHType: "UInt64", JSONType: "integer"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "UInt64", schema["description"])
+	})
+	t.Run("json_format_included_when_set", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "ts", CHType: "DateTime", JSONType: "string", JSONFormat: "date-time", Description: "event time"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "string", schema["type"])
+		require.Equal(t, "date-time", schema["format"])
+		require.Equal(t, "event time", schema["description"])
+	})
+	t.Run("json_format_omitted_when_empty", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "n", CHType: "UInt64", JSONType: "integer"}
+		schema := buildParamSchema(p)
+		_, hasFormat := schema["format"]
+		require.False(t, hasFormat)
+	})
 }
 
 func TestBuildDynamicToolDescription(t *testing.T) {
