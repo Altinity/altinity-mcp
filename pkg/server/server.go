@@ -93,11 +93,12 @@ type ClickHouseJWEServer struct {
 }
 
 type dynamicToolParam struct {
-	Name       string
-	CHType     string
-	JSONType   string
-	JSONFormat string
-	Required   bool
+	Name        string
+	CHType      string
+	JSONType    string
+	JSONFormat  string
+	Required    bool
+	Description string // resolved from column COMMENT or JSON COMMENT params; empty → falls back to CHType
 }
 
 type dynamicToolMeta struct {
@@ -116,6 +117,7 @@ type dynamicToolCommentMetadata struct {
 	Title       string                         `json:"title"`
 	Description string                         `json:"description"`
 	Annotations *dynamicToolCommentAnnotations `json:"annotations"`
+	Params      map[string]string              `json:"params"`
 }
 
 type dynamicToolCommentAnnotations struct {
@@ -1764,6 +1766,9 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 			log.Warn().Err(colErr).Str("table", full).Msg("dynamic_tools: failed to get columns for write tool, skipping")
 			continue
 		}
+		if metadata, ok := parseDynamicToolComment(comment); ok {
+			applyCommentParamOverrides(cols, metadata)
+		}
 
 		var toolName string
 		if rc.name != "" {
@@ -1812,12 +1817,13 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 
 	params := make([]dynamicToolParam, 0, len(result.Rows))
 	for _, row := range result.Rows {
-		if len(row) < 3 {
+		if len(row) < 4 {
 			continue
 		}
 		name, _ := row[0].(string)
 		chType, _ := row[1].(string)
 		defaultKind, _ := row[2].(string)
+		comment, _ := row[3].(string)
 
 		// MATERIALIZED and ALIAS columns are computed server-side; clients must not
 		// supply values for them. Everything else is writable (DEFAULT values make
@@ -1828,11 +1834,12 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 
 		jsonType, jsonFmt := mapCHType(chType)
 		params = append(params, dynamicToolParam{
-			Name:       name,
-			CHType:     chType,
-			JSONType:   jsonType,
-			JSONFormat: jsonFmt,
-			Required:   defaultKind == "", // required iff no DEFAULT expression
+			Name:        name,
+			CHType:      chType,
+			JSONType:    jsonType,
+			JSONFormat:  jsonFmt,
+			Required:    defaultKind == "", // required iff no DEFAULT expression
+			Description: strings.TrimSpace(comment),
 		})
 	}
 	return params, nil
@@ -1862,10 +1869,7 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 		s.dynamicTools[toolName] = meta
 		props := make(map[string]any, len(meta.Params)+1)
 		for _, p := range meta.Params {
-			props[p.Name] = map[string]any{
-				"type":        p.JSONType,
-				"description": p.CHType,
-			}
+			props[p.Name] = buildParamSchema(p)
 		}
 		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
 			props["settings"] = settingsSchema
@@ -1887,10 +1891,7 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 		props := make(map[string]any, len(meta.Params)+1)
 		required := make([]string, 0, len(meta.Params))
 		for _, p := range meta.Params {
-			props[p.Name] = map[string]any{
-				"type":        p.JSONType,
-				"description": p.CHType,
-			}
+			props[p.Name] = buildParamSchema(p)
 			if p.Required {
 				required = append(required, p.Name)
 			}
@@ -2103,6 +2104,9 @@ func getArgumentsMap(req *mcp.CallToolRequest) (map[string]any, error) {
 
 func buildDynamicToolMeta(toolName, db, table, comment string, params []dynamicToolParam) dynamicToolMeta {
 	title, description, annotations := buildToolPresentation(toolName, db, table, comment)
+	if metadata, ok := parseDynamicToolComment(comment); ok {
+		applyCommentParamOverrides(params, metadata)
+	}
 
 	return dynamicToolMeta{
 		ToolName:    toolName,
@@ -2137,6 +2141,41 @@ func parseDynamicToolComment(comment string) (dynamicToolCommentMetadata, bool) 
 		return dynamicToolCommentMetadata{}, false
 	}
 	return metadata, true
+}
+
+// applyCommentParamOverrides sets param.Description from the tool-level JSON
+// COMMENT's "params" map when present. Called after any column-level comment
+// has been applied, so JSON overrides win.
+func applyCommentParamOverrides(params []dynamicToolParam, meta dynamicToolCommentMetadata) {
+	if len(meta.Params) == 0 {
+		return
+	}
+	for i, p := range params {
+		if desc, ok := meta.Params[p.Name]; ok {
+			if trimmed := strings.TrimSpace(desc); trimmed != "" {
+				params[i].Description = trimmed
+			}
+		}
+	}
+}
+
+// buildParamSchema returns the JSON Schema fragment for a single dynamic tool
+// parameter. Description resolves to the param's own Description (from a
+// column COMMENT or the tool's JSON COMMENT "params" map) and falls back to
+// the ClickHouse type string when none was set.
+func buildParamSchema(p dynamicToolParam) map[string]any {
+	desc := p.Description
+	if desc == "" {
+		desc = p.CHType
+	}
+	schema := map[string]any{
+		"type":        p.JSONType,
+		"description": desc,
+	}
+	if p.JSONFormat != "" {
+		schema["format"] = p.JSONFormat
+	}
+	return schema
 }
 
 func buildTitle(toolName, title string) string {
