@@ -931,6 +931,168 @@ func TestDynamicTools_ParamParsingAndTypeMapping(t *testing.T) {
 	require.Equal(t, "boolean", byName("ok").JSONType)
 }
 
+// TestBuildInsertQuery covers pure-function INSERT SQL generation, including
+// quote escaping, required-param validation, unicode, and null bytes.
+func TestBuildInsertQuery(t *testing.T) {
+	t.Parallel()
+
+	mkMeta := func(params ...dynamicToolParam) dynamicToolMeta {
+		return dynamicToolMeta{Database: "mydb", Table: "users", Params: params}
+	}
+
+	t.Run("basic_string_and_int", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"id": float64(42), "name": "Alice"})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users")
+		require.Contains(t, q, "id")
+		require.Contains(t, q, "name")
+		require.Contains(t, q, "42")
+		require.Contains(t, q, "'Alice'")
+	})
+
+	t.Run("required_param_missing", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": float64(42)})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "name")
+	})
+
+	t.Run("optional_param_omitted", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "note", JSONType: "string", Required: false},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"id": float64(42)})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users (id) VALUES (42)")
+		require.NotContains(t, q, "note")
+	})
+
+	t.Run("no_columns_provided", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "note", JSONType: "string", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no columns")
+	})
+
+	t.Run("quote_escaping_keeps_string_well_formed", func(t *testing.T) {
+		t.Parallel()
+		// ClickHouse doesn't support multi-statement queries, so classic
+		// stacked-query injection (e.g. '); DROP TABLE) isn't applicable.
+		// What we still verify: a user quote doesn't break out of the string
+		// literal into column-reference or WHERE-clause territory.
+		meta := mkMeta(
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"name": "it's fine"})
+		require.NoError(t, err)
+		// After removing backslash-escape sequences, only the outer pair of quotes remains.
+		stripped := strings.ReplaceAll(q, `\\`, "")
+		stripped = strings.ReplaceAll(stripped, `\'`, "")
+		require.Equal(t, 2, strings.Count(stripped, "'"),
+			"expected exactly 2 unescaped quotes (the string-literal boundaries), got query: %s", q)
+	})
+
+	t.Run("backslash_escaping", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "path", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"path": `C:\Users\x`})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users")
+	})
+
+	t.Run("unicode_values", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"name": "日本語 — €"})
+		require.NoError(t, err)
+		require.Contains(t, q, "日本語 — €")
+	})
+
+	t.Run("null_byte_in_string", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "blob", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"blob": "before\x00after"})
+		require.NoError(t, err)
+		// Query must remain well-formed (balanced quotes)
+		require.True(t, strings.Count(q, "'")%2 == 0, "unbalanced quotes in: %s", q)
+	})
+}
+
+// TestBuildDynamicWriteQuery covers the mode dispatcher.
+func TestBuildDynamicWriteQuery(t *testing.T) {
+	t.Parallel()
+	meta := dynamicToolMeta{
+		Database: "mydb", Table: "t",
+		Params: []dynamicToolParam{{Name: "id", JSONType: "integer", Required: true}},
+	}
+
+	t.Run("insert_mode", func(t *testing.T) {
+		t.Parallel()
+		meta.WriteMode = "insert"
+		q, err := buildDynamicWriteQuery(meta, map[string]any{"id": float64(1)})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.t")
+	})
+
+	t.Run("update_mode_unsupported", func(t *testing.T) {
+		t.Parallel()
+		meta.WriteMode = "update"
+		_, err := buildDynamicWriteQuery(meta, map[string]any{"id": float64(1)})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "insert")
+	})
+
+	t.Run("empty_mode_unsupported", func(t *testing.T) {
+		t.Parallel()
+		meta.WriteMode = ""
+		_, err := buildDynamicWriteQuery(meta, map[string]any{"id": float64(1)})
+		require.Error(t, err)
+	})
+}
+
+// TestRegisterTools_RejectsUnsupportedWriteModes verifies that RegisterTools
+// skips dynamic write tools with unsupported modes at config-parse time.
+func TestRegisterTools_RejectsUnsupportedWriteModes(t *testing.T) {
+	t.Parallel()
+	srv := &captureServer{}
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			Tools: []config.ToolDefinition{
+				{Type: "read", Name: "execute_query"},
+				// Should be accepted
+				{Type: "write", Regexp: `^test\..*$`, Prefix: "insert_", Mode: "insert"},
+				// Should be rejected (unsupported)
+				{Type: "write", Regexp: `^other\..*$`, Prefix: "update_", Mode: "update"},
+				{Type: "write", Regexp: `^bad\..*$`, Prefix: "x_", Mode: "upsert"},
+			},
+		},
+	}
+	RegisterTools(srv, &cfg)
+	// Only the insert rule should survive into DynamicTools
+	require.Len(t, cfg.Server.DynamicTools, 1)
+	require.Equal(t, "insert", cfg.Server.DynamicTools[0].Mode)
+}
+
 // TestOpenAPI_DynamicPathsIncluded tests that dynamic tool paths are included in OpenAPI schema
 func TestOpenAPI_DynamicPathsIncluded(t *testing.T) {
 	t.Parallel()
@@ -1524,12 +1686,13 @@ func TestGetArgumentsMap_ErrorPath(t *testing.T) {
 				Arguments: nil,
 			},
 		}
-		args := getArgumentsMap(req)
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
 		require.NotNil(t, args)
 		require.Empty(t, args)
 	})
 
-	t.Run("invalid_json", func(t *testing.T) {
+	t.Run("invalid_json_returns_error", func(t *testing.T) {
 		t.Parallel()
 		req := &mcp.CallToolRequest{
 			Params: &mcp.CallToolParamsRaw{
@@ -1537,7 +1700,36 @@ func TestGetArgumentsMap_ErrorPath(t *testing.T) {
 				Arguments: json.RawMessage(`invalid json`),
 			},
 		}
-		args := getArgumentsMap(req)
+		args, err := getArgumentsMap(req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to parse tool arguments")
+		require.Nil(t, args)
+	})
+
+	t.Run("valid_json_returns_map", func(t *testing.T) {
+		t.Parallel()
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "test",
+				Arguments: json.RawMessage(`{"foo": "bar", "n": 42}`),
+			},
+		}
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
+		require.Equal(t, "bar", args["foo"])
+		require.Equal(t, float64(42), args["n"])
+	})
+
+	t.Run("json_null_returns_empty_map", func(t *testing.T) {
+		t.Parallel()
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "test",
+				Arguments: json.RawMessage(`null`),
+			},
+		}
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
 		require.NotNil(t, args)
 		require.Empty(t, args)
 	})

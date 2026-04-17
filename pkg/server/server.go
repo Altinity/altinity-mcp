@@ -107,7 +107,6 @@ type dynamicToolMeta struct {
 	Params      []dynamicToolParam
 	ToolType    string // "read" or "write"
 	WriteMode   string // "insert", "update", "upsert" (for write tools)
-	IsStatic    bool   // true if static tool, false if dynamic
 }
 
 type dynamicToolCommentMetadata struct {
@@ -1098,6 +1097,25 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
+// maxClientErrorLen caps error messages returned to MCP clients.
+// ClickHouse errors can include full SQL + stack traces that exceed tens of KB.
+// The full error is always logged server-side; clients only need enough to
+// understand what went wrong.
+const maxClientErrorLen = 2000
+
+// truncateErrForClient returns a client-safe error message from err, applying
+// JSON-safe escaping and truncating to maxClientErrorLen characters.
+func truncateErrForClient(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := ErrJSONEscaper.Replace(err.Error())
+	if len(msg) > maxClientErrorLen {
+		msg = msg[:maxClientErrorLen] + "… (truncated)"
+	}
+	return msg
+}
+
 // RegisterTools adds the ClickHouse tools to the MCP server.
 // cfg is a pointer so that converted dynamic tool rules are stored
 // back for EnsureDynamicTools to discover later.
@@ -1152,9 +1170,15 @@ func RegisterTools(srv AltinityMCPServer, cfg *config.Config) {
 		} else if toolDef.Regexp != "" {
 			// Dynamic tool: has Regexp (Name is optional)
 			// Validate type and mode for write tools
-			if toolDef.Type == "write" && toolDef.Mode == "" {
-				log.Error().Str("regexp", toolDef.Regexp).Msg("Write tool must specify mode (insert, update, upsert)")
-				continue
+			if toolDef.Type == "write" {
+				if toolDef.Mode == "" {
+					log.Error().Str("regexp", toolDef.Regexp).Msg("Write tool must specify mode (currently only 'insert' is supported)")
+					continue
+				}
+				if toolDef.Mode != "insert" {
+					log.Error().Str("regexp", toolDef.Regexp).Str("mode", toolDef.Mode).Msg("Write tool mode not supported (only 'insert' is implemented); skipping")
+					continue
+				}
 			}
 			dynamicToolRules = append(dynamicToolRules, toolDef)
 		} else {
@@ -1396,7 +1420,7 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 			Str("table", tableName).
 			Str("resource", "table_structure").
 			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
+		return nil, fmt.Errorf("failed to get table structure: %s", truncateErrForClient(err))
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")
@@ -1427,10 +1451,29 @@ func RegisterPrompts(srv AltinityMCPServer) {
 // arrives with the first authenticated tool call, not during tools/list.
 // The MCP SDK automatically sends notifications/tools/list_changed when
 // AddTool is called, so the client re-fetches the tool list after discovery.
+//
+// Concurrency: If a discovery is already in progress, concurrent callers return
+// immediately with the current (static-only) tool list instead of blocking on
+// ClickHouse round-trips. The in-flight caller completes discovery and the MCP
+// SDK notifies all clients via tools/list_changed.
 func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
-	s.dynamicToolsMu.Lock()
+	// Fast path: already initialized — no lock contention on steady-state traffic.
+	s.dynamicToolsMu.RLock()
+	if s.dynamicToolsInit {
+		s.dynamicToolsMu.RUnlock()
+		return nil
+	}
+	s.dynamicToolsMu.RUnlock()
+
+	// Try to acquire the write lock. If another goroutine is currently running
+	// discovery, skip — the in-flight call will register tools and notify clients.
+	if !s.dynamicToolsMu.TryLock() {
+		return nil
+	}
 	defer s.dynamicToolsMu.Unlock()
 
+	// Double-check under write lock: another goroutine may have finished discovery
+	// between our fast-path check and the TryLock.
 	if s.dynamicToolsInit {
 		return nil
 	}
@@ -1818,7 +1861,11 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		}()
 
 		// Get arguments from request
-		arguments := getArgumentsMap(req)
+		arguments, err := getArgumentsMap(req)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: invalid arguments")
+			return NewToolResultError(err.Error()), nil
+		}
 
 		// build param list
 		args := make([]string, 0, len(meta.Params))
@@ -1838,7 +1885,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 		}
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -1868,7 +1915,20 @@ func makeDynamicWriteToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		}
 		defer chClient.Close()
 
-		arguments := getArgumentsMap(req)
+		arguments, err := getArgumentsMap(req)
+		if err != nil {
+			log.Error().Err(err).Str("tool", meta.ToolName).Msg("dynamic_tools: invalid arguments")
+			return NewToolResultError(err.Error()), nil
+		}
+
+		// Enforce per-parameter size limit before building SQL.
+		if max := chJweServer.Config.ClickHouse.EffectiveMaxParameterSize(); max > 0 {
+			for k, v := range arguments {
+				if s, ok := v.(string); ok && len(s) > max {
+					return NewToolResultError(fmt.Sprintf("parameter %q exceeds max size (%d bytes, limit %d)", k, len(s), max)), nil
+				}
+			}
+		}
 
 		// Build query based on write mode
 		query, err := buildDynamicWriteQuery(meta, arguments)
@@ -1881,26 +1941,22 @@ func makeDynamicWriteToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		_, err = chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: write query failed")
-			return NewToolResultError(fmt.Sprintf("Query failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query failed: %s", truncateErrForClient(err))), nil
 		}
 
 		return NewToolResultText(fmt.Sprintf("Successfully executed %s", meta.ToolName)), nil
 	}
 }
 
-// buildDynamicWriteQuery builds a SQL write query from tool parameters
+// buildDynamicWriteQuery builds a SQL write query from tool parameters.
+// Only "insert" mode is currently implemented. Unsupported modes are rejected
+// at tool registration (see RegisterTools), so reaching them here is a bug.
 func buildDynamicWriteQuery(meta dynamicToolMeta, args map[string]interface{}) (string, error) {
 	switch meta.WriteMode {
 	case "insert":
 		return buildInsertQuery(meta, args)
-	case "update":
-		// UPDATE not yet implemented
-		return "", fmt.Errorf("UPDATE mode not yet implemented; use write_query tool instead")
-	case "upsert":
-		// UPSERT not yet implemented
-		return "", fmt.Errorf("UPSERT mode not yet implemented; use write_query tool instead")
 	default:
-		return "", fmt.Errorf("unknown write mode: %s", meta.WriteMode)
+		return "", fmt.Errorf("unsupported write mode %q (only 'insert' is implemented)", meta.WriteMode)
 	}
 }
 
@@ -1932,17 +1988,22 @@ func buildInsertQuery(meta dynamicToolMeta, args map[string]interface{}) (string
 }
 
 // getArgumentsMap extracts arguments from a CallToolRequest as a map
-func getArgumentsMap(req *mcp.CallToolRequest) map[string]any {
+// getArgumentsMap extracts arguments from a CallToolRequest as a map.
+// Returns an error if the arguments are present but cannot be parsed as JSON.
+func getArgumentsMap(req *mcp.CallToolRequest) (map[string]any, error) {
 	if req.Params.Arguments == nil {
-		return make(map[string]any)
+		return make(map[string]any), nil
 	}
 
-	// Arguments is json.RawMessage, unmarshal it
 	var args map[string]any
 	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return make(map[string]any)
+		return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
 	}
-	return args
+	if args == nil {
+		// Arguments was valid JSON like "null" — treat as empty
+		return make(map[string]any), nil
+	}
+	return args, nil
 }
 
 func buildDynamicToolMeta(toolName, db, table, comment string, params []dynamicToolParam) dynamicToolMeta {
@@ -2024,7 +2085,10 @@ func buildDynamicToolAnnotations(commentAnnotations *dynamicToolCommentAnnotatio
 // HandleReadOnlyQuery wraps HandleExecuteQuery with a read-only check.
 // Only SELECT, WITH, SHOW, DESCRIBE, EXISTS, and EXPLAIN are allowed.
 func HandleReadOnlyQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	arguments := getArgumentsMap(req)
+	arguments, err := getArgumentsMap(req)
+	if err != nil {
+		return NewToolResultError(err.Error()), nil
+	}
 	queryArg, ok := arguments["query"]
 	if !ok {
 		return NewToolResultError("query parameter is required"), nil
@@ -2187,7 +2251,10 @@ func NewToolResultError(errMsg string) *mcp.CallToolResult {
 // HandleExecuteQuery implements the execute_query tool handler
 func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Get arguments from request
-	arguments := getArgumentsMap(req)
+	arguments, err := getArgumentsMap(req)
+	if err != nil {
+		return NewToolResultError(err.Error()), nil
+	}
 
 	queryArg, ok := arguments["query"]
 	if !ok {
@@ -2202,6 +2269,11 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	chJweServer := GetClickHouseJWEServerFromContext(ctx)
 	if chJweServer == nil {
 		return nil, fmt.Errorf("can't get JWEServer from context")
+	}
+
+	// Reject oversize queries before they reach ClickHouse (avoids memory spike).
+	if max := chJweServer.Config.ClickHouse.EffectiveMaxQueryLength(); max > 0 && len(query) > max {
+		return NewToolResultError(fmt.Sprintf("query exceeds max length (%d bytes, limit %d)", len(query), max)), nil
 	}
 
 	// Get optional limit parameter
@@ -2251,7 +2323,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")
@@ -2620,7 +2692,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 
 	result, err := chClient.ExecuteQuery(ctx, query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error())), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err)), http.StatusInternalServerError)
 		return
 	}
 
