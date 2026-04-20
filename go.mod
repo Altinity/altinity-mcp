@@ -2,6 +2,14 @@ module github.com/altinity/altinity-mcp
 
 go 1.25.6
 
+// Cluster interserver-secret support ships from the Altinity fork
+// (https://github.com/Altinity/clickhouse-go, feature/interserver-secret,
+// commit 7ce8b23) until upstream PR lands. This local-path replace is
+// intended for WIP development only — before merging altinity-mcp, swap
+// in a release tag on Altinity/clickhouse-go and update the module path
+// in that repo's go.mod to `github.com/Altinity/clickhouse-go/v2`.
+replace github.com/ClickHouse/clickhouse-go/v2 => /Users/Workspaces/altinity/clickhouse-go
+
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.45.0

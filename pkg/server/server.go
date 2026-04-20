@@ -1067,6 +1067,18 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		chConfig.Password = ""
 	}
 
+	// In cluster-secret mode, the shared secret is the only credential sent
+	// to ClickHouse; Username is just the identity we ask ClickHouse to
+	// impersonate. When OAuth is enabled, prefer the authenticated OAuth
+	// subject so query_log attributes the query to the end user rather than
+	// to a shared service account.
+	if chConfig.ClusterSecret != "" && oauthClaims != nil {
+		if subject := strings.TrimSpace(oauthClaims.Subject); subject != "" {
+			chConfig.Username = subject
+		}
+		chConfig.Password = ""
+	}
+
 	// Merge tool-input settings from context (tool_input_settings)
 	if toolSettings := ToolInputSettingsFromContext(ctx); len(toolSettings) > 0 {
 		chConfig = mergeExtraSettings(chConfig, toolSettings)
