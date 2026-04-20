@@ -169,7 +169,7 @@ Or via env: `CLICKHOUSE_CLUSTER_NAME`, `CLICKHOUSE_CLUSTER_SECRET`, `CLICKHOUSE_
 
 **User and role provisioning (required).** The impersonated user must already exist on ClickHouse. ClickHouse skips the password check for cluster peers, but **not** the user lookup or grant resolution — an unknown `initial_user` fails with `Unknown user`. altinity-mcp does **not** auto-provision users; you precreate them with the grants they need.
 
-Map OAuth claims to ClickHouse users however suits your IdP. Typical setup using `claims.sub` verbatim as the username:
+Map OAuth claims to ClickHouse users however suits your IdP. Typical setup using the user's email as the ClickHouse username:
 
 ```sql
 -- One role per entitlement level
@@ -187,7 +187,7 @@ CREATE USER IF NOT EXISTS "bob@example.com" IDENTIFIED WITH no_password;
 GRANT mcp_admin TO "bob@example.com";
 ```
 
-The literal value used for the ClickHouse username is `claims.Subject` from the OAuth token (the `sub` claim) — whatever your IdP emits there is what appears in `system.query_log` and what you `CREATE USER` for. For Google that is a numeric ID; for Keycloak, a UUID; for internal IdPs, often the email. If your IdP emits cryptic subjects, add an Auth0 action / Keycloak mapper / Azure AD claim rule that normalizes `sub` to the email or username you want to manage ClickHouse users by.
+The literal value used for the ClickHouse username is the OAuth `email` claim when present, falling back to `sub` otherwise. Most IdPs (Google, Azure AD, Keycloak with the email scope) emit `email`, so `system.query_log` attributes queries to addresses like `alice@example.com`. `sub` is reserved for IdPs that deliberately omit email (e.g., machine-to-machine tokens). This matches the convention used by forward mode's `username_claim: email` setups, so operators can share a single pool of pre-provisioned CH users across both modes.
 
 **Limitations:**
 
