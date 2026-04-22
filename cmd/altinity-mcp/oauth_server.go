@@ -779,10 +779,16 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	// grant_types must include every grant the server will accept from this
+	// client. Per RFC 7591 §3.2.1 clients treat this list as authoritative,
+	// so omitting refresh_token here causes strict clients (e.g. Claude.ai)
+	// to skip grant_type=refresh_token even though /oauth/token would
+	// accept it and /.well-known/oauth-authorization-server advertises it
+	// via grant_types_supported.
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"client_id":                  clientID,
 		"redirect_uris":              req.RedirectURIs,
-		"grant_types":                []string{"authorization_code"},
+		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "none",
 		"client_id_issued_at":        time.Now().Unix(),

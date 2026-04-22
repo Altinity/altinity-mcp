@@ -89,6 +89,15 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.True(t, ok)
 		require.NotEmpty(t, clientID)
 
+		// Registration response must echo every grant the client is
+		// permitted to use. Per RFC 7591 strict clients (Claude.ai) treat
+		// an omitted grant as forbidden and never attempt it, which
+		// silently disables the refresh flow.
+		grants, ok := reg["grant_types"].([]interface{})
+		require.True(t, ok, "grant_types missing or wrong type in registration response")
+		require.ElementsMatch(t, []interface{}{"authorization_code", "refresh_token"}, grants,
+			"registration response must advertise both authorization_code and refresh_token")
+
 		authReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+"&redirect_uri="+url.QueryEscape("http://127.0.0.1:3334/callback")+"&scope=openid+email&state=test-state&code_challenge=test-challenge&code_challenge_method=S256", nil)
 		authRR := httptest.NewRecorder()
 		app.handleOAuthAuthorize(authRR, authReq)
