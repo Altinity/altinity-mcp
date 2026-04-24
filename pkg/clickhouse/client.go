@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/Altinity/clickhouse-go/v2"
+	"github.com/Altinity/clickhouse-go/v2/lib/driver"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/rs/zerolog/log"
 )
