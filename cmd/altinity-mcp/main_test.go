@@ -3604,6 +3604,51 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	})
 }
 
+func TestValidateClusterSecretConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_secret_is_ok", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, validateClusterSecretConfig(config.Config{}))
+	})
+
+	t.Run("requires_tcp", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.HTTPProtocol,
+				ClusterSecret: "shared-secret",
+			},
+		}
+		err := validateClusterSecretConfig(cfg)
+		require.ErrorContains(t, err, "clickhouse-cluster-secret requires clickhouse-protocol=tcp")
+	})
+
+	t.Run("requires_cluster_name", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.TCPProtocol,
+				ClusterSecret: "shared-secret",
+			},
+		}
+		err := validateClusterSecretConfig(cfg)
+		require.ErrorContains(t, err, "clickhouse-cluster-secret is set but clickhouse-cluster-name is empty")
+	})
+
+	t.Run("valid_secret_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.TCPProtocol,
+				ClusterName:   "mcp_cluster",
+				ClusterSecret: "shared-secret",
+			},
+		}
+		require.NoError(t, validateClusterSecretConfig(cfg))
+	})
+}
+
 func TestWarnOAuthMisconfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -3617,9 +3662,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should log warning but not panic
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "",
 		}}})
 	})
@@ -3628,9 +3673,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should not warn
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "https://public.example.com",
 		}}})
 	})
