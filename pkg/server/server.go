@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -89,7 +90,7 @@ type ClickHouseJWEServer struct {
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
-	blockedClauses map[string]bool
+	blockedClauses     map[string]bool
 }
 
 type dynamicToolParam struct {
@@ -157,10 +158,10 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	}, opts)
 
 	chJweServer := &ClickHouseJWEServer{
-		MCPServer:             srv,
-		Config:                cfg,
-		Version:               version,
-		dynamicTools:          make(map[string]dynamicToolMeta),
+		MCPServer:      srv,
+		Config:         cfg,
+		Version:        version,
+		dynamicTools:   make(map[string]dynamicToolMeta),
 		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
@@ -1823,8 +1824,9 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 		comment, _ := row[3].(string)
 
 		// MATERIALIZED and ALIAS columns are computed server-side; clients must not
-		// supply values for them. Everything else is writable (DEFAULT values make
-		// the column optional in INSERT).
+		// supply values for them. All remaining columns are optional in INSERT:
+		// omitted fields are filled by ClickHouse from DEFAULT expressions or the
+		// type's zero/default value.
 		if defaultKind == "MATERIALIZED" || defaultKind == "ALIAS" {
 			continue
 		}
@@ -1835,7 +1837,7 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 			CHType:      chType,
 			JSONType:    jsonType,
 			JSONFormat:  jsonFmt,
-			Required:    defaultKind == "", // required iff no DEFAULT expression
+			Required:    false,
 			Description: strings.TrimSpace(comment),
 		})
 	}
@@ -1886,12 +1888,8 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 	for toolName, meta := range writeTools {
 		s.dynamicTools[toolName] = meta
 		props := make(map[string]any, len(meta.Params)+1)
-		required := make([]string, 0, len(meta.Params))
 		for _, p := range meta.Params {
 			props[p.Name] = buildParamSchema(p)
-			if p.Required {
-				required = append(required, p.Name)
-			}
 		}
 		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
 			props["settings"] = settingsSchema
@@ -1899,9 +1897,6 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 		schema := map[string]any{
 			"type":       "object",
 			"properties": props,
-		}
-		if len(required) > 0 {
-			schema["required"] = required
 		}
 		s.AddTool(&mcp.Tool{
 			Name:        toolName,
@@ -1954,7 +1949,10 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		for _, p := range meta.Params {
 			if v, ok := arguments[p.Name]; ok {
 				// encode to SQL literal based on expected type
-				literal := sqlLiteral(p.JSONType, v)
+				literal, err := sqlLiteralChecked(p.JSONType, v)
+				if err != nil {
+					return NewToolResultError(fmt.Sprintf("Invalid argument %q: %v", p.Name, err)), nil
+				}
 				args = append(args, fmt.Sprintf("%s=%s", p.Name, literal))
 			}
 		}
@@ -2062,7 +2060,11 @@ func buildInsertQuery(meta dynamicToolMeta, args map[string]interface{}) (string
 		v, ok := args[p.Name]
 		if ok {
 			cols = append(cols, p.Name)
-			vals = append(vals, sqlLiteral(p.JSONType, v))
+			literal, err := sqlLiteralChecked(p.JSONType, v)
+			if err != nil {
+				return "", fmt.Errorf("invalid parameter %s: %w", p.Name, err)
+			}
+			vals = append(vals, literal)
 			continue
 		}
 		if p.Required {
@@ -2276,46 +2278,69 @@ func mapCHType(chType string) (jsonType, jsonFormat string) {
 }
 
 func sqlLiteral(jsonType string, v interface{}) string {
+	literal, err := sqlLiteralChecked(jsonType, v)
+	if err != nil {
+		switch jsonType {
+		case "integer", "number", "boolean":
+			return "0"
+		default:
+			return "''"
+		}
+	}
+	return literal
+}
+
+func sqlLiteralChecked(jsonType string, v interface{}) (string, error) {
 	switch jsonType {
 	case "integer":
 		switch n := v.(type) {
 		case float64:
-			return strconv.FormatInt(int64(n), 10)
+			if math.Trunc(n) != n {
+				return "", fmt.Errorf("expected integer, got non-integer number %v", n)
+			}
+			return strconv.FormatInt(int64(n), 10), nil
 		case int64:
-			return strconv.FormatInt(n, 10)
+			return strconv.FormatInt(n, 10), nil
 		case int:
-			return strconv.Itoa(n)
+			return strconv.Itoa(n), nil
 		default:
-			return "0"
+			return "", fmt.Errorf("expected integer, got %T", v)
 		}
 	case "number":
 		switch n := v.(type) {
 		case float64:
-			return strconv.FormatFloat(n, 'f', -1, 64)
+			return strconv.FormatFloat(n, 'f', -1, 64), nil
+		case int64:
+			return strconv.FormatInt(n, 10), nil
+		case int:
+			return strconv.Itoa(n), nil
 		default:
-			return "0"
+			return "", fmt.Errorf("expected number, got %T", v)
 		}
 	case "boolean":
 		if b, ok := v.(bool); ok {
 			if b {
-				return "1"
+				return "1", nil
 			}
-			return "0"
+			return "0", nil
 		}
-		return "0"
+		return "", fmt.Errorf("expected boolean, got %T", v)
 	default: // string
 		s := ""
 		switch x := v.(type) {
 		case string:
 			s = x
 		default:
-			b, _ := json.Marshal(v)
+			b, err := json.Marshal(v)
+			if err != nil {
+				return "", fmt.Errorf("failed to encode string value: %w", err)
+			}
 			s = string(b)
 		}
 		// ClickHouse single-quoted string literal escaping: escape backslashes then single quotes
 		s = strings.ReplaceAll(s, "\\", "\\\\")
 		s = strings.ReplaceAll(s, "'", "\\'")
-		return "'" + s + "'"
+		return "'" + s + "'", nil
 	}
 }
 
@@ -3104,8 +3129,8 @@ func buildToolInputSettingsSchema(settings []string) map[string]any {
 	}
 	return map[string]any{
 		"type":                 "object",
-		"description":         fmt.Sprintf("Optional ClickHouse settings to apply to this query. Allowed: %s", strings.Join(settings, ", ")),
-		"properties":          props,
+		"description":          fmt.Sprintf("Optional ClickHouse settings to apply to this query. Allowed: %s", strings.Join(settings, ", ")),
+		"properties":           props,
 		"additionalProperties": false,
 	}
 }
