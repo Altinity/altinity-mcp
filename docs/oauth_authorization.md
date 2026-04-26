@@ -276,7 +276,7 @@ For direct bearer-token use, a plain reverse proxy is usually enough.
 
 For browser-based MCP login, the frontend must expose two public URL spaces:
 
-- the protected resource, for example `https://PUBLIC_HOST.example.com/http`
+- the protected resource, for example `https://PUBLIC_HOST.example.com/`
 - the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth`
 
 The proxy must:
@@ -291,7 +291,7 @@ The proxy must:
 Example nginx configuration:
 
 ```nginx
-location ^~ /http {
+location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Authorization $http_authorization;
@@ -317,8 +317,8 @@ server:
     mode: "forward"
     gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
-    audience: "https://PUBLIC_HOST.example.com/http"
-    public_resource_url: "https://PUBLIC_HOST.example.com/http"
+    audience: "https://PUBLIC_HOST.example.com/"
+    public_resource_url: "https://PUBLIC_HOST.example.com/"
     public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth"
     client_id: "YOUR_GOOGLE_WEB_CLIENT.apps.googleusercontent.com"
     client_secret: "YOUR_GOOGLE_CLIENT_SECRET"

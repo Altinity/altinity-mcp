@@ -29,8 +29,8 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
 					Issuer:              "https://mcp.example.com/oauth",
-					Audience:            "https://mcp.example.com/http",
-					PublicResourceURL:   "https://mcp.example.com/http",
+					Audience:            "https://mcp.example.com",
+					PublicResourceURL:   "https://mcp.example.com",
 					PublicAuthServerURL: "https://mcp.example.com/oauth",
 					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
 					Scopes:              []string{"openid", "email"},
@@ -52,7 +52,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "https://mcp.example.com/http", body["resource"])
+		require.Equal(t, "https://mcp.example.com", body["resource"])
 		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
@@ -66,7 +66,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	})
 
 	t.Run("openid_configuration_aliases", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/openid-configuration/http", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/openid-configuration/oauth", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthOpenIDConfiguration(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -106,7 +106,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	})
 
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
-		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com/http"
+		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com"
 		app.config.Server.OAuth.PublicAuthServerURL = "https://public.example.com/oauth"
 		app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
 		app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
@@ -128,7 +128,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/http\"")
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
@@ -186,7 +186,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 
 	t.Run("missing_oauth_gets_challenge", func(t *testing.T) {
 		t.Parallel()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken, nil)
 		req.SetPathValue("token", jweToken)
 		rr := httptest.NewRecorder()
 		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +199,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 
 	t.Run("valid_oauth_sets_context", func(t *testing.T) {
 		t.Parallel()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken+"/http", nil)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken, nil)
 		req.SetPathValue("token", jweToken)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rr := httptest.NewRecorder()
@@ -217,7 +217,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 
 	t.Run("jwe_with_credentials_skips_oauth", func(t *testing.T) {
 		t.Parallel()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweTokenWithCredentials+"/http", nil)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweTokenWithCredentials, nil)
 		req.SetPathValue("token", jweTokenWithCredentials)
 		rr := httptest.NewRecorder()
 		called := false
@@ -255,7 +255,7 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 		}, "test"),
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/http", nil)
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 	called := false
@@ -280,7 +280,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:  true,
 					Issuer:   "https://mcp.example.com/oauth",
-					Audience: "https://mcp.example.com/http",
+					Audience: "https://mcp.example.com",
 					Scopes:   []string{"openid", "email"},
 				},
 			},
@@ -291,14 +291,8 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app.registerOAuthHTTPRoutes(mux)
 
 	for _, path := range []string{
-		"/.well-known/oauth-protected-resource/http",
-		"/http/.well-known/oauth-protected-resource",
-		"/.well-known/oauth-authorization-server/http",
-		"/http/.well-known/oauth-authorization-server",
 		"/.well-known/oauth-authorization-server/oauth",
 		"/oauth/.well-known/oauth-authorization-server",
-		"/.well-known/openid-configuration/http",
-		"/http/.well-known/openid-configuration",
 		"/.well-known/openid-configuration/oauth",
 		"/oauth/.well-known/openid-configuration",
 	} {

@@ -170,14 +170,14 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	// helper to create a mux with our middleware
 	newMux := func(jwe bool) http.Handler {
 		mux := http.NewServeMux()
-		// static route
-		mux.HandleFunc("/http", func(w http.ResponseWriter, r *http.Request) {
+		// HTTP transport is served at root
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("http"))
+			_, _ = w.Write([]byte("root"))
 		})
 		// dynamic route when JWE is enabled
 		if jwe {
-			mux.HandleFunc("/{token}/http", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/{token}", func(w http.ResponseWriter, r *http.Request) {
 				token := r.PathValue("token")
 				if token == "" {
 					http.Error(w, "missing token", http.StatusBadRequest)
@@ -190,25 +190,24 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 		return stripTrailingSlash(mux)
 	}
 
-	t.Run("static_path_with_and_without_slash", func(t *testing.T) {
+	t.Run("root_path", func(t *testing.T) {
 		t.Parallel()
 		h := newMux(false)
-		cases := []string{"/http", "/http/"}
-		for _, path := range cases {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			rr := httptest.NewRecorder()
-			h.ServeHTTP(rr, req)
-			require.Equal(t, http.StatusOK, rr.Code, path)
-			require.Equal(t, "http", strings.TrimSpace(rr.Body.String()))
-		}
+		// Root path "/" has no trailing-slash variant — stripTrailingSlash
+		// explicitly skips it. So one case.
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "root", strings.TrimSpace(rr.Body.String()))
 	})
 
 	t.Run("dynamic_path_with_and_without_slash", func(t *testing.T) {
 		t.Parallel()
 		h := newMux(true)
 		cases := []struct{ in, want string }{
-			{"/abc/http", "dyn:abc"},
-			{"/abc/http/", "dyn:abc"},
+			{"/abc", "dyn:abc"},
+			{"/abc/", "dyn:abc"},
 		}
 		for _, c := range cases {
 			req := httptest.NewRequest(http.MethodGet, c.in, nil)
@@ -224,9 +223,10 @@ func TestRoutePatterns(t *testing.T) {
 	t.Parallel()
 	t.Run("combined_auth_transport_routes_include_tokenized_and_pathless", func(t *testing.T) {
 		t.Parallel()
+		// HTTP transport is served at root; pass "" as the transport string.
 		require.Equal(t,
-			[]string{"/{token}/http", "/http"},
-			transportRoutePatterns(true, true, "http"),
+			[]string{"/{token}", "/"},
+			transportRoutePatterns(true, true, ""),
 		)
 		require.Equal(t,
 			[]string{"/{token}/sse", "/sse"},
@@ -2091,7 +2091,7 @@ func TestCORSSupport(t *testing.T) {
 			if serverPort != "" {
 				// Test CORS preflight request
 				client := &http.Client{}
-				req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/http", serverPort), nil)
+				req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/", serverPort), nil)
 				req.Header.Set("Access-Control-Request-Method", "POST")
 				req.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization")
 				req.Header.Set("Origin", "http://localhost")
@@ -3638,25 +3638,31 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 
 func TestTransportRoutePatterns(t *testing.T) {
 	t.Parallel()
-	t.Run("jwe_only", func(t *testing.T) {
+	// HTTP transport is served at root — callers pass "" as the transport string.
+	t.Run("http_jwe_only", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(true, false, "http")
-		require.Equal(t, []string{"/{token}/http"}, patterns)
+		patterns := transportRoutePatterns(true, false, "")
+		require.Equal(t, []string{"/{token}"}, patterns)
 	})
-	t.Run("jwe_and_oauth", func(t *testing.T) {
+	t.Run("http_jwe_and_oauth", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(true, true, "http")
-		require.Equal(t, []string{"/{token}/http", "/http"}, patterns)
+		patterns := transportRoutePatterns(true, true, "")
+		require.Equal(t, []string{"/{token}", "/"}, patterns)
 	})
-	t.Run("no_jwe", func(t *testing.T) {
+	t.Run("http_no_jwe", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(false, false, "http")
-		require.Equal(t, []string{"/http"}, patterns)
+		patterns := transportRoutePatterns(false, false, "")
+		require.Equal(t, []string{"/"}, patterns)
 	})
 	t.Run("sse_transport", func(t *testing.T) {
 		t.Parallel()
 		patterns := transportRoutePatterns(false, false, "sse")
 		require.Equal(t, []string{"/sse"}, patterns)
+	})
+	t.Run("sse_jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, true, "sse")
+		require.Equal(t, []string{"/{token}/sse", "/sse"}, patterns)
 	})
 }
 
