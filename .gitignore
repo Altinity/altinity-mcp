@@ -15,6 +15,7 @@ AGENTS.md
 build/
 dist/
 /altinity-mcp
+/jwe-token-generator
 coverage.out
 results.xml
 go-carpet*

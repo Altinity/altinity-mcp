@@ -259,11 +259,10 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
 
 	startupScriptsXML := generateClickHouseStartupScriptsConfig()
 
-	cfg := setupEmbeddedClickHouse(t,
+	cfg := setupEmbeddedClickHouseUnseeded(t,
 		withFlavor(flavorAntalya),
 		withConfigDropIn(tokenProcessorXML),
 		withConfigDropIn(startupScriptsXML),
-		withoutDefaultTable(),
 	)
 	return *cfg
 }

@@ -5,68 +5,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// setupClickHouseContainer sets up a ClickHouse container for testing.
-func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
+// setupEmbeddedClickHouse boots a ClickHouse server as a host subprocess via
+// embedded-clickhouse and returns a TCP-protocol config. This replaces the
+// previous testcontainers-based fixture.
+func setupEmbeddedClickHouse(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
-	ctx := context.Background()
-
-	totalStart := time.Now()
-
-	req := testcontainers.ContainerRequest{
-		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
-	}
-	containerStart := time.Now()
-	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	containerElapsed := time.Since(containerStart)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		cleanupStart := time.Now()
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := chContainer.Terminate(cleanupCtx); err != nil {
-			t.Logf("Warning: failed to terminate container: %v", err)
-		}
-		t.Logf("[container/%s] cleanup took %s", req.Image, time.Since(cleanupStart))
-	})
-
-	host, err := chContainer.Host(ctx)
-	require.NoError(t, err)
-
-	port, err := chContainer.MappedPort(ctx, "9000")
-	require.NoError(t, err)
-
-	t.Logf("[container/%s] start=%s total=%s", req.Image, containerElapsed, time.Since(totalStart))
-
-	return &config.ClickHouseConfig{
-		Host:             host,
-		Port:             port.Int(),
-		Database:         "default",
-		Username:         "default",
-		Password:         "",
-		Protocol:         config.TCPProtocol,
-		ReadOnly:         false,
-		MaxExecutionTime: 60,
-		Limit:            0,
-	}
+	return embeddedch.Setup(t, embeddedch.WithTCPProtocol())
 }
 
 // TestNewClient tests client creation
@@ -109,7 +58,7 @@ func TestNewClient(t *testing.T) {
 // TestClientOperations tests client operations with real ClickHouse
 func TestClientOperations(t *testing.T) {
 	t.Parallel()
-	cfg := setupClickHouseContainer(t)
+	cfg := setupEmbeddedClickHouse(t)
 	ctx := context.Background()
 
 	client, err := NewClient(ctx, *cfg)
@@ -173,7 +122,7 @@ func TestClientErrorPaths(t *testing.T) {
 
 	t.Run("describe_table_not_exists", func(t *testing.T) {
 		t.Parallel()
-		cfg := setupClickHouseContainer(t)
+		cfg := setupEmbeddedClickHouse(t)
 		ctx := context.Background()
 		client, err := NewClient(ctx, *cfg)
 		require.NoError(t, err)
@@ -185,7 +134,7 @@ func TestClientErrorPaths(t *testing.T) {
 
 	t.Run("non_select_error", func(t *testing.T) {
 		t.Parallel()
-		cfg := setupClickHouseContainer(t)
+		cfg := setupEmbeddedClickHouse(t)
 		ctx := context.Background()
 		client, err := NewClient(ctx, *cfg)
 		require.NoError(t, err)

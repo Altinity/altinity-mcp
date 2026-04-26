@@ -45,9 +45,8 @@ func TestEmbeddedClickHouseXMLDropIn(t *testing.T) {
     </profiles>
 </clickhouse>
 `
-	chConfig := setupEmbeddedClickHouse(t,
+	chConfig := setupEmbeddedClickHouseUnseeded(t,
 		withConfigDropIn(customXML),
-		withoutDefaultTable(),
 	)
 
 	dsn := "http://tester:secret123@" + chConfig.Host + ":" + portString(chConfig.Port) + "/default"
