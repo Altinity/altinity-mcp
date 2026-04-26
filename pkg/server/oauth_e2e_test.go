@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -239,6 +240,12 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.ClickHouseConfig {
 	t.Helper()
 
+	// Antalya's <user_directories> needs a writable <local_directory> for
+	// runtime user storage. The Antalya container shipped with
+	// /var/lib/clickhouse/access/, but the host process running as the CI
+	// user can't create that path. Use a host-writable temp dir.
+	accessDir := t.TempDir()
+
 	tokenProcessorXML := fmt.Sprintf(`<?xml version="1.0"?>
 <clickhouse>
     <token_processors>
@@ -253,7 +260,7 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
             <path>users.xml</path>
         </users_xml>
         <local_directory>
-            <path>/var/lib/clickhouse/access/</path>
+            <path>%s</path>
         </local_directory>
         <token>
             <processor>test_oidc</processor>
@@ -263,7 +270,7 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
         </token>
     </user_directories>
 </clickhouse>
-`, oidcDiscoveryURL)
+`, oidcDiscoveryURL, accessDir)
 
 	startupScriptsXML := generateClickHouseStartupScriptsConfig()
 
@@ -298,15 +305,25 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
 	return *cfg
 }
 
-// newAntalyaOIDCProvider mirrors newTestOAuthProvider but advertises the full
-// OIDC discovery document Antalya's token_processors expects: issuer,
-// authorization_endpoint, token_endpoint, jwks_uri, userinfo_endpoint,
-// introspection_endpoint, response_types_supported, subject_types_supported,
-// id_token_signing_alg_values_supported. The shorter discovery doc returned
-// by newTestOAuthProvider is fine for upstream-bearer / forward-mode tests
-// that don't validate the doc — Antalya is stricter.
+// newAntalyaOIDCProvider serves the full OIDC discovery document Antalya's
+// token_processors parser requires (issuer + auth/token/jwks/userinfo/
+// introspection endpoints + response_types + subject_types + id_token_signing
+// algs). The shorter doc returned by newTestOAuthProvider is enough for
+// forward-mode bearer-passthrough tests that never look at it — Antalya
+// rejects it with "Cannot extract userinfo_endpoint or introspection_endpoint".
+//
+// Uses an explicit net.Listen + http.Server.Serve loop instead of
+// httptest.NewServer so we control Content-Length / chunked-vs-fixed framing
+// exactly as the original docker-reachable variant did. Antalya's HTTP
+// client occasionally drops the trailing bytes when chunked encoding kicks
+// in mid-response on small bodies.
 func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{}) *testOAuthProvider {
 	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
@@ -317,18 +334,15 @@ func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{})
 	}
 
 	mux := http.NewServeMux()
-	server := httptest.NewServer(mux)
-	provider.server = server
-	t.Cleanup(server.Close)
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]interface{}{
-			"issuer":                                server.URL,
-			"authorization_endpoint":                server.URL + "/auth",
-			"token_endpoint":                        server.URL + "/token",
-			"jwks_uri":                              server.URL + "/jwks",
-			"userinfo_endpoint":                     server.URL + "/userinfo",
-			"introspection_endpoint":                server.URL + "/introspect",
+			"issuer":                                url,
+			"authorization_endpoint":                url + "/auth",
+			"token_endpoint":                        url + "/token",
+			"jwks_uri":                              url + "/jwks",
+			"userinfo_endpoint":                     url + "/userinfo",
+			"introspection_endpoint":                url + "/introspect",
 			"response_types_supported":              []string{"code"},
 			"subject_types_supported":               []string{"public"},
 			"id_token_signing_alg_values_supported": []string{"RS256"},
@@ -366,6 +380,20 @@ func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
 	})
+
+	httpSrv := &http.Server{Handler: mux}
+	go func() { _ = httpSrv.Serve(ln) }()
+	time.Sleep(50 * time.Millisecond)
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	})
+
+	stub := httptest.NewUnstartedServer(nil)
+	stub.Listener.Close()
+	stub.URL = url
+	provider.server = stub
 
 	return provider
 }

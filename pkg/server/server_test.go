@@ -3762,8 +3762,10 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
 		t.Parallel()
 		// Antalya is required for token_processors-driven OIDC validation in CH.
+		// Use newAntalyaOIDCProvider (full discovery doc) — Antalya rejects
+		// the shorter doc returned by newTestOAuthProvider.
 		// setupEmbeddedAntalyaWithOIDC auto-skips on non-Linux hosts.
-		oidcProvider := newTestOAuthProvider(t, nil)
+		oidcProvider := newAntalyaOIDCProvider(t, nil)
 		antalyaCH := setupEmbeddedAntalyaWithOIDC(t, oidcProvider.server.URL)
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: antalyaCH,
