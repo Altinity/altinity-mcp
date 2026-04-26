@@ -26,6 +26,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -1074,6 +1075,21 @@ func TestTestConnection(t *testing.T) {
 		// https://github.com/ClickHouse/clickhouse-go/issues/1630
 		nonEmptyDefaultUserPassword := "<clickhouse><users><default><password>non_empty</password></default></users></clickhouse>"
 
+		// Materialize config to a TempDir and bind-mount read-only.
+		// testcontainers' File-stream-via-archive path uses PUT /containers/{id}/archive
+		// which is blocked in some sandboxes (e.g. our agent isolator).
+		tmpDir := t.TempDir()
+		writeTmp := func(name, content string) string {
+			p := tmpDir + "/" + name
+			require.NoError(t, os.WriteFile(p, []byte(content), 0644))
+			return p
+		}
+		certFile := writeTmp("server.crt", string(cert))
+		keyFile := writeTmp("server.key", string(key))
+		httpsConfigFile := writeTmp("https_port.xml", httpsConfig)
+		// https://github.com/ClickHouse/clickhouse-go/issues/1630
+		nonEmptyPasswordFile := writeTmp("non_empty_password.xml", nonEmptyDefaultUserPassword)
+
 		// Start ClickHouse container with TLS enabled
 		containerReq := testcontainers.ContainerRequest{
 			Image:        "clickhouse/clickhouse-server:latest",
@@ -1081,28 +1097,13 @@ func TestTestConnection(t *testing.T) {
 			Env: map[string]string{
 				"CLICKHOUSE_SKIP_USER_SETUP": "1",
 			},
-			Files: []testcontainers.ContainerFile{
-				{
-					Reader:            strings.NewReader(string(cert)),
-					ContainerFilePath: "/etc/clickhouse-server/server.crt",
-					FileMode:          0644,
-				},
-				{
-					Reader:            strings.NewReader(string(key)),
-					ContainerFilePath: "/etc/clickhouse-server/server.key",
-					FileMode:          0644,
-				},
-				{
-					Reader:            strings.NewReader(httpsConfig),
-					ContainerFilePath: "/etc/clickhouse-server/config.d/https_port.xml",
-					FileMode:          0644,
-				},
-				// https://github.com/ClickHouse/clickhouse-go/issues/1630
-				{
-					Reader:            strings.NewReader(nonEmptyDefaultUserPassword),
-					ContainerFilePath: "/etc/clickhouse-server/users.d/non_empty_password.xml",
-					FileMode:          0644,
-				},
+			HostConfigModifier: func(hc *container.HostConfig) {
+				hc.Binds = append(hc.Binds,
+					certFile+":/etc/clickhouse-server/server.crt:ro",
+					keyFile+":/etc/clickhouse-server/server.key:ro",
+					httpsConfigFile+":/etc/clickhouse-server/config.d/https_port.xml:ro",
+					nonEmptyPasswordFile+":/etc/clickhouse-server/users.d/non_empty_password.xml:ro",
+				)
 			},
 			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
 		}
