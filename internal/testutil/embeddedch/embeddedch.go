@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -115,6 +116,17 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 	if o.Flavor == FlavorAntalya {
 		bin := EnsureAntalyaBinary(t)
 		cfgBuilder = cfgBuilder.BinaryPath(bin)
+	} else {
+		// embedded-clickhouse v0.4.0's cache layer locks within a process but
+		// not across processes. `go test ./...` runs each package as a
+		// separate binary, so multiple processes may race to download and
+		// extract the same archive into ~/.cache/embedded-clickhouse,
+		// corrupting the .tmp file with "write binary: unexpected EOF" or
+		// "rename temp file: no such file or directory". Hold an OS-level
+		// flock around the first start until the archive lands, then release.
+		release, err := acquireFileLock(t, embeddedClickHouseCacheLockPath())
+		require.NoError(t, err)
+		defer release()
 	}
 
 	if len(o.ConfigDropIns) > 0 || o.UsersXML != "" {
@@ -235,6 +247,39 @@ func (e *extractErr) Error() string {
 		return e.stage + ": " + e.err.Error() + "\n" + e.out
 	}
 	return e.stage + ": " + e.err.Error()
+}
+
+// embeddedClickHouseCacheLockPath returns the path to a process-private lock
+// file used to serialize concurrent first-time stock-CH binary extractions
+// when go test runs packages in parallel.
+func embeddedClickHouseCacheLockPath() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = "/tmp"
+	}
+	cacheDir = filepath.Join(cacheDir, "embedded-clickhouse")
+	_ = os.MkdirAll(cacheDir, 0o755)
+	return filepath.Join(cacheDir, ".altinity-mcp-extract.lock")
+}
+
+// acquireFileLock takes an exclusive flock on the given path, returning a
+// release function the caller must defer. Blocks until the lock is granted.
+// The lock file is created if it doesn't exist; we never delete it (multiple
+// concurrent processes need a stable inode to flock on).
+func acquireFileLock(t *testing.T, path string) (func(), error) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func safeFileName(s string) string {

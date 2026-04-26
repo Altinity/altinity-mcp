@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -36,8 +39,12 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Step 1: mock OIDC provider on 127.0.0.1.
-	provider := newTestOAuthProvider(t, nil)
+	// Step 1: mock OIDC provider on 127.0.0.1. Use the full-discovery variant
+	// because Antalya's token_processors parser requires introspection_endpoint
+	// (or userinfo_endpoint) plus the standard required OIDC fields — without
+	// them it logs "Cannot extract userinfo_endpoint or introspection_endpoint
+	// from OIDC configuration" and silently disables the processor.
+	provider := newAntalyaOIDCProvider(t, nil)
 	oidcURL := provider.server.URL
 	t.Logf("Mock OIDC provider URL: %s", oidcURL)
 
@@ -289,6 +296,78 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
 		embeddedch.WithUsersXML(usersXML),
 	)
 	return *cfg
+}
+
+// newAntalyaOIDCProvider mirrors newTestOAuthProvider but advertises the full
+// OIDC discovery document Antalya's token_processors expects: issuer,
+// authorization_endpoint, token_endpoint, jwks_uri, userinfo_endpoint,
+// introspection_endpoint, response_types_supported, subject_types_supported,
+// id_token_signing_alg_values_supported. The shorter discovery doc returned
+// by newTestOAuthProvider is fine for upstream-bearer / forward-mode tests
+// that don't validate the doc — Antalya is stricter.
+func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{}) *testOAuthProvider {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testOAuthProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		userInfoClaims: userInfoClaims,
+	}
+
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	provider.server = server
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := json.Marshal(map[string]interface{}{
+			"issuer":                                server.URL,
+			"authorization_endpoint":                server.URL + "/auth",
+			"token_endpoint":                        server.URL + "/token",
+			"jwks_uri":                              server.URL + "/jwks",
+			"userinfo_endpoint":                     server.URL + "/userinfo",
+			"introspection_endpoint":                server.URL + "/introspect",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		body, _ := json.Marshal(keySet)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.lastAuthorizationMu.Lock()
+		provider.lastAuthorization = r.Header.Get("Authorization")
+		provider.lastAuthorizationMu.Unlock()
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
+	})
+
+	return provider
 }
 
 // generateClickHouseStartupScriptsConfig returns the XML drop-in that
