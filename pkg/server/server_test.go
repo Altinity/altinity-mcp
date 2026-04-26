@@ -21,8 +21,6 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 type captureServer struct {
@@ -46,86 +44,10 @@ func generateJWEToken(t *testing.T, claims map[string]interface{}, jweSecretKey 
 	return token
 }
 
-// setupClickHouseContainer sets up a ClickHouse container for testing.
-func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
-	t.Helper()
-	ctx := context.Background() // Use background context instead of test context to avoid cancellation issues
-
-	totalStart := time.Now()
-
-	req := testcontainers.ContainerRequest{
-		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
-	}
-	containerStart := time.Now()
-	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	containerElapsed := time.Since(containerStart)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		cleanupStart := time.Now()
-		if err := chContainer.Terminate(context.Background()); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-		t.Logf("[container/%s] cleanup took %s", req.Image, time.Since(cleanupStart))
-	})
-
-	host, err := chContainer.Host(ctx)
-	require.NoError(t, err)
-
-	port, err := chContainer.MappedPort(ctx, "8123")
-	require.NoError(t, err)
-
-	chConfig := &config.ClickHouseConfig{
-		Host:     host,
-		Port:     port.Int(),
-		Database: "default",
-		Username: "default",
-		Protocol: config.HTTPProtocol,
-	}
-
-	// Create a client to test the connection and create test tables
-	setupStart := time.Now()
-	client, err := clickhouse.NewClient(ctx, *chConfig)
-	require.NoError(t, err)
-
-	// Create a test table
-	_, err = client.ExecuteQuery(ctx, `CREATE TABLE IF NOT EXISTS default.test (
-		id UInt64,
-		name String,
-		created_at DateTime
-	) ENGINE = MergeTree() ORDER BY id`)
-	require.NoError(t, err)
-
-	// Insert some test data
-	_, err = client.ExecuteQuery(ctx, `INSERT INTO default.test VALUES (1, 'test1', now()), (2, 'test2', now())`)
-	require.NoError(t, err)
-
-	// Close the client after setup
-	err = client.Close()
-	require.NoError(t, err)
-	setupElapsed := time.Since(setupStart)
-
-	t.Logf("[container/%s] start=%s setup=%s total=%s", req.Image, containerElapsed, setupElapsed, time.Since(totalStart))
-
-	return chConfig
-}
-
 // TestOpenAPIHandlers tests the OpenAPI handlers
 func TestOpenAPIHandlers(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("serves_openapi_schema", func(t *testing.T) {
 		t.Parallel()
@@ -392,7 +314,7 @@ func TestNewClickHouseMCPServer(t *testing.T) {
 func TestHandleExecuteQuery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -507,7 +429,7 @@ func TestHandleExecuteQuery(t *testing.T) {
 func TestHandleSchemaResource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -538,7 +460,7 @@ func TestHandleSchemaResource(t *testing.T) {
 func TestHandleTableResource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -586,7 +508,7 @@ func TestHandleTableResource(t *testing.T) {
 func TestJWEAuthentication(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret-key-123"
@@ -1151,7 +1073,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// prepare parameterized view
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -1211,7 +1133,7 @@ func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
 func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
@@ -1258,7 +1180,7 @@ func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
 func TestHandleDynamicToolOpenAPI_PostExecutes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
@@ -1352,7 +1274,7 @@ func TestHandleDynamicToolOpenAPI_Errors(t *testing.T) {
 func TestLazyLoading_OpenAPISchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// Create view
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -1408,7 +1330,7 @@ func TestLazyLoading_OpenAPISchema(t *testing.T) {
 func TestLazyLoading_MCPTools(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// Create view
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -1638,7 +1560,7 @@ func TestSqlLiteral_AllTypes(t *testing.T) {
 // TestHandleExecuteQueryOpenAPI_MethodNotAllowed tests method validation
 func TestHandleExecuteQueryOpenAPI_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -1657,7 +1579,7 @@ func TestHandleExecuteQueryOpenAPI_MethodNotAllowed(t *testing.T) {
 // TestHandleExecuteQueryOpenAPI_InvalidLimit tests invalid limit parameter
 func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -1701,7 +1623,7 @@ func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
 // TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit tests limit exceeding max
 func TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: config.ClickHouseConfig{
@@ -1747,7 +1669,7 @@ func TestHandleDynamicToolOpenAPI_MethodNotAllowed(t *testing.T) {
 // TestHandleDynamicToolOpenAPI_MissingRequiredParam tests missing required parameter
 func TestHandleDynamicToolOpenAPI_MissingRequiredParam(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := &ClickHouseJWEServer{
 		Config: config.Config{
@@ -1885,7 +1807,7 @@ func TestHandleExecuteQuery_EmptyQuery(t *testing.T) {
 // TestHandleExecuteQuery_ExceedsMaxLimit tests limit exceeding config max
 func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: config.ClickHouseConfig{
@@ -1919,7 +1841,7 @@ func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 // TestHandleExecuteQuery_WithQueryWithExistingLimit tests query already having limit
 func TestHandleExecuteQuery_WithQueryWithExistingLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -1961,7 +1883,7 @@ func TestEnsureDynamicTools_NoRules(t *testing.T) {
 // TestEnsureDynamicTools_InvalidRegexp tests invalid regexp in rules
 func TestEnsureDynamicTools_InvalidRegexp(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -1981,7 +1903,7 @@ func TestEnsureDynamicTools_InvalidRegexp(t *testing.T) {
 // TestEnsureDynamicTools_NamedRuleNoMatch tests named rule that matches no views
 func TestEnsureDynamicTools_NamedRuleNoMatch(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -2003,7 +1925,7 @@ func TestEnsureDynamicTools_NamedRuleNoMatch(t *testing.T) {
 func TestEnsureDynamicTools_NamedRuleMultipleMatches(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
@@ -2035,7 +1957,7 @@ func TestEnsureDynamicTools_NamedRuleMultipleMatches(t *testing.T) {
 // TestMakeDynamicToolHandler_QueryError tests handler when query fails
 func TestMakeDynamicToolHandler_QueryError(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := &ClickHouseJWEServer{
 		Config: config.Config{
@@ -2146,7 +2068,7 @@ func TestOpenAPIHandler_InvalidJWEToken(t *testing.T) {
 // TestHandleDynamicToolOpenAPI_QueryError tests query execution failure
 func TestHandleDynamicToolOpenAPI_QueryError(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := &ClickHouseJWEServer{
 		Config: config.Config{
@@ -2179,7 +2101,7 @@ func TestHandleDynamicToolOpenAPI_QueryError(t *testing.T) {
 // TestHandleExecuteQueryOpenAPI_QueryError tests query execution failure
 func TestHandleExecuteQueryOpenAPI_QueryError(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -2199,7 +2121,7 @@ func TestHandleExecuteQueryOpenAPI_QueryError(t *testing.T) {
 // TestHandleExecuteQueryOpenAPI_NonSelectWithLimit tests limit on non-select query
 func TestHandleExecuteQueryOpenAPI_NonSelectWithLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -2220,7 +2142,7 @@ func TestHandleExecuteQueryOpenAPI_NonSelectWithLimit(t *testing.T) {
 func TestHandleDynamicToolOpenAPI_WithOptionalParams(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// Create a simple view
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -2304,7 +2226,7 @@ func TestMakeDynamicToolHandler_GetClientError(t *testing.T) {
 func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// Create a view with multiple param types
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -3011,7 +2933,7 @@ func TestOAuthClearClickHouseCredentials(t *testing.T) {
 func TestOAuthAndJWECombined(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	jweSecretKey := "this-is-a-32-byte-secret-key!!"
@@ -3261,7 +3183,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 // TestOAuthOpenAPIHandler tests OpenAPI handler with OAuth authentication
 func TestOAuthOpenAPIHandler(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("oauth_only_valid", func(t *testing.T) {
@@ -3448,7 +3370,7 @@ func TestGetOAuthClaimsFromCtx(t *testing.T) {
 func TestGetClickHouseClientWithOAuth(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("no_oauth_forwarding", func(t *testing.T) {
 		t.Parallel()
@@ -3708,7 +3630,7 @@ func TestValidateAuth(t *testing.T) {
 func TestOAuthMCPToolExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("execute_query_with_oauth", func(t *testing.T) {
@@ -3834,21 +3756,22 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 // TestOAuthOpenAPIFullFlow tests complete OAuth flow for OpenAPI endpoint
 func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		dockerProvider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
-		dockerChConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
+		// Antalya is required for token_processors-driven OIDC validation in CH.
+		// setupEmbeddedAntalyaWithOIDC auto-skips on non-Linux hosts.
+		oidcProvider := newTestOAuthProvider(t, nil)
+		antalyaCH := setupEmbeddedAntalyaWithOIDC(t, oidcProvider.server.URL)
 		srv := NewClickHouseMCPServer(config.Config{
-			ClickHouse: dockerChConfig,
+			ClickHouse: antalyaCH,
 			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
 		}, "test")
-		oauthToken := dockerProvider.issueJWT(t, map[string]interface{}{
+		oauthToken := oidcProvider.issueJWT(t, map[string]interface{}{
 			"sub": "service-account-123",
-			"iss": dockerOIDCURL,
+			"iss": oidcProvider.server.URL,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20version()%20as%20version", nil)
@@ -5240,7 +5163,7 @@ func TestValidateJWEToken(t *testing.T) {
 
 func TestHandleSchemaResourceE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -5267,7 +5190,7 @@ func TestHandleSchemaResourceE2E_NoServer(t *testing.T) {
 
 func TestHandleTableResourceE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -5316,7 +5239,7 @@ func TestHandleTableResourceE2E(t *testing.T) {
 
 func TestHandleExecuteQueryE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -5390,7 +5313,7 @@ func TestHandleExecuteQueryE2E(t *testing.T) {
 
 func TestEnsureDynamicToolsE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("no_dynamic_tools_config", func(t *testing.T) {
 		t.Parallel()
@@ -5428,7 +5351,7 @@ func TestEnsureDynamicToolsE2E(t *testing.T) {
 
 func TestOpenAPIHandlerE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -5465,7 +5388,7 @@ func TestOpenAPIHandlerE2E(t *testing.T) {
 
 func TestGetClickHouseClientWithOAuthE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("default_config_no_oauth", func(t *testing.T) {
 		t.Parallel()
