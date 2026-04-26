@@ -119,6 +119,11 @@ type OAuthConfig struct {
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
 
+	// UpstreamOfflineAccess opts forward mode into requesting offline_access from the upstream IdP
+	// and wrapping the returned refresh token in a stateless JWE handed back to the MCP client.
+	// Default false: forward mode behaves exactly as before (no refresh token issued, refresh grant rejected).
+	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" desc:"Forward mode: request offline_access upstream and issue JWE-wrapped refresh tokens"`
+
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" desc:"Required OAuth scopes for access"`
 
