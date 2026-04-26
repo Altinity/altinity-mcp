@@ -931,6 +931,15 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Missing upstream token", http.StatusBadGateway)
 		return
 	}
+	log.Info().
+		Bool("has_access_token", tokenResp.AccessToken != "").
+		Bool("has_id_token", tokenResp.IDToken != "").
+		Bool("has_refresh_token", tokenResp.RefreshToken != "").
+		Bool("forward_mode", a.oauthForwardMode()).
+		Bool("upstream_offline_access", cfg.Server.OAuth.UpstreamOfflineAccess).
+		Str("scope", tokenResp.Scope).
+		Int64("expires_in", tokenResp.ExpiresIn).
+		Msg("Upstream OAuth token exchange succeeded")
 
 	var identityClaims *altinitymcp.OAuthClaims
 	if tokenResp.IDToken != "" {
@@ -961,13 +970,24 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	if tokenType == "" {
 		tokenType = "Bearer"
 	}
-	accessTokenExpiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
-	if tokenResp.ExpiresIn <= 0 {
-		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
-	}
 	bearerToken := tokenResp.IDToken
 	if bearerToken == "" {
 		bearerToken = tokenResp.AccessToken
+	}
+	// The bearer we forward to ClickHouse is the ID token when present, else
+	// the access_token. Auth0 (and other IdPs) routinely return different
+	// lifetimes for the two — e.g. expires_in=86400 for the access_token while
+	// the id_token's own exp is iat+3600. We must report expires_in matching
+	// the actual bearer the client receives, otherwise downstream MCP clients
+	// (Claude.ai) won't refresh in time and the user-visible session breaks
+	// at the bearer's real expiry.
+	var accessTokenExpiry int64
+	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		accessTokenExpiry = identityClaims.ExpiresAt
+	} else if tokenResp.ExpiresIn > 0 {
+		accessTokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
+	} else {
+		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
 	}
 	gatingCode := randomToken("oac_")
 	issuedCode := oauthIssuedCode{
@@ -984,6 +1004,11 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		issuedCode.AccessTokenExpiry = time.Unix(accessTokenExpiry, 0)
 		if cfg.Server.OAuth.UpstreamOfflineAccess {
 			issuedCode.UpstreamRefreshToken = tokenResp.RefreshToken
+			if tokenResp.RefreshToken == "" {
+				log.Warn().
+					Str("scope", tokenResp.Scope).
+					Msg("upstream_offline_access=true but upstream did not return a refresh_token; check IdP application config (offline_access scope, refresh_token grant, audience)")
+			}
 		}
 	} else {
 		issuedCode.Subject = identityClaims.Subject
@@ -1115,7 +1140,12 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Form.Get("grant_type") {
+	grantType := r.Form.Get("grant_type")
+	log.Info().
+		Str("grant_type", grantType).
+		Bool("forward_mode", a.oauthForwardMode()).
+		Msg("OAuth /oauth/token request received")
+	switch grantType {
 	case "authorization_code":
 		a.handleOAuthTokenAuthCode(w, r)
 	case "refresh_token":
@@ -1199,6 +1229,14 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 				return
 			}
 			response["refresh_token"] = refreshToken
+			log.Info().
+				Str("client_id", clientID).
+				Int("jwe_len", len(refreshToken)).
+				Msg("Forward-mode auth-code response includes refresh_token (JWE wrapping upstream refresh)")
+		} else {
+			log.Info().
+				Str("client_id", clientID).
+				Msg("Forward-mode auth-code response WITHOUT refresh_token (no upstream refresh captured)")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
@@ -1236,6 +1274,9 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 // In forward mode, IdP-side refresh-token rotation + reuse detection (e.g. Auth0)
 // provides a second line of defense outside MCP.
 func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
+	log.Info().
+		Bool("forward_mode", a.oauthForwardMode()).
+		Msg("OAuth refresh_token grant: handler entered")
 	secret, err := a.mustJWESecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
@@ -1263,9 +1304,14 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	}
 	claims, err := decodeJWEArtifact(secret, refreshTokenStr)
 	if err != nil {
+		log.Warn().Err(err).Msg("OAuth refresh_token grant: JWE decode failed")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		return
 	}
+	jweUpstreamRefresh, _ := claims["upstream_refresh_token"].(string)
+	log.Info().
+		Bool("has_upstream_refresh_token", jweUpstreamRefresh != "").
+		Msg("OAuth refresh_token grant: JWE decoded successfully")
 
 	// Verify client_id in refresh token matches the requesting client
 	tokenClientID, _ := claims["client_id"].(string)
@@ -1341,6 +1387,7 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		form.Set("scope", scope)
 	}
 
+	log.Info().Str("token_url", tokenURL).Msg("Forward-mode refresh: calling upstream /oauth/token")
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(tokenURL, form)
 	if err != nil {
 		log.Error().Err(err).Str("token_url", tokenURL).Msg("Upstream OAuth refresh request failed")
@@ -1358,6 +1405,7 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "upstream rejected the refresh token")
 		return
 	}
+	log.Info().Int("status", resp.StatusCode).Msg("Forward-mode refresh: upstream /oauth/token returned 2xx")
 
 	var tokenResp struct {
 		AccessToken  string `json:"access_token"`
@@ -1381,8 +1429,10 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 	// Mirror handleOAuthCallback's preference: validate id_token via JWKS when
 	// present, otherwise fall back to the upstream userinfo endpoint with the
 	// access_token (which also runs identity-policy checks).
+	var identityClaims *altinitymcp.OAuthClaims
 	if tokenResp.IDToken != "" {
-		if _, err := a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID); err != nil {
+		identityClaims, err = a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID)
+		if err != nil {
 			log.Error().Err(err).Msg("Upstream identity token validation failed on refresh")
 			writeOAuthTokenError(w, http.StatusForbidden, "access_denied", err.Error())
 			return
@@ -1417,9 +1467,20 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
+	// Match expires_in to the actual bearer we forward (id_token when present),
+	// not tokenResp.ExpiresIn which describes the access_token's lifetime —
+	// IdPs often return divergent lifetimes (e.g. Auth0: id_token exp = iat+3600,
+	// access_token expires_in = 86400). See handleOAuthCallback for the same fix.
+	var expiresIn int64
+	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		expiresIn = identityClaims.ExpiresAt - time.Now().Unix()
+	} else if tokenResp.ExpiresIn > 0 {
+		expiresIn = tokenResp.ExpiresIn
+	} else {
 		expiresIn = int64(time.Hour.Seconds())
+	}
+	if expiresIn < 0 {
+		expiresIn = 0
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

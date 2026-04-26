@@ -583,8 +583,13 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
 		require.Equal(t, "Bearer", tokenResp["token_type"])
 		require.Equal(t, "openid email profile", tokenResp["scope"])
-		require.Greater(t, tokenResp["expires_in"].(float64), float64(0))
-		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(1800))
+		// The bearer we forward is the id_token, so expires_in must reflect
+		// the id_token's exp (1h), NOT the upstream access_token's expires_in
+		// (30m). IdPs commonly return divergent lifetimes; using the wrong
+		// one means downstream MCP clients (Claude.ai) refresh too late and
+		// the bearer expires under them.
+		require.Greater(t, tokenResp["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(3600))
 
 		userInfoCalls, userInfoAuth := provider.userInfoRequest()
 		require.Equal(t, 0, userInfoCalls)
@@ -1159,6 +1164,13 @@ func TestOAuthForwardModeRefresh(t *testing.T) {
 		require.NotEmpty(t, resp["refresh_token"], "forward mode + UpstreamOfflineAccess must issue a refresh_token")
 		// MCP refresh token is the JWE wrapper, not the raw upstream refresh.
 		require.NotEqual(t, "upstream-refresh-token-original", resp["refresh_token"])
+		// expires_in must reflect the id_token's actual exp (1h here), not the
+		// upstream access_token's expires_in (1800). MCP clients schedule
+		// proactive refresh from this value; using the access_token TTL when
+		// we forward the id_token causes downstream sessions to break at the
+		// real bearer expiry.
+		require.Greater(t, resp["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, resp["expires_in"].(float64), float64(3600))
 	})
 
 	t.Run("refresh_grants_new_upstream_id_token_and_rotates", func(t *testing.T) {
@@ -1180,6 +1192,11 @@ func TestOAuthForwardModeRefresh(t *testing.T) {
 		require.NotEmpty(t, refreshed["refresh_token"])
 		require.NotEqual(t, resp["refresh_token"], refreshed["refresh_token"])
 		require.Equal(t, "Bearer", refreshed["token_type"])
+		// expires_in must reflect the rotated id_token's exp (1h), not the
+		// upstream access_token's expires_in (1800). Same rationale as the
+		// auth-code path above.
+		require.Greater(t, refreshed["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, refreshed["expires_in"].(float64), float64(3600))
 	})
 
 	t.Run("idp_rotation_invalidates_rotated_out_mcp_refresh", func(t *testing.T) {
