@@ -48,6 +48,12 @@ const (
 type Options struct {
 	Flavor        Flavor
 	ConfigDropIns []string
+	// UsersXML, if non-empty, is written to <DataPath>/users.xml beside the
+	// generated config.xml. Use it when a config.d drop-in references
+	// `<users_xml><path>users.xml</path></users_xml>` (Antalya's
+	// token_processors / user_directories does this) — the file would
+	// otherwise not exist and ClickHouse fails startup with CANNOT_LOAD_CONFIG.
+	UsersXML string
 	// Protocol controls which port (HTTP or TCP) is reflected in the
 	// returned ClickHouseConfig. Defaults to HTTP.
 	Protocol     config.ClickHouseProtocol
@@ -75,6 +81,12 @@ func WithTCPProtocol() Option {
 // WithStartTimeout overrides the default 60s start timeout.
 func WithStartTimeout(d time.Duration) Option {
 	return func(o *Options) { o.StartTimeout = d }
+}
+
+// WithUsersXML writes the given XML to <DataPath>/users.xml beside config.xml.
+// Pair with config.d drop-ins that declare <user_directories><users_xml>.
+func WithUsersXML(xml string) Option {
+	return func(o *Options) { o.UsersXML = xml }
 }
 
 // Setup boots a ClickHouse server as a host subprocess and returns a
@@ -105,13 +117,18 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 		cfgBuilder = cfgBuilder.BinaryPath(bin)
 	}
 
-	if len(o.ConfigDropIns) > 0 {
+	if len(o.ConfigDropIns) > 0 || o.UsersXML != "" {
 		dataDir := t.TempDir()
-		configDDir := filepath.Join(dataDir, "config.d")
-		require.NoError(t, os.MkdirAll(configDDir, 0o755))
-		for i, xml := range o.ConfigDropIns {
-			path := filepath.Join(configDDir, "drop-in-"+strconv.Itoa(i)+".xml")
-			require.NoError(t, os.WriteFile(path, []byte(xml), 0o644))
+		if len(o.ConfigDropIns) > 0 {
+			configDDir := filepath.Join(dataDir, "config.d")
+			require.NoError(t, os.MkdirAll(configDDir, 0o755))
+			for i, xml := range o.ConfigDropIns {
+				path := filepath.Join(configDDir, "drop-in-"+strconv.Itoa(i)+".xml")
+				require.NoError(t, os.WriteFile(path, []byte(xml), 0o644))
+			}
+		}
+		if o.UsersXML != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dataDir, "users.xml"), []byte(o.UsersXML), 0o644))
 		}
 		cfgBuilder = cfgBuilder.DataPath(dataDir)
 	}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
@@ -259,10 +260,33 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
 
 	startupScriptsXML := generateClickHouseStartupScriptsConfig()
 
+	// The token_processor.xml above declares <user_directories> with a
+	// <users_xml> element pointing at users.xml. The Antalya Docker image
+	// ships /etc/clickhouse-server/users.xml; embedded-clickhouse does not.
+	// Without it, ClickHouse fails startup with CANNOT_LOAD_CONFIG. Provide
+	// a minimal users.xml so the path resolves; the actual users we care
+	// about come from the OIDC token user_directory at runtime.
+	const usersXML = `<?xml version="1.0"?>
+<clickhouse>
+    <users>
+        <default>
+            <password></password>
+            <networks><ip>::/0</ip></networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+    </users>
+    <profiles><default/></profiles>
+    <quotas><default/></quotas>
+</clickhouse>
+`
+
 	cfg := setupEmbeddedClickHouseUnseeded(t,
 		withFlavor(flavorAntalya),
 		withConfigDropIn(tokenProcessorXML),
 		withConfigDropIn(startupScriptsXML),
+		embeddedch.WithUsersXML(usersXML),
 	)
 	return *cfg
 }
