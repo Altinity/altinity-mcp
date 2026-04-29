@@ -43,6 +43,14 @@ type ClickHouseConfig struct {
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Maximum limit for query results (0 means no limit)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
+	// ClusterName + ClusterSecret enable interserver-secret authentication.
+	// When ClusterSecret is set, altinity-mcp connects as a trusted cluster
+	// peer (no username/password) and executes each query as the
+	// MCP-authenticated user. The target ClickHouse must list altinity-mcp
+	// under <remote_servers><cluster><secret>...</secret></cluster>. Only
+	// the TCP protocol is supported.
+	ClusterName   string `json:"cluster_name,omitempty" yaml:"cluster_name,omitempty" flag:"clickhouse-cluster-name" desc:"ClickHouse cluster name for interserver-secret auth"`
+	ClusterSecret string `json:"cluster_secret,omitempty" yaml:"cluster_secret,omitempty" flag:"clickhouse-cluster-secret" desc:"Shared interserver secret; when set altinity-mcp authenticates as a trusted cluster peer"`
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -202,18 +210,22 @@ func (cfg OAuthConfig) IsGatingMode() bool {
 
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport          MCPTransport      `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address            string            `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port               int               `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS                ServerTLSConfig   `json:"tls" yaml:"tls"`
-	JWE                JWEConfig         `json:"jwe" yaml:"jwe"`
-	OAuth              OAuthConfig       `json:"oauth" yaml:"oauth"`
-	OpenAPI            OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin        string   `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
-	ToolInputSettings []string `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
-	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
-	// DynamicTools defines rules for generating tools from ClickHouse views
-	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools"`
+	Transport           MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address             string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port                int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS                 ServerTLSConfig `json:"tls" yaml:"tls"`
+	JWE                 JWEConfig       `json:"jwe" yaml:"jwe"`
+	OAuth               OAuthConfig     `json:"oauth" yaml:"oauth"`
+	OpenAPI             OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin          string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ToolInputSettings   []string        `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
+	BlockedQueryClauses []string        `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
+	// Tools is the unified tool configuration (static + dynamic in one array).
+	// Static tools: type + name. Dynamic tools: type + regexp + prefix + mode.
+	Tools []ToolDefinition `json:"tools" yaml:"tools" desc:"Tool definitions (static and dynamic)"`
+	// DynamicTools is the legacy rule list for generating tools from ClickHouse views.
+	// DEPRECATED: use Tools instead. Retained for backwards compatibility.
+	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools" desc:"(Deprecated: use tools instead) Rules for generating tools from ClickHouse views"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration
@@ -222,11 +234,31 @@ type OpenAPIConfig struct {
 	TLS     bool `json:"tls" yaml:"tls" desc:"Use TLS (https) for OpenAPI endpoints"`
 }
 
-// DynamicToolRule describes a rule to create dynamic tools from views
+// ToolDefinition describes a tool in the unified tools configuration.
+//
+//   - Static tool: Type + Name (no Regexp). Currently supported names:
+//     "execute_query" (read), "write_query" (write).
+//   - Dynamic tool: Type + Regexp (+ optional Name/Prefix). Type "read"
+//     discovers views; type "write" discovers tables. Dynamic write tools
+//     require Mode (currently only "insert" is implemented).
+type ToolDefinition struct {
+	Type   string `json:"type" yaml:"type"`     // "read" or "write"
+	Name   string `json:"name" yaml:"name"`     // static tool name, or label for dynamic rule
+	Regexp string `json:"regexp" yaml:"regexp"` // dynamic discovery pattern (matched against db.name)
+	Prefix string `json:"prefix" yaml:"prefix"` // tool-name prefix for discovered tools
+	Mode   string `json:"mode" yaml:"mode"`     // "insert" (required for dynamic write tools)
+}
+
+// DynamicToolRule describes a rule to create dynamic tools from views.
+// DEPRECATED: use ToolDefinition instead. Retained for backwards compatibility.
 type DynamicToolRule struct {
 	Name   string `json:"name" yaml:"name"`
 	Regexp string `json:"regexp" yaml:"regexp"`
 	Prefix string `json:"prefix" yaml:"prefix"`
+	// Type and Mode are accepted so DynamicToolRule can round-trip through
+	// the new unified Tools path without losing information.
+	Type string `json:"type" yaml:"type"` // "read" or "write"
+	Mode string `json:"mode" yaml:"mode"` // "insert" for write tools
 }
 
 // LogLevel defines the logging level
@@ -284,6 +316,5 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 			}
 		}
 	}
-
 	return config, nil
 }

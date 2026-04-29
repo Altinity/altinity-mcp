@@ -11,25 +11,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/docker/docker/api/types/container"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // TestOAuthE2EWithMockOIDC is an end-to-end test that validates the full OAuth2 flow
 // through real MCP client and OpenAPI endpoints:
-// 1. A lightweight mock OIDC provider (in-process Go HTTP server)
-// 2. ClickHouse (Antalya build) with token_processors for JWT auth
-// 3. MCP server forwarding Bearer tokens to ClickHouse
+//
+//  1. A lightweight mock OIDC provider (in-process Go HTTP server bound to 127.0.0.1)
+//  2. Altinity Antalya ClickHouse with token_processors for JWT auth, run as a host
+//     subprocess via embedded-clickhouse + an extracted Antalya binary
+//  3. MCP server forwarding Bearer tokens to ClickHouse
+//
+// Antalya is Linux-only (no darwin binaries published), so this test
+// auto-skips on non-Linux hosts via ensureAntalyaBinary. CI runs it on Linux.
 func TestOAuthE2EWithMockOIDC(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -38,29 +40,32 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 
 	ctx := context.Background()
 
-	// ---------- Step 1: Start mock OIDC provider ----------
-	provider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
-	t.Logf("Mock OIDC provider URL (Docker): %s", dockerOIDCURL)
+	// Step 1: mock OIDC provider on 127.0.0.1. Use the full-discovery variant
+	// because Antalya's token_processors parser requires introspection_endpoint
+	// (or userinfo_endpoint) plus the standard required OIDC fields — without
+	// them it logs "Cannot extract userinfo_endpoint or introspection_endpoint
+	// from OIDC configuration" and silently disables the processor.
+	provider := newAntalyaOIDCProvider(t, nil)
+	oidcURL := provider.server.URL
+	t.Logf("Mock OIDC provider URL: %s", oidcURL)
 
-	// ---------- Step 2: Start ClickHouse with token_processors ----------
-	chConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
+	// Step 2: Antalya ClickHouse via embedded-clickhouse, configured for OIDC.
+	chConfig := setupEmbeddedAntalyaWithOIDC(t, oidcURL)
 
-	// ---------- Step 3: Issue a signed JWT ----------
+	// Step 3: issue a signed JWT to use as the Bearer.
 	const tokenSubject = "test-oauth-user"
 	token := provider.issueJWT(t, map[string]interface{}{
 		"sub": tokenSubject,
-		"iss": dockerOIDCURL,
+		"iss": oidcURL,
 		"aud": "test-audience",
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"iat": time.Now().Unix(),
 	})
 	require.NotEmpty(t, token, "OAuth token should not be empty")
 
-	// Verify it looks like a JWT
 	parts := strings.Split(token, ".")
 	require.Equal(t, 3, len(parts), "Token should be a JWT with 3 parts")
 
-	// ---------- Step 4: Test via MCP Client (InMemoryTransports) ----------
 	t.Run("MCP_Client", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
@@ -73,17 +78,14 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			},
 		}, "test-e2e")
 
-		// Create in-memory transports
 		clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
-		// Connect server with context containing the server instance and OAuth token
 		srvCtx := context.WithValue(ctx, CHJWEServerKey, srv)
 		srvCtx = context.WithValue(srvCtx, OAuthTokenKey, token)
 		serverSession, err := srv.MCPServer.Connect(srvCtx, serverTransport, nil)
 		require.NoError(t, err, "Server connect should succeed")
 		defer serverSession.Close()
 
-		// Connect MCP client
 		mcpClient := mcp.NewClient(
 			&mcp.Implementation{Name: "test-oauth-client", Version: "v0.0.1"}, nil,
 		)
@@ -91,8 +93,6 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 		require.NoError(t, err, "Client connect should succeed")
 		defer clientSession.Close()
 
-		// NOTE: MCP subtests are NOT parallel — they share clientSession
-		// 4a. ListTools — verify execute_query is registered
 		t.Run("ListTools", func(t *testing.T) {
 			toolsResult, err := clientSession.ListTools(ctx, nil)
 			require.NoError(t, err)
@@ -103,10 +103,8 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 				toolNames = append(toolNames, tool.Name)
 			}
 			require.Contains(t, toolNames, "execute_query", "execute_query tool should be registered")
-			t.Logf("Listed tools: %v", toolNames)
 		})
 
-		// 4b. CallTool(execute_query) — query should reach ClickHouse via OAuth Bearer token
 		t.Run("CallTool_ExecuteQuery", func(t *testing.T) {
 			res, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
 				Name:      "execute_query",
@@ -120,9 +118,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			textContent, ok := res.Content[0].(*mcp.TextContent)
 			require.True(t, ok, "Content should be TextContent")
 			require.NotEmpty(t, textContent.Text)
-			t.Logf("execute_query result: %s", textContent.Text)
 
-			// Parse the JSON result and verify it has rows
 			var queryResult map[string]interface{}
 			require.NoError(t, json.Unmarshal([]byte(textContent.Text), &queryResult))
 			rows, ok := queryResult["rows"].([]interface{})
@@ -131,7 +127,6 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			require.Equal(t, tokenSubject, firstStringCell(t, rows))
 		})
 
-		// 4c. ListResources — verify clickhouse://schema is registered
 		t.Run("ListResources", func(t *testing.T) {
 			resourcesResult, err := clientSession.ListResources(ctx, nil)
 			require.NoError(t, err)
@@ -142,10 +137,8 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 				resourceURIs = append(resourceURIs, r.URI)
 			}
 			require.Contains(t, resourceURIs, "clickhouse://schema", "Schema resource should be registered")
-			t.Logf("Listed resources: %v", resourceURIs)
 		})
 
-		// 4d. ReadResource(clickhouse://schema) — should return schema via OAuth
 		t.Run("ReadResource_Schema", func(t *testing.T) {
 			res, err := clientSession.ReadResource(ctx, &mcp.ReadResourceParams{
 				URI: "clickhouse://schema",
@@ -154,11 +147,9 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			require.NotNil(t, res)
 			require.Greater(t, len(res.Contents), 0, "Should have contents")
 			require.NotEmpty(t, res.Contents[0].Text, "Schema should not be empty")
-			t.Logf("Schema resource (first 200 chars): %.200s...", res.Contents[0].Text)
 		})
 	})
 
-	// ---------- Step 5: Test via OpenAPI Client (httptest) ----------
 	t.Run("OpenAPI_Client", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
@@ -171,14 +162,12 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			},
 		}, "test-e2e")
 
-		// 5a. Execute query via OpenAPI with Bearer token
 		t.Run("ExecuteQuery", func(t *testing.T) {
 			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user, 1 AS ok")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
-			req = req.WithContext(reqCtx)
+			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 			rr := httptest.NewRecorder()
 			srv.OpenAPIHandler(rr, req)
@@ -191,31 +180,26 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			require.True(t, ok, "Result should have Rows")
 			require.Greater(t, len(rows), 0, "Should have at least one row")
 			require.Equal(t, tokenSubject, firstStringCell(t, rows))
-			t.Logf("OpenAPI result: %s", rr.Body.String())
 		})
 
-		// 5b. OpenAPI schema endpoint should work
 		t.Run("OpenAPISchema", func(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, "/openapi", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
-			req = req.WithContext(reqCtx)
+			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 			rr := httptest.NewRecorder()
 			srv.OpenAPIHandler(rr, req)
 
 			require.Equal(t, http.StatusOK, rr.Code, "OpenAPI schema should return 200")
 			require.Contains(t, rr.Body.String(), "execute_query", "Schema should contain execute_query")
-			t.Logf("OpenAPI schema (first 200 chars): %.200s...", rr.Body.String())
 		})
 
 		t.Run("ExecuteQuery_MissingBearerToken", func(t *testing.T) {
 			t.Parallel()
 			query := url.QueryEscape("SELECT currentUser() AS user")
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
-			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
-			req = req.WithContext(reqCtx)
+			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 			rr := httptest.NewRecorder()
 			srv.OpenAPIHandler(rr, req)
@@ -235,8 +219,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 				"exp":   time.Now().Add(10 * time.Minute).Unix(),
 				"scope": "openid",
 			}))
-			reqCtx := context.WithValue(req.Context(), CHJWEServerKey, srv)
-			req = req.WithContext(reqCtx)
+			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 			rr := httptest.NewRecorder()
 			srv.OpenAPIHandler(rr, req)
@@ -248,8 +231,175 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 	})
 }
 
-// ---------- Helper functions ----------
+// setupEmbeddedAntalyaWithOIDC boots an Antalya ClickHouse server as a host
+// subprocess via embedded-clickhouse, configured with a token_processors
+// drop-in pointing at the supplied OIDC discovery URL plus a startup_scripts
+// drop-in that creates the default_role used by the token user_directory.
+//
+// Auto-skips on non-Linux hosts because Antalya only ships Linux binaries.
+func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.ClickHouseConfig {
+	t.Helper()
 
+	// Antalya's <user_directories> needs a writable <local_directory> for
+	// runtime user storage. The Antalya container shipped with
+	// /var/lib/clickhouse/access/, but the host process running as the CI
+	// user can't create that path. Use a host-writable temp dir.
+	accessDir := t.TempDir()
+
+	tokenProcessorXML := fmt.Sprintf(`<?xml version="1.0"?>
+<clickhouse>
+    <token_processors>
+        <test_oidc>
+            <type>openid</type>
+            <configuration_endpoint>%s/.well-known/openid-configuration</configuration_endpoint>
+            <token_cache_lifetime>60</token_cache_lifetime>
+        </test_oidc>
+    </token_processors>
+    <user_directories replace="replace">
+        <users_xml>
+            <path>users.xml</path>
+        </users_xml>
+        <local_directory>
+            <path>%s</path>
+        </local_directory>
+        <token>
+            <processor>test_oidc</processor>
+            <common_roles>
+                <default_role />
+            </common_roles>
+        </token>
+    </user_directories>
+</clickhouse>
+`, oidcDiscoveryURL, accessDir)
+
+	startupScriptsXML := generateClickHouseStartupScriptsConfig()
+
+	// The token_processor.xml above declares <user_directories> with a
+	// <users_xml> element pointing at users.xml. The Antalya Docker image
+	// ships /etc/clickhouse-server/users.xml; embedded-clickhouse does not.
+	// Without it, ClickHouse fails startup with CANNOT_LOAD_CONFIG. Provide
+	// a minimal users.xml so the path resolves; the actual users we care
+	// about come from the OIDC token user_directory at runtime.
+	const usersXML = `<?xml version="1.0"?>
+<clickhouse>
+    <users>
+        <default>
+            <password></password>
+            <networks><ip>::/0</ip></networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+    </users>
+    <profiles><default/></profiles>
+    <quotas><default/></quotas>
+</clickhouse>
+`
+
+	cfg := setupEmbeddedClickHouseUnseeded(t,
+		withFlavor(flavorAntalya),
+		withConfigDropIn(tokenProcessorXML),
+		withConfigDropIn(startupScriptsXML),
+		embeddedch.WithUsersXML(usersXML),
+	)
+	return *cfg
+}
+
+// newAntalyaOIDCProvider serves the full OIDC discovery document Antalya's
+// token_processors parser requires (issuer + auth/token/jwks/userinfo/
+// introspection endpoints + response_types + subject_types + id_token_signing
+// algs). The shorter doc returned by newTestOAuthProvider is enough for
+// forward-mode bearer-passthrough tests that never look at it — Antalya
+// rejects it with "Cannot extract userinfo_endpoint or introspection_endpoint".
+//
+// Uses an explicit net.Listen + http.Server.Serve loop instead of
+// httptest.NewServer so we control Content-Length / chunked-vs-fixed framing
+// exactly as the original docker-reachable variant did. Antalya's HTTP
+// client occasionally drops the trailing bytes when chunked encoding kicks
+// in mid-response on small bodies.
+func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{}) *testOAuthProvider {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	provider := &testOAuthProvider{
+		privateKey:     privateKey,
+		keyID:          "test-signing-key",
+		userInfoClaims: userInfoClaims,
+	}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := json.Marshal(map[string]interface{}{
+			"issuer":                                url,
+			"authorization_endpoint":                url + "/auth",
+			"token_endpoint":                        url + "/token",
+			"jwks_uri":                              url + "/jwks",
+			"userinfo_endpoint":                     url + "/userinfo",
+			"introspection_endpoint":                url + "/introspect",
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		keySet := jose.JSONWebKeySet{
+			Keys: []jose.JSONWebKey{{
+				Key:       &privateKey.PublicKey,
+				KeyID:     provider.keyID,
+				Use:       "sig",
+				Algorithm: string(jose.RS256),
+			}},
+		}
+		body, _ := json.Marshal(keySet)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	})
+
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		provider.lastAuthorizationMu.Lock()
+		provider.lastAuthorization = r.Header.Get("Authorization")
+		provider.lastAuthorizationMu.Unlock()
+		if provider.userInfoClaims == nil {
+			http.Error(w, "userinfo not configured", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
+	})
+
+	httpSrv := &http.Server{Handler: mux}
+	go func() { _ = httpSrv.Serve(ln) }()
+	time.Sleep(50 * time.Millisecond)
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+	})
+
+	stub := httptest.NewUnstartedServer(nil)
+	stub.Listener.Close()
+	stub.URL = url
+	provider.server = stub
+
+	return provider
+}
+
+// generateClickHouseStartupScriptsConfig returns the XML drop-in that
+// pre-creates the default_role granted to OIDC-authenticated users.
 func generateClickHouseStartupScriptsConfig() string {
 	return `<?xml version="1.0"?>
 <clickhouse>
@@ -315,200 +465,4 @@ func generateUnsignedJWT(t *testing.T, claims map[string]any) string {
 		base64.RawURLEncoding.EncodeToString(headerJSON),
 		base64.RawURLEncoding.EncodeToString(payloadJSON),
 	)
-}
-
-// getDockerHostIP returns the hostname reachable from Docker containers.
-// We always return "host.docker.internal" and rely on the ExtraHosts container setting
-// (host.docker.internal:host-gateway) so it resolves correctly on both macOS and Linux.
-func getDockerHostIP() string {
-	return "host.docker.internal"
-}
-
-// newTestOAuthProviderReachableFromDocker creates an OIDC provider bound to 0.0.0.0
-// so Docker containers can reach it. Returns (provider, dockerAccessURL).
-//
-// The discovery document, JWKS, and userinfo endpoints all use dockerURL directly,
-// so ClickHouse containers can reach all endpoints without any forwarding.
-func newTestOAuthProviderReachableFromDocker(t *testing.T, userInfoClaims map[string]interface{}) (*testOAuthProvider, string) {
-	t.Helper()
-
-	// Bind to all interfaces so Docker containers can reach us.
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	dockerURL := fmt.Sprintf("http://%s:%d", getDockerHostIP(), port)
-	localURL := fmt.Sprintf("http://127.0.0.1:%d", port) // for host-side access in tests
-
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	provider := &testOAuthProvider{
-		privateKey:     privateKey,
-		keyID:          "test-signing-key",
-		userInfoClaims: userInfoClaims,
-	}
-
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
-		// Antalya CH requires a complete OIDC discovery document with introspection_endpoint
-		// (or userinfo_endpoint) plus the standard required OIDC fields. Without them CH
-		// silently ignores the document and logs "Cannot extract userinfo_endpoint or
-		// introspection_endpoint from OIDC configuration". Content-Length must be set
-		// explicitly so CH's HTTP client receives the full body over the OrbStack NAT.
-		doc := map[string]interface{}{
-			"issuer":                                dockerURL,
-			"authorization_endpoint":                dockerURL + "/auth",
-			"token_endpoint":                        dockerURL + "/token",
-			"jwks_uri":                              dockerURL + "/jwks",
-			"userinfo_endpoint":                     dockerURL + "/userinfo",
-			"introspection_endpoint":                dockerURL + "/introspect",
-			"response_types_supported":              []string{"code"},
-			"subject_types_supported":               []string{"public"},
-			"id_token_signing_alg_values_supported": []string{"RS256"},
-		}
-		body, _ := json.Marshal(doc)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(200)
-		_, _ = w.Write(body)
-	})
-
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
-		keySet := jose.JSONWebKeySet{
-			Keys: []jose.JSONWebKey{{
-				Key:       &privateKey.PublicKey,
-				KeyID:     provider.keyID,
-				Use:       "sig",
-				Algorithm: string(jose.RS256),
-			}},
-		}
-		body, _ := json.Marshal(keySet)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		w.WriteHeader(200)
-		_, _ = w.Write(body)
-	})
-
-	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
-		provider.lastAuthorizationMu.Lock()
-		provider.lastAuthorization = r.Header.Get("Authorization")
-		provider.lastAuthorizationMu.Unlock()
-		if provider.userInfoClaims == nil {
-			http.Error(w, "userinfo not configured", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(provider.userInfoClaims)
-	})
-
-	// Use plain http.Serve (not httptest) — httptest replaces the listener
-	// in a way that breaks 0.0.0.0 binding needed for Docker-to-host connectivity.
-	httpSrv := &http.Server{Handler: mux}
-	go func() { _ = httpSrv.Serve(ln) }()
-	time.Sleep(50 * time.Millisecond) // ensure goroutine is scheduled before container starts
-	t.Cleanup(func() {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shutCtx)
-	})
-
-	// Set a stub server so provider.server.URL works in test verification code.
-	stub := httptest.NewUnstartedServer(nil)
-	stub.Listener.Close() // free the auto-created listener immediately
-	stub.URL = localURL
-	provider.server = stub
-
-	return provider, dockerURL
-}
-
-// setupAntalyaClickHouseWithOIDC starts an Antalya ClickHouse container with token_processors
-// pointing at the given OIDC discovery URL.
-// On Linux, host.docker.internal is resolved via ExtraHosts (host-gateway).
-// On macOS/Docker Desktop/OrbStack it resolves automatically.
-func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDiscoveryURL string) config.ClickHouseConfig {
-	t.Helper()
-
-	tokenProcessorXML := fmt.Sprintf(`<?xml version="1.0"?>
-<clickhouse>
-    <token_processors>
-        <test_oidc>
-            <type>openid</type>
-            <configuration_endpoint>%s/.well-known/openid-configuration</configuration_endpoint>
-            <token_cache_lifetime>60</token_cache_lifetime>
-        </test_oidc>
-    </token_processors>
-    <user_directories replace="replace">
-        <users_xml>
-            <path>users.xml</path>
-        </users_xml>
-        <local_directory>
-            <path>/var/lib/clickhouse/access/</path>
-        </local_directory>
-        <token>
-            <processor>test_oidc</processor>
-            <common_roles>
-                <default_role />
-            </common_roles>
-        </token>
-    </user_directories>
-</clickhouse>
-`, oidcDiscoveryURL)
-	startupScriptsXML := generateClickHouseStartupScriptsConfig()
-
-	tmpDir := t.TempDir()
-	tokenProcessorFile := tmpDir + "/token_processor.xml"
-	require.NoError(t, os.WriteFile(tokenProcessorFile, []byte(tokenProcessorXML), 0644))
-	startupScriptsFile := tmpDir + "/startup_scripts.xml"
-	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
-
-	req := testcontainers.ContainerRequest{
-		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: tokenProcessorFile, ContainerFilePath: "/etc/clickhouse-server/config.d/token_processor.xml", FileMode: 0644},
-			{HostFilePath: startupScriptsFile, ContainerFilePath: "/etc/clickhouse-server/config.d/startup_scripts.xml", FileMode: 0644},
-		},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		HostConfigModifier: func(hc *container.HostConfig) {
-			hc.ExtraHosts = append(hc.ExtraHosts, "host.docker.internal:host-gateway")
-		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
-			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
-	}
-
-	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = ctr.Terminate(cleanupCtx)
-	})
-
-	host, err := ctr.Host(ctx)
-	require.NoError(t, err)
-	httpPort, err := ctr.MappedPort(ctx, "8123")
-	require.NoError(t, err)
-
-	t.Logf("Antalya ClickHouse HTTP at %s:%s", host, httpPort.Port())
-
-	return config.ClickHouseConfig{
-		Host:             host,
-		Port:             httpPort.Int(),
-		Database:         "default",
-		Username:         "default",
-		Password:         "",
-		Protocol:         config.HTTPProtocol,
-		ReadOnly:         false,
-		MaxExecutionTime: 60,
-	}
 }
