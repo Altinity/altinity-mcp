@@ -12,6 +12,7 @@ AGENTS.md
 .crush/
 .code/
 .claude/
+.omc/
 build/
 dist/
 /altinity-mcp
@@ -23,5 +24,6 @@ go-carpet*
 .gocache/
 .gomodcache/
 .tmp/
+
 resutls.xml
 push-action

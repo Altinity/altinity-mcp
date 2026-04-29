@@ -8,7 +8,7 @@ require (
 	github.com/franchb/embedded-clickhouse v0.4.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/modelcontextprotocol/go-sdk v1.5.0
-	github.com/rs/zerolog v1.35.0
+	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.8.0
 	gopkg.in/yaml.v3 v3.0.1
