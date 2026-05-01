@@ -145,6 +145,13 @@ services:
       - "8123:8123"
 ```
 
+### With installed golang
+
+```bash
+go install github.com/altinity/altinity-mcp/cmd/altinity-mcp@latest
+$(go env GOPATH)/bin/altinity-mcp --help
+```
+
 ### From Source
 
 ```bash
