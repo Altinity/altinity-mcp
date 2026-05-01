@@ -840,14 +840,16 @@ func TestDynamicToolCommentMetadata(t *testing.T) {
 
 func TestRegisterTools_Annotations(t *testing.T) {
 	t.Parallel()
-	t.Run("read_only_server_marks_execute_query_safe", func(t *testing.T) {
+	t.Run("read_only_server_skips_write_query_and_marks_execute_query_safe", func(t *testing.T) {
 		t.Parallel()
 		srv := &captureServer{}
 
-		RegisterTools(srv, config.Config{
+		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{ReadOnly: true},
-		})
+		}
+		RegisterTools(srv, &cfg)
 
+		// In read-only mode write_query is skipped entirely; only execute_query remains.
 		require.Len(t, srv.tools, 1)
 		tool := srv.tools[0]
 		require.Equal(t, "execute_query", tool.Name)
@@ -860,22 +862,39 @@ func TestRegisterTools_Annotations(t *testing.T) {
 		require.False(t, *tool.Annotations.OpenWorldHint)
 	})
 
-	t.Run("read_write_server_marks_execute_query_risky", func(t *testing.T) {
+	t.Run("read_write_server_registers_both_and_execute_query_still_read_only", func(t *testing.T) {
 		t.Parallel()
 		srv := &captureServer{}
 
-		RegisterTools(srv, config.Config{
+		cfg := config.Config{
 			ClickHouse: config.ClickHouseConfig{ReadOnly: false},
-		})
+		}
+		RegisterTools(srv, &cfg)
 
-		require.Len(t, srv.tools, 1)
-		tool := srv.tools[0]
-		require.NotNil(t, tool.Annotations)
-		require.False(t, tool.Annotations.ReadOnlyHint)
-		require.NotNil(t, tool.Annotations.DestructiveHint)
-		require.True(t, *tool.Annotations.DestructiveHint)
-		require.NotNil(t, tool.Annotations.OpenWorldHint)
-		require.False(t, *tool.Annotations.OpenWorldHint)
+		// Defaults register both execute_query and write_query.
+		require.Len(t, srv.tools, 2)
+
+		var eq, wq *mcp.Tool
+		for _, t := range srv.tools {
+			switch t.Name {
+			case "execute_query":
+				eq = t
+			case "write_query":
+				wq = t
+			}
+		}
+		require.NotNil(t, eq, "execute_query tool should be registered")
+		require.NotNil(t, wq, "write_query tool should be registered")
+
+		// execute_query is always read-only, regardless of the server's read-only flag.
+		require.True(t, eq.Annotations.ReadOnlyHint)
+		require.False(t, *eq.Annotations.DestructiveHint)
+		require.False(t, *eq.Annotations.OpenWorldHint)
+
+		// write_query is destructive.
+		require.False(t, wq.Annotations.ReadOnlyHint)
+		require.True(t, *wq.Annotations.DestructiveHint)
+		require.False(t, *wq.Annotations.OpenWorldHint)
 	})
 }
 
@@ -1497,12 +1516,13 @@ func TestGetArgumentsMap_ErrorPath(t *testing.T) {
 				Arguments: nil,
 			},
 		}
-		args := getArgumentsMap(req)
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
 		require.NotNil(t, args)
 		require.Empty(t, args)
 	})
 
-	t.Run("invalid_json", func(t *testing.T) {
+	t.Run("invalid_json_returns_error", func(t *testing.T) {
 		t.Parallel()
 		req := &mcp.CallToolRequest{
 			Params: &mcp.CallToolParamsRaw{
@@ -1510,7 +1530,36 @@ func TestGetArgumentsMap_ErrorPath(t *testing.T) {
 				Arguments: json.RawMessage(`invalid json`),
 			},
 		}
-		args := getArgumentsMap(req)
+		args, err := getArgumentsMap(req)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "failed to parse tool arguments")
+		require.Nil(t, args)
+	})
+
+	t.Run("valid_json_object", func(t *testing.T) {
+		t.Parallel()
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "test",
+				Arguments: json.RawMessage(`{"foo": "bar", "n": 42}`),
+			},
+		}
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
+		require.Equal(t, "bar", args["foo"])
+		require.Equal(t, float64(42), args["n"])
+	})
+
+	t.Run("json_null_is_empty_map", func(t *testing.T) {
+		t.Parallel()
+		req := &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{
+				Name:      "test",
+				Arguments: json.RawMessage(`null`),
+			},
+		}
+		args, err := getArgumentsMap(req)
+		require.NoError(t, err)
 		require.NotNil(t, args)
 		require.Empty(t, args)
 	})
@@ -4399,8 +4448,8 @@ func TestOAuthClaimsFromRawClaims(t *testing.T) {
 	t.Run("extra_claims_preserved", func(t *testing.T) {
 		t.Parallel()
 		raw := map[string]interface{}{
-			"sub":       "user",
-			"custom1":   "value1",
+			"sub":        "user",
+			"custom1":    "value1",
 			"custom_num": float64(42),
 		}
 		claims := oauthClaimsFromRawClaims(raw)
@@ -4651,6 +4700,86 @@ func TestParseDynamicToolComment(t *testing.T) {
 		require.NotNil(t, meta.Annotations)
 		require.True(t, *meta.Annotations.OpenWorldHint)
 	})
+	t.Run("json_with_params", func(t *testing.T) {
+		t.Parallel()
+		meta, ok := parseDynamicToolComment(`{"params":{"user_id":"The user ID","ts":"Event timestamp"}}`)
+		require.True(t, ok)
+		require.Equal(t, "The user ID", meta.Params["user_id"])
+		require.Equal(t, "Event timestamp", meta.Params["ts"])
+	})
+}
+
+func TestApplyCommentParamOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_params_is_noop", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		applyCommentParamOverrides(params, dynamicToolCommentMetadata{})
+		require.Equal(t, "col-level", params[0].Description)
+	})
+	t.Run("json_overrides_existing_description", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "json-override"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "json-override", params[0].Description)
+	})
+	t.Run("json_fills_missing_description", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "from-json"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "from-json", params[0].Description)
+	})
+	t.Run("whitespace_only_override_ignored", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "col-level"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"a": "   "}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "col-level", params[0].Description)
+	})
+	t.Run("unmatched_params_preserved", func(t *testing.T) {
+		t.Parallel()
+		params := []dynamicToolParam{{Name: "a", Description: "A"}, {Name: "b"}}
+		meta := dynamicToolCommentMetadata{Params: map[string]string{"c": "nope"}}
+		applyCommentParamOverrides(params, meta)
+		require.Equal(t, "A", params[0].Description)
+		require.Equal(t, "", params[1].Description)
+	})
+}
+
+func TestBuildParamSchema(t *testing.T) {
+	t.Parallel()
+
+	t.Run("description_used_when_set", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "uid", CHType: "UInt64", JSONType: "integer", Description: "user id"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "integer", schema["type"])
+		require.Equal(t, "user id", schema["description"])
+	})
+	t.Run("fallback_to_chtype_when_empty", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "uid", CHType: "UInt64", JSONType: "integer"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "UInt64", schema["description"])
+	})
+	t.Run("json_format_included_when_set", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "ts", CHType: "DateTime", JSONType: "string", JSONFormat: "date-time", Description: "event time"}
+		schema := buildParamSchema(p)
+		require.Equal(t, "string", schema["type"])
+		require.Equal(t, "date-time", schema["format"])
+		require.Equal(t, "event time", schema["description"])
+	})
+	t.Run("json_format_omitted_when_empty", func(t *testing.T) {
+		t.Parallel()
+		p := dynamicToolParam{Name: "n", CHType: "UInt64", JSONType: "integer"}
+		schema := buildParamSchema(p)
+		_, hasFormat := schema["format"]
+		require.False(t, hasFormat)
+	})
 }
 
 func TestBuildDynamicToolDescription(t *testing.T) {
@@ -4762,8 +4891,8 @@ func TestValidateOAuthClaims(t *testing.T) {
 	t.Run("gating_mode_uses_public_auth_server_url_as_issuer", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Mode:               "gating",
-			Issuer:             "https://original-issuer.com",
+			Mode:                "gating",
+			Issuer:              "https://original-issuer.com",
 			PublicAuthServerURL: "https://public-auth.com",
 		}}}}
 		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://public-auth.com"})
@@ -4893,6 +5022,35 @@ func TestSqlLiteral(t *testing.T) {
 	t.Run("string_non_string_value", func(t *testing.T) {
 		t.Parallel()
 		result := sqlLiteral("string", 42)
+		require.Equal(t, "'42'", result)
+	})
+}
+
+func TestSqlLiteralChecked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("integer_rejects_string", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("integer", "not-a-number")
+		require.ErrorContains(t, err, "expected integer")
+	})
+
+	t.Run("integer_rejects_fractional_float", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("integer", 3.14)
+		require.ErrorContains(t, err, "non-integer number")
+	})
+
+	t.Run("boolean_rejects_string", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("boolean", "yes")
+		require.ErrorContains(t, err, "expected boolean")
+	})
+
+	t.Run("string_accepts_marshaled_non_string", func(t *testing.T) {
+		t.Parallel()
+		result, err := sqlLiteralChecked("string", 42)
+		require.NoError(t, err)
 		require.Equal(t, "'42'", result)
 	})
 }
@@ -5347,9 +5505,12 @@ func TestNewClickHouseMCPServerVersionField(t *testing.T) {
 func TestRegisterToolsAndResources(t *testing.T) {
 	t.Parallel()
 	capture := &captureServer{}
-	RegisterTools(capture, config.Config{})
-	require.Len(t, capture.tools, 1)
-	require.Equal(t, "execute_query", capture.tools[0].Name)
+	cfg := config.Config{}
+	RegisterTools(capture, &cfg)
+	// Defaults register both execute_query and write_query.
+	require.Len(t, capture.tools, 2)
+	names := []string{capture.tools[0].Name, capture.tools[1].Name}
+	require.ElementsMatch(t, []string{"execute_query", "write_query"}, names)
 
 	// These just verify no panic
 	RegisterResources(capture)
@@ -5540,12 +5701,16 @@ func TestRegisterToolsWithSettings(t *testing.T) {
 				registeredTools = append(registeredTools, tool)
 			},
 		}
-		RegisterTools(mock, config.Config{})
-		require.Len(t, registeredTools, 1)
-		schema := registeredTools[0].InputSchema.(map[string]any)
-		props := schema["properties"].(map[string]any)
-		_, hasSettings := props["settings"]
-		require.False(t, hasSettings)
+		cfg := config.Config{}
+		RegisterTools(mock, &cfg)
+		// Defaults register both execute_query and write_query.
+		require.Len(t, registeredTools, 2)
+		for _, tool := range registeredTools {
+			schema := tool.InputSchema.(map[string]any)
+			props := schema["properties"].(map[string]any)
+			_, hasSettings := props["settings"]
+			require.Falsef(t, hasSettings, "tool %q should not have settings property", tool.Name)
+		}
 	})
 
 	t.Run("settings_property_added_when_configured", func(t *testing.T) {
@@ -5555,24 +5720,29 @@ func TestRegisterToolsWithSettings(t *testing.T) {
 				registeredTools = append(registeredTools, tool)
 			},
 		}
-		RegisterTools(mock, config.Config{
+		cfg := config.Config{
 			Server: config.ServerConfig{
 				ToolInputSettings: []string{"custom_tenant_id", "custom_org_id"},
 			},
-		})
-		require.Len(t, registeredTools, 1)
+		}
+		RegisterTools(mock, &cfg)
+		// Defaults register both execute_query and write_query; each should
+		// have the settings property wired in.
+		require.Len(t, registeredTools, 2)
 
-		schema := registeredTools[0].InputSchema.(map[string]any)
-		props := schema["properties"].(map[string]any)
-		settingsSchema, ok := props["settings"].(map[string]any)
-		require.True(t, ok)
-		require.Equal(t, "object", settingsSchema["type"])
-		require.False(t, settingsSchema["additionalProperties"].(bool))
+		for _, tool := range registeredTools {
+			schema := tool.InputSchema.(map[string]any)
+			props := schema["properties"].(map[string]any)
+			settingsSchema, ok := props["settings"].(map[string]any)
+			require.Truef(t, ok, "tool %q missing settings property", tool.Name)
+			require.Equal(t, "object", settingsSchema["type"])
+			require.False(t, settingsSchema["additionalProperties"].(bool))
 
-		innerProps := settingsSchema["properties"].(map[string]any)
-		require.Len(t, innerProps, 2)
-		require.Contains(t, innerProps, "custom_tenant_id")
-		require.Contains(t, innerProps, "custom_org_id")
+			innerProps := settingsSchema["properties"].(map[string]any)
+			require.Len(t, innerProps, 2)
+			require.Contains(t, innerProps, "custom_tenant_id")
+			require.Contains(t, innerProps, "custom_org_id")
+		}
 	})
 }
 
@@ -5730,6 +5900,315 @@ func (m *mockMCPServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
 		m.addToolFn(tool, handler)
 	}
 }
-func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)             {}
+func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)                 {}
 func (m *mockMCPServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
-func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                   {}
+func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                       {}
+
+// --- PR 1: unified tools config + dynamic write tool discovery ---
+
+// TestRegisterTools_UnifiedConfig covers the new Tools config path.
+func TestRegisterTools_UnifiedConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("only_static_read_tool_registered", func(t *testing.T) {
+		t.Parallel()
+		srv := &captureServer{}
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Tools: []config.ToolDefinition{
+					{Type: "read", Name: "execute_query"},
+				},
+			},
+		}
+		RegisterTools(srv, &cfg)
+		require.Len(t, srv.tools, 1)
+		require.Equal(t, "execute_query", srv.tools[0].Name)
+		// No dynamic rules survived.
+		require.Empty(t, cfg.Server.DynamicTools)
+	})
+
+	t.Run("dynamic_rules_preserved_in_DynamicTools", func(t *testing.T) {
+		t.Parallel()
+		srv := &captureServer{}
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Tools: []config.ToolDefinition{
+					{Type: "read", Name: "execute_query"},
+					{Type: "read", Regexp: `^analytics\..*_view$`, Prefix: "ro_"},
+					{Type: "write", Regexp: `^events\..*$`, Prefix: "log_", Mode: "insert"},
+				},
+			},
+		}
+		RegisterTools(srv, &cfg)
+		// Only execute_query is static (dynamic tools get registered lazily).
+		require.Len(t, srv.tools, 1)
+		// Dynamic rules were converted into DynamicTools for EnsureDynamicTools.
+		require.Len(t, cfg.Server.DynamicTools, 2)
+		// Ordering is preserved, so rule 0 is the read rule, rule 1 is the write rule.
+		require.Equal(t, "read", cfg.Server.DynamicTools[0].Type)
+		require.Equal(t, "write", cfg.Server.DynamicTools[1].Type)
+		require.Equal(t, "insert", cfg.Server.DynamicTools[1].Mode)
+	})
+
+	t.Run("invalid_mode_rejected_at_registration", func(t *testing.T) {
+		t.Parallel()
+		srv := &captureServer{}
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Tools: []config.ToolDefinition{
+					{Type: "read", Name: "execute_query"},
+					// Should survive — insert is supported.
+					{Type: "write", Regexp: `^ok\..*$`, Prefix: "ok_", Mode: "insert"},
+					// Should be rejected — update/upsert not implemented.
+					{Type: "write", Regexp: `^bad1\..*$`, Prefix: "x_", Mode: "update"},
+					{Type: "write", Regexp: `^bad2\..*$`, Prefix: "x_", Mode: "upsert"},
+					// Should be rejected — mode required for write.
+					{Type: "write", Regexp: `^bad3\..*$`, Prefix: "x_"},
+				},
+			},
+		}
+		RegisterTools(srv, &cfg)
+		require.Len(t, cfg.Server.DynamicTools, 1)
+		require.Equal(t, "insert", cfg.Server.DynamicTools[0].Mode)
+	})
+
+	t.Run("legacy_dynamic_tools_still_works_with_warning", func(t *testing.T) {
+		t.Parallel()
+		srv := &captureServer{}
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				// Legacy rule: no Type → defaults to "read".
+				DynamicTools: []config.DynamicToolRule{
+					{Regexp: `^mydb\..*$`, Prefix: "get_"},
+				},
+			},
+		}
+		RegisterTools(srv, &cfg)
+		require.Len(t, cfg.Server.DynamicTools, 1)
+		require.Equal(t, "read", cfg.Server.DynamicTools[0].Type)
+	})
+
+	t.Run("static_tool_with_unknown_name_ignored", func(t *testing.T) {
+		t.Parallel()
+		srv := &captureServer{}
+		cfg := config.Config{
+			Server: config.ServerConfig{
+				Tools: []config.ToolDefinition{
+					{Type: "read", Name: "execute_query"},
+					{Type: "read", Name: "query_something_unknown"},
+				},
+			},
+		}
+		RegisterTools(srv, &cfg)
+		require.Len(t, srv.tools, 1)
+		require.Equal(t, "execute_query", srv.tools[0].Name)
+	})
+}
+
+// TestFilterRulesByType covers the read/write rule splitter.
+func TestFilterRulesByType(t *testing.T) {
+	t.Parallel()
+	rules := []config.DynamicToolRule{
+		{Regexp: `^a\..*$`, Type: "read"},
+		{Regexp: `^b\..*$`, Type: "write", Mode: "insert"},
+		{Regexp: `^c\..*$`}, // no type — defaults to "read"
+		{Regexp: `^d\..*$`, Type: "write", Mode: "insert"},
+	}
+	reads := filterRulesByType(rules, "read")
+	writes := filterRulesByType(rules, "write")
+	require.Len(t, reads, 2)
+	require.Len(t, writes, 2)
+}
+
+// TestHasDiscoveryCredentials covers the credential-presence check.
+func TestHasDiscoveryCredentials(t *testing.T) {
+	t.Parallel()
+
+	t.Run("none_present", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{}
+		require.False(t, s.hasDiscoveryCredentials(context.Background()))
+	})
+
+	t.Run("jwe_token_present", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{}
+		ctx := context.WithValue(context.Background(), JWETokenKey, "jwe-abc")
+		require.True(t, s.hasDiscoveryCredentials(ctx))
+	})
+
+	t.Run("oauth_token_present", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{}
+		ctx := context.WithValue(context.Background(), OAuthTokenKey, "oauth-xyz")
+		require.True(t, s.hasDiscoveryCredentials(ctx))
+	})
+
+	t.Run("static_username_present", func(t *testing.T) {
+		t.Parallel()
+		s := &ClickHouseJWEServer{
+			Config: config.Config{ClickHouse: config.ClickHouseConfig{Username: "alice"}},
+		}
+		require.True(t, s.hasDiscoveryCredentials(context.Background()))
+	})
+}
+
+// TestBuildInsertQuery covers the pure-function INSERT SQL generation —
+// quote escaping, validation, unicode, null bytes.
+func TestBuildInsertQuery(t *testing.T) {
+	t.Parallel()
+
+	mkMeta := func(params ...dynamicToolParam) dynamicToolMeta {
+		return dynamicToolMeta{Database: "mydb", Table: "users", Params: params}
+	}
+
+	t.Run("basic_string_and_int", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"id": float64(42), "name": "Alice"})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users")
+		require.Contains(t, q, "id, name")
+		require.Contains(t, q, "42")
+		require.Contains(t, q, "'Alice'")
+	})
+
+	t.Run("required_param_missing", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": float64(42)})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "name")
+	})
+
+	t.Run("optional_param_omitted", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: true},
+			dynamicToolParam{Name: "note", JSONType: "string", Required: false},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"id": float64(42)})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users (id) VALUES (42)")
+		require.NotContains(t, q, "note")
+	})
+
+	t.Run("no_columns_provided", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "note", JSONType: "string", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no columns")
+	})
+
+	t.Run("quote_escaping_keeps_literal_well_formed", func(t *testing.T) {
+		t.Parallel()
+		// ClickHouse doesn't support multi-statement queries, so classic
+		// stacked-query injection isn't applicable. What we verify: a user
+		// quote must be escaped so the whole payload stays inside ONE string
+		// literal (balanced outer quotes after escape).
+		meta := mkMeta(
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"name": "it's \"fine\""})
+		require.NoError(t, err)
+		stripped := strings.ReplaceAll(q, `\\`, "")
+		stripped = strings.ReplaceAll(stripped, `\'`, "")
+		require.Equal(t, 2, strings.Count(stripped, "'"),
+			"expected exactly 2 unescaped single quotes (literal boundaries), got: %s", q)
+	})
+
+	t.Run("backslash_escaping", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "path", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"path": `C:\Users\x`})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.users")
+	})
+
+	t.Run("unicode_values", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "name", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"name": "日本語 — €"})
+		require.NoError(t, err)
+		require.Contains(t, q, "日本語 — €")
+	})
+
+	t.Run("null_byte_in_string_keeps_literal_well_formed", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "blob", JSONType: "string", Required: true},
+		)
+		q, err := buildInsertQuery(meta, map[string]any{"blob": "before\x00after"})
+		require.NoError(t, err)
+		require.True(t, strings.Count(q, "'")%2 == 0, "unbalanced quotes in: %s", q)
+	})
+
+	t.Run("invalid_integer_rejected", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": "abc"})
+		require.ErrorContains(t, err, "invalid parameter id")
+		require.ErrorContains(t, err, "expected integer")
+	})
+
+	t.Run("fractional_integer_rejected", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": 1.5})
+		require.ErrorContains(t, err, "non-integer number")
+	})
+}
+
+// TestBuildDynamicWriteQuery covers the mode dispatcher.
+func TestBuildDynamicWriteQuery(t *testing.T) {
+	t.Parallel()
+	base := dynamicToolMeta{
+		Database: "mydb", Table: "t",
+		Params: []dynamicToolParam{{Name: "id", JSONType: "integer", Required: true}},
+	}
+
+	t.Run("insert_mode", func(t *testing.T) {
+		t.Parallel()
+		m := base
+		m.WriteMode = "insert"
+		q, err := buildDynamicWriteQuery(m, map[string]any{"id": float64(1)})
+		require.NoError(t, err)
+		require.Contains(t, q, "INSERT INTO mydb.t")
+	})
+
+	t.Run("unsupported_mode_rejected", func(t *testing.T) {
+		t.Parallel()
+		for _, mode := range []string{"update", "upsert", "delete", ""} {
+			m := base
+			m.WriteMode = mode
+			_, err := buildDynamicWriteQuery(m, map[string]any{"id": float64(1)})
+			require.Errorf(t, err, "mode=%q should error", mode)
+		}
+	})
+}
+
+// TestBuildWriteToolDescription covers description fallbacks.
+func TestBuildWriteToolDescription(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "table comment", buildWriteToolDescription("table comment", "db", "t", "insert"))
+	require.Equal(t, "Insert data in db.t", buildWriteToolDescription("", "db", "t", "insert"))
+	require.Equal(t, "Update data in db.t", buildWriteToolDescription("", "db", "t", "update"))
+	require.Equal(t, "Insert or update data in db.t", buildWriteToolDescription("", "db", "t", "upsert"))
+}
