@@ -89,6 +89,15 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.True(t, ok)
 		require.NotEmpty(t, clientID)
 
+		// Registration response must echo every grant the client is
+		// permitted to use. Per RFC 7591 strict clients (Claude.ai) treat
+		// an omitted grant as forbidden and never attempt it, which
+		// silently disables the refresh flow.
+		grants, ok := reg["grant_types"].([]interface{})
+		require.True(t, ok, "grant_types missing or wrong type in registration response")
+		require.ElementsMatch(t, []interface{}{"authorization_code", "refresh_token"}, grants,
+			"registration response must advertise both authorization_code and refresh_token")
+
 		authReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+"&redirect_uri="+url.QueryEscape("http://127.0.0.1:3334/callback")+"&scope=openid+email&state=test-state&code_challenge=test-challenge&code_challenge_method=S256", nil)
 		authRR := httptest.NewRecorder()
 		app.handleOAuthAuthorize(authRR, authReq)
@@ -341,6 +350,12 @@ type testForwardModeOIDCProvider struct {
 	lastUserInfoAuth string
 	userInfoCalls    int
 	mu               sync.Mutex
+
+	// refreshHandler, if non-nil, handles POST /token requests with
+	// grant_type=refresh_token. It receives the parsed form and returns
+	// (status, body). When nil, refresh_token grants fall through to the
+	// default static tokenResponse behavior.
+	refreshHandler func(form url.Values) (int, map[string]interface{})
 }
 
 func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]interface{}, userInfoClaims map[string]interface{}) *testForwardModeOIDCProvider {
@@ -367,6 +382,14 @@ func newTestForwardModeOIDCProvider(t *testing.T, tokenResponse map[string]inter
 
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
+		require.NoError(t, r.ParseForm())
+		if provider.refreshHandler != nil && r.Form.Get("grant_type") == "refresh_token" {
+			status, body := provider.refreshHandler(r.Form)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			require.NoError(t, json.NewEncoder(w).Encode(body))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		require.NoError(t, json.NewEncoder(w).Encode(provider.tokenResponse))
 	})
@@ -566,8 +589,13 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 		require.Equal(t, provider.tokenResponse["id_token"], tokenResp["access_token"])
 		require.Equal(t, "Bearer", tokenResp["token_type"])
 		require.Equal(t, "openid email profile", tokenResp["scope"])
-		require.Greater(t, tokenResp["expires_in"].(float64), float64(0))
-		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(1800))
+		// The bearer we forward is the id_token, so expires_in must reflect
+		// the id_token's exp (1h), NOT the upstream access_token's expires_in
+		// (30m). IdPs commonly return divergent lifetimes; using the wrong
+		// one means downstream MCP clients (Claude.ai) refresh too late and
+		// the bearer expires under them.
+		require.Greater(t, tokenResp["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, tokenResp["expires_in"].(float64), float64(3600))
 
 		userInfoCalls, userInfoAuth := provider.userInfoRequest()
 		require.Equal(t, 0, userInfoCalls)
@@ -963,13 +991,17 @@ func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
 		require.Contains(t, rr.Body.String(), "missing refresh token")
 	})
 
-	t.Run("forward_mode_rejects_refresh", func(t *testing.T) {
+	t.Run("forward_mode_rejects_gating_refresh_token", func(t *testing.T) {
 		t.Parallel()
+		// Forward mode now supports refresh when UpstreamOfflineAccess is on,
+		// but a refresh token minted by gating mode is not transferable: the
+		// client_id encoded in the JWE belongs to the gating-mode app, not the
+		// forward-mode app's freshly registered client.
 		fwdApp := newForwardModeBrowserLoginTestApp(provider)
 		fwdClientID := registerOAuthBrowserClient(t, fwdApp, redirectURI)
 		rr := exchangeRefreshToken(t, fwdApp, fwdClientID, resp["refresh_token"].(string))
 		require.Equal(t, http.StatusBadRequest, rr.Code)
-		require.Contains(t, rr.Body.String(), "not supported in forward mode")
+		require.Contains(t, rr.Body.String(), "not issued to this client")
 	})
 }
 
@@ -1016,6 +1048,281 @@ func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
 	require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
 	_, hasRefresh := tokenResp["refresh_token"]
 	require.False(t, hasRefresh, "forward mode should NOT include refresh_token")
+}
+
+// newForwardModeRefreshTestApp configures a forward-mode app with
+// UpstreamOfflineAccess enabled, so the auth-code response carries a JWE
+// refresh_token wrapping the upstream IdP's refresh token.
+func newForwardModeRefreshTestApp(provider *testForwardModeOIDCProvider) *application {
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "forward",
+				Issuer:                 provider.server.URL,
+				JWKSURL:                provider.server.URL + "/jwks",
+				AuthURL:                provider.server.URL + "/authorize",
+				TokenURL:               provider.server.URL + "/token",
+				UserInfoURL:            provider.server.URL + "/userinfo",
+				ClientID:               "upstream-client-id",
+				ClientSecret:           "upstream-client-secret",
+				Scopes:                 []string{"openid", "email"},
+				UpstreamOfflineAccess:  true,
+				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				RefreshTokenTTLSeconds: 86400,
+			},
+		},
+	}
+	return &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+}
+
+func TestOAuthForwardModeRefresh(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier-fwd-refresh"
+		clientState  = "cs"
+	)
+
+	newProvider := func(t *testing.T) *testForwardModeOIDCProvider {
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token":  "upstream-access-token",
+			"refresh_token": "upstream-refresh-token-original",
+			"token_type":    "Bearer",
+			"expires_in":    1800,
+			"scope":         "openid email offline_access",
+		}, nil)
+		provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+			"sub":            "user-1",
+			"iss":            provider.server.URL,
+			"aud":            "upstream-client-id",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Unix(),
+			"email":          "user@example.com",
+			"email_verified": true,
+		})
+
+		// Stateful refresh handler with strict single-use rotation: each refresh
+		// invalidates the inbound token and issues a new one. Models an IdP with
+		// refresh-token reuse detection enabled (e.g. Auth0 default).
+		validUpstreamRefresh := map[string]bool{"upstream-refresh-token-original": true}
+		rotation := 0
+		var mu sync.Mutex
+		provider.refreshHandler = func(form url.Values) (int, map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			inbound := form.Get("refresh_token")
+			if !validUpstreamRefresh[inbound] {
+				return http.StatusBadRequest, map[string]interface{}{"error": "invalid_grant"}
+			}
+			delete(validUpstreamRefresh, inbound)
+			rotation++
+			next := fmt.Sprintf("upstream-refresh-token-rotated-%d", rotation)
+			validUpstreamRefresh[next] = true
+			newIDToken := provider.issueIDToken(t, map[string]interface{}{
+				"sub":            "user-1",
+				"iss":            provider.server.URL,
+				"aud":            "upstream-client-id",
+				"exp":            time.Now().Add(time.Hour).Unix(),
+				"iat":            time.Now().Add(time.Duration(rotation) * time.Second).Unix(),
+				"email":          "user@example.com",
+				"email_verified": true,
+			})
+			return http.StatusOK, map[string]interface{}{
+				"access_token":  "upstream-access-token-r" + fmt.Sprint(rotation),
+				"id_token":      newIDToken,
+				"refresh_token": next,
+				"token_type":    "Bearer",
+				"expires_in":    1800,
+				"scope":         "openid email offline_access",
+			}
+		}
+		return provider
+	}
+
+	doInitialFlow := func(t *testing.T, app *application) (string, map[string]interface{}) {
+		t.Helper()
+		clientID := registerOAuthBrowserClient(t, app, redirectURI)
+		state := startOAuthBrowserLogin(t, app, clientID, redirectURI, clientState, codeVerifier)
+		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+		callbackRR := httptest.NewRecorder()
+		app.handleOAuthCallback(callbackRR, callbackReq)
+		require.Equal(t, http.StatusFound, callbackRR.Code)
+		loc, err := url.Parse(callbackRR.Header().Get("Location"))
+		require.NoError(t, err)
+		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
+		require.Equal(t, http.StatusOK, tokenRR.Code)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &resp))
+		return clientID, resp
+	}
+
+	t.Run("auth_code_response_includes_refresh_token", func(t *testing.T) {
+		t.Parallel()
+		provider := newProvider(t)
+		app := newForwardModeRefreshTestApp(provider)
+		_, resp := doInitialFlow(t, app)
+
+		require.Equal(t, provider.tokenResponse["id_token"], resp["access_token"], "access_token must remain the upstream ID token verbatim")
+		require.NotEmpty(t, resp["refresh_token"], "forward mode + UpstreamOfflineAccess must issue a refresh_token")
+		// MCP refresh token is the JWE wrapper, not the raw upstream refresh.
+		require.NotEqual(t, "upstream-refresh-token-original", resp["refresh_token"])
+		// expires_in must reflect the id_token's actual exp (1h here), not the
+		// upstream access_token's expires_in (1800). MCP clients schedule
+		// proactive refresh from this value; using the access_token TTL when
+		// we forward the id_token causes downstream sessions to break at the
+		// real bearer expiry.
+		require.Greater(t, resp["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, resp["expires_in"].(float64), float64(3600))
+	})
+
+	t.Run("refresh_grants_new_upstream_id_token_and_rotates", func(t *testing.T) {
+		t.Parallel()
+		provider := newProvider(t)
+		app := newForwardModeRefreshTestApp(provider)
+		clientID, resp := doInitialFlow(t, app)
+
+		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusOK, rr.Code, "refresh response body: %s", rr.Body.String())
+
+		var refreshed map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &refreshed))
+		require.NotEmpty(t, refreshed["access_token"])
+		// New access_token must be a freshly minted upstream ID token, not the
+		// original one returned at auth_code exchange.
+		require.NotEqual(t, resp["access_token"], refreshed["access_token"])
+		// Refresh token rotates (new JWE wraps the rotated upstream refresh).
+		require.NotEmpty(t, refreshed["refresh_token"])
+		require.NotEqual(t, resp["refresh_token"], refreshed["refresh_token"])
+		require.Equal(t, "Bearer", refreshed["token_type"])
+		// expires_in must reflect the rotated id_token's exp (1h), not the
+		// upstream access_token's expires_in (1800). Same rationale as the
+		// auth-code path above.
+		require.Greater(t, refreshed["expires_in"].(float64), float64(3500))
+		require.LessOrEqual(t, refreshed["expires_in"].(float64), float64(3600))
+	})
+
+	t.Run("idp_rotation_invalidates_rotated_out_mcp_refresh", func(t *testing.T) {
+		t.Parallel()
+		// MCP-side refresh tokens are stateless JWEs with no server-side
+		// reuse detection — the JWE itself stays decryptable until its exp.
+		// Security against replay therefore depends on the upstream IdP
+		// enforcing rotation. This test verifies that when the upstream IdP
+		// does enforce rotation (the production-recommended Auth0/Okta
+		// configuration), MCP correctly surfaces upstream's rejection as
+		// invalid_grant rather than silently issuing new tokens.
+		provider := newProvider(t)
+		app := newForwardModeRefreshTestApp(provider)
+		clientID, resp := doInitialFlow(t, app)
+
+		// First refresh succeeds; upstream rotates the underlying refresh.
+		rr1 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusOK, rr1.Code, "first refresh should succeed: %s", rr1.Body.String())
+
+		// Second refresh with the original (now rotated-out) MCP refresh token:
+		// MCP decrypts the JWE successfully but the upstream IdP rejects the
+		// underlying refresh, and MCP must return invalid_grant.
+		rr2 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusBadRequest, rr2.Code)
+		require.Contains(t, rr2.Body.String(), "invalid_grant")
+		require.Contains(t, rr2.Body.String(), "upstream rejected the refresh token")
+	})
+
+	t.Run("malformed_refresh_token_rejected", func(t *testing.T) {
+		t.Parallel()
+		provider := newProvider(t)
+		app := newForwardModeRefreshTestApp(provider)
+		clientID, _ := doInitialFlow(t, app)
+
+		rr := exchangeRefreshToken(t, app, clientID, "garbage-refresh-token")
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Contains(t, rr.Body.String(), "invalid refresh token")
+	})
+
+	t.Run("rotating_gating_secret_invalidates_outstanding_refresh_tokens", func(t *testing.T) {
+		t.Parallel()
+		provider := newProvider(t)
+		app := newForwardModeRefreshTestApp(provider)
+		clientID, resp := doInitialFlow(t, app)
+
+		// Rotate the symmetric secret used to encrypt the JWE.
+		app.config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
+		app.mcpServer.Config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
+
+		// client_id is decrypted first in handleOAuthTokenRefresh, so a
+		// client_id JWE keyed by the prior secret fails before the refresh
+		// token is even inspected.
+		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Contains(t, rr.Body.String(), "unknown OAuth client")
+	})
+}
+
+func TestOAuthAuthorizeOfflineAccessScope(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "v"
+	)
+
+	scopeFromRedirect := func(t *testing.T, app *application) []string {
+		t.Helper()
+		clientID := registerOAuthBrowserClient(t, app, redirectURI)
+		authReq := httptest.NewRequest(
+			http.MethodGet,
+			"https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+
+				"&redirect_uri="+url.QueryEscape(redirectURI)+
+				"&scope=openid+email&state=cs"+
+				"&code_challenge="+url.QueryEscape(pkceChallenge(codeVerifier))+
+				"&code_challenge_method=S256",
+			nil,
+		)
+		authRR := httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code)
+		loc, err := url.Parse(authRR.Header().Get("Location"))
+		require.NoError(t, err)
+		return strings.Fields(loc.Query().Get("scope"))
+	}
+
+	t.Run("forward_mode_with_offline_access_appends_scope", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token": "irrelevant",
+			"token_type":   "Bearer",
+		}, nil)
+		app := newForwardModeRefreshTestApp(provider)
+		scopes := scopeFromRedirect(t, app)
+		require.Contains(t, scopes, "offline_access", "forward mode + UpstreamOfflineAccess must request offline_access upstream")
+	})
+
+	t.Run("forward_mode_without_offline_access_omits_scope", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token": "irrelevant",
+			"token_type":   "Bearer",
+		}, nil)
+		app := newForwardModeBrowserLoginTestApp(provider)
+		scopes := scopeFromRedirect(t, app)
+		require.NotContains(t, scopes, "offline_access", "default forward mode must not request offline_access")
+	})
+
+	t.Run("gating_mode_ignores_flag", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+			"access_token": "irrelevant",
+			"token_type":   "Bearer",
+		}, nil)
+		app := newGatingModeTestApp(provider)
+		// Even if the flag were set in gating mode, offline_access is forward-only.
+		app.config.Server.OAuth.UpstreamOfflineAccess = true
+		app.mcpServer.Config.Server.OAuth.UpstreamOfflineAccess = true
+		scopes := scopeFromRedirect(t, app)
+		require.NotContains(t, scopes, "offline_access", "gating mode must not request offline_access regardless of flag")
+	})
 }
 
 func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
