@@ -4448,8 +4448,8 @@ func TestOAuthClaimsFromRawClaims(t *testing.T) {
 	t.Run("extra_claims_preserved", func(t *testing.T) {
 		t.Parallel()
 		raw := map[string]interface{}{
-			"sub":       "user",
-			"custom1":   "value1",
+			"sub":        "user",
+			"custom1":    "value1",
 			"custom_num": float64(42),
 		}
 		claims := oauthClaimsFromRawClaims(raw)
@@ -4891,8 +4891,8 @@ func TestValidateOAuthClaims(t *testing.T) {
 	t.Run("gating_mode_uses_public_auth_server_url_as_issuer", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Mode:               "gating",
-			Issuer:             "https://original-issuer.com",
+			Mode:                "gating",
+			Issuer:              "https://original-issuer.com",
 			PublicAuthServerURL: "https://public-auth.com",
 		}}}}
 		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://public-auth.com"})
@@ -5022,6 +5022,35 @@ func TestSqlLiteral(t *testing.T) {
 	t.Run("string_non_string_value", func(t *testing.T) {
 		t.Parallel()
 		result := sqlLiteral("string", 42)
+		require.Equal(t, "'42'", result)
+	})
+}
+
+func TestSqlLiteralChecked(t *testing.T) {
+	t.Parallel()
+
+	t.Run("integer_rejects_string", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("integer", "not-a-number")
+		require.ErrorContains(t, err, "expected integer")
+	})
+
+	t.Run("integer_rejects_fractional_float", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("integer", 3.14)
+		require.ErrorContains(t, err, "non-integer number")
+	})
+
+	t.Run("boolean_rejects_string", func(t *testing.T) {
+		t.Parallel()
+		_, err := sqlLiteralChecked("boolean", "yes")
+		require.ErrorContains(t, err, "expected boolean")
+	})
+
+	t.Run("string_accepts_marshaled_non_string", func(t *testing.T) {
+		t.Parallel()
+		result, err := sqlLiteralChecked("string", 42)
+		require.NoError(t, err)
 		require.Equal(t, "'42'", result)
 	})
 }
@@ -5871,9 +5900,9 @@ func (m *mockMCPServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
 		m.addToolFn(tool, handler)
 	}
 }
-func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)             {}
+func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)                 {}
 func (m *mockMCPServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
-func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                   {}
+func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                       {}
 
 // --- PR 1: unified tools config + dynamic write tool discovery ---
 
@@ -5982,7 +6011,7 @@ func TestFilterRulesByType(t *testing.T) {
 	rules := []config.DynamicToolRule{
 		{Regexp: `^a\..*$`, Type: "read"},
 		{Regexp: `^b\..*$`, Type: "write", Mode: "insert"},
-		{Regexp: `^c\..*$`},             // no type — defaults to "read"
+		{Regexp: `^c\..*$`}, // no type — defaults to "read"
 		{Regexp: `^d\..*$`, Type: "write", Mode: "insert"},
 	}
 	reads := filterRulesByType(rules, "read")
@@ -6025,7 +6054,7 @@ func TestHasDiscoveryCredentials(t *testing.T) {
 }
 
 // TestBuildInsertQuery covers the pure-function INSERT SQL generation —
-// quote escaping, required-param validation, unicode, null bytes.
+// quote escaping, validation, unicode, null bytes.
 func TestBuildInsertQuery(t *testing.T) {
 	t.Parallel()
 
@@ -6125,6 +6154,25 @@ func TestBuildInsertQuery(t *testing.T) {
 		q, err := buildInsertQuery(meta, map[string]any{"blob": "before\x00after"})
 		require.NoError(t, err)
 		require.True(t, strings.Count(q, "'")%2 == 0, "unbalanced quotes in: %s", q)
+	})
+
+	t.Run("invalid_integer_rejected", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": "abc"})
+		require.ErrorContains(t, err, "invalid parameter id")
+		require.ErrorContains(t, err, "expected integer")
+	})
+
+	t.Run("fractional_integer_rejected", func(t *testing.T) {
+		t.Parallel()
+		meta := mkMeta(
+			dynamicToolParam{Name: "id", JSONType: "integer", Required: false},
+		)
+		_, err := buildInsertQuery(meta, map[string]any{"id": 1.5})
+		require.ErrorContains(t, err, "non-integer number")
 	})
 }
 
