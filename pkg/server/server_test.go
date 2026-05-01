@@ -742,11 +742,11 @@ func TestHelperFunctions(t *testing.T) {
 	t.Parallel()
 	t.Run("isSelectQuery", func(t *testing.T) {
 		t.Parallel()
-		require.True(t, isSelectQuery("SELECT * FROM table"))
-		require.True(t, isSelectQuery("select * from table"))
-		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
-		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
-		require.False(t, isSelectQuery("CREATE TABLE test (id Int)"))
+		require.True(t, clickhouse.IsSelectQuery("SELECT * FROM table"))
+		require.True(t, clickhouse.IsSelectQuery("select * from table"))
+		require.True(t, clickhouse.IsSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
+		require.False(t, clickhouse.IsSelectQuery("INSERT INTO table VALUES (1)"))
+		require.False(t, clickhouse.IsSelectQuery("CREATE TABLE test (id Int)"))
 	})
 
 	t.Run("hasLimitClause", func(t *testing.T) {
