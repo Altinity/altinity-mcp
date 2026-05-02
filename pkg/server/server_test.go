@@ -4400,8 +4400,8 @@ func TestOAuthClaimsFromRawClaims(t *testing.T) {
 	t.Run("extra_claims_preserved", func(t *testing.T) {
 		t.Parallel()
 		raw := map[string]interface{}{
-			"sub":       "user",
-			"custom1":   "value1",
+			"sub":        "user",
+			"custom1":    "value1",
 			"custom_num": float64(42),
 		}
 		claims := oauthClaimsFromRawClaims(raw)
@@ -4763,8 +4763,8 @@ func TestValidateOAuthClaims(t *testing.T) {
 	t.Run("gating_mode_uses_public_auth_server_url_as_issuer", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Mode:               "gating",
-			Issuer:             "https://original-issuer.com",
+			Mode:                "gating",
+			Issuer:              "https://original-issuer.com",
 			PublicAuthServerURL: "https://public-auth.com",
 		}}}}
 		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://public-auth.com"})
@@ -5731,9 +5731,9 @@ func (m *mockMCPServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
 		m.addToolFn(tool, handler)
 	}
 }
-func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)             {}
+func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)                 {}
 func (m *mockMCPServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
-func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                   {}
+func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                       {}
 
 // TestTruncateErrForClient covers the error-truncation helper.
 func TestTruncateErrForClient(t *testing.T) {
@@ -5816,8 +5816,13 @@ func TestHandleExecuteQuery_MaxQueryLength(t *testing.T) {
 
 	t.Run("limit_disabled_with_negative", func(t *testing.T) {
 		t.Parallel()
-		cfg := config.Config{ClickHouse: config.ClickHouseConfig{MaxQueryLength: -1, Host: "127.0.0.1", Port: 1}}
-		big := strings.Repeat("x", 2*1024*1024) // 2 MB — over default, under nothing
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{
+			MaxQueryLength: -1,
+			Limit:          0,
+			Host:           "127.0.0.1",
+			Port:           1,
+		}}
+		big := strings.Repeat("x", 1024)
 		res := callExec(t, cfg, "SELECT '"+big+"'")
 		require.True(t, res.IsError)
 		require.NotContains(t, textOf(res), "exceeds max length")
