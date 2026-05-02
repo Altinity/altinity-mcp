@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -262,7 +261,11 @@ func TestOpenAPIHandlers(t *testing.T) {
 		ctx := context.Background()
 		client, err := clickhouse.NewClient(ctx, *chConfig)
 		require.NoError(t, err)
-		defer client.Close()
+		defer func() {
+			if closeErr := client.Close(); closeErr != nil {
+				t.Fatalf("can't close client, %v", closeErr)
+			}
+		}()
 
 		_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
 		_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
@@ -2328,21 +2331,6 @@ func TestMergeExtraSettings_NilBase(t *testing.T) {
 // Unused import suppressors (remove if unused)
 var _ = io.EOF
 var _ = fmt.Sprintf
-
-// generateOAuthToken creates a mock OAuth JWT token for testing
-func generateOAuthToken(t *testing.T, claims map[string]interface{}) string {
-	// Create a simple JWT token (header.payload.signature)
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payload)
-
-	// For testing, we use a dummy signature
-	signature := base64.RawURLEncoding.EncodeToString([]byte("test-signature"))
-
-	return header + "." + payloadEncoded + "." + signature
-}
 
 // mintSelfIssuedToken creates a properly signed HS256 JWT using the gating secret
 func mintSelfIssuedToken(t *testing.T, gatingSecret string, claims map[string]interface{}) string {
@@ -5826,6 +5814,7 @@ func TestHandleExecuteQuery_MaxQueryLength(t *testing.T) {
 		res := callExec(t, cfg, "SELECT '"+big+"'")
 		require.True(t, res.IsError)
 		require.NotContains(t, textOf(res), "exceeds max length")
+		require.Contains(t, textOf(res), "failed to connect to ClickHouse")
 	})
 }
 
