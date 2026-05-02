@@ -71,7 +71,7 @@ To integrate Altinity MCP with Claude.ai:
 
 ![Claude Web Integration Step 2](screenshots/claude_web_connectors_1.jpg) 
 
-* Enter a name for your connector (e.g., `altinity-mcp-jwe`) and the server URL, which should include the JWE token. For example: `https://host/token/http`.
+* Enter a name for your connector (e.g., `altinity-mcp-jwe`) and the server URL, which should include the JWE token. For example: `https://host/token`.
 
 ![Claude Web Integration Step 3](screenshots/claude_web_connectors_2.jpg)
  
@@ -148,7 +148,7 @@ To integrate Altinity MCP with Claude Desktop:
   "mcpServers": {
    "altinity-mcp": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http{s}://your-mcp-host:port/generated_jwe_token/http"]
+      "args": ["-y", "mcp-remote", "http{s}://your-mcp-host:port/generated_jwe_token"]
     }
   }
 }
@@ -162,10 +162,10 @@ Download and install Claude Code https://www.anthropic.com/claude-code
 To integrate Altinity MCP with Claude Code, you can use the `claude mcp add` command for HTTP transport:
 
 ```bash
-claude mcp add --transport http altinity-mcp https://your-mcp-host:port/generated_jwe_token/http
+claude mcp add --transport http altinity-mcp https://your-mcp-host:port/generated_jwe_token
 ```
 
-Replace `https://your-mcp-host:port/generated_jwe_token/http` with the actual URL of your Altinity MCP server, including the JWE token and `/http` suffix.
+Replace `https://your-mcp-host:port/generated_jwe_token` with the actual URL of your Altinity MCP server, including the JWE token.
 
 This command will configure Claude Code to use your Altinity MCP server as a tool provider.
 
@@ -180,7 +180,7 @@ Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file i
 {
   "mcpServers": {
     "altinity-mcp": {
-      "url": "https://your-mcp-server-url:port/default/http",
+      "url": "https://your-mcp-server-url:port/default",
       "headers": {
         "Authorization": "Bearer your-jwe-token"
       }
@@ -200,7 +200,7 @@ Add this to your Windsurf MCP config file. See [Windsurf MCP docs](https://docs.
 {
   "mcpServers": {
     "context7": {
-      "serverUrl": "https://your-mcp-server-url:port/default/http",
+      "serverUrl": "https://your-mcp-server-url:port/default",
       "headers": {
         "Authorization": "Bearer your-jwe-token"
       }
@@ -215,7 +215,7 @@ Add this to your Windsurf MCP config file. See [Windsurf MCP docs](https://docs.
 If you encounter issues during integration:
 
 1. Verify your Altinity MCP server is running and accessible
-2. Ensure your JWE token is valid and not  (use `curl -vvv https://your-mcp-host/your_jwe_token/http`)
+2. Ensure your JWE token is valid (use `curl -vvv https://your-mcp-host/your_jwe_token`)
 3. Check that the server configuration matches the integration settings
 4. Confirm network connectivity between the AI tool and your Altinity MCP server
 5. Review server logs for authentication or connection errors
