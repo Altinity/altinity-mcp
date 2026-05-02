@@ -365,10 +365,10 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 // ExecuteQuery executes a SQL query and returns results
 // For non-SELECT queries (DDL, DML) will return single row with `OK`
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
-	if c.config.ReadOnly && !isSelectQuery(query) {
+	if c.config.ReadOnly && !IsSelectQuery(query) {
 		return nil, fmt.Errorf("query rejected: read-only mode allows only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN statements")
 	}
-	if isSelectQuery(query) {
+	if IsSelectQuery(query) {
 		return c.executeSelect(ctx, query, args...)
 	}
 	return c.executeNonSelect(ctx, query, args...)
@@ -498,14 +498,14 @@ func buildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 
 // Helper functions
 
-var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
-var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+var SingleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
+var MultiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
 
-// isSelectQuery determines if a query is a SELECT query
-func isSelectQuery(query string) bool {
+// IsSelectQuery determines if a query is a SELECT query
+func IsSelectQuery(query string) bool {
 	// Remove SQL comments: /* */ and --
-	query = multiLineCommentRE.ReplaceAllString(query, "")
-	query = singleLineCommentRE.ReplaceAllString(query, "")
+	query = MultiLineCommentRE.ReplaceAllString(query, "")
+	query = SingleLineCommentRE.ReplaceAllString(query, "")
 	// Simple check - can be improved with more sophisticated parsing if needed
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
