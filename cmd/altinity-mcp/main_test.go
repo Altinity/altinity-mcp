@@ -400,8 +400,11 @@ func TestBuildServerTLSConfig(t *testing.T) {
 		// Create a temporary CA certificate file
 		tmpFile, err := os.CreateTemp("", "test-ca-*.crt")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
-
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 		// Write a dummy PEM certificate
 		caCertPEM := `-----BEGIN CERTIFICATE-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
@@ -743,11 +746,11 @@ func TestHealthHandler(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -976,11 +979,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -1024,11 +1027,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port for TCP
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "9000")
@@ -1114,11 +1117,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")
 		require.NoError(t, err)
@@ -1166,11 +1169,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -1215,11 +1218,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -1540,7 +1543,11 @@ func TestNewApplication(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -1643,7 +1650,11 @@ func TestBuildConfigWithFile(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 reload_time: 10
@@ -1721,7 +1732,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -2098,11 +2113,13 @@ func TestCORSSupport(t *testing.T) {
 
 				resp, err := client.Do(req)
 				require.NoError(t, err)
-				defer resp.Body.Close()
 				require.Equal(t, http.StatusOK, resp.StatusCode)
 				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
 				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					t.Fatalf("can't close response body, %v", closeErr)
+				}
 			}
 
 			// Clean up (thread-safe)
@@ -2124,9 +2141,9 @@ func getFreeRandomPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer listener.Close()
 
 	addr := listener.Addr().(*net.TCPAddr)
+	_ = listener.Close()
 	return addr.Port, nil
 }
 
@@ -2633,7 +2650,11 @@ func TestReloadConfigWithValidFile(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2666,7 +2687,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `clickhouse: {}`
 		_, err = tmpFile.WriteString(configContent)
@@ -2752,11 +2777,11 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	if err != nil {
 		t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 	}
-	defer func() {
-		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-			t.Logf("Failed to terminate container: %v", termErr)
-		}
-	}()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = clickhouseContainer.Terminate(cleanupCtx)
+	})
 
 	// Get the mapped port
 	mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -2802,7 +2827,11 @@ func TestRunServerWithValidConfig(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2965,7 +2994,11 @@ func TestRun(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -2983,7 +3016,6 @@ logging:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
 
 		args := []string{"altinity-mcp", "--config", tmpFile.Name()}
 
@@ -3441,7 +3473,11 @@ func TestMainFunctionality(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -3617,9 +3653,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should log warning but not panic
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "",
 		}}})
 	})
@@ -3628,9 +3664,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should not warn
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "https://public.example.com",
 		}}})
 	})
