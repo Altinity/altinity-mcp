@@ -48,7 +48,7 @@ const (
 	oauthClockSkewSecs = int64(60)
 )
 
-type openIDConfiguration struct {
+type OpenIDConfiguration struct {
 	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
@@ -86,7 +86,7 @@ type ClickHouseJWEServer struct {
 	jwksCacheURL       string
 	jwksCacheMu        sync.RWMutex
 	jwksCacheTime      time.Time
-	oidcConfigCache    openIDConfiguration
+	oidcConfigCache    OpenIDConfiguration
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
@@ -680,7 +680,7 @@ func (s *ClickHouseJWEServer) resolveOAuthJWKSURL() (string, error) {
 	return strings.TrimSpace(discovery.JWKSURI), nil
 }
 
-func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*OpenIDConfiguration, error) {
 	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
 	if issuer == "" {
 		return nil, fmt.Errorf("issuer is required")
@@ -708,11 +708,13 @@ func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDCo
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Warn().Stack().Err(closeErr).Msgf("can't close %s response body", metadataURL)
+		}
 		if resp.StatusCode >= 300 || readErr != nil {
 			continue
 		}
-		var discovery openIDConfiguration
+		var discovery OpenIDConfiguration
 		if err := json.Unmarshal(body, &discovery); err == nil {
 			s.oidcConfigMu.Lock()
 			s.oidcConfigCache = discovery
@@ -727,7 +729,7 @@ func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDCo
 }
 
 // FetchOpenIDConfiguration returns the discovered OIDC metadata for the configured issuer.
-func (s *ClickHouseJWEServer) FetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+func (s *ClickHouseJWEServer) FetchOpenIDConfiguration(issuer string) (*OpenIDConfiguration, error) {
 	return s.fetchOpenIDConfiguration(issuer)
 }
 
@@ -746,7 +748,11 @@ func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKey
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch jwks: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Warn().Stack().Err(err).Msgf("can't close %s response body", jwksURI)
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks response: %w", err)
@@ -1086,6 +1092,25 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
 
+// maxClientErrorLen caps error messages returned to MCP clients.
+// ClickHouse errors can include full SQL + stack traces that exceed tens of KB.
+// The full error is always logged server-side; clients only need enough to
+// understand what went wrong.
+const maxClientErrorLen = 2000
+
+// truncateErrForClient returns a client-safe error message from err, applying
+// JSON-safe escaping and truncating to maxClientErrorLen characters.
+func truncateErrForClient(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := ErrJSONEscaper.Replace(err.Error())
+	if len(msg) > maxClientErrorLen {
+		msg = msg[:maxClientErrorLen] + "… (truncated)"
+	}
+	return msg
+}
+
 // RegisterTools adds ClickHouse tools to the MCP server. It accepts either
 // the new unified Tools configuration or the legacy DynamicTools form
 // (deprecated; converted automatically with a warning). With no config,
@@ -1207,6 +1232,8 @@ func registerStaticTool(srv AltinityMCPServer, td config.ToolDefinition, srvCfg 
 // buildExecuteQueryTool builds the execute_query tool definition. execute_query
 // is ALWAYS read-only (regardless of the server's read-only flag); it rejects
 // non-SELECT statements at call time via HandleReadOnlyQuery.
+// When cfg.Server.ToolInputSettings is non-empty, a "settings" property is
+// added to every query-executing tool's schema.
 func buildExecuteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 	properties := map[string]any{
 		"query": map[string]any{
@@ -1304,7 +1331,7 @@ func HandleReadOnlyQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	if !ok || query == "" {
 		return NewToolResultError("query parameter must be a non-empty string"), nil
 	}
-	if !isSelectQuery(query) {
+	if !clickhouse.IsSelectQuery(query) {
 		return NewToolResultError("execute_query only accepts read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN). Use write_query for write operations."), nil
 	}
 	return HandleExecuteQuery(ctx, req)
@@ -1437,7 +1464,7 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 			Str("table", tableName).
 			Str("resource", "table_structure").
 			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
+		return nil, fmt.Errorf("failed to get table structure: %s", truncateErrForClient(err))
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")
@@ -1949,7 +1976,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 		}
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -2222,7 +2249,7 @@ func capitalize(s string) string {
 	return string(runes)
 }
 
-var paramRe = regexp.MustCompile(`\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)\}`)
+var paramRe = regexp.MustCompile(`{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)}`)
 
 func parseViewParams(createSQL string) []dynamicToolParam {
 	matches := paramRe.FindAllStringSubmatch(createSQL, -1)
@@ -2394,6 +2421,11 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
+	// Reject oversize queries before they reach ClickHouse or the SQL parser.
+	if maxQueryLength := chJweServer.Config.ClickHouse.EffectiveMaxQueryLength(); maxQueryLength > 0 && len(query) > maxQueryLength {
+		return NewToolResultError(fmt.Sprintf("query exceeds max length (%d bytes, limit %d)", len(query), maxQueryLength)), nil
+	}
+
 	if clause, err := checkBlockedClauses(query, chJweServer.blockedClauses); err != nil {
 		return NewToolResultError(fmt.Sprintf("Query rejected: %v", err)), nil
 	} else if clause != "" {
@@ -2421,7 +2453,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		Msg("Executing query")
 
 	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
+	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
@@ -2441,6 +2473,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
 			log.Error().
+				Stack().
 				Err(closeErr).
 				Msg("execute_query: can't close clickhouse")
 		}
@@ -2454,7 +2487,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")
@@ -2605,7 +2638,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	// add dynamic tool paths (POST)
 	paths := schema["paths"].(map[string]interface{})
 	for _, prefix := range s.openAPIPathPrefixes() {
-		parameters := []map[string]interface{}{}
+		var parameters []map[string]interface{}
 		if prefix != "" {
 			parameters = append(parameters, map[string]interface{}{
 				"name":        "jwe_token",
@@ -2674,7 +2707,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		for toolName, meta := range s.dynamicTools {
 			path := prefix + "/openapi/" + toolName
 			props := map[string]interface{}{}
-			required := []string{}
+			var required []string
 			for _, p := range meta.Params {
 				prop := map[string]interface{}{"type": p.JSONType}
 				if p.JSONFormat != "" {
@@ -2765,7 +2798,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
+	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
@@ -2867,7 +2900,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 
 	result, err := chClient.ExecuteQuery(ctx, query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error())), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err)), http.StatusInternalServerError)
 		return
 	}
 
@@ -2878,16 +2911,6 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 }
 
 // Helper functions
-
-var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
-var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
-
-func isSelectQuery(query string) bool {
-	query = multiLineCommentRE.ReplaceAllString(query, "")
-	query = singleLineCommentRE.ReplaceAllString(query, "")
-	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
-}
 
 func hasLimitClause(query string) bool {
 	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)

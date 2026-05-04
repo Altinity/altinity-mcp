@@ -82,6 +82,23 @@ ingress:
   #    hosts:
   #      - chart-example.local
 
+# -- Probe configuration
+probes:
+  liveness:
+    # -- Path for the liveness probe
+    path: /livez
+    # -- Initial delay before liveness probe starts
+    initialDelaySeconds: 7
+    # -- How often to perform the liveness probe
+    periodSeconds: 30
+  readiness:
+    # -- Path for the readiness probe
+    path: /health
+    # -- Initial delay before readiness probe starts
+    initialDelaySeconds: 7
+    # -- How often to perform the readiness probe
+    periodSeconds: 30
+
 # -- Container resource requests and limits
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious
