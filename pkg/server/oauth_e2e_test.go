@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/docker/docker/api/types/container"
 	"github.com/go-jose/go-jose/v4"
+	"github.com/moby/moby/api/types/container"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -462,13 +462,13 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 	startupScriptsFile := tmpDir + "/startup_scripts.xml"
 	require.NoError(t, os.WriteFile(startupScriptsFile, []byte(startupScriptsXML), 0644))
 
+	// Inject CH config via read-only bind mounts rather than testcontainers'
+	// File-stream-via-archive path: PUT /containers/{id}/archive is blocked
+	// in some sandboxes (e.g. our agent isolator). Bind mounts go through
+	// container create and avoid the archive endpoint entirely.
 	req := testcontainers.ContainerRequest{
 		Image:        "altinity/clickhouse-server:25.8.16.20001.altinityantalya",
 		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: tokenProcessorFile, ContainerFilePath: "/etc/clickhouse-server/config.d/token_processor.xml", FileMode: 0644},
-			{HostFilePath: startupScriptsFile, ContainerFilePath: "/etc/clickhouse-server/config.d/startup_scripts.xml", FileMode: 0644},
-		},
 		Env: map[string]string{
 			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
 			"CLICKHOUSE_DB":                        "default",
@@ -478,6 +478,10 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 		},
 		HostConfigModifier: func(hc *container.HostConfig) {
 			hc.ExtraHosts = append(hc.ExtraHosts, "host.docker.internal:host-gateway")
+			hc.Binds = append(hc.Binds,
+				tokenProcessorFile+":/etc/clickhouse-server/config.d/token_processor.xml:ro",
+				startupScriptsFile+":/etc/clickhouse-server/config.d/startup_scripts.xml:ro",
+			)
 		},
 		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
 			WithStartupTimeout(120 * time.Second).WithPollInterval(2 * time.Second),
@@ -503,7 +507,7 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 
 	return config.ClickHouseConfig{
 		Host:             host,
-		Port:             httpPort.Int(),
+		Port:             int(httpPort.Num()),
 		Database:         "default",
 		Username:         "default",
 		Password:         "",
