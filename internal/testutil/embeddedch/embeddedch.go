@@ -3,9 +3,9 @@
 // fixtures used across this repo, eliminating Docker/Ryuk/proxy plumbing for
 // any test that doesn't require Antalya-specific server features.
 //
-// Stock ClickHouse 26.1 is the default; pass WithFlavor(FlavorAntalya) to
-// extract and run the Altinity Antalya binary from the production Docker
-// image. Antalya tests auto-skip on non-Linux hosts because Antalya only
+// Stock ClickHouse 26.3 is the default;
+// pass WithFlavor(FlavorAntalya) to extract and run the Altinity Antalya binary from the production Docker image.
+// Antalya tests auto-skip on non-Linux hosts because Antalya only
 // publishes Linux binaries.
 package embeddedch
 
@@ -110,7 +110,7 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 	}
 
 	cfgBuilder := embeddedclickhouse.DefaultConfig().
-		Version(embeddedclickhouse.V26_1).
+		Version(embeddedclickhouse.V26_3).
 		StartTimeout(o.StartTimeout)
 
 	if o.Flavor == FlavorAntalya {
