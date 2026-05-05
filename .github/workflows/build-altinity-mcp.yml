@@ -25,13 +25,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
 
     - name: Run go vet
       run: go vet ./...
 
     - name: Run tests with coverage
-      run: go test -shuffle=$(date +%Y%m%d) -coverpkg ./... -coverprofile=coverage.out ./...
+      run: go test -parallel 4 -shuffle=$(date +%Y%m%d) -coverpkg ./... -coverprofile=coverage.out ./...
 
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
@@ -57,7 +57,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
 
     - name: Build binary for ${{ matrix.platform }}
       run: |
@@ -180,7 +180,7 @@ jobs:
       if: steps.release_tag.outputs.matched == 'true'
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
 
     - name: Install nfpm
       if: steps.release_tag.outputs.matched == 'true'
