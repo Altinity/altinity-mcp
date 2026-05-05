@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -290,6 +291,22 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		}
 		// In forward mode, always clear static credentials — ClickHouse authenticates via the token
 		chConfig.Username = ""
+		chConfig.Password = ""
+	}
+
+	// In cluster-secret mode, the shared secret is the only credential sent
+	// to ClickHouse; Username is just the identity we ask ClickHouse to
+	// impersonate. When OAuth is enabled, prefer the authenticated user's
+	// email so `system.query_log` attributes the query to a human-readable
+	// identity that matches how operators typically provision ClickHouse
+	// users. Fall back to `sub` for IdPs that don't emit an email claim.
+	if chConfig.ClusterSecret != "" && oauthClaims != nil {
+		switch {
+		case strings.TrimSpace(oauthClaims.Email) != "":
+			chConfig.Username = strings.TrimSpace(oauthClaims.Email)
+		case strings.TrimSpace(oauthClaims.Subject) != "":
+			chConfig.Username = strings.TrimSpace(oauthClaims.Subject)
+		}
 		chConfig.Password = ""
 	}
 

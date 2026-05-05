@@ -43,6 +43,14 @@ type ClickHouseConfig struct {
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Maximum limit for query results (0 means no limit)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
+	// ClusterName + ClusterSecret enable interserver-secret authentication.
+	// When ClusterSecret is set, altinity-mcp connects as a trusted cluster
+	// peer (no username/password) and executes each query as the
+	// MCP-authenticated user. The target ClickHouse must list altinity-mcp
+	// under <remote_servers><cluster><secret>...</secret></cluster>. Only
+	// the TCP protocol is supported.
+	ClusterName   string `json:"cluster_name,omitempty" yaml:"cluster_name,omitempty" flag:"clickhouse-cluster-name" desc:"ClickHouse cluster name for interserver-secret auth"`
+	ClusterSecret string `json:"cluster_secret,omitempty" yaml:"cluster_secret,omitempty" flag:"clickhouse-cluster-secret" desc:"Shared interserver secret; when set altinity-mcp authenticates as a trusted cluster peer"`
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
 	// Default 10 MB when 0. Set to a negative number to disable the check.
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
@@ -326,6 +334,5 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 			}
 		}
 	}
-
 	return config, nil
 }
