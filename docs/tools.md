@@ -26,6 +26,8 @@ Two static tools are built into the server:
 
 `write_query` accepts the same `query` and `settings` parameters and executes the statement as-is.
 
+**Handler mapping:** `name: execute_query` registers the `HandleReadOnlyQuery` function in `pkg/server/server.go`, which enforces the SELECT-only guard and then delegates to `HandleExecuteQuery`. `name: write_query` registers `HandleExecuteQuery` directly. These two names are the only valid values for static tool entries.
+
 ---
 
 ## Read dynamic tools (Views)
@@ -84,6 +86,8 @@ For `type: write` with `mode: insert`, the tool accepts one row at a time. Its p
 
 The tool inserts a single row using the provided values. Bulk or streaming inserts are not supported through this mode.
 
+**Unsupported column types:** Columns with ClickHouse types `Dynamic`, `Array(...)`, `Tuple(...)`, or `JSON`/`JSON(...)` are skipped because these types have no direct JSON Schema equivalent. Such columns do not appear as tool parameters. Use `write_query` to insert values into complex-type columns.
+
 ---
 
 ## Parameter descriptions
@@ -138,7 +142,7 @@ If both `server.tools` and the legacy `server.dynamic_tools` are empty, the serv
 - `execute_query` (always)
 - `write_query` (only if `clickhouse.read_only: false`)
 
-No dynamic discovery runs. You only get dynamic tools by adding a `regexp` entry under `server.tools`.
+No dynamic discovery runs. You only get dynamic tools by adding a `view_regexp` (read) or `table_regexp` (write) entry under `server.tools`.
 
 ```yaml
 clickhouse:
@@ -159,14 +163,16 @@ clickhouse:
 |-------|----------|---------|
 | `type` | yes | `"read"` or `"write"`. |
 | `name` | static only | `"execute_query"` or `"write_query"`. |
-| `regexp` | dynamic only | Regex matched against `database.table_or_view_name`. |
+| `view_regexp` | dynamic read only | Regex matched against `database.view_name`. Use with `type: read`. |
+| `table_regexp` | dynamic write only | Regex matched against `database.table_name`. Use with `type: write`. |
 | `prefix` | no | Prepended to auto-generated tool names (dynamic only). |
 | `mode` | dynamic write only | Must be `"insert"`. No other value is accepted. |
 
 Rules enforced at config load:
 
-- An entry must have **either** `name` **or** `regexp`, never both.
-- A `type: write` entry with `regexp` **must** set `mode: insert`.
+- An entry must have **either** `name` **or** `view_regexp`/`table_regexp`, never both.
+- `view_regexp` is only valid with `type: read`; `table_regexp` is only valid with `type: write`.
+- A `type: write` entry with `table_regexp` **must** set `mode: insert`.
 - Any `mode` value other than `insert` is rejected with an error.
 - Invalid regexps are reported at load time and the rule is skipped.
 - If a view or table matches multiple rules, that overlap is logged and the later match is skipped.
@@ -199,7 +205,7 @@ server:
     - type: read
       name: execute_query
     - type: read
-      regexp: "analytics\\..*_view"
+      view_regexp: "analytics\\..*_view"
       prefix: "analytics_"
 ```
 
@@ -213,10 +219,10 @@ server:
     - type: read
       name: execute_query
     - type: read
-      regexp: "analytics\\..*_view"
+      view_regexp: "analytics\\..*_view"
       prefix: "ro_"
     - type: write
-      regexp: "events\\..*"
+      table_regexp: "events\\..*"
       prefix: "log_"
       mode: insert
 ```
@@ -275,11 +281,13 @@ ClickHouse types are mapped to JSON Schema as follows:
 | `UUID` | `string` | `uuid` |
 | Anything else | `string` | — |
 
+**Unsupported types for write tools:** `Dynamic`, `Array(...)`, `Tuple(...)`, and `JSON`/`JSON(...)` columns are skipped entirely — they have no JSON Schema equivalent and are excluded from the tool's parameter list. Use `write_query` to insert into such columns.
+
 ---
 
 ## Tool name generation
 
-For dynamic entries (have `regexp`, no `name`), the tool name is:
+For dynamic entries (have `view_regexp` or `table_regexp`, no `name`), the tool name is:
 
 ```
 snake_case(prefix + database + "_" + view_or_table_name)
@@ -338,7 +346,7 @@ Expected. Discovery runs on the first authenticated tool call, not at startup. M
 ### A view or table isn't being exposed
 
 1. Confirm the object exists in `system.tables` (with `engine = 'View'` for read tools).
-2. Check that your `regexp` matches `database.name` — remember to escape the dot (`\\.`).
+2. Check that your `view_regexp` / `table_regexp` matches `database.name` — remember to escape the dot (`\\.`).
 3. Look for overlap warnings: if multiple rules match the same object, the later one is skipped.
 4. For write tools, verify you set `mode: insert` and `type: write`.
 
@@ -358,14 +366,14 @@ Each failed attempt is logged and retried on the next authenticated call. Common
 
 - The token (JWE or Bearer) carries credentials that can't read `system.tables` / `system.columns`.
 - The configured `clickhouse.host` / `port` aren't reachable from the server.
-- A `regexp` is invalid — check startup logs for `invalid regexp, skipping rule`.
+- A `view_regexp` or `table_regexp` is invalid — check startup logs for `invalid regexp, skipping rule`.
 
 Static tools (`execute_query`, `write_query`) continue to work even while discovery is failing.
 
 ### `mode` validation error at startup
 
 ```
-server.tools: write tool with regexp requires mode: insert
+server.tools: write tool with table_regexp requires mode: insert
 ```
 
 Add `mode: insert` to the offending write entry. Any other `mode` value is rejected.

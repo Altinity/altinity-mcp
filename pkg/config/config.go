@@ -259,17 +259,18 @@ type OpenAPIConfig struct {
 
 // ToolDefinition describes a tool in the unified tools configuration.
 //
-//   - Static tool: Type + Name (no Regexp). Currently supported names:
+//   - Static tool: Type + Name (no ViewRegexp/TableRegexp). Currently supported names:
 //     "execute_query" (read), "write_query" (write).
-//   - Dynamic tool: Type + Regexp (+ optional Name/Prefix). Type "read"
-//     discovers views; type "write" discovers tables. Dynamic write tools
-//     require Mode (currently only "insert" is implemented).
+//   - Dynamic read tool: Type "read" + ViewRegexp (+ optional Name/Prefix). Discovers views.
+//   - Dynamic write tool: Type "write" + TableRegexp (+ optional Name/Prefix). Discovers tables.
+//     Dynamic write tools require Mode (currently only "insert" is implemented).
 type ToolDefinition struct {
-	Type   string `json:"type" yaml:"type"`     // "read" or "write"
-	Name   string `json:"name" yaml:"name"`     // static tool name, or label for dynamic rule
-	Regexp string `json:"regexp" yaml:"regexp"` // dynamic discovery pattern (matched against db.name)
-	Prefix string `json:"prefix" yaml:"prefix"` // tool-name prefix for discovered tools
-	Mode   string `json:"mode" yaml:"mode"`     // "insert" (required for dynamic write tools)
+	Type        string `json:"type"         yaml:"type"`         // "read" or "write"
+	Name        string `json:"name"         yaml:"name"`         // static tool name, or label for dynamic rule
+	ViewRegexp  string `json:"view_regexp"  yaml:"view_regexp"`  // dynamic read discovery pattern (matched against db.view_name)
+	TableRegexp string `json:"table_regexp" yaml:"table_regexp"` // dynamic write discovery pattern (matched against db.table_name)
+	Prefix      string `json:"prefix"       yaml:"prefix"`       // tool-name prefix for discovered tools
+	Mode        string `json:"mode"         yaml:"mode"`         // "insert" (required for dynamic write tools)
 }
 
 // DynamicToolRule describes a rule to create dynamic tools from views.

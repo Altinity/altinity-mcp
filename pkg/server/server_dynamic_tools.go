@@ -353,8 +353,8 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 			Description: buildWriteToolDescription(comment, db, name, rc.mode),
 			Annotations: &mcp.ToolAnnotations{
 				ReadOnlyHint:    false,
-				DestructiveHint: boolPtr(true),
-				OpenWorldHint:   boolPtr(false),
+				DestructiveHint: new(true),
+				OpenWorldHint:   new(false),
 			},
 			Params:    cols,
 			ToolType:  "write",
@@ -398,6 +398,13 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 		// omitted fields are filled by ClickHouse from DEFAULT expressions or the
 		// type's zero/default value.
 		if defaultKind == "MATERIALIZED" || defaultKind == "ALIAS" {
+			continue
+		}
+		// Dynamic, Array, Tuple, and JSON types have no JSON Schema equivalent;
+		// skip them. Use write_query to insert complex-type values instead.
+		if isUnsupportedCHType(chType) {
+			log.Warn().Str("table", db+"."+table).Str("column", name).Str("type", chType).
+				Msg("dynamic write tool: skipping column with unsupported type (no JSON Schema equivalent)")
 			continue
 		}
 
@@ -774,19 +781,15 @@ func buildDynamicToolDescription(comment, db, table, metadataDescription string,
 func buildDynamicToolAnnotations(commentAnnotations *dynamicToolCommentAnnotations) *mcp.ToolAnnotations {
 	annotations := &mcp.ToolAnnotations{
 		ReadOnlyHint:    true,
-		DestructiveHint: boolPtr(false),
-		OpenWorldHint:   boolPtr(false),
+		DestructiveHint: new(false),
+		OpenWorldHint:   new(false),
 	}
 	if commentAnnotations != nil {
 		if commentAnnotations.OpenWorldHint != nil {
-			annotations.OpenWorldHint = boolPtr(*commentAnnotations.OpenWorldHint)
+			annotations.OpenWorldHint = new(*commentAnnotations.OpenWorldHint)
 		}
 	}
 	return annotations
-}
-
-func boolPtr(v bool) *bool {
-	return &v
 }
 
 func humanizeToolName(toolName string) string {
@@ -823,6 +826,18 @@ func parseViewParams(createSQL string) []dynamicToolParam {
 		params = append(params, dynamicToolParam{Name: name, CHType: ch, JSONType: jType, JSONFormat: jFmt, Required: true})
 	}
 	return params
+}
+
+// isUnsupportedCHType reports whether a ClickHouse type cannot be represented
+// in JSON Schema / OpenAPI. Dynamic write tools skip columns of these types.
+// Use write_query to insert values into such columns instead.
+func isUnsupportedCHType(chType string) bool {
+	t := strings.ToLower(strings.TrimSpace(chType))
+	return t == "dynamic" ||
+		t == "json" ||
+		strings.HasPrefix(t, "array(") ||
+		strings.HasPrefix(t, "tuple(") ||
+		strings.HasPrefix(t, "json(")
 }
 
 func mapCHType(chType string) (jsonType, jsonFormat string) {

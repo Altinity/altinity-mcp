@@ -167,27 +167,36 @@ func RegisterTools(srv AltinityMCPServer, cfg *config.Config) {
 			continue
 		}
 
+		isDynamic := td.ViewRegexp != "" || td.TableRegexp != ""
 		switch {
-		case td.Name != "" && td.Regexp == "":
+		case td.Name != "" && !isDynamic:
 			// Static tool: bound to a known name.
 			if registerStaticTool(srv, td, &cfg.Server, cfg.ClickHouse.ReadOnly) {
 				staticToolCount++
 			}
-		case td.Regexp != "":
+		case isDynamic:
 			// Dynamic tool: discovered from ClickHouse metadata at first use.
 			if td.Type == "write" {
+				if td.TableRegexp == "" {
+					log.Error().Str("view_regexp", td.ViewRegexp).Msg("Write tool must use table_regexp, not view_regexp")
+					continue
+				}
 				if td.Mode == "" {
-					log.Error().Str("regexp", td.Regexp).Msg("Write tool must specify mode (only 'insert' is supported)")
+					log.Error().Str("table_regexp", td.TableRegexp).Msg("Write tool must specify mode (only 'insert' is supported)")
 					continue
 				}
 				if td.Mode != "insert" {
-					log.Error().Str("regexp", td.Regexp).Str("mode", td.Mode).Msg("Write tool mode not supported (only 'insert' is implemented); skipping")
+					log.Error().Str("table_regexp", td.TableRegexp).Str("mode", td.Mode).Msg("Write tool mode not supported (only 'insert' is implemented); skipping")
 					continue
 				}
 			}
+			if td.Type == "read" && td.TableRegexp != "" {
+				log.Error().Str("table_regexp", td.TableRegexp).Msg("Read tool must use view_regexp, not table_regexp")
+				continue
+			}
 			dynamicRules = append(dynamicRules, td)
 		default:
-			log.Error().Str("name", td.Name).Str("regexp", td.Regexp).Msg("Tool definition must have either name (static) or regexp (dynamic)")
+			log.Error().Str("name", td.Name).Str("view_regexp", td.ViewRegexp).Str("table_regexp", td.TableRegexp).Msg("Tool definition must have either name (static) or view_regexp/table_regexp (dynamic)")
 		}
 	}
 
@@ -214,13 +223,18 @@ func resolveToolDefinitions(cfg *config.Config) []config.ToolDefinition {
 			td := config.ToolDefinition{
 				Type:   old.Type,
 				Name:   old.Name,
-				Regexp: old.Regexp,
 				Prefix: old.Prefix,
 				Mode:   old.Mode,
 			}
 			// Legacy DynamicToolRule entries had no Type; they described view-based read tools.
-			if td.Type == "" && td.Regexp != "" {
+			if td.Type == "" && old.Regexp != "" {
 				td.Type = "read"
+			}
+			// Route the legacy regexp to the correct typed field.
+			if td.Type == "write" {
+				td.TableRegexp = old.Regexp
+			} else {
+				td.ViewRegexp = old.Regexp
 			}
 			out = append(out, td)
 		}
@@ -289,8 +303,8 @@ func buildExecuteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 		Description: "Executes a read-only SQL query against ClickHouse and returns the results. Only SELECT, WITH, SHOW, DESCRIBE, EXISTS, and EXPLAIN statements are allowed — write operations are rejected; use write_query for those.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    true,
-			DestructiveHint: boolPtr(false),
-			OpenWorldHint:   boolPtr(false),
+			DestructiveHint: new(false),
+			OpenWorldHint:   new(false),
 		},
 		InputSchema: map[string]any{
 			"type":       "object",
@@ -323,8 +337,8 @@ func buildWriteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 		Description: "Executes a write query (INSERT, UPDATE, DELETE, ALTER, CREATE, DROP, TRUNCATE) against ClickHouse. Not registered when the server runs in read-only mode.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    false,
-			DestructiveHint: boolPtr(true),
-			OpenWorldHint:   boolPtr(false),
+			DestructiveHint: new(true),
+			OpenWorldHint:   new(false),
 		},
 		InputSchema: map[string]any{
 			"type":       "object",
@@ -339,9 +353,14 @@ func buildWriteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 func convertToDynamicToolRules(defs []config.ToolDefinition) []config.DynamicToolRule {
 	rules := make([]config.DynamicToolRule, len(defs))
 	for i, td := range defs {
+		// Pick whichever regexp field is set (only one should be non-empty per rule).
+		re := td.ViewRegexp
+		if re == "" {
+			re = td.TableRegexp
+		}
 		rules[i] = config.DynamicToolRule{
 			Name:   td.Name,
-			Regexp: td.Regexp,
+			Regexp: re,
 			Prefix: td.Prefix,
 			Type:   td.Type,
 			Mode:   td.Mode,

@@ -1173,8 +1173,8 @@ func TestRegisterTools_UnifiedConfig(t *testing.T) {
 			Server: config.ServerConfig{
 				Tools: []config.ToolDefinition{
 					{Type: "read", Name: "execute_query"},
-					{Type: "read", Regexp: `^analytics\..*_view$`, Prefix: "ro_"},
-					{Type: "write", Regexp: `^events\..*$`, Prefix: "log_", Mode: "insert"},
+					{Type: "read", ViewRegexp: `^analytics\..*_view$`, Prefix: "ro_"},
+					{Type: "write", TableRegexp: `^events\..*$`, Prefix: "log_", Mode: "insert"},
 				},
 			},
 		}
@@ -1197,12 +1197,12 @@ func TestRegisterTools_UnifiedConfig(t *testing.T) {
 				Tools: []config.ToolDefinition{
 					{Type: "read", Name: "execute_query"},
 					// Should survive — insert is supported.
-					{Type: "write", Regexp: `^ok\..*$`, Prefix: "ok_", Mode: "insert"},
+					{Type: "write", TableRegexp: `^ok\..*$`, Prefix: "ok_", Mode: "insert"},
 					// Should be rejected — update/upsert not implemented.
-					{Type: "write", Regexp: `^bad1\..*$`, Prefix: "x_", Mode: "update"},
-					{Type: "write", Regexp: `^bad2\..*$`, Prefix: "x_", Mode: "upsert"},
+					{Type: "write", TableRegexp: `^bad1\..*$`, Prefix: "x_", Mode: "update"},
+					{Type: "write", TableRegexp: `^bad2\..*$`, Prefix: "x_", Mode: "upsert"},
 					// Should be rejected — mode required for write.
-					{Type: "write", Regexp: `^bad3\..*$`, Prefix: "x_"},
+					{Type: "write", TableRegexp: `^bad3\..*$`, Prefix: "x_"},
 				},
 			},
 		}

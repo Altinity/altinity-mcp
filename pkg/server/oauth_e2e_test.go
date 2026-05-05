@@ -84,14 +84,18 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 		srvCtx = context.WithValue(srvCtx, OAuthTokenKey, token)
 		serverSession, err := srv.MCPServer.Connect(srvCtx, serverTransport, nil)
 		require.NoError(t, err, "Server connect should succeed")
-		defer serverSession.Close()
+		defer func() {
+			require.NoError(t, serverSession.Close())
+		}()
 
 		mcpClient := mcp.NewClient(
 			&mcp.Implementation{Name: "test-oauth-client", Version: "v0.0.1"}, nil,
 		)
 		clientSession, err := mcpClient.Connect(ctx, clientTransport, nil)
 		require.NoError(t, err, "Client connect should succeed")
-		defer clientSession.Close()
+		defer func() {
+			require.NoError(t, clientSession.Close())
+		}()
 
 		t.Run("ListTools", func(t *testing.T) {
 			toolsResult, err := clientSession.ListTools(ctx, nil)
@@ -322,7 +326,7 @@ func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	port := ln.Addr().(*net.TCPAddr).Port
-	url := fmt.Sprintf("http://127.0.0.1:%d", port)
+	oidcProviderURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -337,12 +341,12 @@ func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{})
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]interface{}{
-			"issuer":                                url,
-			"authorization_endpoint":                url + "/auth",
-			"token_endpoint":                        url + "/token",
-			"jwks_uri":                              url + "/jwks",
-			"userinfo_endpoint":                     url + "/userinfo",
-			"introspection_endpoint":                url + "/introspect",
+			"issuer":                                oidcProviderURL,
+			"authorization_endpoint":                oidcProviderURL + "/auth",
+			"token_endpoint":                        oidcProviderURL + "/token",
+			"jwks_uri":                              oidcProviderURL + "/jwks",
+			"userinfo_endpoint":                     oidcProviderURL + "/userinfo",
+			"introspection_endpoint":                oidcProviderURL + "/introspect",
 			"response_types_supported":              []string{"code"},
 			"subject_types_supported":               []string{"public"},
 			"id_token_signing_alg_values_supported": []string{"RS256"},
@@ -391,8 +395,8 @@ func newAntalyaOIDCProvider(t *testing.T, userInfoClaims map[string]interface{})
 	})
 
 	stub := httptest.NewUnstartedServer(nil)
-	stub.Listener.Close()
-	stub.URL = url
+	_ = stub.Listener.Close()
+	stub.URL = oidcProviderURL
 	provider.server = stub
 
 	return provider
@@ -413,24 +417,6 @@ func generateClickHouseStartupScriptsConfig() string {
     </startup_scripts>
 </clickhouse>
 `
-}
-
-func extractJWTStringClaim(t *testing.T, token, claim string) string {
-	t.Helper()
-
-	parts := strings.Split(token, ".")
-	require.Len(t, parts, 3, "token should have three JWT parts")
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	require.NoError(t, err)
-
-	var claims map[string]any
-	require.NoError(t, json.Unmarshal(payload, &claims))
-
-	value, ok := claims[claim].(string)
-	require.True(t, ok, "token should include string %q claim", claim)
-
-	return value
 }
 
 func firstStringCell(t *testing.T, rows []interface{}) string {
