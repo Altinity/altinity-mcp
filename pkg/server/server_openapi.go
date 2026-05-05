@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/rs/zerolog/log"
 )
@@ -142,7 +143,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 	// add dynamic tool paths (POST)
 	paths := schema["paths"].(map[string]interface{})
 	for _, prefix := range s.openAPIPathPrefixes() {
-		parameters := []map[string]interface{}{}
+		var parameters []map[string]interface{}
 		if prefix != "" {
 			parameters = append(parameters, map[string]interface{}{
 				"name":        "jwe_token",
@@ -211,7 +212,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		for toolName, meta := range s.dynamicTools {
 			path := prefix + "/openapi/" + toolName
 			props := map[string]interface{}{}
-			required := []string{}
+			var required []string
 			for _, p := range meta.Params {
 				prop := map[string]interface{}{"type": p.JSONType}
 				if p.JSONFormat != "" {
@@ -302,7 +303,7 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 	}
 
 	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
+	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
 	}
 
@@ -404,7 +405,7 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 
 	result, err := chClient.ExecuteQuery(ctx, query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error())), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Query execution failed: %v", truncateErrForClient(err)), http.StatusInternalServerError)
 		return
 	}
 

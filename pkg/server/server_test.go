@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -261,7 +261,11 @@ func TestOpenAPIHandlers(t *testing.T) {
 		ctx := context.Background()
 		client, err := clickhouse.NewClient(ctx, *chConfig)
 		require.NoError(t, err)
-		defer client.Close()
+		defer func() {
+			if closeErr := client.Close(); closeErr != nil {
+				t.Fatalf("can't close client, %v", closeErr)
+			}
+		}()
 
 		_, _ = client.ExecuteQuery(ctx, "DROP VIEW IF EXISTS default.v_api")
 		_, err = client.ExecuteQuery(ctx, "CREATE VIEW default.v_api AS SELECT * FROM default.test WHERE id={id:UInt64}")
@@ -741,11 +745,11 @@ func TestHelperFunctions(t *testing.T) {
 	t.Parallel()
 	t.Run("isSelectQuery", func(t *testing.T) {
 		t.Parallel()
-		require.True(t, isSelectQuery("SELECT * FROM table"))
-		require.True(t, isSelectQuery("select * from table"))
-		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
-		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
-		require.False(t, isSelectQuery("CREATE TABLE test (id Int)"))
+		require.True(t, clickhouse.IsSelectQuery("SELECT * FROM table"))
+		require.True(t, clickhouse.IsSelectQuery("select * from table"))
+		require.True(t, clickhouse.IsSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
+		require.False(t, clickhouse.IsSelectQuery("INSERT INTO table VALUES (1)"))
+		require.False(t, clickhouse.IsSelectQuery("CREATE TABLE test (id Int)"))
 	})
 
 	t.Run("hasLimitClause", func(t *testing.T) {
@@ -2376,21 +2380,6 @@ func TestMergeExtraSettings_NilBase(t *testing.T) {
 // Unused import suppressors (remove if unused)
 var _ = io.EOF
 var _ = fmt.Sprintf
-
-// generateOAuthToken creates a mock OAuth JWT token for testing
-func generateOAuthToken(t *testing.T, claims map[string]interface{}) string {
-	// Create a simple JWT token (header.payload.signature)
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	payloadEncoded := base64.RawURLEncoding.EncodeToString(payload)
-
-	// For testing, we use a dummy signature
-	signature := base64.RawURLEncoding.EncodeToString([]byte("test-signature"))
-
-	return header + "." + payloadEncoded + "." + signature
-}
 
 // mintSelfIssuedToken creates a properly signed HS256 JWT using the gating secret
 func mintSelfIssuedToken(t *testing.T, gatingSecret string, claims map[string]interface{}) string {
@@ -5903,6 +5892,134 @@ func (m *mockMCPServer) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
 func (m *mockMCPServer) AddResource(_ *mcp.Resource, _ ResourceHandlerFunc)                 {}
 func (m *mockMCPServer) AddResourceTemplate(_ *mcp.ResourceTemplate, _ ResourceHandlerFunc) {}
 func (m *mockMCPServer) AddPrompt(_ *mcp.Prompt, _ PromptHandlerFunc)                       {}
+
+// TestTruncateErrForClient covers the error-truncation helper.
+func TestTruncateErrForClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_returns_empty", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "", truncateErrForClient(nil))
+	})
+
+	t.Run("short_error_unchanged", func(t *testing.T) {
+		t.Parallel()
+		err := errors.New("boom")
+		require.Equal(t, "boom", truncateErrForClient(err))
+	})
+
+	t.Run("long_error_truncated", func(t *testing.T) {
+		t.Parallel()
+		big := strings.Repeat("x", maxClientErrorLen+500)
+		err := errors.New(big)
+		out := truncateErrForClient(err)
+		require.Less(t, len(out), len(big))
+		require.Greater(t, len(out), maxClientErrorLen)
+		require.Contains(t, out, "(truncated)")
+	})
+
+	t.Run("passes_through_existing_escaper", func(t *testing.T) {
+		t.Parallel()
+		err := errors.New("quoted 'x'")
+		out := truncateErrForClient(err)
+		// The function applies ErrJSONEscaper (pre-existing behavior) — we just
+		// verify the message is preserved without adding new artifacts.
+		require.Equal(t, ErrJSONEscaper.Replace("quoted 'x'"), out)
+	})
+}
+
+// TestHandleExecuteQuery_MaxQueryLength covers query-size limiting.
+func TestHandleExecuteQuery_MaxQueryLength(t *testing.T) {
+	t.Parallel()
+
+	callExec := func(t *testing.T, cfg config.Config, query string) *mcp.CallToolResult {
+		srv := &ClickHouseJWEServer{Config: cfg}
+		ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+		args, _ := json.Marshal(map[string]any{"query": query})
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: args}}
+		res, err := HandleExecuteQuery(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		return res
+	}
+
+	t.Run("within_default_limit_passes_size_check", func(t *testing.T) {
+		t.Parallel()
+		// With no ClickHouse reachable, the query will fail later — but we only care
+		// that it doesn't fail with the length error.
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "127.0.0.1", Port: 1}}
+		res := callExec(t, cfg, "SELECT 1")
+		require.True(t, res.IsError)
+		require.NotContains(t, textOf(res), "exceeds max length")
+	})
+
+	t.Run("oversize_query_rejected_with_default_limit", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{}} // default 10MB
+		big := "SELECT '" + strings.Repeat("x", 11*1024*1024) + "'"
+		res := callExec(t, cfg, big)
+		require.True(t, res.IsError)
+		require.Contains(t, textOf(res), "exceeds max length")
+	})
+
+	t.Run("custom_limit_enforced", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{MaxQueryLength: 100}}
+		big := strings.Repeat("X", 150)
+		res := callExec(t, cfg, "SELECT '"+big+"'")
+		require.True(t, res.IsError)
+		require.Contains(t, textOf(res), "exceeds max length")
+		require.Contains(t, textOf(res), "limit 100")
+	})
+
+	t.Run("limit_disabled_with_negative", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{ClickHouse: config.ClickHouseConfig{
+			MaxQueryLength: -1,
+			Limit:          0,
+			Host:           "127.0.0.1",
+			Port:           1,
+		}}
+		big := strings.Repeat("x", 1024)
+		res := callExec(t, cfg, "SELECT '"+big+"'")
+		require.True(t, res.IsError)
+		require.NotContains(t, textOf(res), "exceeds max length")
+		require.Contains(t, textOf(res), "failed to connect to ClickHouse")
+	})
+}
+
+// textOf extracts text content from the first content block of a tool result.
+func textOf(res *mcp.CallToolResult) string {
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			return tc.Text
+		}
+	}
+	return ""
+}
+
+// TestEffectiveMaxQueryLength covers the config helper.
+func TestEffectiveMaxQueryLength(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"zero_uses_default", 0, 10 * 1024 * 1024},
+		{"positive_used_as_is", 1024, 1024},
+		{"negative_disables", -1, 0},
+		{"negative_large", -1000, 0},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := config.ClickHouseConfig{MaxQueryLength: tc.set}
+			require.Equal(t, tc.want, c.EffectiveMaxQueryLength())
+		})
+	}
+}
 
 // --- PR 1: unified tools config + dynamic write tool discovery ---
 

@@ -43,6 +43,24 @@ type ClickHouseConfig struct {
 	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" desc:"Maximum limit for query results (0 means no limit)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
+	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
+	// Default 10 MB when 0. Set to a negative number to disable the check.
+	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
+}
+
+// defaultMaxQueryLength is the default cap applied when MaxQueryLength is 0.
+const defaultMaxQueryLength = 10 * 1024 * 1024 // 10 MiB
+
+// EffectiveMaxQueryLength returns the effective cap after applying defaults/disable semantics.
+// Returns 0 if the check is disabled.
+func (c ClickHouseConfig) EffectiveMaxQueryLength() int {
+	if c.MaxQueryLength < 0 {
+		return 0
+	}
+	if c.MaxQueryLength == 0 {
+		return defaultMaxQueryLength
+	}
+	return c.MaxQueryLength
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -202,16 +220,16 @@ func (cfg OAuthConfig) IsGatingMode() bool {
 
 // ServerConfig defines configuration for the MCP server
 type ServerConfig struct {
-	Transport          MCPTransport      `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
-	Address            string            `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
-	Port               int               `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
-	TLS                ServerTLSConfig   `json:"tls" yaml:"tls"`
-	JWE                JWEConfig         `json:"jwe" yaml:"jwe"`
-	OAuth              OAuthConfig       `json:"oauth" yaml:"oauth"`
-	OpenAPI            OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
-	CORSOrigin          string   `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
-	ToolInputSettings   []string `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
-	BlockedQueryClauses []string `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
+	Transport           MCPTransport    `json:"transport" yaml:"transport" flag:"transport" desc:"MCP transport type (stdio/http/sse)"`
+	Address             string          `json:"address" yaml:"address" flag:"address" desc:"Server address for HTTP/SSE transport"`
+	Port                int             `json:"port" yaml:"port" flag:"port" desc:"Server port for HTTP/SSE transport"`
+	TLS                 ServerTLSConfig `json:"tls" yaml:"tls"`
+	JWE                 JWEConfig       `json:"jwe" yaml:"jwe"`
+	OAuth               OAuthConfig     `json:"oauth" yaml:"oauth"`
+	OpenAPI             OpenAPIConfig   `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	CORSOrigin          string          `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" desc:"CORS origin for HTTP/SSE transports (default: *)"`
+	ToolInputSettings   []string        `json:"tool_input_settings" yaml:"tool_input_settings" desc:"Allowed ClickHouse settings that can be passed via tool arguments"`
+	BlockedQueryClauses []string        `json:"blocked_query_clauses" yaml:"blocked_query_clauses" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
 	// Tools is the unified tool configuration (static + dynamic in one array).
 	// Static tools: type + name. Dynamic tools: type + regexp + prefix + mode.
 	Tools []ToolDefinition `json:"tools" yaml:"tools" desc:"Tool definitions (static and dynamic)"`

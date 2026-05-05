@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,7 +29,7 @@ type ClickHouseJWEServer struct {
 	jwksCacheURL       string
 	jwksCacheMu        sync.RWMutex
 	jwksCacheTime      time.Time
-	oidcConfigCache    openIDConfiguration
+	oidcConfigCache    OpenIDConfiguration
 	oidcConfigCacheURL string
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
@@ -125,6 +126,25 @@ func (s *ClickHouseJWEServer) AddPrompt(prompt *mcp.Prompt, handler PromptHandle
 // ErrJSONEscaper replacing for resolve OpenAI MCP wrong handling single quote and backtick characters in error message
 // look details in https://github.com/Altinity/altinity-mcp/issues/19
 var ErrJSONEscaper = strings.NewReplacer("'", "\u0027", "`", "\u0060")
+
+// maxClientErrorLen caps error messages returned to MCP clients.
+// ClickHouse errors can include full SQL + stack traces that exceed tens of KB.
+// The full error is always logged server-side; clients only need enough to
+// understand what went wrong.
+const maxClientErrorLen = 2000
+
+// truncateErrForClient returns a client-safe error message from err, applying
+// JSON-safe escaping and truncating to maxClientErrorLen characters.
+func truncateErrForClient(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := ErrJSONEscaper.Replace(err.Error())
+	if len(msg) > maxClientErrorLen {
+		msg = msg[:maxClientErrorLen] + "… (truncated)"
+	}
+	return msg
+}
 
 // RegisterTools adds ClickHouse tools to the MCP server. It accepts either
 // the new unified Tools configuration or the legacy DynamicTools form
@@ -247,6 +267,8 @@ func registerStaticTool(srv AltinityMCPServer, td config.ToolDefinition, srvCfg 
 // buildExecuteQueryTool builds the execute_query tool definition. execute_query
 // is ALWAYS read-only (regardless of the server's read-only flag); it rejects
 // non-SELECT statements at call time via HandleReadOnlyQuery.
+// When cfg.Server.ToolInputSettings is non-empty, a "settings" property is
+// added to every query-executing tool's schema.
 func buildExecuteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 	properties := map[string]any{
 		"query": map[string]any{
@@ -344,7 +366,7 @@ func HandleReadOnlyQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	if !ok || query == "" {
 		return NewToolResultError("query parameter must be a non-empty string"), nil
 	}
-	if !isSelectQuery(query) {
+	if !clickhouse.IsSelectQuery(query) {
 		return NewToolResultError("execute_query only accepts read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN). Use write_query for write operations."), nil
 	}
 	return HandleExecuteQuery(ctx, req)
@@ -396,6 +418,11 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return nil, fmt.Errorf("can't get JWEServer from context")
 	}
 
+	// Reject oversize queries before they reach ClickHouse or the SQL parser.
+	if maxQueryLength := chJweServer.Config.ClickHouse.EffectiveMaxQueryLength(); maxQueryLength > 0 && len(query) > maxQueryLength {
+		return NewToolResultError(fmt.Sprintf("query exceeds max length (%d bytes, limit %d)", len(query), maxQueryLength)), nil
+	}
+
 	if clause, err := checkBlockedClauses(query, chJweServer.blockedClauses); err != nil {
 		return NewToolResultError(fmt.Sprintf("Query rejected: %v", err)), nil
 	} else if clause != "" {
@@ -423,7 +450,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		Msg("Executing query")
 
 	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && isSelectQuery(query) && !hasLimitClause(query) {
+	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
 		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
 	}
 
@@ -443,6 +470,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	defer func() {
 		if closeErr := chClient.Close(); closeErr != nil {
 			log.Error().
+				Stack().
 				Err(closeErr).
 				Msg("execute_query: can't close clickhouse")
 		}
@@ -456,7 +484,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
-		return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+		return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
 	}
 
 	jsonData, err := json.MarshalIndent(result, "", "  ")

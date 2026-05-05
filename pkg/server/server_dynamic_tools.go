@@ -535,7 +535,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		result, err := chClient.ExecuteQuery(ctx, query)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
-			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", ErrJSONEscaper.Replace(err.Error()))), nil
+			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", truncateErrForClient(err))), nil
 		}
 		jsonData, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
@@ -808,7 +808,7 @@ func capitalize(s string) string {
 	return string(runes)
 }
 
-var paramRe = regexp.MustCompile(`\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)\}`)
+var paramRe = regexp.MustCompile(`{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^}]+)}`)
 
 func parseViewParams(createSQL string) []dynamicToolParam {
 	matches := paramRe.FindAllStringSubmatch(createSQL, -1)

@@ -137,7 +137,7 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 			Str("table", tableName).
 			Str("resource", "table_structure").
 			Msg("ClickHouse operation failed: get table structure")
-		return nil, fmt.Errorf("failed to get table structure: %s", ErrJSONEscaper.Replace(err.Error()))
+		return nil, fmt.Errorf("failed to get table structure: %s", truncateErrForClient(err))
 	}
 
 	jsonData, err := json.MarshalIndent(columns, "", "  ")

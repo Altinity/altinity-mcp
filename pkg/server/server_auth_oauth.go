@@ -37,7 +37,7 @@ const (
 	oauthClockSkewSecs = int64(60)
 )
 
-type openIDConfiguration struct {
+type OpenIDConfiguration struct {
 	Issuer                string `json:"issuer"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
@@ -357,7 +357,7 @@ func (s *ClickHouseJWEServer) resolveOAuthJWKSURL() (string, error) {
 	return strings.TrimSpace(discovery.JWKSURI), nil
 }
 
-func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*OpenIDConfiguration, error) {
 	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
 	if issuer == "" {
 		return nil, fmt.Errorf("issuer is required")
@@ -385,11 +385,13 @@ func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDCo
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Warn().Stack().Err(closeErr).Msgf("can't close %s response body", metadataURL)
+		}
 		if resp.StatusCode >= 300 || readErr != nil {
 			continue
 		}
-		var discovery openIDConfiguration
+		var discovery OpenIDConfiguration
 		if err := json.Unmarshal(body, &discovery); err == nil {
 			s.oidcConfigMu.Lock()
 			s.oidcConfigCache = discovery
@@ -404,7 +406,7 @@ func (s *ClickHouseJWEServer) fetchOpenIDConfiguration(issuer string) (*openIDCo
 }
 
 // FetchOpenIDConfiguration returns the discovered OIDC metadata for the configured issuer.
-func (s *ClickHouseJWEServer) FetchOpenIDConfiguration(issuer string) (*openIDConfiguration, error) {
+func (s *ClickHouseJWEServer) FetchOpenIDConfiguration(issuer string) (*OpenIDConfiguration, error) {
 	return s.fetchOpenIDConfiguration(issuer)
 }
 
@@ -423,7 +425,11 @@ func (s *ClickHouseJWEServer) fetchOAuthJWKSet(jwksURI string) (*jose.JSONWebKey
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch jwks: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Warn().Stack().Err(err).Msgf("can't close %s response body", jwksURI)
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks response: %w", err)
