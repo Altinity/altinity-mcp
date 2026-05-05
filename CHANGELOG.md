@@ -1,3 +1,14 @@
+# v1.4.2
+
+IMPROVEMENTS
+- helm: add `sessionAffinity` and `sessionAffinityConfig` support to service template for sticky sessions (PR #78)
+- helm: add liveness probe handler
+- fix description of resources
+
+DEPENDENCY UPDATES
+- bump `github.com/ClickHouse/clickhouse-go/v2` from 2.44.0 to 2.45.0
+- bump `github.com/modelcontextprotocol/go-sdk` from 1.4.1 to 1.5.0
+
 # v1.4.1
 
 IMPROVEMENTS

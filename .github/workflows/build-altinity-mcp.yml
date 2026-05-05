@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
     tags: [ 'v*.*.*' ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ '**' ]
   workflow_dispatch:
 
 env:
@@ -25,13 +25,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
 
     - name: Run go vet
       run: go vet ./...
 
     - name: Run tests with coverage
-      run: go test -parallel 4 -v -coverpkg ./... -coverprofile=coverage.out ./...
+      run: go test -parallel 4 -shuffle=$(date +%Y%m%d) -coverpkg ./... -coverprofile=coverage.out ./...
 
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
@@ -57,12 +57,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
-
-    - name: Install cross-compilation tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+        go-version: '1.26'
 
     - name: Build binary for ${{ matrix.platform }}
       run: |
@@ -185,7 +180,7 @@ jobs:
       if: steps.release_tag.outputs.matched == 'true'
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
 
     - name: Install nfpm
       if: steps.release_tag.outputs.matched == 'true'

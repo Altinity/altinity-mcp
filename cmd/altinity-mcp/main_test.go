@@ -171,14 +171,14 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	// helper to create a mux with our middleware
 	newMux := func(jwe bool) http.Handler {
 		mux := http.NewServeMux()
-		// static route
-		mux.HandleFunc("/http", func(w http.ResponseWriter, r *http.Request) {
+		// HTTP transport is served at root
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("http"))
+			_, _ = w.Write([]byte("root"))
 		})
 		// dynamic route when JWE is enabled
 		if jwe {
-			mux.HandleFunc("/{token}/http", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/{token}", func(w http.ResponseWriter, r *http.Request) {
 				token := r.PathValue("token")
 				if token == "" {
 					http.Error(w, "missing token", http.StatusBadRequest)
@@ -191,25 +191,24 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 		return stripTrailingSlash(mux)
 	}
 
-	t.Run("static_path_with_and_without_slash", func(t *testing.T) {
+	t.Run("root_path", func(t *testing.T) {
 		t.Parallel()
 		h := newMux(false)
-		cases := []string{"/http", "/http/"}
-		for _, path := range cases {
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			rr := httptest.NewRecorder()
-			h.ServeHTTP(rr, req)
-			require.Equal(t, http.StatusOK, rr.Code, path)
-			require.Equal(t, "http", strings.TrimSpace(rr.Body.String()))
-		}
+		// Root path "/" has no trailing-slash variant — stripTrailingSlash
+		// explicitly skips it. So one case.
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "root", strings.TrimSpace(rr.Body.String()))
 	})
 
 	t.Run("dynamic_path_with_and_without_slash", func(t *testing.T) {
 		t.Parallel()
 		h := newMux(true)
 		cases := []struct{ in, want string }{
-			{"/abc/http", "dyn:abc"},
-			{"/abc/http/", "dyn:abc"},
+			{"/abc", "dyn:abc"},
+			{"/abc/", "dyn:abc"},
 		}
 		for _, c := range cases {
 			req := httptest.NewRequest(http.MethodGet, c.in, nil)
@@ -225,9 +224,10 @@ func TestRoutePatterns(t *testing.T) {
 	t.Parallel()
 	t.Run("combined_auth_transport_routes_include_tokenized_and_pathless", func(t *testing.T) {
 		t.Parallel()
+		// HTTP transport is served at root; pass "" as the transport string.
 		require.Equal(t,
-			[]string{"/{token}/http", "/http"},
-			transportRoutePatterns(true, true, "http"),
+			[]string{"/{token}", "/"},
+			transportRoutePatterns(true, true, ""),
 		)
 		require.Equal(t,
 			[]string{"/{token}/sse", "/sse"},
@@ -401,8 +401,11 @@ func TestBuildServerTLSConfig(t *testing.T) {
 		// Create a temporary CA certificate file
 		tmpFile, err := os.CreateTemp("", "test-ca-*.crt")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
-
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 		// Write a dummy PEM certificate
 		caCertPEM := `-----BEGIN CERTIFICATE-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
@@ -463,7 +466,7 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 
 	cfg := &config.ClickHouseConfig{
 		Host:             host,
-		Port:             port.Int(),
+		Port:             int(port.Num()),
 		Database:         "default",
 		Username:         "default",
 		Password:         "",
@@ -744,11 +747,11 @@ func TestHealthHandler(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -761,7 +764,7 @@ func TestHealthHandler(t *testing.T) {
 			config: config.Config{
 				ClickHouse: config.ClickHouseConfig{
 					Host:     host,
-					Port:     mappedPort.Int(),
+					Port:     int(mappedPort.Num()),
 					Database: "default",
 					Username: "default",
 					Password: "",
@@ -977,11 +980,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -992,7 +995,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1025,11 +1028,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port for TCP
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "9000")
@@ -1040,7 +1043,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1115,11 +1118,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")
 		require.NoError(t, err)
@@ -1129,7 +1132,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			// https://github.com/ClickHouse/clickhouse-go/issues/1630
@@ -1167,11 +1170,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -1182,7 +1185,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1216,11 +1219,11 @@ func TestTestConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 		}
-		defer func() {
-			if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-				t.Logf("Failed to terminate container: %v", termErr)
-			}
-		}()
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = clickhouseContainer.Terminate(cleanupCtx)
+		})
 
 		// Get the mapped port
 		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -1231,7 +1234,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:             host,
-			Port:             mappedPort.Int(),
+			Port:             int(mappedPort.Num()),
 			Database:         "default",
 			Username:         "default",
 			Password:         "",
@@ -1541,7 +1544,11 @@ func TestNewApplication(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -1644,7 +1651,11 @@ func TestBuildConfigWithFile(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 reload_time: 10
@@ -1722,7 +1733,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -2092,18 +2107,20 @@ func TestCORSSupport(t *testing.T) {
 			if serverPort != "" {
 				// Test CORS preflight request
 				client := &http.Client{}
-				req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/http", serverPort), nil)
+				req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/", serverPort), nil)
 				req.Header.Set("Access-Control-Request-Method", "POST")
 				req.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization")
 				req.Header.Set("Origin", "http://localhost")
 
 				resp, err := client.Do(req)
 				require.NoError(t, err)
-				defer resp.Body.Close()
 				require.Equal(t, http.StatusOK, resp.StatusCode)
 				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
 				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					t.Fatalf("can't close response body, %v", closeErr)
+				}
 			}
 
 			// Clean up (thread-safe)
@@ -2125,9 +2142,9 @@ func getFreeRandomPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer listener.Close()
 
 	addr := listener.Addr().(*net.TCPAddr)
+	_ = listener.Close()
 	return addr.Port, nil
 }
 
@@ -2634,7 +2651,11 @@ func TestReloadConfigWithValidFile(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2667,7 +2688,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `clickhouse: {}`
 		_, err = tmpFile.WriteString(configContent)
@@ -2753,11 +2778,11 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	if err != nil {
 		t.Fatal("Failed to start ClickHouse container, skipping test:", err)
 	}
-	defer func() {
-		if termErr := clickhouseContainer.Terminate(ctx); termErr != nil {
-			t.Logf("Failed to terminate container: %v", termErr)
-		}
-	}()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = clickhouseContainer.Terminate(cleanupCtx)
+	})
 
 	// Get the mapped port
 	mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
@@ -2769,7 +2794,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	cfg := config.Config{
 		ClickHouse: config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -2803,7 +2828,11 @@ func TestRunServerWithValidConfig(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2966,7 +2995,11 @@ func TestRun(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -2984,7 +3017,6 @@ logging:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
 
 		args := []string{"altinity-mcp", "--config", tmpFile.Name()}
 
@@ -3442,7 +3474,11 @@ func TestMainFunctionality(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -3618,9 +3654,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should log warning but not panic
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "",
 		}}})
 	})
@@ -3629,9 +3665,9 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 		t.Parallel()
 		// Should not warn
 		warnOAuthMisconfiguration(config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:            true,
-			Mode:               "gating",
-			Issuer:             "https://issuer.example.com",
+			Enabled:             true,
+			Mode:                "gating",
+			Issuer:              "https://issuer.example.com",
 			PublicAuthServerURL: "https://public.example.com",
 		}}})
 	})
@@ -3639,25 +3675,31 @@ func TestWarnOAuthMisconfiguration(t *testing.T) {
 
 func TestTransportRoutePatterns(t *testing.T) {
 	t.Parallel()
-	t.Run("jwe_only", func(t *testing.T) {
+	// HTTP transport is served at root — callers pass "" as the transport string.
+	t.Run("http_jwe_only", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(true, false, "http")
-		require.Equal(t, []string{"/{token}/http"}, patterns)
+		patterns := transportRoutePatterns(true, false, "")
+		require.Equal(t, []string{"/{token}"}, patterns)
 	})
-	t.Run("jwe_and_oauth", func(t *testing.T) {
+	t.Run("http_jwe_and_oauth", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(true, true, "http")
-		require.Equal(t, []string{"/{token}/http", "/http"}, patterns)
+		patterns := transportRoutePatterns(true, true, "")
+		require.Equal(t, []string{"/{token}", "/"}, patterns)
 	})
-	t.Run("no_jwe", func(t *testing.T) {
+	t.Run("http_no_jwe", func(t *testing.T) {
 		t.Parallel()
-		patterns := transportRoutePatterns(false, false, "http")
-		require.Equal(t, []string{"/http"}, patterns)
+		patterns := transportRoutePatterns(false, false, "")
+		require.Equal(t, []string{"/"}, patterns)
 	})
 	t.Run("sse_transport", func(t *testing.T) {
 		t.Parallel()
 		patterns := transportRoutePatterns(false, false, "sse")
 		require.Equal(t, []string{"/sse"}, patterns)
+	})
+	t.Run("sse_jwe_and_oauth", func(t *testing.T) {
+		t.Parallel()
+		patterns := transportRoutePatterns(true, true, "sse")
+		require.Equal(t, []string{"/{token}/sse", "/sse"}, patterns)
 	})
 }
 
