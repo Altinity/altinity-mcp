@@ -106,7 +106,7 @@ exec /entrypoint.sh
 	require.NoError(t, err)
 	p, err := c.MappedPort(ctx, "9000")
 	require.NoError(t, err)
-	return h, p.Int()
+	return h, int(p.Num())
 }
 
 func clusterClientConfig(host string, port int, username string, secret string) config.ClickHouseConfig {
