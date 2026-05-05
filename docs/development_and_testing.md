@@ -4,7 +4,7 @@ This document collects the local development workflow and the repository's test 
 
 ## Prerequisites
 
-- Go 1.25 or later
+- Go 1.26 or later
 - Docker, for integration tests (including OAuth e2e tests)
 - A local or reachable ClickHouse server, if you want to run `test-connection` manually
 

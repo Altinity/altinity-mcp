@@ -1,6 +1,6 @@
 module github.com/altinity/altinity-mcp
 
-go 1.25.6
+go 1.26
 
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.1
