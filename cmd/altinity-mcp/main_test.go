@@ -465,7 +465,7 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 
 	cfg := &config.ClickHouseConfig{
 		Host:             host,
-		Port:             port.Int(),
+		Port:             int(port.Num()),
 		Database:         "default",
 		Username:         "default",
 		Password:         "",
@@ -763,7 +763,7 @@ func TestHealthHandler(t *testing.T) {
 			config: config.Config{
 				ClickHouse: config.ClickHouseConfig{
 					Host:     host,
-					Port:     mappedPort.Int(),
+					Port:     int(mappedPort.Num()),
 					Database: "default",
 					Username: "default",
 					Password: "",
@@ -994,7 +994,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1042,7 +1042,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1131,7 +1131,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			// https://github.com/ClickHouse/clickhouse-go/issues/1630
@@ -1184,7 +1184,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
@@ -1233,7 +1233,7 @@ func TestTestConnection(t *testing.T) {
 
 		cfg := config.ClickHouseConfig{
 			Host:             host,
-			Port:             mappedPort.Int(),
+			Port:             int(mappedPort.Num()),
 			Database:         "default",
 			Username:         "default",
 			Password:         "",
@@ -2793,7 +2793,7 @@ func TestNewApplicationWithTestContainer(t *testing.T) {
 	cfg := config.Config{
 		ClickHouse: config.ClickHouseConfig{
 			Host:     host,
-			Port:     mappedPort.Int(),
+			Port:     int(mappedPort.Num()),
 			Database: "default",
 			Username: "default",
 			Password: "",
