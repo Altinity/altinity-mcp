@@ -1461,16 +1461,19 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		dockerProvider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
-		dockerChConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
+		// Antalya is required for token_processors-driven OIDC validation in CH.
+		// Use newAntalyaOIDCProvider (full discovery doc) — Antalya rejects
+		// the shorter doc returned by newTestOAuthProvider.
+		// setupEmbeddedAntalyaWithOIDC auto-skips on non-Linux hosts.
+		oidcProvider := newAntalyaOIDCProvider(t, nil)
+		antalyaCH := setupEmbeddedAntalyaWithOIDC(t, oidcProvider.server.URL)
 		srv := NewClickHouseMCPServer(config.Config{
-			ClickHouse: dockerChConfig,
+			ClickHouse: antalyaCH,
 			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
 		}, "test")
-		oauthToken := dockerProvider.issueJWT(t, map[string]interface{}{
+		oauthToken := oidcProvider.issueJWT(t, map[string]interface{}{
 			"sub": "service-account-123",
-			"iss": dockerOIDCURL,
+			"iss": oidcProvider.server.URL,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20version()%20as%20version", nil)
