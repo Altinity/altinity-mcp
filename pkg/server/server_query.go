@@ -9,16 +9,6 @@ import (
 	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 )
 
-var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
-var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
-
-func isSelectQuery(query string) bool {
-	query = multiLineCommentRE.ReplaceAllString(query, "")
-	query = singleLineCommentRE.ReplaceAllString(query, "")
-	trimmed := strings.TrimSpace(strings.ToUpper(query))
-	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")
-}
-
 func hasLimitClause(query string) bool {
 	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
 	return hasLimit
