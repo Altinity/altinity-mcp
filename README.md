@@ -11,7 +11,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
 - **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
 - **Comprehensive Tools**: Built-in tools for listing tables, describing schemas, and executing queries
-- **Dynamic Tools**: Automatically generate MCP tools from ClickHouse® views (see [Dynamic Tools Documentation](docs/dynamic_tools.md))
+- **Dynamic Tools**: Automatically generate MCP tools from ClickHouse® views and tables (see [Tools Documentation](docs/tools.md))
 - **Resource Templates**: Dynamic resource discovery for database schemas and table information
 - **Query Prompts**: AI-assisted query building and optimization prompts
 - **Configuration Management**: Flexible configuration via files, environment variables, or CLI flags
@@ -145,6 +145,13 @@ services:
       - "8123:8123"
 ```
 
+### With installed golang
+
+```bash
+go install github.com/altinity/altinity-mcp/cmd/altinity-mcp@latest
+$(go env GOPATH)/bin/altinity-mcp --help
+```
+
 ### From Source
 
 ```bash
@@ -203,7 +210,7 @@ logging:
   level: "info"
 ```
 
-> **Note**: For detailed information about dynamic tools configuration, see the [Dynamic Tools Documentation](docs/dynamic_tools.md).
+> **Note**: For detailed information about dynamic tools configuration, see the [Tools Documentation](docs/tools.md).
 
 Use the configuration file:
 
@@ -247,7 +254,7 @@ View `COMMENT` supports either:
 - A plain string description.
 - A strict JSON object with top-level `title`, `description`, and `annotations`.
 
-See [Dynamic Tools Documentation](docs/dynamic_tools.md) for examples and supported metadata.
+See [Tools Documentation](docs/tools.md) for examples and supported metadata.
 
 ## Available Resources
 

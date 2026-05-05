@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/Altinity/clickhouse-go/v2"
+	"github.com/Altinity/clickhouse-go/v2/lib/driver"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/rs/zerolog/log"
 )
@@ -106,12 +106,24 @@ func (c *Client) connect() error {
 
 	httpHeaders, getJWT := prepareHTTPAuthForClickHouse(c.config)
 
+	auth := clickhouse.Auth{
+		Database: c.config.Database,
+		Username: c.config.Username,
+		Password: c.config.Password,
+	}
+	// In interserver-secret mode the driver authenticates with the shared
+	// cluster secret and ignores the password. We drop the password here to
+	// prevent accidental fallback if the Cluster fields are later cleared.
+	if c.config.ClusterSecret != "" {
+		auth.Password = ""
+	}
+
 	conn, openErr := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
-		Auth: clickhouse.Auth{
-			Database: c.config.Database,
-			Username: c.config.Username,
-			Password: c.config.Password,
+		Auth: auth,
+		Cluster: clickhouse.ClusterCredentials{
+			Name:   c.config.ClusterName,
+			Secret: c.config.ClusterSecret,
 		},
 		TLS:             tlsConfig,
 		Protocol:        protocol,
@@ -365,10 +377,10 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 // ExecuteQuery executes a SQL query and returns results
 // For non-SELECT queries (DDL, DML) will return single row with `OK`
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
-	if c.config.ReadOnly && !isSelectQuery(query) {
+	if c.config.ReadOnly && !IsSelectQuery(query) {
 		return nil, fmt.Errorf("query rejected: read-only mode allows only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN statements")
 	}
-	if isSelectQuery(query) {
+	if IsSelectQuery(query) {
 		return c.executeSelect(ctx, query, args...)
 	}
 	return c.executeNonSelect(ctx, query, args...)
@@ -498,14 +510,14 @@ func buildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 
 // Helper functions
 
-var singleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
-var multiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
+var SingleLineCommentRE = regexp.MustCompile(`(?m)--.*$`)
+var MultiLineCommentRE = regexp.MustCompile(`/\*[\s\S]*?\*/`)
 
-// isSelectQuery determines if a query is a SELECT query
-func isSelectQuery(query string) bool {
+// IsSelectQuery determines if a query is a SELECT query
+func IsSelectQuery(query string) bool {
 	// Remove SQL comments: /* */ and --
-	query = multiLineCommentRE.ReplaceAllString(query, "")
-	query = singleLineCommentRE.ReplaceAllString(query, "")
+	query = MultiLineCommentRE.ReplaceAllString(query, "")
+	query = SingleLineCommentRE.ReplaceAllString(query, "")
 	// Simple check - can be improved with more sophisticated parsing if needed
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	return strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "WITH") || strings.HasPrefix(trimmed, "SHOW") || strings.HasPrefix(trimmed, "DESC") || strings.HasPrefix(trimmed, "EXISTS") || strings.HasPrefix(trimmed, "EXPLAIN")

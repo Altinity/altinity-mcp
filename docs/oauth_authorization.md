@@ -102,10 +102,103 @@ server:
     allowed_email_domains: ["example.com"]
 ```
 
+#### Cluster-secret authentication (optional)
+
+Gating mode's default connects to ClickHouse with a **single static username/password** shared across all MCP users. Queries land in `system.query_log` under that service account, so you lose per-user attribution.
+
+The **cluster-secret path** removes both limitations. altinity-mcp handshakes with ClickHouse as a trusted cluster peer using a shared `<secret>` instead of a password, and executes each query as the OAuth-authenticated user. ClickHouse records the real identity in `system.query_log`, applies that user's grants, and the MCP process never touches a shared password.
+
+```
+┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
+│  MCP   │      │   IdP    │      │   MCP    │      │ ClickHouse │
+│ Client │      │          │      │  Server  │      │            │
+│        │──login──>│     │      │          │      │            │
+│        │<─MCP tok─│     │      │          │      │            │
+│        │                        │          │      │            │
+│        │──query + MCP token────>│          │      │            │
+│        │                        │─cluster─>│      │  verifies  │
+│        │                        │ secret + │      │  HMAC, runs│
+│        │                        │ initial  │─────>│  as claim. │
+│        │                        │ _user =  │      │  subject   │
+│        │                        │ claim.sub│      │            │
+│        │<───────────────────────│<─────────│<─────│            │
+└────────┘                        └──────────┘      └────────────┘
+```
+
+**altinity-mcp config:**
+
+```yaml
+clickhouse:
+  host: "clickhouse.example.com"
+  port: 9000               # TCP only — interserver auth has no HTTP equivalent
+  protocol: tcp
+  database: default
+  cluster_name: mcp_cluster        # must match <remote_servers> on ClickHouse
+  cluster_secret: "CHANGE_ME_SHARED_SECRET"
+  username: default                # fallback when no OAuth identity is present
+  # password: intentionally omitted — the shared secret is the only credential
+
+server:
+  oauth:
+    enabled: true
+    mode: gating
+    issuer: https://accounts.google.com
+    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    # ... standard gating config ...
+```
+
+Or via env: `CLICKHOUSE_CLUSTER_NAME`, `CLICKHOUSE_CLUSTER_SECRET`, `CLICKHOUSE_PROTOCOL=tcp`.
+
+**ClickHouse config** (`/etc/clickhouse-server/config.d/mcp_cluster.xml`):
+
+```xml
+<clickhouse>
+  <remote_servers>
+    <mcp_cluster>
+      <secret>CHANGE_ME_SHARED_SECRET</secret>
+      <shard>
+        <replica>
+          <host>clickhouse.example.com</host>
+          <port>9000</port>
+        </replica>
+      </shard>
+    </mcp_cluster>
+  </remote_servers>
+</clickhouse>
+```
+
+**User and role provisioning (required).** The impersonated user must already exist on ClickHouse. ClickHouse skips the password check for cluster peers, but **not** the user lookup or grant resolution — an unknown `initial_user` fails with `Unknown user`. altinity-mcp does **not** auto-provision users; you precreate them with the grants they need.
+
+Map OAuth claims to ClickHouse users however suits your IdP. Typical setup using the user's email as the ClickHouse username:
+
+```sql
+-- One role per entitlement level
+CREATE ROLE IF NOT EXISTS mcp_reader;
+GRANT SELECT ON analytics.* TO mcp_reader;
+
+CREATE ROLE IF NOT EXISTS mcp_admin;
+GRANT ALL ON analytics.* TO mcp_admin;
+
+-- One user per identity; password-less because the cluster secret is the credential
+CREATE USER IF NOT EXISTS "alice@example.com" IDENTIFIED WITH no_password;
+GRANT mcp_reader TO "alice@example.com";
+
+CREATE USER IF NOT EXISTS "bob@example.com" IDENTIFIED WITH no_password;
+GRANT mcp_admin TO "bob@example.com";
+```
+
+The literal value used for the ClickHouse username is the OAuth `email` claim when present, falling back to `sub` otherwise. Most IdPs (Google, Azure AD, Keycloak with the email scope) emit `email`, so `system.query_log` attributes queries to addresses like `alice@example.com`. `sub` is reserved for IdPs that deliberately omit email (e.g., machine-to-machine tokens). This matches the convention used by forward mode's `username_claim: email` setups, so operators can share a single pool of pre-provisioned CH users across both modes.
+
+**Limitations:**
+
+- **TCP only**: Startup fails with `clickhouse-cluster-secret requires clickhouse-protocol=tcp` if `protocol: http` is set.
+- **No role forwarding from the IdP**: altinity-mcp does not send ClickHouse `external_roles` on the wire; permissions come entirely from what's `GRANT`ed to the user on the ClickHouse side. This is a deliberate limit of the current driver protocol revision (54460); revisit if the IdP becomes the source of truth for ClickHouse entitlements.
+- **Secret hygiene**: Treat `cluster_secret` like a root credential. Anyone holding it can authenticate to ClickHouse as any existing user — including `default` and any admin account. Put it in a secret manager, rotate it by updating both sides simultaneously (ClickHouse accepts live reloads of `remote_servers` config).
+
 
 ## Requirements
 
-- **ClickHouse protocol**: Forward mode requires `http`. Gating mode works with both `http` and native `tcp`.
+- **ClickHouse protocol**: Forward mode requires `http`. Gating mode with static credentials works with both `http` and native `tcp`. Gating mode with cluster-secret authentication requires `tcp`.
 - **ClickHouse version**: Forward mode requires Altinity Antalya build 25.8+ (or any build that supports `token_processors`). Gating mode works with any ClickHouse version.
 - **Identity Provider**: Any OAuth 2.0 / OIDC-compliant provider (Keycloak, Azure AD, Google, AWS Cognito, etc.)
 - **`gating_secret_key`**: Required in both modes. Protects stateless client registration, authorization codes, and (in gating mode) refresh tokens.
@@ -276,7 +369,7 @@ For direct bearer-token use, a plain reverse proxy is usually enough.
 
 For browser-based MCP login, the frontend must expose two public URL spaces:
 
-- the protected resource, for example `https://PUBLIC_HOST.example.com/http`
+- the protected resource, for example `https://PUBLIC_HOST.example.com/`
 - the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth`
 
 The proxy must:
@@ -291,7 +384,7 @@ The proxy must:
 Example nginx configuration:
 
 ```nginx
-location ^~ /http {
+location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Authorization $http_authorization;
@@ -317,8 +410,8 @@ server:
     mode: "forward"
     gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
-    audience: "https://PUBLIC_HOST.example.com/http"
-    public_resource_url: "https://PUBLIC_HOST.example.com/http"
+    audience: "https://PUBLIC_HOST.example.com/"
+    public_resource_url: "https://PUBLIC_HOST.example.com/"
     public_auth_server_url: "https://PUBLIC_HOST.example.com/oauth"
     client_id: "YOUR_GOOGLE_WEB_CLIENT.apps.googleusercontent.com"
     client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
