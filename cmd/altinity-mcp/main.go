@@ -142,6 +142,18 @@ func run(args []string) error {
 				Value:   map[string]string{},
 				Sources: cli.EnvVars("CLICKHOUSE_HTTP_HEADERS"),
 			},
+			&cli.StringFlag{
+				Name:    "clickhouse-cluster-name",
+				Usage:   "ClickHouse cluster name for interserver-secret auth",
+				Value:   "",
+				Sources: cli.EnvVars("CLICKHOUSE_CLUSTER_NAME"),
+			},
+			&cli.StringFlag{
+				Name:    "clickhouse-cluster-secret",
+				Usage:   "Shared cluster secret; when set altinity-mcp authenticates as a trusted cluster peer (requires --clickhouse-protocol=tcp)",
+				Value:   "",
+				Sources: cli.EnvVars("CLICKHOUSE_CLUSTER_SECRET"),
+			},
 			&cli.BoolFlag{
 				Name:    "clickhouse-tls-insecure-skip-verify",
 				Usage:   "Skip server certificate verification",
@@ -1027,6 +1039,13 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.ClickHouse.TLS.InsecureSkipVerify = cmd.Bool("clickhouse-tls-insecure-skip-verify")
 	}
 
+	if cmd.IsSet("clickhouse-cluster-name") {
+		cfg.ClickHouse.ClusterName = cmd.String("clickhouse-cluster-name")
+	}
+	if cmd.IsSet("clickhouse-cluster-secret") {
+		cfg.ClickHouse.ClusterSecret = cmd.String("clickhouse-cluster-secret")
+	}
+
 	// Override Server config with CLI flags
 	if cmd.IsSet("transport") {
 		cfg.Server.Transport = mcpTransport
@@ -1274,6 +1293,9 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	if err := validateOAuthRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateClusterSecretConfig(cfg); err != nil {
+		return nil, err
+	}
 
 	// Test connection to ClickHouse at startup, unless credentials are dynamic:
 	// - JWE: each request carries its own ClickHouse credentials
@@ -1357,6 +1379,22 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
 	}
 
+	return nil
+}
+
+// validateClusterSecretConfig rejects invalid combinations for
+// interserver-secret mode. The shared secret can only authenticate over the
+// TCP native protocol; ClickHouse has no HTTP equivalent.
+func validateClusterSecretConfig(cfg config.Config) error {
+	if cfg.ClickHouse.ClusterSecret == "" {
+		return nil
+	}
+	if cfg.ClickHouse.Protocol != config.TCPProtocol {
+		return fmt.Errorf("clickhouse-cluster-secret requires clickhouse-protocol=tcp")
+	}
+	if cfg.ClickHouse.ClusterName == "" {
+		return fmt.Errorf("clickhouse-cluster-secret is set but clickhouse-cluster-name is empty")
+	}
 	return nil
 }
 

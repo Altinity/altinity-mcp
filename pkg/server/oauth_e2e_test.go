@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/moby/moby/api/types/container"
 	"github.com/go-jose/go-jose/v4"
+	"github.com/moby/moby/api/types/container"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

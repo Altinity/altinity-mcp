@@ -2,6 +2,7 @@
 CLAUDE.md
 CRUSH.md
 AGENTS.md
+GEMINI.md
 *.pcap
 *.log
 *.exe
@@ -16,13 +17,12 @@ AGENTS.md
 build/
 dist/
 /altinity-mcp
-coverage.out
-results.xml
 go-carpet*
 .mcp.json
 .gocache/
 .gomodcache/
 .tmp/
-
 resutls.xml
+coverage.out
+results.xml
 push-action

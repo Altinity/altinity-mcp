@@ -221,6 +221,7 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"code_challenge":             true,
 		"code_challenge_method":      true,
 		"upstream_bearer_token":      true,
+		"upstream_refresh_token":     true,
 		"upstream_token_type":        true,
 		"access_token_exp":           true,
 		"email":                      true,

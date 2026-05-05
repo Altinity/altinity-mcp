@@ -56,20 +56,21 @@ type oauthPendingAuth struct {
 }
 
 type oauthIssuedCode struct {
-	ClientID            string `json:"client_id"`
-	RedirectURI         string `json:"redirect_uri"`
-	Scope               string `json:"scope"`
-	CodeChallenge       string `json:"code_challenge"`
-	CodeChallengeMethod string `json:"code_challenge_method"`
-	UpstreamBearerToken string `json:"upstream_bearer_token"`
-	UpstreamTokenType   string `json:"upstream_token_type"`
-	Subject             string `json:"sub"`
-	Email               string `json:"email"`
-	Name                string `json:"name"`
-	HostedDomain        string `json:"hd"`
-	EmailVerified       bool   `json:"email_verified"`
-	ExpiresAt           time.Time
-	AccessTokenExpiry   time.Time
+	ClientID             string `json:"client_id"`
+	RedirectURI          string `json:"redirect_uri"`
+	Scope                string `json:"scope"`
+	CodeChallenge        string `json:"code_challenge"`
+	CodeChallengeMethod  string `json:"code_challenge_method"`
+	UpstreamBearerToken  string `json:"upstream_bearer_token"`
+	UpstreamRefreshToken string `json:"upstream_refresh_token,omitempty"`
+	UpstreamTokenType    string `json:"upstream_token_type"`
+	Subject              string `json:"sub"`
+	Email                string `json:"email"`
+	Name                 string `json:"name"`
+	HostedDomain         string `json:"hd"`
+	EmailVerified        bool   `json:"email_verified"`
+	ExpiresAt            time.Time
+	AccessTokenExpiry    time.Time
 }
 
 // maxOAuthStateEntries caps each map in the state store to prevent memory
@@ -195,24 +196,24 @@ func (a *application) oauthForwardMode() bool {
 	return a.oauthMode() == "forward"
 }
 
-func (a *application) oauthGatingSecret() []byte {
+func (a *application) oauthJWESecret() []byte {
 	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.GatingSecretKey)
 	return []byte(secret)
 }
 
-func (a *application) mustGatingSecret() ([]byte, error) {
-	secret := a.oauthGatingSecret()
+func (a *application) mustJWESecret() ([]byte, error) {
+	secret := a.oauthJWESecret()
 	if len(secret) == 0 {
 		return nil, fmt.Errorf("oauth gating_secret_key is required for OAuth client registration and gating-mode token minting")
 	}
 	return secret, nil
 }
 
-func encodeGatingArtifact(secret []byte, claims map[string]interface{}) (string, error) {
+func encodeJWEArtifact(secret []byte, claims map[string]interface{}) (string, error) {
 	return jwe_auth.GenerateJWEToken(claims, secret, secret)
 }
 
-func decodeGatingArtifact(secret []byte, token string) (map[string]interface{}, error) {
+func decodeJWEArtifact(secret []byte, token string) (map[string]interface{}, error) {
 	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
 }
 
@@ -762,12 +763,12 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Only public clients with PKCE are supported", http.StatusBadRequest)
 		return
 	}
-	secret, err := a.mustGatingSecret()
+	secret, err := a.mustJWESecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientID, err := encodeGatingArtifact(secret, map[string]interface{}{
+	clientID, err := encodeJWEArtifact(secret, map[string]interface{}{
 		"redirect_uris":              req.RedirectURIs,
 		"token_endpoint_auth_method": "none",
 		"grant_type":                 "authorization_code",
@@ -779,10 +780,16 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	// grant_types must include every grant the server will accept from this
+	// client. Per RFC 7591 §3.2.1 clients treat this list as authoritative,
+	// so omitting refresh_token here causes strict clients (e.g. Claude.ai)
+	// to skip grant_type=refresh_token even though /oauth/token would
+	// accept it and /.well-known/oauth-authorization-server advertises it
+	// via grant_types_supported.
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"client_id":                  clientID,
 		"redirect_uris":              req.RedirectURIs,
-		"grant_types":                []string{"authorization_code"},
+		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "none",
 		"client_id_issued_at":        time.Now().Unix(),
@@ -805,12 +812,12 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Invalid authorization request", http.StatusBadRequest)
 		return
 	}
-	secret, err := a.mustGatingSecret()
+	secret, err := a.mustJWESecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientClaims, err := decodeGatingArtifact(secret, clientID)
+	clientClaims, err := decodeJWEArtifact(secret, clientID)
 	if err != nil {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
@@ -849,6 +856,9 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	scope := strings.Join(cfg.Server.OAuth.Scopes, " ")
 	if scope == "" {
 		scope = "openid email"
+	}
+	if a.oauthForwardMode() && cfg.Server.OAuth.UpstreamOfflineAccess && !slices.Contains(strings.Fields(scope), "offline_access") {
+		scope = strings.TrimSpace(scope + " offline_access")
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
@@ -905,11 +915,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		IDToken     string `json:"id_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   int64  `json:"expires_in"`
-		Scope       string `json:"scope"`
+		AccessToken  string `json:"access_token"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+		Scope        string `json:"scope"`
 	}
 	if err := json.Unmarshal(body, &tokenResp); err != nil || (tokenResp.AccessToken == "" && tokenResp.IDToken == "") {
 		log.Error().
@@ -920,6 +931,15 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Missing upstream token", http.StatusBadGateway)
 		return
 	}
+	log.Info().
+		Bool("has_access_token", tokenResp.AccessToken != "").
+		Bool("has_id_token", tokenResp.IDToken != "").
+		Bool("has_refresh_token", tokenResp.RefreshToken != "").
+		Bool("forward_mode", a.oauthForwardMode()).
+		Bool("upstream_offline_access", cfg.Server.OAuth.UpstreamOfflineAccess).
+		Str("scope", tokenResp.Scope).
+		Int64("expires_in", tokenResp.ExpiresIn).
+		Msg("Upstream OAuth token exchange succeeded")
 
 	var identityClaims *altinitymcp.OAuthClaims
 	if tokenResp.IDToken != "" {
@@ -950,13 +970,24 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	if tokenType == "" {
 		tokenType = "Bearer"
 	}
-	accessTokenExpiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
-	if tokenResp.ExpiresIn <= 0 {
-		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
-	}
 	bearerToken := tokenResp.IDToken
 	if bearerToken == "" {
 		bearerToken = tokenResp.AccessToken
+	}
+	// The bearer we forward to ClickHouse is the ID token when present, else
+	// the access_token. Auth0 (and other IdPs) routinely return different
+	// lifetimes for the two — e.g. expires_in=86400 for the access_token while
+	// the id_token's own exp is iat+3600. We must report expires_in matching
+	// the actual bearer the client receives, otherwise downstream MCP clients
+	// (Claude.ai) won't refresh in time and the user-visible session breaks
+	// at the bearer's real expiry.
+	var accessTokenExpiry int64
+	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		accessTokenExpiry = identityClaims.ExpiresAt
+	} else if tokenResp.ExpiresIn > 0 {
+		accessTokenExpiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Unix()
+	} else {
+		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
 	}
 	gatingCode := randomToken("oac_")
 	issuedCode := oauthIssuedCode{
@@ -971,6 +1002,14 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		issuedCode.UpstreamBearerToken = bearerToken
 		issuedCode.UpstreamTokenType = tokenType
 		issuedCode.AccessTokenExpiry = time.Unix(accessTokenExpiry, 0)
+		if cfg.Server.OAuth.UpstreamOfflineAccess {
+			issuedCode.UpstreamRefreshToken = tokenResp.RefreshToken
+			if tokenResp.RefreshToken == "" {
+				log.Warn().
+					Str("scope", tokenResp.Scope).
+					Msg("upstream_offline_access=true but upstream did not return a refresh_token; check IdP application config (offline_access scope, refresh_token grant, audience)")
+			}
+		}
 	} else {
 		issuedCode.Subject = identityClaims.Subject
 		issuedCode.Email = identityClaims.Email
@@ -1038,7 +1077,7 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	refreshToken, err := encodeGatingArtifact(secret, map[string]interface{}{
+	refreshToken, err := encodeJWEArtifact(secret, map[string]interface{}{
 		"sub":            id.Subject,
 		"iss":            issuer,
 		"aud":            audience,
@@ -1068,6 +1107,25 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// mintForwardRefreshToken wraps an upstream IdP refresh token in a stateless JWE.
+func (a *application) mintForwardRefreshToken(secret []byte, upstreamRefresh, upstreamTokenType, scope, clientID, issuer string) (string, error) {
+	cfg := a.GetCurrentConfig()
+	now := time.Now()
+	tokenType := upstreamTokenType
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
+	return encodeJWEArtifact(secret, map[string]interface{}{
+		"upstream_refresh_token": upstreamRefresh,
+		"upstream_token_type":    tokenType,
+		"scope":                  scope,
+		"client_id":              clientID,
+		"iss":                    strings.TrimSuffix(issuer, "/"),
+		"iat":                    now.Unix(),
+		"exp":                    now.Add(time.Duration(ttlSeconds(cfg.Server.OAuth.RefreshTokenTTLSeconds, defaultRefreshTokenTTLSeconds)) * time.Second).Unix(),
+	})
+}
+
 func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if !a.oauthEnabled() {
 		http.NotFound(w, r)
@@ -1082,7 +1140,12 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Form.Get("grant_type") {
+	grantType := r.Form.Get("grant_type")
+	log.Info().
+		Str("grant_type", grantType).
+		Bool("forward_mode", a.oauthForwardMode()).
+		Msg("OAuth /oauth/token request received")
+	switch grantType {
 	case "authorization_code":
 		a.handleOAuthTokenAuthCode(w, r)
 	case "refresh_token":
@@ -1093,13 +1156,13 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Request) {
-	secret, err := a.mustGatingSecret()
+	secret, err := a.mustJWESecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeGatingArtifact(secret, clientID)
+	clientClaims, err := decodeJWEArtifact(secret, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1152,13 +1215,31 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 				expiresIn = 0
 			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		response := map[string]interface{}{
 			"access_token": bearerToken,
 			"token_type":   issued.UpstreamTokenType,
 			"expires_in":   expiresIn,
 			"scope":        issued.Scope,
-		})
+		}
+		if issued.UpstreamRefreshToken != "" {
+			refreshToken, err := a.mintForwardRefreshToken(secret, issued.UpstreamRefreshToken, issued.UpstreamTokenType, issued.Scope, clientID, a.oauthAuthorizationServerBaseURL(r))
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to mint forward-mode refresh token")
+				writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
+				return
+			}
+			response["refresh_token"] = refreshToken
+			log.Info().
+				Str("client_id", clientID).
+				Int("jwe_len", len(refreshToken)).
+				Msg("Forward-mode auth-code response includes refresh_token (JWE wrapping upstream refresh)")
+		} else {
+			log.Info().
+				Str("client_id", clientID).
+				Msg("Forward-mode auth-code response WITHOUT refresh_token (no upstream refresh captured)")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
 		return
 	}
 
@@ -1174,26 +1255,29 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 }
 
 // handleOAuthTokenRefresh exchanges a refresh token for a new access + rotated
-// refresh token pair. Refresh tokens are stateless JWE-encrypted blobs containing
-// the user's identity claims, validated by decrypt + expiry check only.
+// refresh token pair. Refresh tokens are stateless JWE-encrypted blobs validated
+// by decrypt + expiry check only.
 //
-// Limitations of the stateless design:
-//   - No revocation: a stolen refresh token is valid until its TTL expires
-//     (configured via refresh_token_ttl_seconds, default 30 days).
-//   - No reuse detection: a rotated-out refresh token remains valid alongside
+// In gating mode the JWE wraps the user's identity claims and a fresh self-issued
+// access token is minted from them. In forward mode the JWE wraps the upstream
+// IdP's refresh token; this handler decrypts it, calls the upstream token
+// endpoint with grant_type=refresh_token, re-validates the new ID token via the
+// configured JWKS, and returns a new pair (access_token = upstream ID token,
+// refresh_token = new JWE around the rotated upstream refresh).
+//
+// Limitations of the stateless design (apply to both modes):
+//   - No revocation: a stolen MCP refresh token is valid until its JWE exp.
+//   - No reuse detection: a rotated-out MCP refresh token remains valid alongside
 //     the new one until it naturally expires.
 //   - No server-side state: there is no token store to revoke against.
 //
-// These are accepted tradeoffs for a gating server with no persistent storage.
-// Identity policy checks (allowed domains, email verification) are re-evaluated
-// on every refresh before minting new tokens. Deployments that require token
-// revocation should use forward mode, where the upstream IdP controls lifecycle.
+// In forward mode, IdP-side refresh-token rotation + reuse detection (e.g. Auth0)
+// provides a second line of defense outside MCP.
 func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
-	if a.oauthForwardMode() {
-		writeOAuthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "refresh tokens are not supported in forward mode")
-		return
-	}
-	secret, err := a.mustGatingSecret()
+	log.Info().
+		Bool("forward_mode", a.oauthForwardMode()).
+		Msg("OAuth refresh_token grant: handler entered")
+	secret, err := a.mustJWESecret()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
 		return
@@ -1201,7 +1285,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 
 	// Validate client_id
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeGatingArtifact(secret, clientID)
+	clientClaims, err := decodeJWEArtifact(secret, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1218,11 +1302,16 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "missing refresh token")
 		return
 	}
-	claims, err := decodeGatingArtifact(secret, refreshTokenStr)
+	claims, err := decodeJWEArtifact(secret, refreshTokenStr)
 	if err != nil {
+		log.Warn().Err(err).Msg("OAuth refresh_token grant: JWE decode failed")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		return
 	}
+	jweUpstreamRefresh, _ := claims["upstream_refresh_token"].(string)
+	log.Info().
+		Bool("has_upstream_refresh_token", jweUpstreamRefresh != "").
+		Msg("OAuth refresh_token grant: JWE decoded successfully")
 
 	// Verify client_id in refresh token matches the requesting client
 	tokenClientID, _ := claims["client_id"].(string)
@@ -1232,6 +1321,11 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 			Str("request_client_id", clientID).
 			Msg("OAuth refresh rejected: client_id mismatch")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token was not issued to this client")
+		return
+	}
+
+	if a.oauthForwardMode() {
+		a.handleOAuthTokenRefreshForward(w, r, secret, clientID, claims)
 		return
 	}
 
@@ -1260,6 +1354,141 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		HostedDomain:  hd,
 		EmailVerified: emailVerified,
 		Scope:         scope,
+	})
+}
+
+// handleOAuthTokenRefreshForward implements the forward-mode refresh flow.
+// The decrypted JWE carries the upstream IdP refresh token; we exchange it
+// upstream for a fresh ID token + (rotated) refresh token, re-validate the
+// new ID token, and mint a new JWE wrapping the rotated upstream refresh.
+func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *http.Request, secret []byte, clientID string, claims map[string]interface{}) {
+	upstreamRefresh, _ := claims["upstream_refresh_token"].(string)
+	if upstreamRefresh == "" {
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token is not valid for forward mode")
+		return
+	}
+	upstreamTokenType, _ := claims["upstream_token_type"].(string)
+	scope, _ := claims["scope"].(string)
+
+	cfg := a.GetCurrentConfig()
+	tokenURL, err := a.resolveUpstreamTokenURL()
+	if err != nil {
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to resolve upstream token endpoint")
+		return
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", upstreamRefresh)
+	form.Set("client_id", cfg.Server.OAuth.ClientID)
+	if cfg.Server.OAuth.ClientSecret != "" {
+		form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
+	}
+	if scope != "" {
+		form.Set("scope", scope)
+	}
+
+	log.Info().Str("token_url", tokenURL).Msg("Forward-mode refresh: calling upstream /oauth/token")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(tokenURL, form)
+	if err != nil {
+		log.Error().Err(err).Str("token_url", tokenURL).Msg("Upstream OAuth refresh request failed")
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "upstream refresh failed")
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to read upstream refresh response")
+		return
+	}
+	if resp.StatusCode >= 300 {
+		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth refresh rejected")
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "upstream rejected the refresh token")
+		return
+	}
+	log.Info().Int("status", resp.StatusCode).Msg("Forward-mode refresh: upstream /oauth/token returned 2xx")
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+		Scope        string `json:"scope"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil || (tokenResp.AccessToken == "" && tokenResp.IDToken == "") {
+		log.Error().Err(err).Msg("Upstream refresh response missing usable token")
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "missing upstream token")
+		return
+	}
+
+	bearerToken := tokenResp.IDToken
+	if bearerToken == "" {
+		bearerToken = tokenResp.AccessToken
+	}
+	// Re-run identity policy on the rotated upstream token before issuing it.
+	// Mirror handleOAuthCallback's preference: validate id_token via JWKS when
+	// present, otherwise fall back to the upstream userinfo endpoint with the
+	// access_token (which also runs identity-policy checks).
+	var identityClaims *altinitymcp.OAuthClaims
+	if tokenResp.IDToken != "" {
+		identityClaims, err = a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID)
+		if err != nil {
+			log.Error().Err(err).Msg("Upstream identity token validation failed on refresh")
+			writeOAuthTokenError(w, http.StatusForbidden, "access_denied", err.Error())
+			return
+		}
+	} else if tokenResp.AccessToken != "" {
+		if _, err := a.fetchUserInfo(tokenResp.AccessToken); err != nil {
+			log.Error().Err(err).Msg("Upstream userinfo validation failed on refresh")
+			writeOAuthTokenError(w, http.StatusForbidden, "access_denied", err.Error())
+			return
+		}
+	}
+
+	rotatedUpstream := tokenResp.RefreshToken
+	if rotatedUpstream == "" {
+		// IdP did not rotate; keep the existing upstream refresh.
+		rotatedUpstream = upstreamRefresh
+	}
+	newTokenType := tokenResp.TokenType
+	if newTokenType == "" {
+		newTokenType = upstreamTokenType
+	}
+	if newTokenType == "" {
+		newTokenType = "Bearer"
+	}
+	newScope := tokenResp.Scope
+	if newScope == "" {
+		newScope = scope
+	}
+	newRefreshJWE, err := a.mintForwardRefreshToken(secret, rotatedUpstream, newTokenType, newScope, clientID, a.oauthAuthorizationServerBaseURL(r))
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to mint rotated forward-mode refresh token")
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	// Match expires_in to the actual bearer we forward (id_token when present),
+	// not tokenResp.ExpiresIn which describes the access_token's lifetime —
+	// IdPs often return divergent lifetimes (e.g. Auth0: id_token exp = iat+3600,
+	// access_token expires_in = 86400). See handleOAuthCallback for the same fix.
+	var expiresIn int64
+	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		expiresIn = identityClaims.ExpiresAt - time.Now().Unix()
+	} else if tokenResp.ExpiresIn > 0 {
+		expiresIn = tokenResp.ExpiresIn
+	} else {
+		expiresIn = int64(time.Hour.Seconds())
+	}
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token":  bearerToken,
+		"refresh_token": newRefreshJWE,
+		"token_type":    newTokenType,
+		"expires_in":    expiresIn,
+		"scope":         newScope,
 	})
 }
 
