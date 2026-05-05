@@ -69,6 +69,13 @@ A Helm chart for Altinity MCP Server
 | nodeSelector | object | `{}` | Node labels for pod assignment |
 | podAnnotations | object | `{}` | Pod annotations |
 | podSecurityContext | object | `{}` | Pod security context |
+| probes | object | `{"liveness":{"initialDelaySeconds":7,"path":"/livez","periodSeconds":30},"readiness":{"initialDelaySeconds":7,"path":"/health","periodSeconds":30}}` | Probe configuration |
+| probes.liveness.initialDelaySeconds | int | `7` | Initial delay before liveness probe starts |
+| probes.liveness.path | string | `"/livez"` | Path for the liveness probe |
+| probes.liveness.periodSeconds | int | `30` | How often to perform the liveness probe |
+| probes.readiness.initialDelaySeconds | int | `7` | Initial delay before readiness probe starts |
+| probes.readiness.path | string | `"/health"` | Path for the readiness probe |
+| probes.readiness.periodSeconds | int | `30` | How often to perform the readiness probe |
 | replicaCount | int | `1` | Number of replicas to deploy |
 | resources | object | `{}` | Container resource requests and limits |
 | securityContext | object | `{}` | Container security context |

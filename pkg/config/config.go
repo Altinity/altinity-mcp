@@ -51,6 +51,24 @@ type ClickHouseConfig struct {
 	// the TCP protocol is supported.
 	ClusterName   string `json:"cluster_name,omitempty" yaml:"cluster_name,omitempty" flag:"clickhouse-cluster-name" desc:"ClickHouse cluster name for interserver-secret auth"`
 	ClusterSecret string `json:"cluster_secret,omitempty" yaml:"cluster_secret,omitempty" flag:"clickhouse-cluster-secret" desc:"Shared interserver secret; when set altinity-mcp authenticates as a trusted cluster peer"`
+	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
+	// Default 10 MB when 0. Set to a negative number to disable the check.
+	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
+}
+
+// defaultMaxQueryLength is the default cap applied when MaxQueryLength is 0.
+const defaultMaxQueryLength = 10 * 1024 * 1024 // 10 MiB
+
+// EffectiveMaxQueryLength returns the effective cap after applying defaults/disable semantics.
+// Returns 0 if the check is disabled.
+func (c ClickHouseConfig) EffectiveMaxQueryLength() int {
+	if c.MaxQueryLength < 0 {
+		return 0
+	}
+	if c.MaxQueryLength == 0 {
+		return defaultMaxQueryLength
+	}
+	return c.MaxQueryLength
 }
 
 // MCPTransport defines the transport used for MCP communication
