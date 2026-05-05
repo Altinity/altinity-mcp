@@ -58,7 +58,7 @@ func setupClickHouseContainer(t *testing.T) *config.ClickHouseConfig {
 
 	return &config.ClickHouseConfig{
 		Host:             host,
-		Port:             port.Int(),
+		Port:             int(port.Num()),
 		Database:         "default",
 		Username:         "default",
 		Password:         "",

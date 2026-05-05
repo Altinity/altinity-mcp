@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
@@ -503,7 +503,7 @@ func setupAntalyaClickHouseWithOIDC(t *testing.T, ctx context.Context, oidcDisco
 
 	return config.ClickHouseConfig{
 		Host:             host,
-		Port:             httpPort.Int(),
+		Port:             int(httpPort.Num()),
 		Database:         "default",
 		Username:         "default",
 		Password:         "",
