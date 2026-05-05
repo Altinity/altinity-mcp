@@ -51,6 +51,24 @@ type ClickHouseConfig struct {
 	// the TCP protocol is supported.
 	ClusterName   string `json:"cluster_name,omitempty" yaml:"cluster_name,omitempty" flag:"clickhouse-cluster-name" desc:"ClickHouse cluster name for interserver-secret auth"`
 	ClusterSecret string `json:"cluster_secret,omitempty" yaml:"cluster_secret,omitempty" flag:"clickhouse-cluster-secret" desc:"Shared interserver secret; when set altinity-mcp authenticates as a trusted cluster peer"`
+	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
+	// Default 10 MB when 0. Set to a negative number to disable the check.
+	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
+}
+
+// defaultMaxQueryLength is the default cap applied when MaxQueryLength is 0.
+const defaultMaxQueryLength = 10 * 1024 * 1024 // 10 MiB
+
+// EffectiveMaxQueryLength returns the effective cap after applying defaults/disable semantics.
+// Returns 0 if the check is disabled.
+func (c ClickHouseConfig) EffectiveMaxQueryLength() int {
+	if c.MaxQueryLength < 0 {
+		return 0
+	}
+	if c.MaxQueryLength == 0 {
+		return defaultMaxQueryLength
+	}
+	return c.MaxQueryLength
 }
 
 // MCPTransport defines the transport used for MCP communication
@@ -126,6 +144,11 @@ type OAuthConfig struct {
 
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" desc:"OAuth scopes to request"`
+
+	// UpstreamOfflineAccess opts forward mode into requesting offline_access from the upstream IdP
+	// and wrapping the returned refresh token in a stateless JWE handed back to the MCP client.
+	// Default false: forward mode behaves exactly as before (no refresh token issued, refresh grant rejected).
+	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" desc:"Forward mode: request offline_access upstream and issue JWE-wrapped refresh tokens"`
 
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" desc:"Required OAuth scopes for access"`

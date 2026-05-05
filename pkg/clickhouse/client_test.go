@@ -159,35 +159,35 @@ func TestClientErrorPaths(t *testing.T) {
 // TestUtilityFunctions tests utility functions
 func TestUtilityFunctions(t *testing.T) {
 	t.Parallel()
-	t.Run("isSelectQuery", func(t *testing.T) {
+	t.Run("IsSelectQuery", func(t *testing.T) {
 		t.Parallel()
-		require.True(t, isSelectQuery("SELECT * FROM table"))
-		require.True(t, isSelectQuery("  select * from table  "))
-		require.True(t, isSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
-		require.False(t, isSelectQuery("INSERT INTO table VALUES (1)"))
-		require.False(t, isSelectQuery("CREATE TABLE test (id INT)"))
+		require.True(t, IsSelectQuery("SELECT * FROM table"))
+		require.True(t, IsSelectQuery("  select * from table  "))
+		require.True(t, IsSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
+		require.False(t, IsSelectQuery("INSERT INTO table VALUES (1)"))
+		require.False(t, IsSelectQuery("CREATE TABLE test (id INT)"))
 		// Test with -- comments
-		require.True(t, isSelectQuery("-- comment\nSELECT * FROM table"))
-		require.False(t, isSelectQuery("-- comment\nINSERT INTO table VALUES (1)"))
-		require.True(t, isSelectQuery("SELECT * FROM table -- comment"))
-		require.True(t, isSelectQuery("-- comment\nWITH cte AS (SELECT 1) SELECT * FROM cte"))
+		require.True(t, IsSelectQuery("-- comment\nSELECT * FROM table"))
+		require.False(t, IsSelectQuery("-- comment\nINSERT INTO table VALUES (1)"))
+		require.True(t, IsSelectQuery("SELECT * FROM table -- comment"))
+		require.True(t, IsSelectQuery("-- comment\nWITH cte AS (SELECT 1) SELECT * FROM cte"))
 		// Test with /* */ comments
-		require.True(t, isSelectQuery("/* comment */ SELECT * FROM table"))
-		require.False(t, isSelectQuery("/* comment */ INSERT INTO table VALUES (1)"))
-		require.True(t, isSelectQuery("SELECT /* comment */ * FROM table"))
-		require.True(t, isSelectQuery("/* multiline\ncomment */ SELECT * FROM table"))
-		require.False(t, isSelectQuery("/* comment */ CREATE TABLE test (id INT)"))
+		require.True(t, IsSelectQuery("/* comment */ SELECT * FROM table"))
+		require.False(t, IsSelectQuery("/* comment */ INSERT INTO table VALUES (1)"))
+		require.True(t, IsSelectQuery("SELECT /* comment */ * FROM table"))
+		require.True(t, IsSelectQuery("/* multiline\ncomment */ SELECT * FROM table"))
+		require.False(t, IsSelectQuery("/* comment */ CREATE TABLE test (id INT)"))
 		// Test with both comment types
-		require.True(t, isSelectQuery("-- line comment\n/* block comment */ SELECT * FROM table"))
-		require.False(t, isSelectQuery("-- line comment\n/* block comment */ INSERT INTO table VALUES (1)"))
+		require.True(t, IsSelectQuery("-- line comment\n/* block comment */ SELECT * FROM table"))
+		require.False(t, IsSelectQuery("-- line comment\n/* block comment */ INSERT INTO table VALUES (1)"))
 		// Mid-query single-line comments (multiline input)
-		require.True(t, isSelectQuery("SELECT 1\n-- mid comment\nFROM table"))
-		require.False(t, isSelectQuery("-- first line\n-- second line\nINSERT INTO table VALUES (1)"))
-		require.True(t, isSelectQuery("\n-- leading blank\n\nSELECT 1"))
+		require.True(t, IsSelectQuery("SELECT 1\n-- mid comment\nFROM table"))
+		require.False(t, IsSelectQuery("-- first line\n-- second line\nINSERT INTO table VALUES (1)"))
+		require.True(t, IsSelectQuery("\n-- leading blank\n\nSELECT 1"))
 		// Additional query types
-		require.True(t, isSelectQuery("DESC table"))
-		require.True(t, isSelectQuery("EXISTS (SELECT 1)"))
-		require.True(t, isSelectQuery("EXPLAIN SELECT * FROM table"))
+		require.True(t, IsSelectQuery("DESC table"))
+		require.True(t, IsSelectQuery("EXISTS (SELECT 1)"))
+		require.True(t, IsSelectQuery("EXPLAIN SELECT * FROM table"))
 	})
 
 	t.Run("truncateString", func(t *testing.T) {

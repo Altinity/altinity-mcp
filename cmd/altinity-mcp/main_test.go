@@ -399,8 +399,11 @@ func TestBuildServerTLSConfig(t *testing.T) {
 		// Create a temporary CA certificate file
 		tmpFile, err := os.CreateTemp("", "test-ca-*.crt")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
-
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 		// Write a dummy PEM certificate
 		caCertPEM := `-----BEGIN CERTIFICATE-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
@@ -438,7 +441,6 @@ func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 	_, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
 	return cfg
 }
-
 
 // Health handler tests
 func TestHealthHandler_Additions(t *testing.T) {
@@ -906,7 +908,7 @@ func TestTestConnection(t *testing.T) {
 </clickhouse>`, certPath, keyPath)
 
 		// https://github.com/ClickHouse/clickhouse-go/issues/1630
-		nonEmptyDefaultUserPassword := `<clickhouse><users><default><password>non_empty</password></default></users></clickhouse>`
+		nonEmptyDefaultUserPassword := "<clickhouse><users><default><password>non_empty</password></default></users></clickhouse>"
 
 		chCfg := embeddedch.Setup(t,
 			embeddedch.WithConfigDropIn(httpsConfig),
@@ -1234,7 +1236,11 @@ func TestNewApplication(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -1337,7 +1343,11 @@ func TestBuildConfigWithFile(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 reload_time: 10
@@ -1415,7 +1425,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+				t.Fatalf("can't delete tmpFile.Name(): %v", removeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -1792,11 +1806,13 @@ func TestCORSSupport(t *testing.T) {
 
 				resp, err := client.Do(req)
 				require.NoError(t, err)
-				defer resp.Body.Close()
 				require.Equal(t, http.StatusOK, resp.StatusCode)
 				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
 				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					t.Fatalf("can't close response body, %v", closeErr)
+				}
 			}
 
 			// Clean up (thread-safe)
@@ -1818,9 +1834,9 @@ func getFreeRandomPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer listener.Close()
 
 	addr := listener.Addr().(*net.TCPAddr)
+	_ = listener.Close()
 	return addr.Port, nil
 }
 
@@ -2327,7 +2343,11 @@ func TestReloadConfigWithValidFile(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2360,7 +2380,11 @@ logging:
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `clickhouse: {}`
 		_, err = tmpFile.WriteString(configContent)
@@ -2460,7 +2484,11 @@ func TestRunServerWithValidConfig(t *testing.T) {
 	// Create a temporary config file
 	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() {
+		if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+			t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+		}
+	}()
 
 	configContent := `
 clickhouse:
@@ -2623,7 +2651,11 @@ func TestRun(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:
@@ -2641,7 +2673,6 @@ logging:
 `
 		_, err = tmpFile.WriteString(configContent)
 		require.NoError(t, err)
-		tmpFile.Close()
 
 		args := []string{"altinity-mcp", "--config", tmpFile.Name()}
 
@@ -3099,7 +3130,11 @@ func TestMainFunctionality(t *testing.T) {
 		// Create a temporary config file
 		tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
+		defer func() {
+			if closeErr := os.Remove(tmpFile.Name()); closeErr != nil {
+				t.Fatalf("can't delete %s: %v", tmpFile.Name(), closeErr)
+			}
+		}()
 
 		configContent := `
 clickhouse:

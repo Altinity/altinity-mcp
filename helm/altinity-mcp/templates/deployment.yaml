@@ -48,16 +48,16 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /livez
+              path: {{ .Values.probes.liveness.path }}
               port: http
-            initialDelaySeconds: 7
-            periodSeconds: 30
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           readinessProbe:
             httpGet:
-              path: /health
+              path: {{ .Values.probes.readiness.path }}
               port: http
-            initialDelaySeconds: 7
-            periodSeconds: 30
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

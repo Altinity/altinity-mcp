@@ -2,6 +2,7 @@
 CLAUDE.md
 CRUSH.md
 AGENTS.md
+GEMINI.md
 *.pcap
 *.log
 *.exe
@@ -17,13 +18,11 @@ build/
 dist/
 /altinity-mcp
 /jwe-token-generator
-coverage.out
-results.xml
 go-carpet*
 .mcp.json
 .gocache/
 .gomodcache/
 .tmp/
-
-resutls.xml
+coverage.out
+results.xml
 push-action
