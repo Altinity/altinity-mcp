@@ -699,9 +699,11 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	resp := map[string]interface{}{
 		// Trailing slash is the canonical form per RFC 9728 §2: clients (incl.
 		// Anthropic's proxy) normalise the MCP server URL to include one and
-		// compare it against this field. A mismatch causes silent auth failure.
+		// compare it against this field. Keep `authorization_servers` in the
+		// same shape so cross-doc URL equality (issuer == as[0] == resource)
+		// holds regardless of whether the client normalises before comparing.
 		"resource":                 strings.TrimRight(baseURL, "/") + "/",
-		"authorization_servers":    []string{authServerBaseURL},
+		"authorization_servers":    []string{strings.TrimRight(authServerBaseURL, "/") + "/"},
 		"scopes_supported":         a.GetCurrentConfig().Server.OAuth.Scopes,
 		"bearer_methods_supported": []string{"header"},
 	}
@@ -715,8 +717,14 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		return
 	}
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
+	// `issuer` is published with a trailing slash to match the canonical form
+	// of `resource` in the protected-resource document. RFC 8414 §2 requires
+	// the iss claim in minted tokens to be identical, so mintGatingTokenResponse
+	// uses the same with-slash form (and validateOAuthClaims normalises both
+	// sides defensively).
+	issuer := strings.TrimRight(baseURL, "/") + "/"
 	resp := map[string]interface{}{
-		"issuer":                                baseURL,
+		"issuer":                                issuer,
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
@@ -736,8 +744,9 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		return
 	}
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
+	issuer := strings.TrimRight(baseURL, "/") + "/"
 	resp := map[string]interface{}{
-		"issuer":                                baseURL,
+		"issuer":                                issuer,
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
@@ -1136,7 +1145,9 @@ type gatingIdentity struct {
 // for gating mode, then writes the JSON response.
 func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Request, secret []byte, id gatingIdentity) {
 	cfg := a.GetCurrentConfig()
-	issuer := strings.TrimSuffix(a.oauthAuthorizationServerBaseURL(r), "/")
+	// Match the trailing-slash form advertised in /.well-known/oauth-authorization-server
+	// (RFC 8414 §2 requires byte-identical issuer between metadata and iss claim).
+	issuer := strings.TrimRight(a.oauthAuthorizationServerBaseURL(r), "/") + "/"
 	audience := strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
 	if audience == "" {
 		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")

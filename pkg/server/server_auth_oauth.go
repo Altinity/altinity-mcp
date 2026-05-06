@@ -129,8 +129,12 @@ func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthCl
 	if s.Config.Server.OAuth.IsGatingMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
 		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
 	}
-	// Validate issuer if configured
-	if expectedIssuer != "" && claims.Issuer != expectedIssuer {
+	// Validate issuer if configured. Trailing slash is normalised on both sides:
+	// the advertised issuer in /.well-known/oauth-authorization-server uses the
+	// trailing-slash form (matching RFC 9728 `resource`), but operator config may
+	// or may not include the slash. Compare canonicalised forms so either works.
+	if expectedIssuer != "" &&
+		strings.TrimRight(claims.Issuer, "/") != strings.TrimRight(expectedIssuer, "/") {
 		log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
 		return nil, ErrInvalidOAuthToken
 	}
