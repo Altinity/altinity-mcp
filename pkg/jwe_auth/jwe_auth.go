@@ -215,6 +215,7 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"redirect_uris":              true,
 		"token_endpoint_auth_method": true,
 		"client_id":                  true,
+		"client_secret":              true,
 		"redirect_uri":               true,
 		"scope":                      true,
 		"client_state":               true,
