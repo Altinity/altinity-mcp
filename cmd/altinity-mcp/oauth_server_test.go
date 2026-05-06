@@ -52,7 +52,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "https://mcp.example.com", body["resource"])
+		require.Equal(t, "https://mcp.example.com/", body["resource"])
 		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
@@ -125,7 +125,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com\"")
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
@@ -690,6 +690,23 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 		return "", err
 	}
 	return object.CompactSerialize()
+}
+
+func TestCanonicalResourceURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"  ", ""},
+		{"https://mcp.example.com", "https://mcp.example.com/"},
+		{"https://mcp.example.com/", "https://mcp.example.com/"},
+		{"https://mcp.example.com//", "https://mcp.example.com/"},
+		{"  https://mcp.example.com  ", "https://mcp.example.com/"},
+		{"https://mcp.example.com/path", "https://mcp.example.com/path/"},
+		{"https://mcp.example.com/path/", "https://mcp.example.com/path/"},
+	}
+	for _, c := range cases {
+		require.Equal(t, c.want, canonicalResourceURL(c.in), "input=%q", c.in)
+	}
 }
 
 func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {

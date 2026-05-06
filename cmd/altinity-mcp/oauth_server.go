@@ -221,6 +221,22 @@ func normalizeURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
+// canonicalResourceURL returns the protected-resource identifier in its
+// canonical form: trimmed and with exactly one trailing slash. RFC 9728 §3.3
+// (the Bearer Token resource_metadata) and RFC 8707 (resource indicators)
+// treat the resource URL as an opaque identifier compared by string match,
+// so a stable canonical form is what matters; the trailing-slash form is
+// what most upstream IdPs (Auth0, Google) emit in `aud` claims and what
+// Claude.ai expects to round-trip in metadata. Audience validation uses
+// audienceMatchesResource to accept either form on the inbound side.
+func canonicalResourceURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.TrimRight(trimmed, "/") + "/"
+}
+
 func normalizedPath(raw string, fallback string) string {
 	path := strings.TrimSpace(raw)
 	if path == "" {
@@ -651,7 +667,7 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	baseURL := a.resourceBaseURL(r)
 	authServerBaseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
-		"resource":                 baseURL,
+		"resource":                 canonicalResourceURL(baseURL),
 		"authorization_servers":    []string{authServerBaseURL},
 		"scopes_supported":         a.GetCurrentConfig().Server.OAuth.Scopes,
 		"bearer_methods_supported": []string{"header"},
