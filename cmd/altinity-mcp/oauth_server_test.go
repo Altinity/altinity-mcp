@@ -53,10 +53,10 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 		require.Equal(t, "https://mcp.example.com/", body["resource"])
-		// authorization_servers entries also carry a trailing slash so cross-doc
-		// URL equality (issuer == as[0] == resource) holds for clients that
-		// compare strings byte-for-byte (incl. Anthropic's proxy).
-		require.Equal(t, []interface{}{"https://mcp.example.com/oauth/"}, body["authorization_servers"])
+		// authorization_servers entries follow the RFC 8414 issuer convention
+		// (no trailing slash), so as[0] == issuer in our AS metadata. kapa.ai
+		// (the working JSX-artifact reference) ships this same shape.
+		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
 	t.Run("authorization_server_metadata", func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr := httptest.NewRecorder()
 		app.handleOAuthOpenIDConfiguration(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://mcp.example.com/oauth/\"")
+		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://mcp.example.com/oauth\"")
 		require.Contains(t, rr.Body.String(), "\"token_endpoint\":\"https://mcp.example.com/oauth/oauth/token\"")
 	})
 
@@ -172,7 +172,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr := httptest.NewRecorder()
 		app.handleOAuthAuthorizationServerMetadata(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://public.example.com/oauth/\"")
+		require.Contains(t, rr.Body.String(), "\"issuer\":\"https://public.example.com/oauth\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_endpoint\":\"https://public.example.com/oauth/authorize\"")
 		require.Contains(t, rr.Body.String(), "\"registration_endpoint\":\"https://public.example.com/oauth/register\"")
 
@@ -181,7 +181,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
-		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth/\"]")
+		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
 
