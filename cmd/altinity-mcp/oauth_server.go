@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +45,11 @@ type statelessRegisteredClient struct {
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	GrantType               string   `json:"grant_type"`
 	ExpiresAt               int64    `json:"exp"`
+	// ClientSecret is the per-registration secret issued during DCR for
+	// confidential clients (token_endpoint_auth_method: client_secret_post |
+	// client_secret_basic). When empty, the client is public (PKCE-only) —
+	// retained for backward compat with previously-issued client_ids.
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 type oauthPendingAuth struct {
@@ -509,6 +516,35 @@ func sanitizeScope(scope string) string {
 	return strings.Join(strings.Fields(scope), " ")
 }
 
+// authenticateClientSecret validates the inbound `client_secret` against the
+// one stored in the registered client's metadata. RFC 6749 §2.3.1 allows the
+// secret to be presented either via the form body (client_secret_post) or
+// the Authorization: Basic header (client_secret_basic); we accept both.
+//
+// For backward compat with previously-registered public (PKCE-only) clients
+// — those whose JWE-encoded client_id has no `client_secret` claim — we
+// return nil even when the client supplied no secret. New registrations
+// always carry a client_secret, so this fallback only applies to legacy
+// client_ids issued before this change.
+func authenticateClientSecret(client *statelessRegisteredClient, r *http.Request) error {
+	if client.ClientSecret == "" {
+		return nil
+	}
+	got := r.Form.Get("client_secret")
+	if got == "" {
+		if user, pass, ok := r.BasicAuth(); ok && user != "" {
+			got = pass
+		}
+	}
+	if got == "" {
+		return fmt.Errorf("client_secret is required")
+	}
+	if subtle.ConstantTimeCompare([]byte(got), []byte(client.ClientSecret)) != 1 {
+		return fmt.Errorf("client_secret mismatch")
+	}
+	return nil
+}
+
 func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRegisteredClient, error) {
 	client := &statelessRegisteredClient{
 		RedirectURIs: decodeStringSlice(claims["redirect_uris"]),
@@ -521,6 +557,9 @@ func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRe
 	}
 	if exp, ok := claims["exp"].(float64); ok {
 		client.ExpiresAt = int64(exp)
+	}
+	if cs, ok := claims["client_secret"].(string); ok {
+		client.ClientSecret = cs
 	}
 	if client.TokenEndpointAuthMethod == "" {
 		client.TokenEndpointAuthMethod = "none"
@@ -674,7 +713,7 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -695,7 +734,7 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	if !a.oauthForwardMode() {
@@ -747,25 +786,53 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	// We register every new client as confidential (client_secret_post). The
+	// stored secret lives inside the JWE-encoded client_id, so the server
+	// remains stateless. Anthropic's `mcp_servers`-via-URL flow requires a
+	// confidential AS (it has no browser to perform PKCE on); leaving the
+	// "none" path as the only option silently 401s every artifact-side call.
+	// Public-client (PKCE-only) registrations from clients that explicitly ask
+	// for token_endpoint_auth_method:none are still honoured for back-compat
+	// with first-party apps that use only the browser auth-code path.
 	authMethod := req.TokenEndpointAuthMethod
 	if authMethod == "" {
-		authMethod = "none"
+		authMethod = "client_secret_post"
 	}
-	if authMethod != "none" {
-		http.Error(w, "Only public clients with PKCE are supported", http.StatusBadRequest)
+	switch authMethod {
+	case "client_secret_post", "client_secret_basic", "none":
+	default:
+		http.Error(w, "Unsupported token_endpoint_auth_method", http.StatusBadRequest)
 		return
 	}
+
 	secret, err := a.mustJWESecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientID, err := encodeJWEArtifact(secret, map[string]interface{}{
+
+	var clientSecret string
+	if authMethod != "none" {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			http.Error(w, "Failed to generate client_secret", http.StatusInternalServerError)
+			return
+		}
+		clientSecret = hex.EncodeToString(raw[:])
+	}
+
+	clientIDClaims := map[string]interface{}{
 		"redirect_uris":              req.RedirectURIs,
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": authMethod,
 		"grant_type":                 "authorization_code",
 		"exp":                        time.Now().Add(30 * 24 * time.Hour).Unix(),
-	})
+	}
+	if clientSecret != "" {
+		// Embed the secret inside the JWE so the token endpoint can compare
+		// it against the inbound form parameter without server-side state.
+		clientIDClaims["client_secret"] = clientSecret
+	}
+	clientID, err := encodeJWEArtifact(secret, clientIDClaims)
 	if err != nil {
 		http.Error(w, "Failed to create stateless client registration", http.StatusInternalServerError)
 		return
@@ -778,14 +845,18 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	// to skip grant_type=refresh_token even though /oauth/token would
 	// accept it and /.well-known/oauth-authorization-server advertises it
 	// via grant_types_supported.
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"client_id":                  clientID,
 		"redirect_uris":              req.RedirectURIs,
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": authMethod,
 		"client_id_issued_at":        time.Now().Unix(),
-	})
+	}
+	if clientSecret != "" {
+		resp["client_secret"] = clientSecret
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -1164,13 +1235,18 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	client, err := parseStatelessRegisteredClient(clientClaims)
-	if err != nil || time.Now().Unix() > client.ExpiresAt || client.TokenEndpointAuthMethod != "none" {
+	if err != nil || time.Now().Unix() > client.ExpiresAt {
 		log.Debug().
 			Err(err).
 			Int64("client_expires_at", client.ExpiresAt).
 			Str("token_endpoint_auth_method", client.TokenEndpointAuthMethod).
 			Msg("OAuth token request rejected: invalid client metadata")
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	if err := authenticateClientSecret(client, r); err != nil {
+		log.Debug().Err(err).Msg("OAuth token request rejected: client_secret authentication failed")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	issued, ok := a.getOAuthStateStore().consumeAuthCode(r.Form.Get("code"))
@@ -1289,6 +1365,11 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	client, err := parseStatelessRegisteredClient(clientClaims)
 	if err != nil || time.Now().Unix() > client.ExpiresAt {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	if err := authenticateClientSecret(client, r); err != nil {
+		log.Debug().Err(err).Msg("OAuth refresh request rejected: client_secret authentication failed")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 

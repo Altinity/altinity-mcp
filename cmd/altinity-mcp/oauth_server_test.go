@@ -105,6 +105,56 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Contains(t, authRR.Header().Get("Location"), "https://accounts.google.com/o/oauth2/v2/auth")
 	})
 
+	t.Run("dynamic_client_registration_default_is_confidential", func(t *testing.T) {
+		// When the client doesn't ask for a specific auth method, we now
+		// register it as confidential (client_secret_post). This unblocks
+		// Anthropic's mcp_servers-via-URL flow, which has no browser session
+		// for PKCE and needs server-to-server token-endpoint auth.
+		body := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"]}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+		rr := httptest.NewRecorder()
+		app.handleOAuthRegister(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code)
+
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+		require.Equal(t, "client_secret_post", reg["token_endpoint_auth_method"])
+		cs, _ := reg["client_secret"].(string)
+		require.NotEmpty(t, cs, "confidential registration must include client_secret")
+		require.Len(t, cs, 64, "client_secret should be 32 random bytes hex-encoded")
+	})
+
+	t.Run("dynamic_client_registration_explicit_none_still_public", func(t *testing.T) {
+		// First-party flows that explicitly ask for the legacy public-client
+		// shape keep getting it — no client_secret in the response.
+		body := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"],"token_endpoint_auth_method":"none"}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+		rr := httptest.NewRecorder()
+		app.handleOAuthRegister(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code)
+
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+		require.Equal(t, "none", reg["token_endpoint_auth_method"])
+		_, hasSecret := reg["client_secret"]
+		require.False(t, hasSecret, "public registration must not include client_secret")
+	})
+
+	t.Run("authentication_methods_advertised", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorizationServerMetadata(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var meta map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &meta))
+		methods, ok := meta["token_endpoint_auth_methods_supported"].([]interface{})
+		require.True(t, ok)
+		require.Contains(t, methods, "client_secret_post")
+		require.Contains(t, methods, "client_secret_basic")
+		require.Contains(t, methods, "none")
+	})
+
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
 		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com"
 		app.config.Server.OAuth.PublicAuthServerURL = "https://public.example.com/oauth"
@@ -1457,7 +1507,9 @@ func TestOAuthRegistrationNegative(t *testing.T) {
 
 	t.Run("unsupported_auth_method", func(t *testing.T) {
 		t.Parallel()
-		rr := post(`{"redirect_uris":["https://example.com/cb"],"token_endpoint_auth_method":"client_secret_post"}`)
+		// client_secret_post / client_secret_basic / none are now supported.
+		// Anything else (e.g. private_key_jwt) must still be rejected.
+		rr := post(`{"redirect_uris":["https://example.com/cb"],"token_endpoint_auth_method":"private_key_jwt"}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 }
@@ -2007,6 +2059,57 @@ func TestDecodeStringSlice(t *testing.T) {
 		t.Parallel()
 		result := decodeStringSlice([]interface{}{})
 		require.Empty(t, result)
+	})
+}
+
+func TestAuthenticateClientSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public_client_legacy_no_secret_required", func(t *testing.T) {
+		t.Parallel()
+		// Backward compat: client_id JWEs issued before this change have no
+		// client_secret claim; they continue to work with PKCE only.
+		client := &statelessRegisteredClient{}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_via_form", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token",
+			strings.NewReader("client_secret=abc123"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_via_basic_auth", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		req.SetBasicAuth("client-id-doesnt-matter", "abc123")
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_missing", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		require.NoError(t, req.ParseForm())
+		require.Error(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_mismatch", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token",
+			strings.NewReader("client_secret=wrong"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		require.NoError(t, req.ParseForm())
+		require.Error(t, authenticateClientSecret(client, req))
 	})
 }
 
