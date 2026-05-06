@@ -184,36 +184,51 @@ to be possible without forcing every user to re-auth.
 
 ---
 
-## Open question: should we re-add `scope=` to WWW-Authenticate?
+## CONFIRMED: `scope=` on generic `invalid_token` 401 breaks claude.ai's proxy
 
-We already shipped this fix (M-2). Recording the hypothesis here in case it
-turns out to break artifacts:
+### What we did
 
-### The earlier hypothesis (now disproved)
+Re-added `scope=<configured scopes>` to the `WWW-Authenticate` header on
+generic 401 responses (M-2 in the original review), per MCP authorization
+spec 2025-11-25 §Protected Resource Metadata Discovery Requirements:
 
-When we first compared kapa to otel-mcp, kapa's WWW-Authenticate did NOT
-include `scope=`. We hypothesised that Anthropic's proxy disliked it and
-removed it from our challenge. After the RFC 8707 fix unblocked artifacts, we
-re-added `scope=` per MCP spec §Protected Resource Metadata Discovery
-Requirements. If artifact tests start failing after this deploy, the
-hypothesis is back in play and we should drop `scope=` again.
+> "MCP servers **SHOULD** include a `scope` parameter in the
+> `WWW-Authenticate` header as defined in RFC 6750 §3 to indicate the scopes
+> required for accessing the resource."
 
-### Quick test
+### What broke
 
-Probe `WWW-Authenticate` after the deploy:
-
-```sh
-curl -si "https://otel-mcp.demo.altinity.cloud/" | grep WWW-Authenticate
-```
-
-Expected:
+After deploy of commit `7da21f2`, `mcp__claude_ai_otel__*` tool calls (and
+JSX artifacts using the same connector) started failing with:
 
 ```
-Bearer error="invalid_token", error_description="...", resource_metadata="...", scope="openid email profile"
+Anthropic Proxy: Invalid content from server
 ```
 
-Then verify a fresh JSX artifact still attaches tools. If yes, ship. If no,
-revert the `scope=` addition and reopen this hypothesis.
+…with **zero requests reaching our origin server** (verified via pod logs).
+The proxy was failing somewhere in its own internal handling of our metadata
+or 401 challenge, before forwarding tools/call to us.
+
+The earlier RFC 8707 fix (`a3226b2`) had the proxy working. The only
+client-visible change between the two deploys was the addition of `scope=`
+on the generic invalid_token 401.
+
+### What we ship instead
+
+We honour the **MUST** case (RFC 6750 §3.1 / MCP §Runtime Insufficient Scope
+Errors) — `scope=` is included when the failure is `insufficient_scope` and
+the client genuinely needs to know which scopes to request to step up. We
+stay quiet on the **SHOULD** case (initial generic 401) to keep claude.ai's
+proxy working.
+
+### Status
+
+The override is intentional and documented inline at
+`oauthChallengeHeader` (`cmd/altinity-mcp/oauth_server.go`). When Anthropic
+fixes the proxy to tolerate `scope=` on generic 401s, we should reinstate
+the SHOULD path — clients other than claude.ai (Codex, MCP Inspector,
+manual Claude Desktop configs) all want it for spec-compliance and because
+the proxy/Anthropic backend won't be the only consumer forever.
 
 ---
 

@@ -412,10 +412,14 @@ func (a *application) oauthTokenPath() string {
 //     the 401 as a generic auth failure and skip MCP OAuth entirely.
 //   - error_description: human-readable detail for logs/UI.
 //   - resource_metadata: where to fetch the RFC 9728 protected-resource doc.
-//   - scope: the scopes the client should request to access this resource. The
-//     MCP authorization spec (2025-11-25 §Protected Resource Metadata Discovery
-//     Requirements) marks this as SHOULD on initial 401, MUST when the failure
-//     is insufficient_scope (§Runtime Insufficient Scope Errors).
+//   - scope: the scopes the client should request — included only on
+//     insufficient_scope (RFC 6750 §3.1 / MCP §Runtime Insufficient Scope
+//     Errors). NOT included on generic invalid_token 401: the MCP spec marks
+//     `scope` on the initial 401 as SHOULD, but live testing showed
+//     claude.ai's artifact proxy fails downstream tool calls when the
+//     attribute is present. We honour the spec for the MUST case
+//     (insufficient_scope) and stay quiet for the SHOULD case to keep the
+//     proxy compatible. See docs/oauth_compatibility_hypotheses.md.
 func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
 	resourceMetadata := joinURLPath(baseURL, defaultProtectedResourceMetadataPath)
@@ -436,46 +440,36 @@ func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, sc
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
-// challengeScopesForRequest returns the scope string for the WWW-Authenticate
-// header. On insufficient_scope it MUST be the minimum scopes required for the
-// operation (RFC 6750 §3.1 / MCP §Runtime Insufficient Scope Errors). On a
-// generic 401 it SHOULD be the minimum scopes for basic access (the operator
-// configured `RequiredScopes`, or all `Scopes` as a fallback so clients have
-// something to start from).
-func (a *application) challengeScopesForRequest(insufficientScope bool) string {
-	cfg := a.GetCurrentConfig().Server.OAuth
-	if insufficientScope && len(cfg.RequiredScopes) > 0 {
-		return strings.Join(cfg.RequiredScopes, " ")
-	}
-	if len(cfg.RequiredScopes) > 0 {
-		return strings.Join(cfg.RequiredScopes, " ")
-	}
-	if len(cfg.Scopes) > 0 {
-		return strings.Join(cfg.Scopes, " ")
-	}
-	return ""
-}
-
 func (a *application) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	if err == nil {
-		w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, "", "", a.challengeScopesForRequest(false)))
+		w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, "", "", ""))
 		return
 	}
 	var (
-		code              int
-		oauthErr, desc    string
-		insufficientScope bool
+		code           int
+		oauthErr, desc string
+		challengeScope string
 	)
+	cfg := a.GetCurrentConfig().Server.OAuth
 	switch {
 	case errors.Is(err, altinitymcp.ErrOAuthInsufficientScopes):
+		// MUST per RFC 6750 §3.1 / MCP §Runtime Insufficient Scope Errors:
+		// surface the scopes that would satisfy the request so the client can
+		// step up. Falls back to all configured scopes when RequiredScopes
+		// isn't set (the deployment hasn't pinned a minimum).
 		code, oauthErr, desc = http.StatusForbidden, "insufficient_scope", "Insufficient OAuth scopes"
-		insufficientScope = true
+		switch {
+		case len(cfg.RequiredScopes) > 0:
+			challengeScope = strings.Join(cfg.RequiredScopes, " ")
+		case len(cfg.Scopes) > 0:
+			challengeScope = strings.Join(cfg.Scopes, " ")
+		}
 	case errors.Is(err, altinitymcp.ErrOAuthTokenExpired):
 		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "OAuth token expired"
 	default:
 		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "Authentication required"
 	}
-	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, oauthErr, desc, a.challengeScopesForRequest(insufficientScope)))
+	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, oauthErr, desc, challengeScope))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": oauthErr, "error_description": desc})
