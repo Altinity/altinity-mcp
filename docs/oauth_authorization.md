@@ -16,6 +16,17 @@ Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The 
 4. The MCP server forwards the token to ClickHouse via HTTP headers
 5. ClickHouse validates the token using `token_processors` and authenticates the user
 
+> **Spec deviation (deliberate).** MCP authorization spec 2025-11-25 §Access
+> Token Privilege Restriction says *"the MCP server **MUST NOT** pass through
+> the token it received from the MCP client"*. Forward mode does pass it
+> through — by design. The architectural justification is that ClickHouse
+> validates the token against the same upstream JWKS the MCP server would;
+> both extract the same identity; there is no privilege boundary between them
+> to abuse. The deviation is recorded in
+> `docs/oauth_compatibility_hypotheses.md` (H-2). Gating mode is the
+> spec-clean alternative — use that when you don't have ClickHouse-side
+> token validation set up.
+
 ```
 ┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
 │  MCP   │─────>│   IdP    │      │   MCP    │      │ ClickHouse │

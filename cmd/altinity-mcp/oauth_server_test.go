@@ -140,6 +140,18 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		app.handleOAuthAuthorize(authRR, authReq)
 		require.Equal(t, http.StatusFound, authRR.Code, "valid resource indicator must be accepted (slash form)")
 
+		// PKCE on the upstream-IdP leg: the redirect to upstream MUST include
+		// code_challenge + code_challenge_method=S256 (OAuth 2.1 §7.5.2).
+		// Without this, an attacker who intercepts the upstream auth code
+		// (e.g., via referrer or proxy logs between IdP and our /callback)
+		// could redeem it even though we hold the upstream client_secret.
+		upstreamRedirect, parseErr := url.Parse(authRR.Header().Get("Location"))
+		require.NoError(t, parseErr)
+		require.NotEmpty(t, upstreamRedirect.Query().Get("code_challenge"),
+			"upstream /authorize redirect must carry code_challenge (RFC 7636 / OAuth 2.1)")
+		require.Equal(t, "S256", upstreamRedirect.Query().Get("code_challenge_method"),
+			"upstream PKCE method must be S256 per OAuth 2.1 §4.1.1")
+
 		// (b) resource present and matches advertised resource (bare host form): 302
 		authReq = httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://mcp.example.com"), nil)
 		authRR = httptest.NewRecorder()

@@ -35,9 +35,16 @@ const (
 	defaultAuthorizationPath               = "/oauth/authorize"
 	defaultCallbackPath                    = "/oauth/callback"
 	defaultTokenPath                       = "/oauth/token"
-	defaultAuthCodeTTLSeconds              = 5 * 60
-	defaultAccessTokenTTLSeconds           = 60 * 60
-	defaultRefreshTokenTTLSeconds          = 30 * 24 * 60 * 60
+	// defaultPendingAuthTTLSeconds bounds /authorize → /callback (the user has
+	// to log in upstream). 10 minutes per RFC 6749 §3.1.2 guidance for the
+	// authorization request lifetime.
+	defaultPendingAuthTTLSeconds = 10 * 60
+	// defaultAuthCodeTTLSeconds bounds /callback → /token (the legitimate
+	// client redeems immediately). 60 seconds per OAuth 2.1 §4.1.2 — auth
+	// codes "should be redeemed within seconds, never minutes."
+	defaultAuthCodeTTLSeconds     = 60
+	defaultAccessTokenTTLSeconds  = 60 * 60
+	defaultRefreshTokenTTLSeconds = 30 * 24 * 60 * 60
 )
 
 type statelessRegisteredClient struct {
@@ -63,8 +70,15 @@ type oauthPendingAuth struct {
 	// /authorize. Stored verbatim (trailing-slash form preserved) so that
 	// the eventual `aud` claim byte-matches what the client requested —
 	// claude.ai's artifact proxy enforces this byte-equality.
-	Resource  string `json:"resource,omitempty"`
-	ExpiresAt time.Time
+	Resource string `json:"resource,omitempty"`
+	// UpstreamPKCEVerifier is *our* PKCE verifier for the upstream-IdP leg
+	// (RFC 7636 / OAuth 2.1 §7.5.2). The MCP-client→us leg uses its own
+	// verifier (CodeChallenge above); this is the second, independent PKCE
+	// pair we use as the OAuth client to the upstream IdP. Required by
+	// OAuth 2.1 even when we hold the upstream client_secret, because PKCE
+	// also defends against auth-code interception between IdP and our /callback.
+	UpstreamPKCEVerifier string `json:"upstream_pkce_verifier,omitempty"`
+	ExpiresAt            time.Time
 }
 
 type oauthIssuedCode struct {
@@ -390,35 +404,78 @@ func (a *application) oauthTokenPath() string {
 	return normalizedPath(a.GetCurrentConfig().Server.OAuth.TokenPath, defaultTokenPath)
 }
 
-func (a *application) oauthChallengeHeader(r *http.Request) string {
+// oauthChallengeHeader builds the WWW-Authenticate Bearer challenge.
+//
+//   - error: distinguishes the failure (invalid_token | insufficient_scope) per
+//     RFC 6750 §3 / 3.1. error="invalid_token" is what triggers Anthropic's
+//     proxy to start the OAuth discovery flow; without it, some clients treat
+//     the 401 as a generic auth failure and skip MCP OAuth entirely.
+//   - error_description: human-readable detail for logs/UI.
+//   - resource_metadata: where to fetch the RFC 9728 protected-resource doc.
+//   - scope: the scopes the client should request to access this resource. The
+//     MCP authorization spec (2025-11-25 §Protected Resource Metadata Discovery
+//     Requirements) marks this as SHOULD on initial 401, MUST when the failure
+//     is insufficient_scope (§Runtime Insufficient Scope Errors).
+func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
-	// error="invalid_token" signals to clients (incl. Anthropic's proxy) that
-	// Bearer auth is required and they should initiate the OAuth discovery flow.
-	// Omitting it causes some proxies to treat the 401 as a generic auth error
-	// and skip MCP OAuth entirely. Kapa and other working MCP servers include it.
-	return fmt.Sprintf(
-		"Bearer error=%q, error_description=%q, resource_metadata=%q",
-		"invalid_token",
-		"Authentication required",
-		joinURLPath(baseURL, defaultProtectedResourceMetadataPath),
-	)
+	resourceMetadata := joinURLPath(baseURL, defaultProtectedResourceMetadataPath)
+	if errCode == "" {
+		errCode = "invalid_token"
+	}
+	if errDesc == "" {
+		errDesc = "Authentication required"
+	}
+	parts := []string{
+		fmt.Sprintf("error=%q", errCode),
+		fmt.Sprintf("error_description=%q", errDesc),
+		fmt.Sprintf("resource_metadata=%q", resourceMetadata),
+	}
+	if scope != "" {
+		parts = append(parts, fmt.Sprintf("scope=%q", scope))
+	}
+	return "Bearer " + strings.Join(parts, ", ")
+}
+
+// challengeScopesForRequest returns the scope string for the WWW-Authenticate
+// header. On insufficient_scope it MUST be the minimum scopes required for the
+// operation (RFC 6750 §3.1 / MCP §Runtime Insufficient Scope Errors). On a
+// generic 401 it SHOULD be the minimum scopes for basic access (the operator
+// configured `RequiredScopes`, or all `Scopes` as a fallback so clients have
+// something to start from).
+func (a *application) challengeScopesForRequest(insufficientScope bool) string {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	if insufficientScope && len(cfg.RequiredScopes) > 0 {
+		return strings.Join(cfg.RequiredScopes, " ")
+	}
+	if len(cfg.RequiredScopes) > 0 {
+		return strings.Join(cfg.RequiredScopes, " ")
+	}
+	if len(cfg.Scopes) > 0 {
+		return strings.Join(cfg.Scopes, " ")
+	}
+	return ""
 }
 
 func (a *application) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
-	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r))
 	if err == nil {
+		w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, "", "", a.challengeScopesForRequest(false)))
 		return
 	}
-	var code int
-	var oauthErr, desc string
+	var (
+		code              int
+		oauthErr, desc    string
+		insufficientScope bool
+	)
 	switch {
 	case errors.Is(err, altinitymcp.ErrOAuthInsufficientScopes):
 		code, oauthErr, desc = http.StatusForbidden, "insufficient_scope", "Insufficient OAuth scopes"
+		insufficientScope = true
 	case errors.Is(err, altinitymcp.ErrOAuthTokenExpired):
 		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "OAuth token expired"
 	default:
 		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "Authentication required"
 	}
+	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, oauthErr, desc, a.challengeScopesForRequest(insufficientScope)))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": oauthErr, "error_description": desc})
@@ -438,7 +495,11 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 				if token != "" {
 					jweClaims, err := a.mcpServer.ParseJWEClaims(token)
 					if err != nil {
-						http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
+						// Route through the OAuth challenge writer when OAuth is also
+						// enabled — clients hitting a malformed JWE then need OAuth
+						// discovery to recover. With OAuth disabled this path returns
+						// the same JSON error shape minus the WWW-Authenticate header.
+						a.writeOAuthError(w, r, altinitymcp.ErrInvalidOAuthToken)
 						return
 					}
 					ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
@@ -506,6 +567,17 @@ func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// newPKCEVerifier generates a 32-byte random PKCE verifier per RFC 7636 §4.1
+// (43–128 char URL-safe string). Used for the upstream-IdP leg only —
+// downstream MCP-client verifiers come from the client itself.
+func newPKCEVerifier() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func decodeStringSlice(value interface{}) []string {
@@ -945,16 +1017,29 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	// Upstream-leg PKCE (OAuth 2.1 §7.5.2): we generate a fresh verifier
+	// independent of the MCP-client's PKCE, then send code_challenge=SHA256
+	// to the upstream IdP. Defends the upstream auth code from interception
+	// between IdP and our /oauth/callback even if we hold the upstream
+	// client_secret. Verifier stays in pendingAuth and is replayed during
+	// the /token exchange in handleOAuthCallback.
+	upstreamVerifier, err := newPKCEVerifier()
+	if err != nil {
+		http.Error(w, "Failed to generate PKCE verifier", http.StatusInternalServerError)
+		return
+	}
+
 	callbackState := randomToken("oas_")
 	a.getOAuthStateStore().putPendingAuth(callbackState, oauthPendingAuth{
-		ClientID:            clientID,
-		RedirectURI:         redirectURI,
-		Scope:               sanitizeScope(q.Get("scope")),
-		ClientState:         q.Get("state"),
-		CodeChallenge:       q.Get("code_challenge"),
-		CodeChallengeMethod: q.Get("code_challenge_method"),
-		Resource:            resource,
-		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		Scope:                sanitizeScope(q.Get("scope")),
+		ClientState:          q.Get("state"),
+		CodeChallenge:        q.Get("code_challenge"),
+		CodeChallengeMethod:  q.Get("code_challenge_method"),
+		Resource:             resource,
+		UpstreamPKCEVerifier: upstreamVerifier,
+		ExpiresAt:            time.Now().Add(time.Duration(defaultPendingAuthTTLSeconds) * time.Second),
 	})
 
 	cfg := a.GetCurrentConfig()
@@ -977,6 +1062,8 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
+	upstream.Set("code_challenge", pkceChallenge(upstreamVerifier))
+	upstream.Set("code_challenge_method", "S256")
 	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
 
@@ -1006,6 +1093,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	form.Set("client_id", cfg.Server.OAuth.ClientID)
 	form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
 	form.Set("redirect_uri", callbackURL)
+	// Replay our upstream PKCE verifier (set during /authorize) per RFC 7636
+	// §4.5. Skipped only for legacy pending entries that predate the PKCE
+	// upgrade — those expire within 10 minutes and stop appearing.
+	if pending.UpstreamPKCEVerifier != "" {
+		form.Set("code_verifier", pending.UpstreamPKCEVerifier)
+	}
 
 	tokenURL, err := a.resolveUpstreamTokenURL()
 	if err != nil {

@@ -852,6 +852,24 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"minted tokens will use the request Host as issuer, but validation expects the configured issuer; " +
 			"set public_auth_server_url to match, or leave issuer empty to skip issuer validation")
 	}
+	// PublicResourceURL pins the canonical RFC 9728 `resource` URL (and the
+	// audience the RFC 8707 resource indicator is validated against in
+	// /authorize). When unset, we fall back to the request's Host header,
+	// which is client-controlled — a deployment exposed via multiple hostnames
+	// (internal LB + public domain) can have an attacker pass an unintended
+	// resource and pass the validation. Pin it explicitly in production.
+	if strings.TrimSpace(oauth.PublicResourceURL) == "" {
+		log.Warn().Msg("OAuth: public_resource_url is not set — the resource indicator " +
+			"validation (RFC 8707) and the advertised RFC 9728 `resource` URL fall back " +
+			"to the request Host header. For production deployments behind a single canonical " +
+			"hostname, set MCP_OAUTH_PUBLIC_RESOURCE_URL to lock the resource identity.")
+	}
+	if len(oauth.UpstreamIssuerAllowlist) == 0 && strings.TrimSpace(oauth.Issuer) == "" && oauth.IsForwardMode() {
+		log.Warn().Msg("OAuth forward mode: neither oauth_issuer nor upstream_issuer_allowlist is set — " +
+			"upstream identity tokens will be accepted from any signed-by-discovered-JWKS issuer. " +
+			"Set MCP_OAUTH_ISSUER (single-tenant) or MCP_OAUTH_UPSTREAM_ISSUER_ALLOWLIST (multi-tenant) " +
+			"to constrain accepted issuers.")
+	}
 }
 
 // testConnection tests the connection to ClickHouse
@@ -1046,8 +1064,18 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
 	}
 
-	if strings.TrimSpace(cfg.Server.OAuth.SigningSecret) == "" {
+	signingSecret := strings.TrimSpace(cfg.Server.OAuth.SigningSecret)
+	if signingSecret == "" {
 		return fmt.Errorf("oauth signing_secret is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
+	}
+	// Defence in depth: HS256 (gating-mode access token signing) and JWE A256KW
+	// (client_id + refresh-token wrap) both derive their key as SHA-256(secret).
+	// SHA-256 spreads bits but doesn't add entropy — a 4-byte secret hashed
+	// to 32 bytes still has only 32 bits of entropy. 32 bytes is the practical
+	// minimum to make brute-force forging infeasible.
+	const minSigningSecretBytes = 32
+	if len(signingSecret) < minSigningSecretBytes {
+		return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken HS256 and JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
 	}
 
 	if cfg.Server.OAuth.IsForwardMode() && cfg.ClickHouse.Protocol != config.HTTPProtocol {

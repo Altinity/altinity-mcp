@@ -61,24 +61,21 @@ type OAuthClaims struct {
 	Extra         map[string]interface{}
 }
 
-// ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
+// ExtractOAuthTokenFromRequest extracts an OAuth bearer token from an HTTP
+// request, per MCP authorization spec §Token Requirements:
+//
+//	"MCP client MUST use the Authorization request header field defined in
+//	 OAuth 2.1 §5.1.1: Authorization: Bearer <access-token>"
+//	"Access tokens MUST NOT be included in the URI query string"
+//
+// Only the Authorization header is accepted. Earlier revisions of this server
+// also honoured `x-oauth-token` and `x-altinity-oauth-token` for legacy
+// clients; those have been removed for spec conformance.
 func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) string {
-	// Try Authorization header (Bearer token)
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
-
-	// Try x-oauth-token header
-	if token := r.Header.Get("x-oauth-token"); token != "" {
-		return token
-	}
-
-	// Try x-altinity-oauth-token header
-	if token := r.Header.Get("x-altinity-oauth-token"); token != "" {
-		return token
-	}
-
 	return ""
 }
 
@@ -125,18 +122,28 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 }
 
 func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthClaims, error) {
-	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
-	if s.Config.Server.OAuth.IsGatingMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
-		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
-	}
-	// Validate issuer if configured. Trailing slash is normalised on both sides:
-	// the advertised issuer in /.well-known/oauth-authorization-server uses the
-	// trailing-slash form (matching RFC 9728 `resource`), but operator config may
-	// or may not include the slash. Compare canonicalised forms so either works.
-	if expectedIssuer != "" &&
-		strings.TrimRight(claims.Issuer, "/") != strings.TrimRight(expectedIssuer, "/") {
-		log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
-		return nil, ErrInvalidOAuthToken
+	// Issuer enforcement is mode-specific:
+	//
+	//   - Gating mode: the issuer MUST be us. Prefer PublicAuthServerURL when
+	//     configured (deployment-specific public URL), otherwise the operator's
+	//     `Issuer` field. Compare slash-normalised — operator config may or
+	//     may not include the slash; advertised issuer uses no-slash form.
+	//
+	//   - Forward mode: parseAndVerifyExternalJWT (the only path that reaches
+	//     here in forward mode) already enforced issuerAllowed against
+	//     UpstreamIssuerAllowlist (preferred) or the singular `Issuer`. We
+	//     do not re-validate here, because the singular `Issuer` may not be
+	//     authoritative when an allowlist is configured.
+	if s.Config.Server.OAuth.IsGatingMode() {
+		expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
+		if expectedIssuer == "" {
+			expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.Issuer)
+		}
+		if expectedIssuer != "" &&
+			strings.TrimRight(claims.Issuer, "/") != strings.TrimRight(expectedIssuer, "/") {
+			log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
+			return nil, ErrInvalidOAuthToken
+		}
 	}
 
 	// Validate audience if configured. Compare slash-normalised — the token's
@@ -290,6 +297,12 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 		}
 	}
 
+	// Issuer enforcement: when the operator has configured
+	// UpstreamIssuerAllowlist, require the token's `iss` to be in that set
+	// (multi-tenant deployments). Otherwise fall back to the singular
+	// `Issuer` config field for the standard single-tenant case. If neither
+	// is set, no issuer check happens (caller's responsibility to configure).
+	allowlist := s.Config.Server.OAuth.UpstreamIssuerAllowlist
 	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
 	var (
 		rawClaims         map[string]interface{}
@@ -304,7 +317,7 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 		}
 		signatureVerified = true
 		claims := oauthClaimsFromRawClaims(rawClaims)
-		if expectedIssuer != "" && claims.Issuer != expectedIssuer {
+		if !issuerAllowed(claims.Issuer, allowlist, expectedIssuer) {
 			issuerRejected = true
 			continue
 		}
@@ -319,6 +332,28 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 	}
 
 	return nil, fmt.Errorf("failed to verify JWT signature with discovered JWKs")
+}
+
+// issuerAllowed implements the issuer policy used in upstream-token validation:
+// when UpstreamIssuerAllowlist is non-empty, the token's iss MUST be one of
+// the listed values (multi-tenant). Otherwise, when a singular Issuer is
+// configured, the token's iss MUST match it (single-tenant). With neither set,
+// no issuer check is performed (the caller is responsible for configuring at
+// least one of these — see warnOAuthMisconfiguration).
+func issuerAllowed(got string, allowlist []string, singleIssuer string) bool {
+	got = strings.TrimSpace(got)
+	if len(allowlist) > 0 {
+		for _, allowed := range allowlist {
+			if strings.TrimSpace(allowed) == got {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.TrimSpace(singleIssuer) != "" {
+		return got == strings.TrimSpace(singleIssuer)
+	}
+	return true
 }
 
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
