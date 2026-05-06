@@ -48,6 +48,9 @@ Selector labels
 {{- define "altinity-mcp.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "altinity-mcp.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- with .Values.selectorLabels }}
+{{ toYaml . }}
+{{- end }}
 {{- end }}
 
 {{/*
