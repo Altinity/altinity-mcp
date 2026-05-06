@@ -139,15 +139,19 @@ func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthCl
 		return nil, ErrInvalidOAuthToken
 	}
 
-	// Validate audience if configured
+	// Validate audience if configured. Compare slash-normalised — the token's
+	// `aud` claim is whatever string the client passed in `resource` at
+	// /authorize (RFC 8707), so it may legitimately differ in trailing slash
+	// from the operator's configured Audience. Either form is acceptable.
 	if s.Config.Server.OAuth.Audience != "" {
 		if len(claims.Audience) == 0 {
 			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Msg("OAuth token missing audience claim")
 			return nil, ErrInvalidOAuthToken
 		}
+		expectedAudience := strings.TrimRight(s.Config.Server.OAuth.Audience, "/")
 		audienceValid := false
 		for _, aud := range claims.Audience {
-			if aud == s.Config.Server.OAuth.Audience {
+			if strings.TrimRight(aud, "/") == expectedAudience {
 				audienceValid = true
 				break
 			}

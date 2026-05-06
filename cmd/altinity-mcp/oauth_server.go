@@ -59,7 +59,12 @@ type oauthPendingAuth struct {
 	ClientState         string `json:"client_state"`
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
-	ExpiresAt           time.Time
+	// Resource is the RFC 8707 resource indicator the client passed on
+	// /authorize. Stored verbatim (trailing-slash form preserved) so that
+	// the eventual `aud` claim byte-matches what the client requested —
+	// claude.ai's artifact proxy enforces this byte-equality.
+	Resource  string `json:"resource,omitempty"`
+	ExpiresAt time.Time
 }
 
 type oauthIssuedCode struct {
@@ -68,6 +73,7 @@ type oauthIssuedCode struct {
 	Scope                string `json:"scope"`
 	CodeChallenge        string `json:"code_challenge"`
 	CodeChallengeMethod  string `json:"code_challenge_method"`
+	Resource             string `json:"resource,omitempty"`
 	UpstreamBearerToken  string `json:"upstream_bearer_token"`
 	UpstreamRefreshToken string `json:"upstream_refresh_token,omitempty"`
 	UpstreamTokenType    string `json:"upstream_token_type"`
@@ -924,6 +930,21 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
 		return
 	}
+	// RFC 8707 §2 / MCP authorization spec: clients SHOULD include `resource`.
+	// Validate it identifies *this* MCP server. Compare slash-normalised so the
+	// client can pass either form, but preserve the exact string sent so the
+	// eventual `aud` claim byte-matches what the client requested. Anthropic's
+	// artifact proxy validates aud byte-equality against the resource it sent.
+	resource := q.Get("resource")
+	if resource != "" {
+		want := strings.TrimRight(a.resourceBaseURL(r), "/")
+		got := strings.TrimRight(resource, "/")
+		if got != want {
+			log.Debug().Str("got", resource).Str("want", a.resourceBaseURL(r)).Msg("OAuth /authorize rejected: resource indicator mismatch")
+			http.Error(w, "Invalid resource indicator", http.StatusBadRequest)
+			return
+		}
+	}
 	callbackState := randomToken("oas_")
 	a.getOAuthStateStore().putPendingAuth(callbackState, oauthPendingAuth{
 		ClientID:            clientID,
@@ -932,6 +953,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		ClientState:         q.Get("state"),
 		CodeChallenge:       q.Get("code_challenge"),
 		CodeChallengeMethod: q.Get("code_challenge_method"),
+		Resource:            resource,
 		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
 	})
 
@@ -1093,6 +1115,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		Scope:               tokenResp.Scope,
 		CodeChallenge:       pending.CodeChallenge,
 		CodeChallengeMethod: pending.CodeChallengeMethod,
+		Resource:            pending.Resource,
 		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
 	}
 	if a.oauthForwardMode() {
@@ -1139,6 +1162,11 @@ type gatingIdentity struct {
 	HostedDomain  string
 	EmailVerified bool
 	Scope         string
+	// Resource is the RFC 8707 resource indicator the client requested.
+	// Empty when the client did not pass one. When set, it is used verbatim
+	// as the `aud` claim — preserving trailing-slash form for byte-equality
+	// with what the client sent.
+	Resource string
 }
 
 // mintGatingTokenResponse mints an access token and a stateless refresh token
@@ -1148,9 +1176,18 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 	// Match the no-trailing-slash form advertised in /.well-known/oauth-authorization-server
 	// (RFC 8414 §2 requires byte-identical issuer between metadata and iss claim).
 	issuer := strings.TrimRight(a.oauthAuthorizationServerBaseURL(r), "/")
-	audience := strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
-	if audience == "" {
-		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")
+	// RFC 8707 §2.2 / MCP authorization spec: when the client requested a
+	// resource indicator, the `aud` claim MUST identify that resource. Echo
+	// the requested string verbatim so byte-equality with what the client sent
+	// holds — this is what claude.ai's artifact proxy enforces.
+	var audience string
+	switch {
+	case id.Resource != "":
+		audience = id.Resource
+	case cfg.Server.OAuth.Audience != "":
+		audience = strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
+	default:
+		audience = strings.TrimRight(a.resourceBaseURL(r), "/") + "/"
 	}
 	scope := id.Scope
 	if scope == "" {
@@ -1347,6 +1384,18 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// RFC 8707 §2.2: clients MAY also send `resource` on /token. When the same
+	// resource was already pinned at /authorize, both must agree; if /authorize
+	// omitted it but /token includes it, accept and use the latter.
+	resource := issued.Resource
+	if formResource := r.Form.Get("resource"); formResource != "" {
+		if resource == "" {
+			resource = formResource
+		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the one used at /authorize")
+			return
+		}
+	}
 	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      issued.ClientID,
 		Subject:       issued.Subject,
@@ -1355,6 +1404,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		HostedDomain:  issued.HostedDomain,
 		EmailVerified: issued.EmailVerified,
 		Scope:         issued.Scope,
+		Resource:      resource,
 	})
 }
 
@@ -1444,6 +1494,19 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	hd, _ := claims["hd"].(string)
 	emailVerified, _ := claims["email_verified"].(bool)
 	scope, _ := claims["scope"].(string)
+	resource, _ := claims["aud"].(string)
+
+	// RFC 8707 §2.2: a /token refresh request MAY narrow the resource to a
+	// subset of those originally granted. We don't track multi-resource grants,
+	// so the only supported case is "same as original" — reject any mismatch.
+	if formResource := r.Form.Get("resource"); formResource != "" {
+		if resource == "" {
+			resource = formResource
+		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the original grant")
+			return
+		}
+	}
 
 	policyClaims := &altinitymcp.OAuthClaims{
 		Email:         email,
@@ -1463,6 +1526,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		HostedDomain:  hd,
 		EmailVerified: emailVerified,
 		Scope:         scope,
+		Resource:      resource,
 	})
 }
 

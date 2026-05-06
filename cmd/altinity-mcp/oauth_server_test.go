@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,6 +21,14 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 )
+
+// decodeJWTSegment base64url-decodes a JWT segment (header/payload), padding-tolerant.
+func decodeJWTSegment(seg string) ([]byte, error) {
+	if pad := len(seg) % 4; pad != 0 {
+		seg += strings.Repeat("=", 4-pad)
+	}
+	return base64.URLEncoding.DecodeString(seg)
+}
 
 func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	t.Parallel()
@@ -106,6 +115,83 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		app.handleOAuthAuthorize(authRR, authReq)
 		require.Equal(t, http.StatusFound, authRR.Code)
 		require.Contains(t, authRR.Header().Get("Location"), "https://accounts.google.com/o/oauth2/v2/auth")
+	})
+
+	t.Run("authorize_resource_indicator_accepted_when_matches_advertised_resource", func(t *testing.T) {
+		// RFC 8707 / MCP authorization spec: client passes `resource=<MCP URL>`
+		// on /authorize. We accept either trailing-slash form, but the bare-host
+		// form is the canonical advertised resource here (PublicResourceURL
+		// "https://mcp.example.com" — slashes get appended where needed).
+		regBody := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"],"token_endpoint_auth_method":"none"}`)
+		regReq := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", regBody)
+		regRR := httptest.NewRecorder()
+		app.handleOAuthRegister(regRR, regReq)
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(regRR.Body.Bytes(), &reg))
+		clientID, _ := reg["client_id"].(string)
+
+		base := "https://mcp.example.com/oauth/authorize?response_type=code&client_id=" + url.QueryEscape(clientID) +
+			"&redirect_uri=" + url.QueryEscape("http://127.0.0.1:3334/callback") +
+			"&scope=openid+email&state=s&code_challenge=c&code_challenge_method=S256"
+
+		// (a) resource present and matches advertised resource (trailing-slash form): 302
+		authReq := httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://mcp.example.com/"), nil)
+		authRR := httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "valid resource indicator must be accepted (slash form)")
+
+		// (b) resource present and matches advertised resource (bare host form): 302
+		authReq = httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://mcp.example.com"), nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "valid resource indicator must be accepted (bare host form)")
+
+		// (c) resource present but identifies a different host: 400
+		authReq = httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://attacker.example/"), nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusBadRequest, authRR.Code, "mismatched resource indicator must be rejected")
+
+		// (d) resource absent (legacy clients): 302 (back-compat — RFC 8707 says SHOULD, not MUST)
+		authReq = httptest.NewRequest(http.MethodGet, base, nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "missing resource indicator must still authorize (legacy clients)")
+	})
+
+	t.Run("mint_gating_token_aud_mirrors_requested_resource", func(t *testing.T) {
+		// `aud` claim must byte-match what the client passed in `resource`.
+		// Anthropic's artifact-side proxy enforces this byte-equality; if we
+		// strip a trailing slash that the client included, the proxy silently
+		// drops the connector — see docs/artifact-mcp-known-issues.md.
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
+		// Audience field is set on app.config (= "https://mcp.example.com"),
+		// but Resource on the gatingIdentity must win.
+		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
+			ClientID:      "test-client",
+			Subject:       "user-123",
+			Email:         "u@example.com",
+			EmailVerified: true,
+			Scope:         "openid email",
+			Resource:      "https://mcp.example.com/",
+		})
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		accessToken, _ := resp["access_token"].(string)
+		require.NotEmpty(t, accessToken)
+
+		// Decode the JWS (3 parts) without verification; we only check the
+		// audience claim shape.
+		parts := strings.Split(accessToken, ".")
+		require.Len(t, parts, 3)
+		payload, err := decodeJWTSegment(parts[1])
+		require.NoError(t, err)
+		var claims map[string]interface{}
+		require.NoError(t, json.Unmarshal(payload, &claims))
+		require.Equal(t, "https://mcp.example.com/", claims["aud"], "aud must be the exact string the client passed in `resource` (trailing slash preserved)")
 	})
 
 	t.Run("dynamic_client_registration_default_is_confidential", func(t *testing.T) {

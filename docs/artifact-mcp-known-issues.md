@@ -51,7 +51,54 @@ prompt the user with an "Allow access to connectors" dialog on first use, and
 attach the connector to the sub-Claude as a tool. In practice, for our
 OAuth-protected servers, the attach step silently fails.
 
-## What we ruled out
+## Likely root cause: RFC 8707 resource indicator + `aud` byte-equality
+
+After several rounds of tuning surface-level discovery shapes with no effect,
+the actual gap turned out to be RFC 8707 / MCP-spec resource-indicator
+handling. Found via [openai/codex#11292][codex11292] — the codex CLI
+client was failing OAuth with kapa-hosted MCP because codex didn't pass the
+`resource` query parameter on `/authorize`, and **kapa's authorization
+server requires it**. That's how we know Anthropic's claude.ai client *does*
+send it: kapa wouldn't have mounted in artifacts otherwise.
+
+What altinity-mcp was doing wrong:
+
+- `handleOAuthAuthorize` ignored the `resource` query parameter entirely.
+- `mintGatingTokenResponse` minted `aud` from a stripped-trailing-slash
+  form of the resource URL: `aud="https://otel-mcp.demo.altinity.cloud"`
+  while the `resource` field in `/.well-known/oauth-protected-resource`
+  was `"https://otel-mcp.demo.altinity.cloud/"` (with slash).
+- `validateOAuthClaims` audience comparison was strict byte-equality.
+
+If the artifact proxy follows the spec — sends `resource=<URL>` on
+`/authorize` and validates that the issued token's `aud` byte-matches the
+URL it asked for — our mismatch causes silent rejection at the proxy. No
+log on our side because the proxy never sends a tool call against our
+server with the rejected token.
+
+What we now ship:
+
+- `/authorize` reads `resource`, validates it identifies *this* MCP server
+  (slash-normalised compare), stores it verbatim in the pending-auth state.
+- The auth code carries the resource through to `/token`.
+- `/token` (both `authorization_code` and `refresh_token` grants) accepts a
+  `resource` form param per RFC 8707 §2.2, with consistency checking against
+  what was pinned at `/authorize`.
+- `mintGatingTokenResponse` uses the requested resource as `aud`
+  byte-identically — the slash form the client sent is preserved.
+- The default fallback (no resource indicator from the client) now mints
+  `aud` matching the trailing-slash `resource` field we advertise, so
+  byte-equality holds for legacy clients too.
+- `validateOAuthClaims` audience check normalises trailing slash on both
+  sides so operator-configured `Audience` keeps working in either form.
+
+Whether this actually unblocks JSX artifacts remains to be confirmed in a
+production deploy; the mechanism is well-grounded but Anthropic's proxy
+implementation is opaque, so the upstream bug references below still stand.
+
+[codex11292]: https://github.com/openai/codex/issues/11292
+
+## What else we tried first (no effect)
 
 We compared `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`,
 401 responses, CORS preflights, DCR responses, and the MCP-protocol handshake
@@ -67,9 +114,9 @@ side-by-side between our deployment and `https://kapa-docs.mcp.kapa.ai/` (which
 | Tools didn't emit `additionalProperties:false` + `required` | Added (`ba5f7cd`) — required for strict-schema clients | No effect on artifacts |
 | `authorization_servers` / `issuer` consistency | First added trailing slash, then reverted to match kapa | No effect either direction |
 
-After all of those, our discovery output is structurally equivalent to kapa's
-working server. Server side is RFC-correct and matches a known-working
-reference implementation. The artifact attach still fails.
+All of those tweaks are correct per spec — keep them — but none of them moved
+the needle on JSX artifacts. The actual gap was further along the OAuth
+flow (resource indicator → `aud` claim), described in the section above.
 
 ## Why we believe it's an Anthropic proxy bug
 
