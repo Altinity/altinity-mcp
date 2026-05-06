@@ -409,12 +409,18 @@ func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClie
 		}
 
 		jsonType, jsonFmt := mapCHType(chType)
+		// Required iff the column has no DEFAULT/MATERIALIZED/ALIAS expression
+		// AND is not Nullable(...). CH itself would accept the row with the
+		// column omitted (filling the type's zero value), but for strict tool
+		// schemas it's clearer to declare these as required: callers usually
+		// expect to supply a real value, not "" or 0.
+		required := defaultKind == "" && !isNullableCHType(chType)
 		params = append(params, dynamicToolParam{
 			Name:        name,
 			CHType:      chType,
 			JSONType:    jsonType,
 			JSONFormat:  jsonFmt,
-			Required:    false,
+			Required:    required,
 			Description: strings.TrimSpace(comment),
 		})
 	}
@@ -444,8 +450,12 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 	for toolName, meta := range readTools {
 		s.dynamicTools[toolName] = meta
 		props := make(map[string]any, len(meta.Params)+1)
+		required := make([]string, 0, len(meta.Params))
 		for _, p := range meta.Params {
 			props[p.Name] = buildParamSchema(p)
+			if p.Required {
+				required = append(required, p.Name)
+			}
 		}
 		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
 			props["settings"] = settingsSchema
@@ -455,32 +465,29 @@ func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[str
 			Title:       meta.Title,
 			Description: meta.Description,
 			Annotations: meta.Annotations,
-			InputSchema: map[string]any{
-				"type":       "object",
-				"properties": props,
-			},
+			InputSchema: dynamicToolInputSchema(props, required),
 		}, makeDynamicToolHandler(meta))
 	}
 
 	for toolName, meta := range writeTools {
 		s.dynamicTools[toolName] = meta
 		props := make(map[string]any, len(meta.Params)+1)
+		required := make([]string, 0, len(meta.Params))
 		for _, p := range meta.Params {
 			props[p.Name] = buildParamSchema(p)
+			if p.Required {
+				required = append(required, p.Name)
+			}
 		}
 		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
 			props["settings"] = settingsSchema
-		}
-		schema := map[string]any{
-			"type":       "object",
-			"properties": props,
 		}
 		s.AddTool(&mcp.Tool{
 			Name:        toolName,
 			Title:       meta.Title,
 			Description: meta.Description,
 			Annotations: meta.Annotations,
-			InputSchema: schema,
+			InputSchema: dynamicToolInputSchema(props, required),
 		}, s.makeDynamicWriteToolHandler(meta))
 	}
 
@@ -737,12 +744,13 @@ func applyCommentParamOverrides(params []dynamicToolParam, meta dynamicToolComme
 
 // buildParamSchema returns the JSON Schema fragment for a single dynamic tool
 // parameter. Description resolves to the param's own Description (from a
-// column COMMENT or the tool's JSON COMMENT "params" map) and falls back to
-// the ClickHouse type string when none was set.
+// column COMMENT or the tool's JSON COMMENT "params" map) and falls back to a
+// `<name> (<type>)` synthetic description when none was set — bare CH types
+// like "String" alone read as garbage in claude.ai's tool list.
 func buildParamSchema(p dynamicToolParam) map[string]any {
 	desc := p.Description
 	if desc == "" {
-		desc = p.CHType
+		desc = fmt.Sprintf("%s (%s)", p.Name, p.CHType)
 	}
 	schema := map[string]any{
 		"type":        p.JSONType,
@@ -751,6 +759,23 @@ func buildParamSchema(p dynamicToolParam) map[string]any {
 	if p.JSONFormat != "" {
 		schema["format"] = p.JSONFormat
 	}
+	return schema
+}
+
+// dynamicToolInputSchema assembles the JSON Schema for a dynamic tool. Always
+// emits `additionalProperties: false` so the schema is strict-mode compatible
+// — Anthropic's API filters tools whose input schema doesn't pin the property
+// set, which silently hides MCP tools from `mcp_servers`-via-API callers
+// (Claude.ai artifacts, Agent SDK clients).
+func dynamicToolInputSchema(props map[string]any, required []string) map[string]any {
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           props,
+		"additionalProperties": false,
+	}
+	// Empty `required` is permitted by JSON Schema and accepted by strict
+	// validators; emitting it explicitly is cleaner than omitting the key.
+	schema["required"] = required
 	return schema
 }
 
@@ -826,6 +851,14 @@ func parseViewParams(createSQL string) []dynamicToolParam {
 		params = append(params, dynamicToolParam{Name: name, CHType: ch, JSONType: jType, JSONFormat: jFmt, Required: true})
 	}
 	return params
+}
+
+// isNullableCHType reports whether a ClickHouse type is `Nullable(...)`.
+// Used by the dynamic write tool to decide whether a column without a
+// DEFAULT expression should be marked required in the input schema:
+// non-nullable + no-default → required; nullable or has-default → optional.
+func isNullableCHType(chType string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(chType)), "nullable(")
 }
 
 // isUnsupportedCHType reports whether a ClickHouse type cannot be represented

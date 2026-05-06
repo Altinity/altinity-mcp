@@ -307,9 +307,10 @@ func buildExecuteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 			OpenWorldHint:   new(false),
 		},
 		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": properties,
-			"required":   []string{"query"},
+			"type":                 "object",
+			"properties":           properties,
+			"required":             []string{"query"},
+			"additionalProperties": false,
 		},
 	}
 }
@@ -341,9 +342,10 @@ func buildWriteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 			OpenWorldHint:   new(false),
 		},
 		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": properties,
-			"required":   []string{"query"},
+			"type":                 "object",
+			"properties":           properties,
+			"required":             []string{"query"},
+			"additionalProperties": false,
 		},
 	}
 }

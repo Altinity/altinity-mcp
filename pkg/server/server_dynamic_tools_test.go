@@ -669,6 +669,46 @@ func TestApplyCommentParamOverrides(t *testing.T) {
 	})
 }
 
+func TestIsNullableCHType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"Nullable(String)", true},
+		{"Nullable(UInt64)", true},
+		{"  nullable(DateTime)  ", true},
+		{"NULLABLE(Int64)", true},
+		{"String", false},
+		{"UInt64", false},
+		{"LowCardinality(Nullable(String))", false}, // outer wrapper isn't Nullable
+		{"", false},
+	}
+	for _, c := range cases {
+		require.Equalf(t, c.want, isNullableCHType(c.in), "input=%q", c.in)
+	}
+}
+
+func TestDynamicToolInputSchema(t *testing.T) {
+	t.Parallel()
+	t.Run("strict_mode_fields_always_emitted", func(t *testing.T) {
+		t.Parallel()
+		schema := dynamicToolInputSchema(map[string]any{"x": map[string]any{"type": "string"}}, []string{"x"})
+		require.Equal(t, "object", schema["type"])
+		require.Equal(t, false, schema["additionalProperties"], "schema must pin the property set")
+		require.Equal(t, []string{"x"}, schema["required"])
+	})
+	t.Run("empty_required_is_explicit", func(t *testing.T) {
+		t.Parallel()
+		// Anthropic's strict-mode validator accepts an empty `required`
+		// array but not a missing key for some tool-discovery code paths;
+		// emit it explicitly.
+		schema := dynamicToolInputSchema(map[string]any{}, []string{})
+		require.Contains(t, schema, "required")
+		require.Equal(t, []string{}, schema["required"])
+	})
+}
+
 func TestBuildParamSchema(t *testing.T) {
 	t.Parallel()
 
@@ -679,11 +719,14 @@ func TestBuildParamSchema(t *testing.T) {
 		require.Equal(t, "integer", schema["type"])
 		require.Equal(t, "user id", schema["description"])
 	})
-	t.Run("fallback_to_chtype_when_empty", func(t *testing.T) {
+	t.Run("fallback_to_name_and_chtype_when_empty", func(t *testing.T) {
 		t.Parallel()
+		// Bare CH type (e.g. "String") read as garbage in claude.ai's tool
+		// browser; fall back to "<name> (<type>)" so the param has at least
+		// a self-describing label.
 		p := dynamicToolParam{Name: "uid", CHType: "UInt64", JSONType: "integer"}
 		schema := buildParamSchema(p)
-		require.Equal(t, "UInt64", schema["description"])
+		require.Equal(t, "uid (UInt64)", schema["description"])
 	})
 	t.Run("json_format_included_when_set", func(t *testing.T) {
 		t.Parallel()
