@@ -79,6 +79,7 @@ A Helm chart for Altinity MCP Server
 | replicaCount | int | `1` | Number of replicas to deploy |
 | resources | object | `{}` | Container resource requests and limits |
 | securityContext | object | `{}` | Container security context |
+| selectorLabels | object | `{}` | Additional selector labels to add to deployment matchLabels and service selector. **WARNING:** Changing these after initial install requires recreating the Deployment because `spec.selector.matchLabels` is immutable. |
 | service.annotations | object | `{}` | Service annotations |
 | service.port | int | `8080` | Service port |
 | service.sessionAffinity | string | `nil` | Session affinity type. Set to "ClientIP" to enable sticky sessions. |

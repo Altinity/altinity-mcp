@@ -29,6 +29,13 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: ""
 
+# -- Additional selector labels to add to deployment matchLabels and service selector.
+# WARNING: Changing these after initial install requires recreating the Deployment
+# because spec.selector.matchLabels is immutable.
+selectorLabels: {}
+#   app: my-app
+#   component: mcp
+
 # -- Pod annotations
 podAnnotations: {}
 
