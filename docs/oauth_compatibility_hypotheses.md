@@ -232,42 +232,26 @@ the proxy/Anthropic backend won't be the only consumer forever.
 
 ---
 
-## Open question: trailing slash on canonical resource URI
+## Resolved: canonical resource URI is no-trailing-slash (Step 1 of incremental hardening)
 
-MCP spec 2025-11-25 §Canonical Server URI explicitly recommends the
-**no-trailing-slash** form for interoperability. Our advertised `resource` and
-the default-fallback `aud` use the **trailing-slash** form because that's what
-unblocked claude.ai's JSX artifact (commit `2ebf51d`).
+MCP spec 2025-11-25 §Canonical Server URI:
 
-### Hypothesis: claude.ai sends the URL the user pasted; our deployment is registered with the trailing slash
+> implementations **SHOULD** consistently use the form without the trailing
+> slash for better interoperability unless the trailing slash is semantically
+> significant for the specific resource
 
-Our public URL `https://otel-mcp.demo.altinity.cloud/` was registered in the
-claude.ai connector settings with the trailing slash. claude.ai's proxy uses
-that exact form when sending `resource=` on `/authorize` and validating `aud`
-in returned tokens.
+We now ship the no-slash form on the advertised `resource` field and on the
+default-fallback `aud` claim. Byte-equality with whatever the client sent in
+`resource=` on /authorize is preserved on the `aud` claim itself, so a client
+that registered the connector URL with a slash still gets `aud` byte-matching
+what it sent. `validateOAuthClaims` continues to compare slash-normalised
+forms against the operator-configured `Audience`, so operator config remains
+flexible.
 
-If a user registered the connector *without* a trailing slash, the byte-equal
-comparison would fail and the artifact wouldn't attach. This means the spec's
-"no trailing slash for interop" advice is actually correct, *and* we should
-both:
-
-- Strip trailing slash from `resource` and the default `aud` (spec compliance)
-- Pass through whatever the client sent in `resource` for the `aud` claim
-  byte-for-byte (already implemented)
-
-### Why we haven't done it yet
-
-Switching from trailing-slash to no-slash would, for the duration of any
-in-flight refresh tokens, mint tokens with `aud` not matching whatever
-claude.ai cached for our connector. If they validate cross-request, it'd
-break. Tested-but-not-confirmed.
-
-### What to test
-
-1. Probe a fresh artifact registration with `resource=https://otel-mcp.demo.altinity.cloud`
-   (no slash): does claude.ai accept the corresponding token?
-2. If yes, switch our default to no-slash and reaffirm via the artifact test.
-3. If no — keep current behaviour and document that some clients are slash-sensitive.
+The ripple-effect concern (claude.ai cached the with-slash form, would
+mismatch after switch) was tested live: artifact path continued to work
+because the proxy passes the user-registered URL form, and we echo it back
+verbatim on the aud claim.
 
 ---
 

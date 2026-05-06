@@ -769,13 +769,17 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	baseURL := a.resourceBaseURL(r)
 	authServerBaseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
-		// `resource` carries a trailing slash because RFC 9728 §2 treats the
-		// resource identifier as a URL-with-path and clients (incl. Anthropic's
-		// proxy) often normalise the MCP server URL with one before comparing.
-		// `authorization_servers` follows the RFC 8414 issuer convention (no
-		// trailing slash) so as[0] == issuer in our AS metadata holds byte-for-
-		// byte; kapa.ai (the working reference) ships this exact shape.
-		"resource":                 strings.TrimRight(baseURL, "/") + "/",
+		// MCP 2025-11-25 §Canonical Server URI: implementations SHOULD use
+		// the form WITHOUT trailing slash for interoperability. We comply on
+		// the advertised value. Clients that send `resource=<form>` on
+		// /authorize get exact byte-equality preserved on the `aud` claim
+		// (see mintGatingTokenResponse) — so a client that registered the
+		// connector URL with a slash still gets a token whose aud matches
+		// what they sent. validateOAuthClaims also normalises slashes on the
+		// operator-configured Audience to keep operator config flexible.
+		// `authorization_servers` follows the RFC 8414 issuer convention
+		// (no trailing slash) so as[0] == issuer holds byte-for-byte.
+		"resource":                 strings.TrimRight(baseURL, "/"),
 		"authorization_servers":    []string{strings.TrimRight(authServerBaseURL, "/")},
 		"scopes_supported":         a.GetCurrentConfig().Server.OAuth.Scopes,
 		"bearer_methods_supported": []string{"header"},
@@ -1267,6 +1271,10 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 	// resource indicator, the `aud` claim MUST identify that resource. Echo
 	// the requested string verbatim so byte-equality with what the client sent
 	// holds — this is what claude.ai's artifact proxy enforces.
+	//
+	// When the client did NOT send a resource indicator, fall back to the
+	// canonical no-trailing-slash form (matches the advertised `resource`
+	// field per MCP 2025-11-25 §Canonical Server URI).
 	var audience string
 	switch {
 	case id.Resource != "":
@@ -1274,7 +1282,7 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 	case cfg.Server.OAuth.Audience != "":
 		audience = strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
 	default:
-		audience = strings.TrimRight(a.resourceBaseURL(r), "/") + "/"
+		audience = strings.TrimRight(a.resourceBaseURL(r), "/")
 	}
 	scope := id.Scope
 	if scope == "" {

@@ -61,10 +61,10 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "https://mcp.example.com/", body["resource"])
-		// authorization_servers entries follow the RFC 8414 issuer convention
-		// (no trailing slash), so as[0] == issuer in our AS metadata. kapa.ai
-		// (the working JSX-artifact reference) ships this same shape.
+		// MCP 2025-11-25 §Canonical Server URI SHOULD: no trailing slash on
+		// the advertised resource. as[0] follows RFC 8414 issuer convention
+		// (also no slash) so as[0] == issuer holds byte-for-byte.
+		require.Equal(t, "https://mcp.example.com", body["resource"])
 		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
@@ -206,6 +206,40 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Equal(t, "https://mcp.example.com/", claims["aud"], "aud must be the exact string the client passed in `resource` (trailing slash preserved)")
 	})
 
+	t.Run("mint_gating_token_aud_defaults_to_canonical_no_slash", func(t *testing.T) {
+		// When the client did NOT send a resource indicator (e.g., legacy
+		// codex / older mcp clients) the fallback `aud` matches the
+		// canonical advertised `resource` (no trailing slash) per
+		// MCP 2025-11-25 §Canonical Server URI.
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
+		// Clear the operator-configured Audience for this subtest so the
+		// fallback path runs (with Audience set, that wins).
+		savedAud := app.config.Server.OAuth.Audience
+		app.config.Server.OAuth.Audience = ""
+		t.Cleanup(func() { app.config.Server.OAuth.Audience = savedAud })
+
+		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
+			ClientID:      "test-client",
+			Subject:       "user-123",
+			Email:         "u@example.com",
+			EmailVerified: true,
+			Scope:         "openid email",
+			// Resource intentionally empty.
+		})
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		accessToken, _ := resp["access_token"].(string)
+		parts := strings.Split(accessToken, ".")
+		require.Len(t, parts, 3)
+		payload, err := decodeJWTSegment(parts[1])
+		require.NoError(t, err)
+		var claims map[string]interface{}
+		require.NoError(t, json.Unmarshal(payload, &claims))
+		require.Equal(t, "https://mcp.example.com", claims["aud"])
+	})
+
 	t.Run("dynamic_client_registration_default_is_confidential", func(t *testing.T) {
 		// When the client doesn't ask for a specific auth method, we now
 		// register it as confidential (client_secret_post). This unblocks
@@ -278,7 +312,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
