@@ -31,7 +31,9 @@ IMPROVEMENTS
 - split `pkg/server/server.go` into domain-specific files (`server_auth_oauth.go`, `server_dynamic_tools.go`, etc.) for maintainability ([PR #85](https://github.com/Altinity/altinity-mcp/pull/85))
 - migrate all tests from testcontainers-go to `embedded-clickhouse` — faster local test runs with no Docker dependency for unit/integration tests ([PR #92](https://github.com/Altinity/altinity-mcp/pull/92))
 - split `server_test.go` into domain-specific test files (`server_auth_oauth_test.go`, etc.) ([PR #85](https://github.com/Altinity/altinity-mcp/pull/85))
+- helm: add configurable `selectorLabels` in `values.yaml` — merged into deployment `matchLabels`, pod template labels, and service selector ([PR #100](https://github.com/Altinity/altinity-mcp/pull/100))
 - helm: make liveness/readiness probe paths, `initialDelaySeconds`, and `periodSeconds` configurable via `probes.liveness.*` / `probes.readiness.*` values ([PR #95](https://github.com/Altinity/altinity-mcp/pull/95))
+- docs: move Antalya macOS build steps into dedicated `docs/build_antalya_macos.md`
 - add `go install` instructions to README
 - document cluster-secret authentication in OAuth gating mode docs ([PR #86](https://github.com/Altinity/altinity-mcp/pull/86))
 - upgrade Go toolchain to 1.26
