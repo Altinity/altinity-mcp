@@ -129,58 +129,61 @@ gateways.
 
 ---
 
-## H-4 (full) — HKDF-derived per-context keys + key rotation
+## Resolved: H-4 — HKDF-derived per-context keys + kid migration (Step 2)
 
-### What the report flagged
+### What shipped
 
-`SigningSecret` is currently used as the input to a single `SHA256(secret)`
-that doubles as:
-- HS256 signing key for self-issued access tokens
-- A256KW key-wrap key for JWE'd client_ids
-- A256KW key-wrap key for JWE'd refresh tokens
+Each cryptographic use of the shared `SigningSecret` now derives an
+independent 32-byte key via HKDF-SHA256 (RFC 5869 §3.2 domain separation):
 
-Single-key compromise = total compromise. There's no `kid` in either header,
-so multi-key rotation isn't possible without breaking all outstanding tokens.
+| Use | HKDF info label | kid |
+|---|---|---|
+| client_id JWE wrap | `altinity-mcp/oauth/client-id/v1` | `v1` |
+| refresh-token JWE wrap (gating + forward) | `altinity-mcp/oauth/refresh-token/v1` | `v1` |
+| self-issued access token HS256 | `altinity-mcp/oauth/access-token/v1` | `v1` |
 
-### Hypothesis-4A: claude.ai caches the refresh token; rotating any key invalidates it and forces re-auth
+Newly-issued artifacts carry `kid="v1"` in the protected JWE/JWS header.
+Decoders pick the derivation by inspecting `kid`:
 
-If we change the derivation to HKDF(secret, info=<context>), all outstanding
-refresh tokens decrypt to garbage on first use after deploy. Every connected
-artifact has to reauthorize. For a small population this is annoying but
-recoverable; for a deployed feature with many users it's an operational
-incident.
+- `kid == "v1"` → use HKDF-derived key for the matching info label.
+- `kid` absent → fall back to the legacy `SHA256(SigningSecret)` derivation
+  used before the cutover, so refresh tokens and client_ids minted before
+  this commit keep working.
 
-The mitigation is **dual-key acceptance**:
+The fallback runs through `jwe_auth.ParseAndDecryptJWE` (legacy SHA256
+path) and the gating-mode access-token verifier path, both of which know
+the historical formats.
 
-1. New tokens emit a `kid="v2"` header (in JWE protected headers + in JWT
-   header).
-2. Decryption tries `v2` first (with HKDF-derived keys), falls back to no-kid
-   path (with current `SHA256(secret)` keys).
-3. After 30 days (one refresh-token lifetime), remove the fallback.
+### When the legacy fallback can be removed
 
-### Hypothesis-4B: claude.ai validates the JWS signature shape and rejects unknown `kid`
+After every legacy refresh token (default TTL 30 days) and legacy stateless
+client_id (also 30 days) has expired naturally — i.e. ~30 days after the
+deploy that introduced HKDF. After that:
 
-Some JWT validators reject any token whose `kid` doesn't appear in the JWKS
-they fetched. Our access token isn't validated by claude.ai — claude.ai just
-passes it back to us. So adding `kid` should be transparent to them. Worth
-verifying with a probe: emit a token with `kid` set, ensure claude.ai still
-sends it back in `Authorization: Bearer`.
+1. Drop the `kid == ""` branch in `decodeOAuthJWE` and the matching branch
+   in `parseAndVerifySelfIssuedOAuthToken`.
+2. Drop the `encodeJWEArtifact` legacy emit helper if anything still uses
+   it (currently nothing does after Step 2).
+3. Drop the SHA256-fallback test cases.
 
-### What we'd need to do
+### Future rotation
 
-1. Implement HKDF derivation (`info` = "altinity-mcp/oauth/jwe-keywrap-v2",
-   "altinity-mcp/oauth/access-token-hs256-v2").
-2. Add `kid` header support to both JWE artifact creation and self-issued JWT
-   signing.
-3. Decryption + signature verification accept either `kid="v2"` (new) or no
-   `kid` (legacy).
-4. Add a config knob `signing_secret_v1` that retains the old derivation for
-   the rotation window.
-5. After 30 days, drop legacy support.
+To rotate any single key without disturbing the others, bump the `/vN`
+suffix in that one info label and the `kid` value, while temporarily
+accepting both the old and the new label during a rotation window. The
+labels are namespaced so `client-id/v2` doesn't affect `access-token/v1`.
 
-This is a real change; ~100 lines + tests + docs. Not trivial. But it's the
-right thing if we expect the deployment to last and we want incident response
-to be possible without forcing every user to re-auth.
+### Hypothesis-4A (caches refresh token, breaks at first use): expected to be mitigated
+
+The dual-key acceptance branch covers it in code; live JSX-artifact testing
+on the deployed branch verifies it. Update this section to "confirmed" once
+verified.
+
+### Hypothesis-4B (claude.ai rejects unknown kid): expected not to apply
+
+claude.ai's proxy treats our self-issued access tokens as opaque — it
+forwards them to us in `Authorization: Bearer` without inspecting the
+`kid` header. To be confirmed by JSX-artifact testing after deploy.
 
 ---
 

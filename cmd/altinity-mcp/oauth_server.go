@@ -236,13 +236,92 @@ func (a *application) mustJWESecret() ([]byte, error) {
 	return secret, nil
 }
 
-func encodeJWEArtifact(secret []byte, claims map[string]interface{}) (string, error) {
-	return jwe_auth.GenerateJWEToken(claims, secret, secret)
+// oauthKidV1 is the kid header set on every newly-issued OAuth-related JWE
+// or JWS. Its presence selects the HKDF-derived key on decryption; absence
+// (kid="") selects the legacy SHA256(secret) key for backwards compat with
+// artifacts minted before the rotation cutover. After the longest legacy
+// artifact lifetime expires (refresh tokens, default 30 days), the legacy
+// fallback below can be removed.
+const oauthKidV1 = "v1"
+
+// HKDF info labels for per-context OAuth key derivation. Each label produces
+// an independent 32-byte key from the shared signing_secret (RFC 5869 §3.2).
+// Bumping the /vN suffix in any single label rotates that one key without
+// disturbing the others.
+const (
+	hkdfInfoOAuthClientID    = "altinity-mcp/oauth/client-id/v1"
+	hkdfInfoOAuthRefresh     = "altinity-mcp/oauth/refresh-token/v1"
+	hkdfInfoOAuthAccessToken = "altinity-mcp/oauth/access-token/v1"
+)
+
+// encodeOAuthJWE emits a JWE-wrapped JSON document of `claims`, encrypted
+// with a key HKDF-derived from `secret` and the per-context `info` label.
+// kid="v1" is set in the protected header so decoders pick the same key.
+func encodeOAuthJWE(secret []byte, info string, claims map[string]interface{}) (string, error) {
+	key := jwe_auth.DeriveKey(secret, info)
+	plaintext, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	encrypter, err := jose.NewEncrypter(
+		jose.A256GCM,
+		jose.Recipient{Algorithm: jose.A256KW, Key: key},
+		(&jose.EncrypterOptions{}).
+			WithType("JWE").
+			WithContentType("JSON").
+			WithHeader(jose.HeaderKey("kid"), oauthKidV1),
+	)
+	if err != nil {
+		return "", err
+	}
+	jweObj, err := encrypter.Encrypt(plaintext)
+	if err != nil {
+		return "", err
+	}
+	return jweObj.CompactSerialize()
 }
 
-func decodeJWEArtifact(secret []byte, token string) (map[string]interface{}, error) {
+// decodeOAuthJWE decrypts a JWE produced by encodeOAuthJWE OR by the legacy
+// jwe_auth.GenerateJWEToken path used before this commit. The kid header
+// selects the derivation:
+//
+//   - kid == oauthKidV1 → key = HKDF(secret, info)
+//   - kid == ""         → key = SHA256(secret) (legacy)
+//
+// The same RFC 7591/JWE-claim whitelist + expiration check applies to both
+// paths via the exported jwe_auth.ValidateClaimsWhitelist / ValidateExpiration
+// helpers.
+func decodeOAuthJWE(secret []byte, info string, token string) (map[string]interface{}, error) {
+	jweObj, err := jose.ParseEncrypted(token,
+		[]jose.KeyAlgorithm{jose.A256KW},
+		[]jose.ContentEncryption{jose.A256GCM})
+	if err != nil {
+		return nil, jwe_auth.ErrInvalidToken
+	}
+	if jweObj.Header.KeyID == oauthKidV1 {
+		key := jwe_auth.DeriveKey(secret, info)
+		decrypted, err := jweObj.Decrypt(key)
+		if err != nil {
+			return nil, jwe_auth.ErrInvalidToken
+		}
+		var claims map[string]interface{}
+		if err := json.Unmarshal(decrypted, &claims); err != nil {
+			return nil, jwe_auth.ErrInvalidToken
+		}
+		if err := jwe_auth.ValidateClaimsWhitelist(claims); err != nil {
+			return nil, err
+		}
+		if err := jwe_auth.ValidateExpiration(claims); err != nil {
+			return nil, err
+		}
+		return claims, nil
+	}
+	// Legacy path: jwe_auth.ParseAndDecryptJWE knows the SHA256(secret)
+	// derivation AND the legacy JWT-signed-inside-JWE content type. Routing
+	// through it keeps a single source of truth for every legacy variant.
 	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
 }
+
 
 func normalizeURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
@@ -542,8 +621,17 @@ func randomToken(prefix string) string {
 }
 
 func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
-	hashedSecret := jwe_auth.HashSHA256(secret)
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
+	// Signing key is HKDF-derived per the access-token info label, separate
+	// from the JWE-encryption keys used for client_id and refresh_token. A
+	// kid="v1" header lets parseAndVerifySelfIssuedOAuthToken select this
+	// derivation; legacy tokens (no kid) verify against the old SHA256(secret).
+	signingKey := jwe_auth.DeriveKey(secret, hkdfInfoOAuthAccessToken)
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.HS256, Key: signingKey},
+		(&jose.SignerOptions{}).
+			WithType("JWT").
+			WithHeader(jose.HeaderKey("kid"), oauthKidV1),
+	)
 	if err != nil {
 		return "", err
 	}
@@ -927,7 +1015,7 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 		// it against the inbound form parameter without server-side state.
 		clientIDClaims["client_secret"] = clientSecret
 	}
-	clientID, err := encodeJWEArtifact(secret, clientIDClaims)
+	clientID, err := encodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientIDClaims)
 	if err != nil {
 		http.Error(w, "Failed to create stateless client registration", http.StatusInternalServerError)
 		return
@@ -986,7 +1074,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
@@ -1308,7 +1396,7 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	refreshToken, err := encodeJWEArtifact(secret, map[string]interface{}{
+	refreshToken, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
 		"sub":            id.Subject,
 		"iss":            issuer,
 		"aud":            audience,
@@ -1346,7 +1434,7 @@ func (a *application) mintForwardRefreshToken(secret []byte, upstreamRefresh, up
 	if tokenType == "" {
 		tokenType = "Bearer"
 	}
-	return encodeJWEArtifact(secret, map[string]interface{}{
+	return encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
 		"upstream_refresh_token": upstreamRefresh,
 		"upstream_token_type":    tokenType,
 		"scope":                  scope,
@@ -1393,7 +1481,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1534,7 +1622,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 
 	// Validate client_id
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1556,7 +1644,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "missing refresh token")
 		return
 	}
-	claims, err := decodeJWEArtifact(secret, refreshTokenStr)
+	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, refreshTokenStr)
 	if err != nil {
 		log.Warn().Err(err).Msg("OAuth refresh_token grant: JWE decode failed")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")

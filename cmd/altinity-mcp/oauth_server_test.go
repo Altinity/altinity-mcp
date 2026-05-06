@@ -30,6 +30,118 @@ func decodeJWTSegment(seg string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(seg)
 }
 
+// TestOAuthJWEHKDFRoundtripAndLegacyFallback covers the v1 (HKDF) ↔ legacy
+// (SHA256) compatibility surface introduced in Step 2 of the OAuth review.
+// Three invariants:
+//
+//  1. Newly-issued artifacts emit kid="v1" in the JWE/JWS header.
+//  2. v1 artifacts decrypt/verify with the matching HKDF-derived key — and
+//     ONLY with that key (a leak in one info-namespace doesn't compromise
+//     another).
+//  3. Legacy artifacts (no kid, single SHA256(secret) key) still decrypt and
+//     verify, so existing refresh tokens / client_ids minted before the
+//     cutover keep working through the rotation window.
+func TestOAuthJWEHKDFRoundtripAndLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("test-signing-secret-32-byte-key!!")
+
+	t.Run("v1_artifact_carries_kid_header", func(t *testing.T) {
+		t.Parallel()
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthClientID, map[string]interface{}{
+			"sub": "user-1",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		// JWE compact serialisation: 5 dot-separated parts (header.cek.iv.ct.tag).
+		parts := strings.Split(token, ".")
+		require.Len(t, parts, 5)
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		require.Equal(t, oauthKidV1, hdr["kid"], "newly-issued JWE must carry kid=v1")
+	})
+
+	t.Run("v1_roundtrip", func(t *testing.T) {
+		t.Parallel()
+		original := map[string]interface{}{
+			"sub":      "user-1",
+			"exp":      float64(time.Now().Add(time.Hour).Unix()),
+			"scope":    "openid email",
+			"email":    "u@example.com",
+			"client_id": "test-client",
+		}
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, original)
+		require.NoError(t, err)
+		decrypted, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, token)
+		require.NoError(t, err)
+		require.Equal(t, original["sub"], decrypted["sub"])
+		require.Equal(t, original["scope"], decrypted["scope"])
+	})
+
+	t.Run("v1_domain_separation_blocks_cross_context_decrypt", func(t *testing.T) {
+		// A refresh token's JWE MUST NOT decrypt against the client_id key,
+		// even though both are minted from the same shared secret. This is
+		// the core HKDF benefit (RFC 5869 §3.2): different info → independent
+		// keys.
+		t.Parallel()
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
+			"sub": "user-1",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		_, err = decodeOAuthJWE(secret, hkdfInfoOAuthClientID, token)
+		require.Error(t, err, "decryption with the wrong info label MUST fail")
+	})
+
+	t.Run("legacy_artifact_decrypts_via_fallback", func(t *testing.T) {
+		// Mint a JWE the way the pre-Step-2 server did: jwe_auth.GenerateJWEToken
+		// with the raw secret, no kid header, JWT-signed inner content.
+		t.Parallel()
+		legacy, err := jwe_auth.GenerateJWEToken(map[string]interface{}{
+			"sub":   "user-legacy",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"scope": "openid",
+		}, secret, secret)
+		require.NoError(t, err)
+		// Sanity: legacy artifacts have no kid (or empty) in the protected header.
+		parts := strings.Split(legacy, ".")
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		_, hasKid := hdr["kid"]
+		require.False(t, hasKid, "legacy artifact must not carry kid")
+
+		// Now decode it via the new path — should succeed via the legacy
+		// fallback branch, regardless of which info label we ask for (the
+		// fallback ignores info because the legacy SHA256(secret) key is
+		// shared across contexts).
+		decoded, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, legacy)
+		require.NoError(t, err, "legacy JWE must remain decryptable during the rotation window")
+		require.Equal(t, "user-legacy", decoded["sub"])
+	})
+
+	t.Run("self_issued_access_token_v1_carries_kid", func(t *testing.T) {
+		t.Parallel()
+		token, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
+			"sub": "user-1",
+			"iss": "https://mcp.example.com",
+			"aud": "https://mcp.example.com",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		parts := strings.Split(token, ".")
+		require.Len(t, parts, 3)
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		require.Equal(t, oauthKidV1, hdr["kid"], "self-issued access token must carry kid=v1")
+	})
+}
+
 func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	t.Parallel()
 	app := &application{

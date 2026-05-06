@@ -356,20 +356,45 @@ func issuerAllowed(got string, allowlist []string, singleIssuer string) bool {
 	return true
 }
 
+// SelfIssuedAccessTokenKid is the `kid` header value that selects the
+// HKDF-derived HS256 signing key for self-issued OAuth access tokens. Tokens
+// without a kid header are accepted with the legacy SHA256(secret) key for
+// the duration of the rotation window.
+const SelfIssuedAccessTokenKid = "v1"
+
+// SelfIssuedAccessTokenHKDFInfo is the HKDF info label that mints the HS256
+// signing key for self-issued access tokens. Must match the label in
+// cmd/altinity-mcp/oauth_server.go (kept in sync there as
+// hkdfInfoOAuthAccessToken).
+const SelfIssuedAccessTokenHKDFInfo = "altinity-mcp/oauth/access-token/v1"
+
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
 	secret := strings.TrimSpace(s.Config.Server.OAuth.SigningSecret)
 	if secret == "" {
 		return nil, fmt.Errorf("oauth signing_secret is required in gating mode")
 	}
-	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 
 	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.HS256})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse self-issued JWT: %w", err)
 	}
+	if len(parsed.Headers) == 0 {
+		return nil, fmt.Errorf("missing JWT header")
+	}
+
+	// kid="v1" → HKDF-derived key (current). Absent kid → SHA256(secret)
+	// (legacy, accepted during the post-rotation window for tokens minted
+	// before the kid cutover; remove the fallback once all in-flight refresh
+	// tokens have expired).
+	var key []byte
+	if parsed.Headers[0].KeyID == SelfIssuedAccessTokenKid {
+		key = jwe_auth.DeriveKey([]byte(secret), SelfIssuedAccessTokenHKDFInfo)
+	} else {
+		key = jwe_auth.HashSHA256([]byte(secret))
+	}
 
 	var rawClaims map[string]interface{}
-	if err := parsed.Claims(hashedSecret, &rawClaims); err != nil {
+	if err := parsed.Claims(key, &rawClaims); err != nil {
 		return nil, fmt.Errorf("failed to verify self-issued JWT: %w", err)
 	}
 	return oauthClaimsFromRawClaims(rawClaims), nil
