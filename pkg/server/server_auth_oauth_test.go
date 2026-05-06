@@ -633,7 +633,7 @@ func TestOAuthClearClickHouseCredentials(t *testing.T) {
 func TestOAuthAndJWECombined(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	jweSecretKey := "this-is-a-32-byte-secret-key!!"
@@ -883,7 +883,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 // TestOAuthOpenAPIHandler tests OpenAPI handler with OAuth authentication
 func TestOAuthOpenAPIHandler(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("oauth_only_valid", func(t *testing.T) {
@@ -1070,7 +1070,7 @@ func TestGetOAuthClaimsFromCtx(t *testing.T) {
 func TestGetClickHouseClientWithOAuth(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("no_oauth_forwarding", func(t *testing.T) {
 		t.Parallel()
@@ -1330,7 +1330,7 @@ func TestValidateAuth(t *testing.T) {
 func TestOAuthMCPToolExecution(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("execute_query_with_oauth", func(t *testing.T) {
@@ -1456,21 +1456,24 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 // TestOAuthOpenAPIFullFlow tests complete OAuth flow for OpenAPI endpoint
 func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
 	t.Run("complete_oauth_openapi_flow", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		dockerProvider, dockerOIDCURL := newTestOAuthProviderReachableFromDocker(t, nil)
-		dockerChConfig := setupAntalyaClickHouseWithOIDC(t, ctx, dockerOIDCURL)
+		// Antalya is required for token_processors-driven OIDC validation in CH.
+		// Use newAntalyaOIDCProvider (full discovery doc) — Antalya rejects
+		// the shorter doc returned by newTestOAuthProvider.
+		// setupEmbeddedAntalyaWithOIDC auto-skips on non-Linux hosts.
+		oidcProvider := newAntalyaOIDCProvider(t, nil)
+		antalyaCH := setupEmbeddedAntalyaWithOIDC(t, oidcProvider.server.URL)
 		srv := NewClickHouseMCPServer(config.Config{
-			ClickHouse: dockerChConfig,
+			ClickHouse: antalyaCH,
 			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
 		}, "test")
-		oauthToken := dockerProvider.issueJWT(t, map[string]interface{}{
+		oauthToken := oidcProvider.issueJWT(t, map[string]interface{}{
 			"sub": "service-account-123",
-			"iss": dockerOIDCURL,
+			"iss": oidcProvider.server.URL,
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20version()%20as%20version", nil)

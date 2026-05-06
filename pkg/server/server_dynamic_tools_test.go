@@ -98,7 +98,7 @@ func TestMakeDynamicToolHandler_NoServerInContext(t *testing.T) {
 func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// prepare parameterized view
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -158,7 +158,7 @@ func TestMakeDynamicToolHandler_WithClickHouse(t *testing.T) {
 func TestRegisterDynamicTools_SuccessAndOverlap(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
@@ -352,7 +352,7 @@ func TestEnsureDynamicTools_NoRules(t *testing.T) {
 // TestEnsureDynamicTools_InvalidRegexp tests invalid regexp in rules
 func TestEnsureDynamicTools_InvalidRegexp(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -372,7 +372,7 @@ func TestEnsureDynamicTools_InvalidRegexp(t *testing.T) {
 // TestEnsureDynamicTools_NamedRuleNoMatch tests named rule that matches no views
 func TestEnsureDynamicTools_NamedRuleNoMatch(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -394,7 +394,7 @@ func TestEnsureDynamicTools_NamedRuleNoMatch(t *testing.T) {
 func TestEnsureDynamicTools_NamedRuleMultipleMatches(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	client, err := clickhouse.NewClient(ctx, *chConfig)
 	require.NoError(t, err)
@@ -426,7 +426,7 @@ func TestEnsureDynamicTools_NamedRuleMultipleMatches(t *testing.T) {
 // TestMakeDynamicToolHandler_QueryError tests handler when query fails
 func TestMakeDynamicToolHandler_QueryError(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := &ClickHouseJWEServer{
 		Config: config.Config{
@@ -519,7 +519,7 @@ func TestMakeDynamicToolHandler_GetClientError(t *testing.T) {
 func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	// Create a view with multiple param types
 	client, err := clickhouse.NewClient(ctx, *chConfig)
@@ -959,7 +959,7 @@ func TestBuildDynamicToolAnnotations(t *testing.T) {
 
 func TestEnsureDynamicToolsE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	t.Run("no_dynamic_tools_config", func(t *testing.T) {
 		t.Parallel()

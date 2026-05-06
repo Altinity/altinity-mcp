@@ -13,7 +13,7 @@ import (
 func TestHandleSchemaResource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -44,7 +44,7 @@ func TestHandleSchemaResource(t *testing.T) {
 func TestHandleTableResource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -133,7 +133,7 @@ func TestHandleTableResource_EmptyDatabaseOrTable(t *testing.T) {
 
 func TestHandleSchemaResourceE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -160,7 +160,7 @@ func TestHandleSchemaResourceE2E_NoServer(t *testing.T) {
 
 func TestHandleTableResourceE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,

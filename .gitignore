@@ -17,12 +17,12 @@ GEMINI.md
 build/
 dist/
 /altinity-mcp
+/jwe-token-generator
 go-carpet*
 .mcp.json
 .gocache/
 .gomodcache/
 .tmp/
-resutls.xml
 coverage.out
 results.xml
 push-action

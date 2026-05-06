@@ -16,7 +16,7 @@ import (
 func TestJWEAuthentication(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	jweSecretKey := "this-is-a-32-byte-secret-key!!"
 	jwtSecretKey := "test-jwt-secret-key-123"

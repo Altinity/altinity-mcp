@@ -601,7 +601,11 @@ func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaim
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msgf("can't close %s response body", userInfoURL)
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
 	if err != nil {
 		return nil, err
@@ -903,7 +907,11 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msgf("can't close %s response body", tokenURL)
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
 	if err != nil {
 		http.Error(w, "Failed to read upstream token response", http.StatusBadGateway)
@@ -1394,7 +1402,11 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "upstream refresh failed")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msgf("can't close %s response body", tokenURL)
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to read upstream refresh response")

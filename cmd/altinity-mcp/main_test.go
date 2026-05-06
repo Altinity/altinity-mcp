@@ -22,14 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
-	"github.com/moby/moby/api/types/container"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/urfave/cli/v3"
 )
 
@@ -427,75 +425,21 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7d7Qj8fKjKjKjKjKjKjK
 	})
 }
 
-// setupClickHouseContainerMain is a local helper for this package's tests
+// setupClickHouseContainerMain boots a ClickHouse server as a host
+// subprocess via embedded-clickhouse and seeds the default.test table this
+// package's tests rely on.
 func setupClickHouseContainerMain(t *testing.T) *config.ClickHouseConfig {
 	t.Helper()
+	cfg := embeddedch.Setup(t, embeddedch.WithTCPProtocol())
+	cfg.Limit = 1000
+
 	ctx := context.Background()
-
-	totalStart := time.Now()
-
-	req := testcontainers.ContainerRequest{
-		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP":           "1",
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(2 * time.Second),
-	}
-	containerStart := time.Now()
-	chContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{ContainerRequest: req, Started: true})
-	containerElapsed := time.Since(containerStart)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		cleanupStart := time.Now()
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = chContainer.Terminate(cleanupCtx)
-		t.Logf("[container/%s] cleanup took %s", req.Image, time.Since(cleanupStart))
-	})
-
-	host, err := chContainer.Host(ctx)
-	require.NoError(t, err)
-	port, err := chContainer.MappedPort(ctx, "9000")
-	require.NoError(t, err)
-
-	cfg := &config.ClickHouseConfig{
-		Host:             host,
-		Port:             int(port.Num()),
-		Database:         "default",
-		Username:         "default",
-		Password:         "",
-		Protocol:         config.TCPProtocol,
-		ReadOnly:         false,
-		MaxExecutionTime: 60,
-		Limit:            1000,
-	}
-
-	// create base table
-	setupStart := time.Now()
 	client, err := clickhouse.NewClient(ctx, *cfg)
 	require.NoError(t, err)
 	defer func() { _ = client.Close() }()
 	_, _ = client.ExecuteQuery(ctx, "CREATE TABLE IF NOT EXISTS default.test (id UInt64, value String) ENGINE = Memory")
 	_, _ = client.ExecuteQuery(ctx, "INSERT INTO default.test VALUES (1, 'one') ON CLUSTER default")
-	setupElapsed := time.Since(setupStart)
-
-	t.Logf("[container/%s] start=%s setup=%s total=%s", req.Image, containerElapsed, setupElapsed, time.Since(totalStart))
 	return cfg
-}
-
-// startContainerWithTiming wraps testcontainers.GenericContainer with timing logs.
-func startContainerWithTiming(t *testing.T, ctx context.Context, req testcontainers.GenericContainerRequest) (testcontainers.Container, error) {
-	t.Helper()
-	start := time.Now()
-	container, err := testcontainers.GenericContainer(ctx, req)
-	t.Logf("[container/%s] start took %s", req.Image, time.Since(start))
-	return container, err
 }
 
 // Health handler tests
@@ -728,48 +672,10 @@ func TestHealthHandler(t *testing.T) {
 
 	t.Run("successful_clickhouse_connection_with_testcontainer", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-
-		// Start ClickHouse container
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		// Get the mapped port
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
+		cfg := embeddedch.Setup(t)
 		app := &application{
 			config: config.Config{
-				ClickHouse: config.ClickHouseConfig{
-					Host:     host,
-					Port:     int(mappedPort.Num()),
-					Database: "default",
-					Username: "default",
-					Password: "",
-					Protocol: config.HTTPProtocol,
-				},
+				ClickHouse: *cfg,
 				Server: config.ServerConfig{
 					JWE: config.JWEConfig{Enabled: false},
 				},
@@ -962,289 +868,75 @@ func TestTestConnection(t *testing.T) {
 	t.Run("successful_connection_with_testcontainer", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-
-		// Start ClickHouse container
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		// Get the mapped port
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
-		cfg := config.ClickHouseConfig{
-			Host:     host,
-			Port:     int(mappedPort.Num()),
-			Database: "default",
-			Username: "default",
-			Password: "",
-			Protocol: config.HTTPProtocol,
-		}
-
-		// Test connection
-		err = testConnection(ctx, cfg)
-		require.NoError(t, err)
+		cfg := embeddedch.Setup(t)
+		require.NoError(t, testConnection(ctx, *cfg))
 	})
 
 	t.Run("connection_with_tcp_protocol", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-
-		// Start ClickHouse container
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"9000/tcp", "8123/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		// Get the mapped port for TCP
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "9000")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
-		cfg := config.ClickHouseConfig{
-			Host:     host,
-			Port:     int(mappedPort.Num()),
-			Database: "default",
-			Username: "default",
-			Password: "",
-			Protocol: config.TCPProtocol,
-		}
-
-		// Test connection
-		err = testConnection(ctx, cfg)
-		require.NoError(t, err)
+		cfg := embeddedch.Setup(t, embeddedch.WithTCPProtocol())
+		require.NoError(t, testConnection(ctx, *cfg))
 	})
 
 	t.Run("connection_with_tls", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		require.NoError(t, setupLogging("debug"))
-		// Generate self-signed certificate
+
 		cert, key, err := generateSelfSignedCert()
 		require.NoError(t, err)
 
-		// Create HTTPS port config with OpenSSL server section
-		httpsConfig := `<clickhouse>
+		// Materialize cert + key on disk so the embedded CH server can read
+		// them; then point the server config at those host paths via a
+		// config.d drop-in.
+		certDir := t.TempDir()
+		certPath := filepath.Join(certDir, "server.crt")
+		keyPath := filepath.Join(certDir, "server.key")
+		require.NoError(t, os.WriteFile(certPath, cert, 0644))
+		require.NoError(t, os.WriteFile(keyPath, key, 0600))
+
+		httpsConfig := fmt.Sprintf(`<clickhouse>
     <https_port>8443</https_port>
     <openSSL>
         <server>
-            <certificateFile>/etc/clickhouse-server/server.crt</certificateFile>
-            <privateKeyFile>/etc/clickhouse-server/server.key</privateKeyFile>
+            <certificateFile>%s</certificateFile>
+            <privateKeyFile>%s</privateKeyFile>
             <verificationMode>none</verificationMode>
         </server>
     </openSSL>
-</clickhouse>`
+</clickhouse>`, certPath, keyPath)
 
 		// https://github.com/ClickHouse/clickhouse-go/issues/1630
 		nonEmptyDefaultUserPassword := "<clickhouse><users><default><password>non_empty</password></default></users></clickhouse>"
 
-		// Materialize config to a TempDir and bind-mount read-only.
-		// testcontainers' File-stream-via-archive path uses PUT /containers/{id}/archive
-		// which is blocked in some sandboxes (e.g. our agent isolator).
-		tmpDir := t.TempDir()
-		writeTmp := func(name, content string) string {
-			p := tmpDir + "/" + name
-			require.NoError(t, os.WriteFile(p, []byte(content), 0644))
-			return p
-		}
-		certFile := writeTmp("server.crt", string(cert))
-		keyFile := writeTmp("server.key", string(key))
-		httpsConfigFile := writeTmp("https_port.xml", httpsConfig)
-		// https://github.com/ClickHouse/clickhouse-go/issues/1630
-		nonEmptyPasswordFile := writeTmp("non_empty_password.xml", nonEmptyDefaultUserPassword)
+		chCfg := embeddedch.Setup(t,
+			embeddedch.WithConfigDropIn(httpsConfig),
+			embeddedch.WithConfigDropIn(nonEmptyDefaultUserPassword),
+		)
+		chCfg.Port = 8443
+		chCfg.Username = "default"
+		chCfg.Password = "non_empty"
+		chCfg.Protocol = config.HTTPProtocol
+		chCfg.TLS = config.TLSConfig{Enabled: true, InsecureSkipVerify: true}
 
-		// Start ClickHouse container with TLS enabled
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp", "8443/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			HostConfigModifier: func(hc *container.HostConfig) {
-				hc.Binds = append(hc.Binds,
-					certFile+":/etc/clickhouse-server/server.crt:ro",
-					keyFile+":/etc/clickhouse-server/server.key:ro",
-					httpsConfigFile+":/etc/clickhouse-server/config.d/https_port.xml:ro",
-					nonEmptyPasswordFile+":/etc/clickhouse-server/users.d/non_empty_password.xml:ro",
-				)
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8443")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
-		cfg := config.ClickHouseConfig{
-			Host:     host,
-			Port:     int(mappedPort.Num()),
-			Database: "default",
-			Username: "default",
-			// https://github.com/ClickHouse/clickhouse-go/issues/1630
-			Password: "non_empty",
-			Protocol: config.HTTPProtocol,
-			TLS: config.TLSConfig{
-				Enabled:            true,
-				InsecureSkipVerify: true,
-			},
-		}
-
-		// Test connection
-		err = testConnection(ctx, cfg)
-		require.NoError(t, err)
+		require.NoError(t, testConnection(ctx, *chCfg))
 	})
 
 	t.Run("connection_with_readonly_mode", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-
-		// Start ClickHouse container
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		// Get the mapped port
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
-		cfg := config.ClickHouseConfig{
-			Host:     host,
-			Port:     int(mappedPort.Num()),
-			Database: "default",
-			Username: "default",
-			Password: "",
-			Protocol: config.HTTPProtocol,
-			ReadOnly: true,
-		}
-
-		// Test connection
-		err = testConnection(ctx, cfg)
-		require.NoError(t, err)
+		cfg := embeddedch.Setup(t)
+		cfg.ReadOnly = true
+		require.NoError(t, testConnection(ctx, *cfg))
 	})
 
 	t.Run("connection_with_max_execution_time", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-
-		// Start ClickHouse container
-		containerReq := testcontainers.ContainerRequest{
-			Image:        "clickhouse/clickhouse-server:latest",
-			ExposedPorts: []string{"8123/tcp"},
-			Env: map[string]string{
-				"CLICKHOUSE_SKIP_USER_SETUP": "1",
-			},
-			WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-		}
-
-		clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-			ContainerRequest: containerReq,
-			Started:          true,
-		})
-		if err != nil {
-			t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-		}
-		t.Cleanup(func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = clickhouseContainer.Terminate(cleanupCtx)
-		})
-
-		// Get the mapped port
-		mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
-		require.NoError(t, err)
-
-		host, err := clickhouseContainer.Host(ctx)
-		require.NoError(t, err)
-
-		cfg := config.ClickHouseConfig{
-			Host:             host,
-			Port:             int(mappedPort.Num()),
-			Database:         "default",
-			Username:         "default",
-			Password:         "",
-			Protocol:         config.HTTPProtocol,
-			MaxExecutionTime: 300,
-		}
-
-		// Test connection
-		err = testConnection(ctx, cfg)
-		require.NoError(t, err)
+		cfg := embeddedch.Setup(t)
+		cfg.MaxExecutionTime = 300
+		require.NoError(t, testConnection(ctx, *cfg))
 	})
 }
 
@@ -2760,46 +2452,10 @@ logging:
 func TestNewApplicationWithTestContainer(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-
-	// Start ClickHouse container
-	containerReq := testcontainers.ContainerRequest{
-		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"8123/tcp"},
-		Env: map[string]string{
-			"CLICKHOUSE_SKIP_USER_SETUP": "1",
-		},
-		WaitingFor: wait.ForHTTP("/ping").WithPort("8123/tcp").WithStartupTimeout(30 * time.Second).WithPollInterval(1 * time.Second),
-	}
-
-	clickhouseContainer, err := startContainerWithTiming(t, ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: containerReq,
-		Started:          true,
-	})
-	if err != nil {
-		t.Fatal("Failed to start ClickHouse container, skipping test:", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = clickhouseContainer.Terminate(cleanupCtx)
-	})
-
-	// Get the mapped port
-	mappedPort, err := clickhouseContainer.MappedPort(ctx, "8123")
-	require.NoError(t, err)
-
-	host, err := clickhouseContainer.Host(ctx)
-	require.NoError(t, err)
+	chCfg := embeddedch.Setup(t)
 
 	cfg := config.Config{
-		ClickHouse: config.ClickHouseConfig{
-			Host:     host,
-			Port:     int(mappedPort.Num()),
-			Database: "default",
-			Username: "default",
-			Password: "",
-			Protocol: config.HTTPProtocol,
-		},
+		ClickHouse: *chCfg,
 		Server: config.ServerConfig{
 			JWE: config.JWEConfig{
 				Enabled: false,

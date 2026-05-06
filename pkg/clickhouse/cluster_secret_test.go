@@ -2,14 +2,11 @@ package clickhouse
 
 import (
 	"context"
-	"fmt"
 	"testing"
-	"time"
 
+	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 const (
@@ -56,57 +53,18 @@ const (
 `
 )
 
-// setupClusterSecretClickHouse launches a ClickHouse container whose
-// `remote_servers` list declares a cluster with a shared interserver secret,
-// plus two password-less users (alice, bob) that the driver can impersonate.
-//
-// Config files are written by a shell wrapper before ClickHouse starts. We
-// cannot use testcontainers' file-copy API here — the isolator sandbox
-// blocks the `PUT /containers/<id>/archive` Docker endpoint.
+// setupClusterSecretClickHouse boots ClickHouse via embedded-clickhouse with
+// `remote_servers` declaring a cluster + shared interserver secret, plus two
+// password-less users (alice, bob) the driver impersonates over the cluster
+// channel. Both XML pieces are merged via config.d drop-ins.
 func setupClusterSecretClickHouse(t *testing.T) (host string, tcpPort int) {
 	t.Helper()
-	ctx := context.Background()
-
-	script := fmt.Sprintf(`set -e
-cat > /etc/clickhouse-server/config.d/cluster.xml <<'EOF'
-%sEOF
-cat > /etc/clickhouse-server/users.d/cluster_users.xml <<'EOF'
-%sEOF
-exec /entrypoint.sh
-`, clusterConfigXML, clusterUsersXML)
-
-	req := testcontainers.ContainerRequest{
-		Image:        "clickhouse/clickhouse-server:latest",
-		ExposedPorts: []string{"8123/tcp", "9000/tcp"},
-		Env: map[string]string{
-			"CLICKHOUSE_DB":                        "default",
-			"CLICKHOUSE_USER":                      "default",
-			"CLICKHOUSE_PASSWORD":                  "",
-			"CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
-		},
-		Entrypoint: []string{"/bin/sh", "-c", script},
-		WaitingFor: wait.ForHTTP("/").WithPort("8123/tcp").
-			WithStartupTimeout(60 * time.Second).
-			WithPollInterval(2 * time.Second),
-	}
-	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		cleanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if termErr := c.Terminate(cleanCtx); termErr != nil {
-			t.Logf("cluster fixture: terminate failed: %v", termErr)
-		}
-	})
-
-	h, err := c.Host(ctx)
-	require.NoError(t, err)
-	p, err := c.MappedPort(ctx, "9000")
-	require.NoError(t, err)
-	return h, int(p.Num())
+	cfg := embeddedch.Setup(t,
+		embeddedch.WithTCPProtocol(),
+		embeddedch.WithConfigDropIn(clusterConfigXML),
+		embeddedch.WithConfigDropIn(clusterUsersXML),
+	)
+	return cfg.Host, cfg.Port
 }
 
 func clusterClientConfig(host string, port int, username string, secret string) config.ClickHouseConfig {

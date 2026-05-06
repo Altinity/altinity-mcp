@@ -17,7 +17,7 @@ import (
 func TestHandleExecuteQuery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -227,7 +227,7 @@ func TestHandleExecuteQuery_EmptyQuery(t *testing.T) {
 // TestHandleExecuteQuery_ExceedsMaxLimit tests limit exceeding config max
 func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: config.ClickHouseConfig{
@@ -261,7 +261,7 @@ func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 // TestHandleExecuteQuery_WithQueryWithExistingLimit tests query already having limit
 func TestHandleExecuteQuery_WithQueryWithExistingLimit(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
@@ -547,7 +547,7 @@ func TestEffectiveMaxQueryLength(t *testing.T) {
 
 func TestHandleExecuteQueryE2E(t *testing.T) {
 	t.Parallel()
-	chConfig := setupClickHouseContainer(t)
+	chConfig := setupEmbeddedClickHouse(t)
 
 	srv := NewClickHouseMCPServer(config.Config{
 		ClickHouse: *chConfig,
