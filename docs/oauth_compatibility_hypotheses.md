@@ -10,80 +10,82 @@ The fixes already shipped are listed at the bottom for context.
 
 ---
 
-## H-1 — Per-DCR-client consent screen (confused-deputy mitigation)
+## Resolved (with caveats): H-1 — Per-DCR-client consent screen
 
-### What the spec says
+### What shipped
 
-MCP authorization spec 2025-11-25 §Confused Deputy Problem:
+A real interactive HTML consent screen now renders in the user's browser
+between `/oauth/callback` (after upstream IdP auth) and the gating-code
+issuance to the DCR'd client. Per MCP authorization spec 2025-11-25
+§Confused Deputy Problem.
 
-> "MCP proxy servers using static client IDs **MUST** obtain user consent for
-> each dynamically registered client before forwarding to third-party
-> authorization servers."
+The consent page surfaces:
 
-We are exactly that: gating-mode proxies a single static upstream Auth0 client
-across all DCR-registered MCP clients. Auth0 only shows its own consent screen
-once for the upstream client; subsequent DCR'd MCP clients ride on the existing
-upstream session.
+- **Client** (the `client_name` the DCR client claimed — display only,
+  never trusted)
+- **Will redirect to** (the host portion of the registered redirect URI —
+  the only field that materially helps the user spot a malicious DCR client)
+- **Full redirect URI** (so the user can see the path too)
+- **Resource** (the MCP server URI being authorized)
+- **You are signed in as** (the user's email from upstream)
+- **Scopes** (if the client requested any)
 
-### Hypothesis-1A: claude.ai's proxy will follow our redirect to a consent page
+The page lives at `/oauth/consent` (configurable via `MCP_OAUTH_CONSENT_PATH`),
+renders with strict CSP (`default-src 'self'; script-src 'none'`,
+`frame-ancestors 'none'`, `Cache-Control: no-store`), and uses
+`html/template` for safe interpolation. Approve issues a one-time gating
+code and 302's to the registered redirect URI; Deny 302's with
+`error=access_denied` per RFC 6749 §4.1.2.1. Consent state is single-use
+and replays/tampering hit 400.
 
-If we render an HTML "Authorize *<client_name>* to access *<resource>*?" page
-between `/oauth/authorize` and the upstream redirect, claude.ai's artifact-side
-proxy needs to display it and capture the user's click. The proxy is probably
-doing one of:
+### Why this doesn't break JSX artifacts
 
-- **(a)** A headless follow-redirects loop with no UI surface — our consent
-  page would never be shown and the flow would dead-end.
-- **(b)** A WebView with cookies — would render and work like a normal browser.
-- **(c)** Pre-flighted: the proxy expects to see only OAuth-spec'd interstitials
-  (the IdP login + IdP consent), not a custom HTML page from the resource
-  server.
+The consent page only renders during `/callback`, which only runs during
+**initial connector setup or re-authorization in the user's browser**.
+The artifact path (cached bearer + token refresh via `/oauth/token`) never
+goes through `/callback`. So once the user has set the connector up,
+their JSX artifacts keep working with cached bearers and refresh tokens
+— consent is a one-time interaction at connector-add time, not a recurring
+gate per tool call.
 
-The safe default to assume is (a) — Anthropic's proxy is server-side
-infrastructure designed for `mcp_servers`-via-URL flows, not browser UIs. If we
-add a consent step that requires a click, the artifact path will break.
+### Caveat: the user has to actually click Approve in their browser
 
-### Hypothesis-1B: a non-clickthrough consent record would work
+When adding a new connector via claude.ai Settings, the OAuth flow opens
+the user's browser for upstream auth. Our consent page is one extra page
+in that flow — the user sees it, reviews the redirect URI, clicks Approve.
 
-We could implement consent passively: maintain a per-`(user_sub, dcr_client_id)`
-record (TTL'd in the existing JWE state store), and if it's the user's *first*
-authorization for this client, render an interstitial that auto-submits via
-JavaScript (or via a 302 to a self-issued URL containing a signed
-"consent_token"). The artifact proxy would follow it and we'd record consent.
+If a different MCP client (e.g., a CLI-based one that uses a headless OAuth
+flow without a real browser) tries to register, it'll dead-end at the
+consent page. That's the trade-off: we're satisfying the spec by demanding
+real user attention. Headless clients can pre-register out of band (the
+spec calls this "Pre-registration" path) instead of going through DCR.
 
-This is **security theatre** — an autosubmit isn't real consent — but it
-satisfies the letter of the spec and centralises the data. Worth less than the
-implementation cost.
+### What was *not* implemented
 
-### Hypothesis-1C: the existing PKCE + DCR-redirect-URI binding is enough
+We didn't add per-`(user_sub, client_id)` consent caching. Every fresh
+authorization (the user re-adding the connector, or after `/authorize`
+has been called for any reason) re-renders the consent page. Two reasons:
 
-The attack model assumes an attacker can DCR a client and trick a victim into
-authorizing it. PKCE binds the auth code to the *attacker's* code_verifier (the
-attacker DCR'd the client and so legitimately holds the secret + verifier). So
-PKCE doesn't help against a malicious DCR client.
+1. `/authorize` is rare in practice — connector setup is usually once
+   per browser per connector.
+2. Cached consent introduces its own state-management problem (where do
+   you store it, how do you revoke it, what happens on key rotation).
+   Out of scope for the initial fix.
 
-But: the redirect URI is also locked at DCR time. The only way the attacker
-captures the code is if they trick the user into starting `/authorize` with
-`client_id=<attacker_dcr>&redirect_uri=<attacker_url>`. The user would need to
-already be logged into our upstream Auth0 (otherwise they hit Auth0's consent
-which DOES show what's being authorized). And the resulting access token is
-scoped to *our* MCP server only — the attacker can query our MCP, not the
-victim's other resources.
+If the rate of re-consent prompts becomes a UX issue, add a JWE-encoded
+"consent_token" cookie scoped to the user's browser session.
 
-Does that residual risk warrant breaking the current artifact flow? Open
-question. **My recommendation:** ship a logging-only mitigation first (record
-every DCR + first-use-per-user pair, alert on anomalies), gather data, then
-decide.
+### Hypotheses 1A, 1B, 1C status
 
-### What we'd need to test
-
-1. Deploy a test branch that puts a static "Authorize this client?" HTML page
-   between `/oauth/authorize` and the upstream redirect.
-2. Connect via claude.ai artifact: does the JSX get tools attached, or does the
-   flow dead-end?
-3. If it dead-ends, try the auto-submit-form variant.
-4. If even that breaks, confirm we'd need to abandon strict spec compliance
-   here in exchange for the artifact path working.
+- **1A** (proxy is headless, can't render): not in play. claude.ai's
+  custom-connector setup uses the user's browser, not the proxy's
+  internal flow. Live test confirmed Approve+302 lets JSX artifacts work.
+- **1B** (auto-submit consent for headless): not needed; we picked the
+  real-consent path because the user-visible browser is available.
+- **1C** (PKCE + redirect-URI binding is enough): rejected. The spec
+  strictly requires user consent, and the residual risk (attacker DCRs a
+  client, tricks user into authorizing it) is real enough to warrant a
+  user-visible review step.
 
 ---
 

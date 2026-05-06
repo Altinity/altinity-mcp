@@ -30,6 +30,136 @@ func decodeJWTSegment(seg string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(seg)
 }
 
+// TestOAuthConsentFlow exercises the per-DCR-client consent screen + the
+// /oauth/consent endpoint that promotes consent into a redeemable auth code.
+//
+// We bypass the upstream callback (it requires a live IdP) and call
+// putPendingConsent directly with a fake consent record, then assert:
+//   - GET /oauth/consent is rejected (consent state mutates only via POST)
+//   - Approve issues a one-time gating code via the redirect_uri (with the
+//     client's original `state` echoed back per OAuth 2.1 §4.1.2)
+//   - Deny redirects with error=access_denied (RFC 6749 §4.1.2.1)
+//   - Replay (consent_id reused) is rejected (single-use enforcement)
+//   - Tampering (unknown consent_id) is rejected
+func TestOAuthConsentFlow(t *testing.T) {
+	t.Parallel()
+
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:             true,
+					Mode:                "gating",
+					Issuer:              "https://mcp.example.com/oauth",
+					PublicResourceURL:   "https://mcp.example.com",
+					PublicAuthServerURL: "https://mcp.example.com/oauth",
+					SigningSecret:       "test-signing-secret-32-byte-key!!",
+					Scopes:              []string{"openid", "email"},
+				},
+			},
+		},
+	}
+
+	makeConsent := func() oauthPendingConsent {
+		return oauthPendingConsent{
+			ClientID:      "test-client-id",
+			ClientName:    "Test Client",
+			RedirectURI:   "https://client.example.com/callback",
+			Scope:         "openid email",
+			ClientState:   "client-state-xyz",
+			CodeChallenge: "abc",
+			Resource:      "https://mcp.example.com",
+			Subject:       "user-1",
+			Email:         "u@example.com",
+			ExpiresAt:     time.Now().Add(10 * time.Minute),
+		}
+	}
+
+	t.Run("get_rejected", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/consent", nil)
+		rr := httptest.NewRecorder()
+		app.handleOAuthConsent(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+
+	t.Run("approve_issues_gating_code", func(t *testing.T) {
+		t.Parallel()
+		consentID := "ocs_approve"
+		app.getOAuthStateStore().putPendingConsent(consentID, makeConsent())
+
+		body := strings.NewReader("state=" + consentID + "&action=approve")
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/consent", body)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		app.handleOAuthConsent(rr, req)
+		require.Equal(t, http.StatusFound, rr.Code)
+
+		loc, err := url.Parse(rr.Header().Get("Location"))
+		require.NoError(t, err)
+		require.Equal(t, "client.example.com", loc.Host)
+		require.NotEmpty(t, loc.Query().Get("code"), "approved consent must include a gating code")
+		require.Equal(t, "client-state-xyz", loc.Query().Get("state"), "client state must be echoed back")
+		require.Empty(t, loc.Query().Get("error"))
+
+		// Single-use: replaying the same consent_id must fail.
+		body2 := strings.NewReader("state=" + consentID + "&action=approve")
+		req2 := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/consent", body2)
+		req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr2 := httptest.NewRecorder()
+		app.handleOAuthConsent(rr2, req2)
+		require.Equal(t, http.StatusBadRequest, rr2.Code, "replayed consent_id must be rejected")
+	})
+
+	t.Run("deny_redirects_with_access_denied", func(t *testing.T) {
+		t.Parallel()
+		consentID := "ocs_deny"
+		app.getOAuthStateStore().putPendingConsent(consentID, makeConsent())
+
+		body := strings.NewReader("state=" + consentID + "&action=deny")
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/consent", body)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		app.handleOAuthConsent(rr, req)
+		require.Equal(t, http.StatusFound, rr.Code)
+
+		loc, err := url.Parse(rr.Header().Get("Location"))
+		require.NoError(t, err)
+		require.Equal(t, "access_denied", loc.Query().Get("error"))
+		require.Equal(t, "client-state-xyz", loc.Query().Get("state"))
+		require.Empty(t, loc.Query().Get("code"))
+	})
+
+	t.Run("unknown_state_rejected", func(t *testing.T) {
+		t.Parallel()
+		body := strings.NewReader("state=ocs_does_not_exist&action=approve")
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/consent", body)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		app.handleOAuthConsent(rr, req)
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("rendered_consent_includes_redirect_host", func(t *testing.T) {
+		// Render the consent page directly and assert the redirect URI host
+		// (the field a user actually needs to verify) appears in the HTML.
+		t.Parallel()
+		consentID := "ocs_render"
+		consent := makeConsent()
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/", nil)
+		rr := httptest.NewRecorder()
+		app.renderConsentPage(rr, req, consentID, consent)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "text/html; charset=utf-8", rr.Header().Get("Content-Type"))
+		body := rr.Body.String()
+		require.Contains(t, body, "client.example.com")
+		require.Contains(t, body, consent.ClientName)
+		require.Contains(t, body, consent.Email)
+		require.Contains(t, body, consentID)
+		require.NotEmpty(t, rr.Header().Get("Content-Security-Policy"))
+	})
+}
+
 // TestOAuthJWEHKDFRoundtripAndLegacyFallback covers the v1 (HKDF) ↔ legacy
 // (SHA256) compatibility surface introduced in Step 2 of the OAuth review.
 // Three invariants:
@@ -826,6 +956,40 @@ func exchangeOAuthBrowserCode(t *testing.T, app *application, clientID, code, re
 	return rr
 }
 
+// approveOAuthConsent extracts the consent state from a callback response
+// (now an HTML consent page rather than an immediate redirect) and submits
+// approve through /oauth/consent, returning the resulting redirect response.
+// Tests written before the H-1 confused-deputy mitigation expected a 302
+// from /callback directly; they now go through this helper.
+func approveOAuthConsent(t *testing.T, app *application, callbackRR *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	require.Equal(t, http.StatusOK, callbackRR.Code, "callback must render consent page")
+	require.Equal(t, "text/html; charset=utf-8", callbackRR.Header().Get("Content-Type"))
+
+	// Pull the consent state out of the rendered form. The template emits
+	// `<input type="hidden" name="state" value="ocs_...">` — match it
+	// loosely so a future template tweak (whitespace, attribute order)
+	// doesn't silently break tests.
+	body := callbackRR.Body.String()
+	const marker = `name="state" value="`
+	idx := strings.Index(body, marker)
+	require.GreaterOrEqual(t, idx, 0, "consent page must contain hidden state input")
+	rest := body[idx+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	require.Greater(t, end, 0, "consent state must be quoted")
+	consentID := rest[:end]
+	require.NotEmpty(t, consentID)
+
+	form := url.Values{}
+	form.Set("state", consentID)
+	form.Set("action", "approve")
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/consent", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	app.handleOAuthConsent(rr, req)
+	return rr
+}
+
 func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 	t.Parallel()
 	const (
@@ -859,9 +1023,10 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
 
-		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		redirectLocation, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 		require.Equal(t, clientState, redirectLocation.Query().Get("state"))
 
@@ -908,9 +1073,10 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
 
-		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		redirectLocation, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 
 		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, redirectLocation.Query().Get("code"), redirectURI, codeVerifier)
@@ -954,9 +1120,10 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
 
-		redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+		redirectLocation, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 
 		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, redirectLocation.Query().Get("code"), redirectURI, codeVerifier)
@@ -1125,9 +1292,10 @@ func doGatingAuthCodeFlow(t *testing.T, app *application, provider *testForwardM
 	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 	callbackRR := httptest.NewRecorder()
 	app.handleOAuthCallback(callbackRR, callbackReq)
-	require.Equal(t, http.StatusFound, callbackRR.Code)
+	consentRR := approveOAuthConsent(t, app, callbackRR)
+	require.Equal(t, http.StatusFound, consentRR.Code)
 
-	loc, err := url.Parse(callbackRR.Header().Get("Location"))
+	loc, err := url.Parse(consentRR.Header().Get("Location"))
 	require.NoError(t, err)
 
 	tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
@@ -1321,9 +1489,10 @@ func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
 	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 	callbackRR := httptest.NewRecorder()
 	app.handleOAuthCallback(callbackRR, callbackReq)
-	require.Equal(t, http.StatusFound, callbackRR.Code)
+	consentRR := approveOAuthConsent(t, app, callbackRR)
+	require.Equal(t, http.StatusFound, consentRR.Code)
 
-	loc, err := url.Parse(callbackRR.Header().Get("Location"))
+	loc, err := url.Parse(consentRR.Header().Get("Location"))
 	require.NoError(t, err)
 
 	tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
@@ -1435,8 +1604,9 @@ func TestOAuthForwardModeRefresh(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
-		loc, err := url.Parse(callbackRR.Header().Get("Location"))
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
+		loc, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 		tokenRR := exchangeOAuthBrowserCode(t, app, clientID, loc.Query().Get("code"), redirectURI, codeVerifier)
 		require.Equal(t, http.StatusOK, tokenRR.Code)
@@ -1964,8 +2134,9 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
-		loc, err := url.Parse(callbackRR.Header().Get("Location"))
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
+		loc, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 
 		form := url.Values{}
@@ -1987,8 +2158,9 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 		callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 		callbackRR := httptest.NewRecorder()
 		app.handleOAuthCallback(callbackRR, callbackReq)
-		require.Equal(t, http.StatusFound, callbackRR.Code)
-		loc, err := url.Parse(callbackRR.Header().Get("Location"))
+		consentRR := approveOAuthConsent(t, app, callbackRR)
+		require.Equal(t, http.StatusFound, consentRR.Code)
+		loc, err := url.Parse(consentRR.Header().Get("Location"))
 		require.NoError(t, err)
 
 		form := url.Values{}
@@ -2064,9 +2236,10 @@ func TestOAuthGatingFlowE2E(t *testing.T) {
 	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
 	callbackRR := httptest.NewRecorder()
 	app.handleOAuthCallback(callbackRR, callbackReq)
-	require.Equal(t, http.StatusFound, callbackRR.Code)
+	consentRR := approveOAuthConsent(t, app, callbackRR)
+	require.Equal(t, http.StatusFound, consentRR.Code)
 
-	loc, err := url.Parse(callbackRR.Header().Get("Location"))
+	loc, err := url.Parse(consentRR.Header().Get("Location"))
 	require.NoError(t, err)
 	authCode := loc.Query().Get("code")
 	require.NotEmpty(t, authCode)

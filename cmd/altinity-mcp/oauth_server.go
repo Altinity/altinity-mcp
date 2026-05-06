@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"net/url"
@@ -57,6 +58,11 @@ type statelessRegisteredClient struct {
 	// client_secret_basic). When empty, the client is public (PKCE-only) —
 	// retained for backward compat with previously-issued client_ids.
 	ClientSecret string `json:"client_secret,omitempty"`
+	// ClientName is the human-readable identifier the client passed during
+	// DCR per RFC 7591 §2. Surfaced on the consent screen so the user can
+	// recognise what they're authorizing. Untrusted — display-only, never
+	// used in any security decision.
+	ClientName string `json:"client_name,omitempty"`
 }
 
 type oauthPendingAuth struct {
@@ -100,20 +106,48 @@ type oauthIssuedCode struct {
 	AccessTokenExpiry    time.Time
 }
 
+// oauthPendingConsent carries everything needed to finish the auth-code flow
+// AFTER the user has approved the consent screen. It's the same shape as
+// oauthIssuedCode plus user-facing display fields (ClientName, ClientState).
+// Stored under a separate consent_id from any auth_code so a user closing
+// the consent tab doesn't accidentally redeem a half-formed grant.
+type oauthPendingConsent struct {
+	ClientID             string    `json:"client_id"`
+	ClientName           string    `json:"client_name"`
+	RedirectURI          string    `json:"redirect_uri"`
+	Scope                string    `json:"scope"`
+	ClientState          string    `json:"client_state"`
+	CodeChallenge        string    `json:"code_challenge"`
+	CodeChallengeMethod  string    `json:"code_challenge_method"`
+	Resource             string    `json:"resource,omitempty"`
+	UpstreamBearerToken  string    `json:"upstream_bearer_token"`
+	UpstreamRefreshToken string    `json:"upstream_refresh_token,omitempty"`
+	UpstreamTokenType    string    `json:"upstream_token_type"`
+	Subject              string    `json:"sub"`
+	Email                string    `json:"email"`
+	Name                 string    `json:"name"`
+	HostedDomain         string    `json:"hd"`
+	EmailVerified        bool      `json:"email_verified"`
+	AccessTokenExpiry    time.Time `json:"access_token_expiry"`
+	ExpiresAt            time.Time
+}
+
 // maxOAuthStateEntries caps each map in the state store to prevent memory
 // exhaustion from floods of unauthenticated /oauth/authorize requests.
 const maxOAuthStateEntries = 10000
 
 type oauthStateStore struct {
-	mu          sync.Mutex
-	pendingAuth map[string]oauthPendingAuth
-	authCodes   map[string]oauthIssuedCode
+	mu              sync.Mutex
+	pendingAuth     map[string]oauthPendingAuth
+	authCodes       map[string]oauthIssuedCode
+	pendingConsents map[string]oauthPendingConsent
 }
 
 func newOAuthStateStore() *oauthStateStore {
 	return &oauthStateStore{
-		pendingAuth: make(map[string]oauthPendingAuth),
-		authCodes:   make(map[string]oauthIssuedCode),
+		pendingAuth:     make(map[string]oauthPendingAuth),
+		authCodes:       make(map[string]oauthIssuedCode),
+		pendingConsents: make(map[string]oauthPendingConsent),
 	}
 }
 
@@ -126,6 +160,11 @@ func (s *oauthStateStore) cleanupExpiredLocked(now time.Time) {
 	for key, issued := range s.authCodes {
 		if !issued.ExpiresAt.IsZero() && now.After(issued.ExpiresAt) {
 			delete(s.authCodes, key)
+		}
+	}
+	for key, consent := range s.pendingConsents {
+		if !consent.ExpiresAt.IsZero() && now.After(consent.ExpiresAt) {
+			delete(s.pendingConsents, key)
 		}
 	}
 }
@@ -200,6 +239,39 @@ func (s *oauthStateStore) consumeAuthCode(id string) (oauthIssuedCode, bool) {
 		delete(s.authCodes, id)
 	}
 	return issued, ok
+}
+
+func (s *oauthStateStore) putPendingConsent(id string, consent oauthPendingConsent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupExpiredLocked(time.Now())
+	if len(s.pendingConsents) >= maxOAuthStateEntries {
+		// Reuse the eviction policy used for pending auth — drop the entry
+		// with the soonest-to-expire timestamp.
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range s.pendingConsents {
+			if oldestKey == "" || v.ExpiresAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.ExpiresAt
+			}
+		}
+		if oldestKey != "" {
+			delete(s.pendingConsents, oldestKey)
+		}
+	}
+	s.pendingConsents[id] = consent
+}
+
+func (s *oauthStateStore) consumePendingConsent(id string) (oauthPendingConsent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupExpiredLocked(time.Now())
+	consent, ok := s.pendingConsents[id]
+	if ok {
+		delete(s.pendingConsents, id)
+	}
+	return consent, ok
 }
 
 func writeOAuthTokenError(w http.ResponseWriter, status int, code, description string) {
@@ -728,6 +800,9 @@ func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRe
 	if cs, ok := claims["client_secret"].(string); ok {
 		client.ClientSecret = cs
 	}
+	if name, ok := claims["client_name"].(string); ok {
+		client.ClientName = name
+	}
 	if client.TokenEndpointAuthMethod == "" {
 		client.TokenEndpointAuthMethod = "none"
 	}
@@ -940,6 +1015,7 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	var req struct {
 		RedirectURIs            []string `json:"redirect_uris"`
 		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+		ClientName              string   `json:"client_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid registration payload", http.StatusBadRequest)
@@ -1015,6 +1091,14 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 		// it against the inbound form parameter without server-side state.
 		clientIDClaims["client_secret"] = clientSecret
 	}
+	if clientName := strings.TrimSpace(req.ClientName); clientName != "" {
+		// Truncate at 200 chars — RFC 7591 doesn't bound this, but we
+		// embed it in the consent HTML and don't want a runaway value.
+		if len(clientName) > 200 {
+			clientName = clientName[:200]
+		}
+		clientIDClaims["client_name"] = clientName
+	}
 	clientID, err := encodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientIDClaims)
 	if err != nil {
 		http.Error(w, "Failed to create stateless client registration", http.StatusInternalServerError)
@@ -1049,6 +1133,9 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 		// RFC 7591 §3.2.1: client_secret_expires_at is REQUIRED when a secret
 		// is issued. The JWE client_id embeds the same exp, so use it here too.
 		resp["client_secret_expires_at"] = expAt
+	}
+	if name, ok := clientIDClaims["client_name"]; ok {
+		resp["client_name"] = name
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -1287,47 +1374,241 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	} else {
 		accessTokenExpiry = time.Now().Add(time.Hour).Unix()
 	}
-	gatingCode := randomToken("oac_")
-	issuedCode := oauthIssuedCode{
+	// Confused-deputy mitigation (MCP 2025-11-25 §Confused Deputy Problem):
+	// "MCP proxy servers using static client IDs MUST obtain user consent for
+	// each dynamically registered client before forwarding to third-party
+	// authorization servers." Instead of immediately issuing the gating code,
+	// render an HTML consent page so the user can review who they're
+	// authorizing and the redirect URI hostname before proceeding. The
+	// consent flow only matters for browser-driven /authorize → /callback
+	// (initial connector setup, re-authorization). Token refresh paths
+	// don't pass through here, so cached bearers keep working.
+	consent := oauthPendingConsent{
 		ClientID:            pending.ClientID,
 		RedirectURI:         pending.RedirectURI,
 		Scope:               tokenResp.Scope,
+		ClientState:         pending.ClientState,
 		CodeChallenge:       pending.CodeChallenge,
 		CodeChallengeMethod: pending.CodeChallengeMethod,
 		Resource:            pending.Resource,
-		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
+		Subject:             identityClaims.Subject,
+		Email:               identityClaims.Email,
+		Name:                identityClaims.Name,
+		HostedDomain:        identityClaims.HostedDomain,
+		EmailVerified:       identityClaims.EmailVerified,
+		ExpiresAt:           time.Now().Add(time.Duration(defaultPendingAuthTTLSeconds) * time.Second),
 	}
 	if a.oauthForwardMode() {
-		issuedCode.UpstreamBearerToken = bearerToken
-		issuedCode.UpstreamTokenType = tokenType
-		issuedCode.AccessTokenExpiry = time.Unix(accessTokenExpiry, 0)
+		consent.UpstreamBearerToken = bearerToken
+		consent.UpstreamTokenType = tokenType
+		consent.AccessTokenExpiry = time.Unix(accessTokenExpiry, 0)
 		if cfg.Server.OAuth.UpstreamOfflineAccess {
-			issuedCode.UpstreamRefreshToken = tokenResp.RefreshToken
+			consent.UpstreamRefreshToken = tokenResp.RefreshToken
 			if tokenResp.RefreshToken == "" {
 				log.Warn().
 					Str("scope", tokenResp.Scope).
 					Msg("upstream_offline_access=true but upstream did not return a refresh_token; check IdP application config (offline_access scope, refresh_token grant, audience)")
 			}
 		}
-	} else {
-		issuedCode.Subject = identityClaims.Subject
-		issuedCode.Email = identityClaims.Email
-		issuedCode.Name = identityClaims.Name
-		issuedCode.HostedDomain = identityClaims.HostedDomain
-		issuedCode.EmailVerified = identityClaims.EmailVerified
 	}
-	a.getOAuthStateStore().putAuthCode(gatingCode, issuedCode)
 
-	redirect, err := url.Parse(pending.RedirectURI)
+	// Look up the registered client_name (set during DCR per RFC 7591 §2)
+	// for the consent screen. Untrusted, display-only — never used in any
+	// security decision.
+	if secret, secErr := a.mustJWESecret(); secErr == nil {
+		if claims, decErr := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, pending.ClientID); decErr == nil {
+			if dcrClient, parseErr := parseStatelessRegisteredClient(claims); parseErr == nil {
+				consent.ClientName = dcrClient.ClientName
+			}
+		}
+	}
+
+	consentID := randomToken("ocs_")
+	a.getOAuthStateStore().putPendingConsent(consentID, consent)
+	a.renderConsentPage(w, r, consentID, consent)
+}
+
+// defaultConsentPath is the route the consent form posts to.
+const defaultConsentPath = "/oauth/consent"
+
+// consentTemplate renders the per-DCR-client consent screen. The user sees
+// (a) the client_name the DCR'd client claimed (display-only, never trusted),
+// (b) the redirect URI hostname they will be sent to (the only field that
+// matters for spotting an attacker — the redirect URI is what the registered
+// client controls and where the auth code goes), (c) the resource they will
+// be granting access to, (d) the identity they would be authorizing as.
+//
+// HTML built with `html/template` so all interpolated fields are
+// automatically escaped — none of these come from server config.
+var consentTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Authorize MCP client</title>
+<style>
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #1f2328; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { margin: 12px 0; }
+  .row { padding: 8px 12px; background: #f6f8fa; border-radius: 6px; margin: 8px 0; word-break: break-all; }
+  .row b { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #57606a; margin-bottom: 2px; }
+  .row code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: #1f2328; }
+  .warn { background: #fff8e1; border-left: 4px solid #d4a72c; padding: 10px 14px; margin: 16px 0; border-radius: 4px; }
+  .actions { display: flex; gap: 12px; margin-top: 24px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  button.approve { background: #1f883d; color: #fff; }
+  button.deny { background: #fff; border-color: #d0d7de; }
+</style>
+</head>
+<body>
+<h1>Authorize MCP client</h1>
+<p>An OAuth client is requesting access to this MCP server. Review the details before approving.</p>
+<div class="row"><b>Client</b><code>{{.ClientName}}</code></div>
+<div class="row"><b>Will redirect to</b><code>{{.RedirectURIHost}}</code></div>
+<div class="row"><b>Full redirect URI</b><code>{{.RedirectURI}}</code></div>
+<div class="row"><b>Resource</b><code>{{.Resource}}</code></div>
+<div class="row"><b>You are signed in as</b><code>{{.UserDisplay}}</code></div>
+{{if .Scope}}<div class="row"><b>Scopes</b><code>{{.Scope}}</code></div>{{end}}
+<div class="warn">
+If you do not recognise this client or the redirect URL above, do <b>not</b> approve — the auth code goes to that URL and may be used to impersonate you against this MCP server.
+</div>
+<form method="POST" action="{{.ConsentPath}}">
+<input type="hidden" name="state" value="{{.ConsentID}}">
+<div class="actions">
+<button type="submit" class="approve" name="action" value="approve">Approve</button>
+<button type="submit" class="deny" name="action" value="deny">Deny</button>
+</div>
+</form>
+</body>
+</html>`))
+
+// renderConsentPage emits the HTML consent screen referenced from the
+// callback flow. Returns 200 OK with text/html. Sets a strict CSP so no
+// scripts can run from this page (defence-in-depth — the template doesn't
+// include any).
+func (a *application) renderConsentPage(w http.ResponseWriter, r *http.Request, consentID string, consent oauthPendingConsent) {
+	redirectHost := consent.RedirectURI
+	if parsed, err := url.Parse(consent.RedirectURI); err == nil && parsed.Host != "" {
+		redirectHost = parsed.Host
+	}
+	clientName := consent.ClientName
+	if clientName == "" {
+		clientName = "(unnamed client)"
+	}
+	userDisplay := consent.Email
+	if userDisplay == "" {
+		userDisplay = consent.Subject
+	}
+	resourceURI := consent.Resource
+	if resourceURI == "" {
+		resourceURI = a.resourceBaseURL(r)
+	}
+	consentPath := normalizedPath(a.GetCurrentConfig().Server.OAuth.ConsentPath, defaultConsentPath)
+	data := struct {
+		ConsentID       string
+		ConsentPath     string
+		ClientName      string
+		RedirectURI     string
+		RedirectURIHost string
+		Resource        string
+		UserDisplay     string
+		Scope           string
+	}{
+		ConsentID:       consentID,
+		ConsentPath:     consentPath,
+		ClientName:      clientName,
+		RedirectURI:     consent.RedirectURI,
+		RedirectURIHost: redirectHost,
+		Resource:        resourceURI,
+		UserDisplay:     userDisplay,
+		Scope:           consent.Scope,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'none'; frame-ancestors 'none'")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := consentTemplate.Execute(w, data); err != nil {
+		log.Error().Err(err).Msg("Failed to render consent page")
+	}
+}
+
+// handleOAuthConsent receives the user's choice from the consent form and
+// either issues the gating-code (Approve) or redirects with error=access_denied
+// (Deny / unknown action). State is the random consent ID minted in
+// handleOAuthCallback; it's single-use via consumePendingConsent.
+func (a *application) handleOAuthConsent(w http.ResponseWriter, r *http.Request) {
+	if !a.oauthEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid consent form", http.StatusBadRequest)
+		return
+	}
+	consentID := r.Form.Get("state")
+	consent, ok := a.getOAuthStateStore().consumePendingConsent(consentID)
+	if !ok {
+		// Either tampered, expired, or already-consumed (back/refresh).
+		http.Error(w, "Consent session is no longer valid; restart the authorization flow.", http.StatusBadRequest)
+		return
+	}
+
+	redirect, err := url.Parse(consent.RedirectURI)
 	if err != nil {
 		http.Error(w, "Invalid redirect URI", http.StatusBadGateway)
 		return
 	}
 	params := redirect.Query()
-	params.Set("code", gatingCode)
-	if pending.ClientState != "" {
-		params.Set("state", pending.ClientState)
+	if consent.ClientState != "" {
+		params.Set("state", consent.ClientState)
 	}
+
+	if r.Form.Get("action") != "approve" {
+		// Spec-compliant denial response per RFC 6749 §4.1.2.1.
+		params.Set("error", "access_denied")
+		params.Set("error_description", "User denied the consent request")
+		redirect.RawQuery = params.Encode()
+		log.Info().
+			Str("client_id_prefix", truncateForLog(consent.ClientID, 12)).
+			Str("subject", consent.Subject).
+			Str("redirect_uri", consent.RedirectURI).
+			Msg("OAuth consent denied")
+		http.Redirect(w, r, redirect.String(), http.StatusFound)
+		return
+	}
+
+	// Approve — promote the consent record into a regular issued auth code.
+	gatingCode := randomToken("oac_")
+	a.getOAuthStateStore().putAuthCode(gatingCode, oauthIssuedCode{
+		ClientID:             consent.ClientID,
+		RedirectURI:          consent.RedirectURI,
+		Scope:                consent.Scope,
+		CodeChallenge:        consent.CodeChallenge,
+		CodeChallengeMethod:  consent.CodeChallengeMethod,
+		Resource:             consent.Resource,
+		UpstreamBearerToken:  consent.UpstreamBearerToken,
+		UpstreamRefreshToken: consent.UpstreamRefreshToken,
+		UpstreamTokenType:    consent.UpstreamTokenType,
+		Subject:              consent.Subject,
+		Email:                consent.Email,
+		Name:                 consent.Name,
+		HostedDomain:         consent.HostedDomain,
+		EmailVerified:        consent.EmailVerified,
+		AccessTokenExpiry:    consent.AccessTokenExpiry,
+		ExpiresAt:            time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
+	})
+	log.Info().
+		Str("client_id_prefix", truncateForLog(consent.ClientID, 12)).
+		Str("client_name", consent.ClientName).
+		Str("subject", consent.Subject).
+		Str("redirect_uri", consent.RedirectURI).
+		Msg("OAuth consent approved; gating code issued")
+
+	params.Set("code", gatingCode)
 	redirect.RawQuery = params.Encode()
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
@@ -1889,5 +2170,11 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	}
 	for _, path := range uniquePaths(a.oauthTokenPath(), defaultTokenPath) {
 		mux.HandleFunc(path, a.handleOAuthToken)
+	}
+	for _, path := range uniquePaths(
+		normalizedPath(a.GetCurrentConfig().Server.OAuth.ConsentPath, defaultConsentPath),
+		defaultConsentPath,
+	) {
+		mux.HandleFunc(path, a.handleOAuthConsent)
 	}
 }

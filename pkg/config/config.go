@@ -188,6 +188,10 @@ type OAuthConfig struct {
 	// TokenPath configures the relative path for the token endpoint.
 	TokenPath string `json:"token_path" yaml:"token_path" flag:"oauth-token-path" env:"MCP_OAUTH_TOKEN_PATH" desc:"Relative path for OAuth token endpoint"`
 
+	// ConsentPath configures the relative path for the per-DCR-client consent
+	// form (confused-deputy mitigation, MCP §Confused Deputy Problem).
+	ConsentPath string `json:"consent_path" yaml:"consent_path" flag:"oauth-consent-path" env:"MCP_OAUTH_CONSENT_PATH" desc:"Relative path for OAuth consent endpoint"`
+
 	// UpstreamIssuerAllowlist constrains which upstream identity token issuers are accepted during callback exchange.
 	UpstreamIssuerAllowlist []string `json:"upstream_issuer_allowlist" yaml:"upstream_issuer_allowlist" flag:"oauth-upstream-issuer-allowlist" env:"MCP_OAUTH_UPSTREAM_ISSUER_ALLOWLIST" desc:"Allowed upstream identity token issuers"`
 
