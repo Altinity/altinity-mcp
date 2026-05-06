@@ -323,8 +323,7 @@ server:
     allowed_hosted_domains: []
     require_email_verified: false
 
-    # Token/code lifetimes
-    auth_code_ttl_seconds: 300        # 5 minutes
+    # Token lifetimes (auth code TTL is hardcoded to 300s per RFC 6749)
     access_token_ttl_seconds: 3600    # 1 hour
     refresh_token_ttl_seconds: 2592000 # 30 days (gating mode only)
 
@@ -341,10 +340,8 @@ server:
     public_resource_url: ""
     public_auth_server_url: ""
 
-    # Endpoint paths (defaults shown; override for custom proxy layouts)
-    protected_resource_metadata_path: "/.well-known/oauth-protected-resource"
-    authorization_server_metadata_path: "/.well-known/oauth-authorization-server"
-    openid_configuration_path: "/.well-known/openid-configuration"
+    # Endpoint paths (defaults shown; override for custom proxy layouts).
+    # The .well-known metadata paths are spec-fixed and not configurable.
     registration_path: "/register"
     authorization_path: "/authorize"
     callback_path: "/callback"

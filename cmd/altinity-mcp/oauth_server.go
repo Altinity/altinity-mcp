@@ -361,18 +361,6 @@ func (a *application) oauthAuthorizationServerBaseURL(r *http.Request) string {
 	return a.schemeAndHost(r) + a.oauthPrefix(r)
 }
 
-func (a *application) oauthProtectedResourceMetadataPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.ProtectedResourceMetadataPath, defaultProtectedResourceMetadataPath)
-}
-
-func (a *application) oauthAuthorizationServerMetadataPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationServerMetadataPath, defaultAuthorizationServerMetadataPath)
-}
-
-func (a *application) oauthOpenIDConfigurationPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.OpenIDConfigurationPath, defaultOpenIDConfigurationPath)
-}
-
 func (a *application) oauthRegistrationPath() string {
 	return normalizedPath(a.GetCurrentConfig().Server.OAuth.RegistrationPath, defaultRegistrationPath)
 }
@@ -391,7 +379,7 @@ func (a *application) oauthTokenPath() string {
 
 func (a *application) oauthChallengeHeader(r *http.Request) string {
 	baseURL := a.resourceBaseURL(r)
-	challenge := fmt.Sprintf("Bearer resource_metadata=%q", joinURLPath(baseURL, a.oauthProtectedResourceMetadataPath()))
+	challenge := fmt.Sprintf("Bearer resource_metadata=%q", joinURLPath(baseURL, defaultProtectedResourceMetadataPath))
 	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
 	if len(scopes) == 0 {
 		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
@@ -843,7 +831,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		ClientState:         q.Get("state"),
 		CodeChallenge:       q.Get("code_challenge"),
 		CodeChallengeMethod: q.Get("code_challenge_method"),
-		ExpiresAt:           time.Now().Add(time.Duration(ttlSeconds(a.GetCurrentConfig().Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second),
+		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
 	})
 
 	cfg := a.GetCurrentConfig()
@@ -1004,7 +992,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		Scope:               tokenResp.Scope,
 		CodeChallenge:       pending.CodeChallenge,
 		CodeChallengeMethod: pending.CodeChallengeMethod,
-		ExpiresAt:           time.Now().Add(time.Duration(ttlSeconds(cfg.Server.OAuth.AuthCodeTTLSeconds, defaultAuthCodeTTLSeconds)) * time.Second),
+		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
 	}
 	if a.oauthForwardMode() {
 		issuedCode.UpstreamBearerToken = bearerToken
@@ -1512,34 +1500,21 @@ func truncateForLog(value string, max int) string {
 }
 
 func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
-	protectedResourceMetadataPath := a.oauthProtectedResourceMetadataPath()
-	protectedResourceAliases := uniquePaths(
-		protectedResourceMetadataPath,
-		defaultProtectedResourceMetadataPath,
-	)
-	for _, path := range protectedResourceAliases {
-		mux.HandleFunc(path, a.handleOAuthProtectedResource)
-	}
+	mux.HandleFunc(defaultProtectedResourceMetadataPath, a.handleOAuthProtectedResource)
 
-	authMetadataPath := a.oauthAuthorizationServerMetadataPath()
-	authMetadataAliases := uniquePaths(
-		authMetadataPath,
+	for _, path := range uniquePaths(
 		defaultAuthorizationServerMetadataPath,
 		"/.well-known/oauth-authorization-server/oauth",
 		"/oauth/.well-known/oauth-authorization-server",
-	)
-	for _, path := range authMetadataAliases {
+	) {
 		mux.HandleFunc(path, a.handleOAuthAuthorizationServerMetadata)
 	}
 
-	openIDConfigurationPath := a.oauthOpenIDConfigurationPath()
-	openIDAliases := uniquePaths(
-		openIDConfigurationPath,
+	for _, path := range uniquePaths(
 		defaultOpenIDConfigurationPath,
 		"/.well-known/openid-configuration/oauth",
 		"/oauth/.well-known/openid-configuration",
-	)
-	for _, path := range openIDAliases {
+	) {
 		mux.HandleFunc(path, a.handleOAuthOpenIDConfiguration)
 	}
 

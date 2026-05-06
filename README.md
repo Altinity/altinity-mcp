@@ -220,7 +220,9 @@ Use the configuration file:
 
 ### Environment Variables
 
-All configuration options can be set via environment variables:
+Every configuration field with a `flag:` tag in [pkg/config/config.go](pkg/config/config.go) is settable via CLI flag or env var. The CLI flag and env-var name are listed in the field's `flag:` and `env:` tags. `altinity-mcp --help` prints the full surface.
+
+Common examples:
 
 ```bash
 export CLICKHOUSE_HOST=localhost
@@ -231,8 +233,17 @@ export MCP_TRANSPORT=http
 export MCP_PORT=8080
 export LOG_LEVEL=debug
 
+# OAuth — env-var injection lets operators pull secrets from a Kubernetes
+# Secret via `valueFrom.secretKeyRef` instead of committing them to YAML.
+export MCP_OAUTH_ENABLED=true
+export MCP_OAUTH_MODE=gating
+export MCP_OAUTH_ISSUER=https://accounts.example.com
+export MCP_OAUTH_GATING_SECRET_KEY=...
+
 ./altinity-mcp
 ```
+
+Special flags that don't follow this pattern: `--config` (config file path), `--config-reload-time`, `--openapi` (one flag → two struct fields). See `altinity-mcp --help`.
 
 ## Available Tools
 

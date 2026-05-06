@@ -48,218 +48,31 @@ func run(args []string) error {
 		Description: "A Model Context Protocol (MCP) server that provides tools for interacting with ClickHouse databases",
 		Version:     fmt.Sprintf("%s (%s) built on %s", version, commit, date),
 		Authors:     []any{"Altinity <support@altinity.com>"},
-		Flags: []cli.Flag{
-			// Configuration file flags
-			&cli.StringFlag{
-				Name:    "config",
-				Usage:   "Path to configuration file (YAML or JSON)",
-				Value:   "",
-				Sources: cli.EnvVars("CONFIG_FILE"),
+		Flags: append(
+			// Special flags that don't live in config.Config (file path, openapi
+			// shorthand) or that are read before config is loaded (config,
+			// config-reload-time). Everything else is generated from struct tags
+			// in pkg/config/config.go via config.BuildFlags.
+			[]cli.Flag{
+				&cli.StringFlag{
+					Name:    "config",
+					Usage:   "Path to configuration file (YAML or JSON)",
+					Sources: cli.EnvVars("CONFIG_FILE"),
+				},
+				&cli.IntFlag{
+					Name:    "config-reload-time",
+					Usage:   "Configuration reload interval in seconds (0 to disable)",
+					Sources: cli.EnvVars("CONFIG_RELOAD_TIME"),
+				},
+				&cli.StringFlag{
+					Name:    "openapi",
+					Usage:   "Enable OpenAPI endpoints (disable|http|https)",
+					Value:   "disable",
+					Sources: cli.EnvVars("MCP_OPENAPI"),
+				},
 			},
-			&cli.IntFlag{
-				Name:    "config-reload-time",
-				Usage:   "Configuration reload interval in seconds (0 to disable)",
-				Value:   0,
-				Sources: cli.EnvVars("CONFIG_RELOAD_TIME"),
-			},
-			// ClickHouse configuration flags
-			&cli.StringFlag{
-				Name:    "clickhouse-host",
-				Usage:   "ClickHouse server host",
-				Value:   "localhost",
-				Sources: cli.EnvVars("CLICKHOUSE_HOST"),
-			},
-			&cli.IntFlag{
-				Name:    "clickhouse-port",
-				Usage:   "ClickHouse server port",
-				Value:   8123,
-				Sources: cli.EnvVars("CLICKHOUSE_PORT"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-database",
-				Usage:   "ClickHouse database name",
-				Value:   "default",
-				Sources: cli.EnvVars("CLICKHOUSE_DATABASE"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-username",
-				Usage:   "ClickHouse username",
-				Value:   "default",
-				Sources: cli.EnvVars("CLICKHOUSE_USERNAME"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-password",
-				Usage:   "ClickHouse password",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_PASSWORD"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-protocol",
-				Usage:   "ClickHouse connection protocol (http/tcp)",
-				Value:   "http",
-				Sources: cli.EnvVars("CLICKHOUSE_PROTOCOL"),
-			},
-			&cli.IntFlag{
-				Name:    "clickhouse-max-execution-time",
-				Usage:   "ClickHouse max execution time in seconds",
-				Value:   600,
-				Sources: cli.EnvVars("CLICKHOUSE_MAX_EXECUTION_TIME"),
-			},
-			&cli.BoolFlag{
-				Name:    "read-only",
-				Usage:   "Connect to ClickHouse in read-only mode (avoids setting session variables)",
-				Value:   false,
-				Sources: cli.EnvVars("CLICKHOUSE_READ_ONLY"),
-			},
-			// TLS configuration flags
-			&cli.BoolFlag{
-				Name:    "clickhouse-tls",
-				Usage:   "Enable TLS for ClickHouse connection",
-				Value:   false,
-				Sources: cli.EnvVars("CLICKHOUSE_TLS"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-tls-ca-cert",
-				Usage:   "Path to CA certificate for ClickHouse connection",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_TLS_CA_CERT"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-tls-client-cert",
-				Usage:   "Path to client certificate for ClickHouse connection",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_TLS_CLIENT_CERT"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-tls-client-key",
-				Usage:   "Path to client key for ClickHouse connection",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_TLS_CLIENT_KEY"),
-			},
-			&cli.StringMapFlag{
-				Name:    "clickhouse-http-headers",
-				Usage:   "HTTP Headers for ClickHouse",
-				Value:   map[string]string{},
-				Sources: cli.EnvVars("CLICKHOUSE_HTTP_HEADERS"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-cluster-name",
-				Usage:   "ClickHouse cluster name for interserver-secret auth",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_CLUSTER_NAME"),
-			},
-			&cli.StringFlag{
-				Name:    "clickhouse-cluster-secret",
-				Usage:   "Shared cluster secret; when set altinity-mcp authenticates as a trusted cluster peer (requires --clickhouse-protocol=tcp)",
-				Value:   "",
-				Sources: cli.EnvVars("CLICKHOUSE_CLUSTER_SECRET"),
-			},
-			&cli.BoolFlag{
-				Name:    "clickhouse-tls-insecure-skip-verify",
-				Usage:   "Skip server certificate verification",
-				Value:   false,
-				Sources: cli.EnvVars("CLICKHOUSE_TLS_INSECURE_SKIP_VERIFY"),
-			},
-			// Server configuration flags
-			&cli.StringFlag{
-				Name:    "transport",
-				Usage:   "MCP transport type (stdio/http/sse)",
-				Value:   "stdio",
-				Sources: cli.EnvVars("MCP_TRANSPORT"),
-			},
-			&cli.StringFlag{
-				Name:    "address",
-				Usage:   "Server address for HTTP/SSE transport",
-				Value:   "0.0.0.0",
-				Sources: cli.EnvVars("MCP_ADDRESS"),
-			},
-			&cli.IntFlag{
-				Name:    "port",
-				Usage:   "Server port for HTTP/SSE transport",
-				Value:   8080,
-				Sources: cli.EnvVars("MCP_PORT"),
-			},
-			&cli.BoolFlag{
-				Name:    "server-tls",
-				Usage:   "Enable TLS for the MCP server (HTTP/SSE transports)",
-				Value:   false,
-				Sources: cli.EnvVars("MCP_SERVER_TLS"),
-			},
-			&cli.StringFlag{
-				Name:    "server-tls-cert-file",
-				Usage:   "Path to TLS certificate file for the MCP server",
-				Value:   "",
-				Sources: cli.EnvVars("MCP_SERVER_TLS_CERT_FILE"),
-			},
-			&cli.StringFlag{
-				Name:    "server-tls-key-file",
-				Usage:   "Path to TLS key file for the MCP server",
-				Value:   "",
-				Sources: cli.EnvVars("MCP_SERVER_TLS_KEY_FILE"),
-			},
-			&cli.StringFlag{
-				Name:    "server-tls-ca-cert",
-				Usage:   "Path to CA certificate for client certificate validation",
-				Value:   "",
-				Sources: cli.EnvVars("MCP_SERVER_TLS_CA_CERT"),
-			},
-			// Logging configuration flags
-			&cli.StringFlag{
-				Name:    "log-level",
-				Usage:   "Logging level (debug/info/warn/error)",
-				Value:   "info",
-				Sources: cli.EnvVars("LOG_LEVEL"),
-			},
-			// JWE authentication flags
-			&cli.BoolFlag{
-				Name:    "allow-jwe-auth",
-				Usage:   "Enable JWE encryption for ClickHouse connection",
-				Value:   false,
-				Sources: cli.EnvVars("MCP_ALLOW_JWE_AUTH"),
-			},
-			&cli.StringFlag{
-				Name:     "jwe-secret-key",
-				Usage:    "Secret key for JWE token decryption",
-				Value:    "",
-				Sources:  cli.EnvVars("MCP_JWE_SECRET_KEY"),
-				Required: false,
-			},
-			&cli.StringFlag{
-				Name:     "jwt-secret-key",
-				Usage:    "Secret key for JWT signature verification",
-				Value:    "",
-				Sources:  cli.EnvVars("MCP_JWT_SECRET_KEY"),
-				Required: false,
-			},
-			&cli.IntFlag{
-				Name:    "clickhouse-limit",
-				Usage:   "Maximum limit for query results (0 means no limit)",
-				Value:   0,
-				Sources: cli.EnvVars("CLICKHOUSE_LIMIT"),
-			},
-			&cli.StringFlag{
-				Name:    "openapi",
-				Usage:   "Enable OpenAPI endpoints (disable|http|https)",
-				Value:   "disable",
-				Sources: cli.EnvVars("MCP_OPENAPI"),
-			},
-			&cli.StringFlag{
-				Name:    "cors-origin",
-				Usage:   "CORS origin for HTTP/SSE transports",
-				Value:   "*",
-				Sources: cli.EnvVars("MCP_CORS_ORIGIN"),
-			},
-			&cli.StringSliceFlag{
-				Name:    "tool-input-settings",
-				Usage:   "ClickHouse setting names allowed in tool arguments (e.g. --tool-input-settings custom_tenant_id --tool-input-settings custom_org_id)",
-				Sources: cli.EnvVars("TOOL_INPUT_SETTINGS"),
-			},
-			&cli.StringSliceFlag{
-				Name:    "blocked-query-clauses",
-				Usage:   "AST clause kinds to block (parser-derived names: WHERE, SETTINGS, FORMAT, …; see config desc)",
-				Sources: cli.EnvVars("BLOCKED_QUERY_CLAUSES"),
-			},
-		},
+			config.BuildFlags(&config.Config{})...,
+		),
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
 			// Setup logging
 			err := setupLogging(cmd.String("log-level"))
@@ -936,135 +749,50 @@ type CommandInterface interface {
 	IsSet(name string) bool
 }
 
-// overrideWithCLIFlags overrides config values with CLI flags if they are set
+// overrideWithCLIFlags overrides config values with CLI flags if they are set.
+// The bulk of the work is done by config.ApplyFlags, which walks the struct
+// and copies CLI/env values into fields with `flag:` tags. This function
+// only handles the special cases that don't fit the generic mechanism:
+//
+//   - --openapi: a single string flag that maps to two bool fields.
+//   - --tool-input-settings: needs post-apply validation.
+//   - --config-reload-time: lives outside the struct (used to drive the
+//     reload loop) and has YAML-only-when-zero precedence semantics.
+//   - enum-like string fields (transport, log-level, clickhouse-protocol):
+//     unrecognised values fall back to a safe default rather than propagating
+//     garbage downstream.
 func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
-	// Parse ClickHouse protocol
-	var chProtocol config.ClickHouseProtocol
-	switch strings.ToLower(cmd.String("clickhouse-protocol")) {
+	config.ApplyFlags(cfg, cmd)
+
+	// Defensive normalisation: garbage values for enum-like fields collapse
+	// to the canonical default. Mirrors the historical switch/default
+	// behaviour of the pre-reflection override path.
+	switch strings.ToLower(string(cfg.ClickHouse.Protocol)) {
 	case "tcp":
-		chProtocol = config.TCPProtocol
-	case "http":
-		chProtocol = config.HTTPProtocol
+		cfg.ClickHouse.Protocol = config.TCPProtocol
 	default:
-		chProtocol = config.HTTPProtocol
-	}
-
-	// Parse MCP transport
-	var mcpTransport config.MCPTransport
-	switch strings.ToLower(cmd.String("transport")) {
-	case "stdio":
-		mcpTransport = config.StdioTransport
-	case "http":
-		mcpTransport = config.HTTPTransport
-	case "sse":
-		mcpTransport = config.SSETransport
-	default:
-		mcpTransport = config.StdioTransport
-	}
-
-	// Parse log level
-	var logLevel config.LogLevel
-	switch strings.ToLower(cmd.String("log-level")) {
-	case "debug":
-		logLevel = config.DebugLevel
-	case "info":
-		logLevel = config.InfoLevel
-	case "warn":
-		logLevel = config.WarnLevel
-	case "error":
-		logLevel = config.ErrorLevel
-	default:
-		logLevel = config.InfoLevel
-	}
-
-	// Override ClickHouse config with CLI flags
-	if cmd.IsSet("clickhouse-host") {
-		cfg.ClickHouse.Host = cmd.String("clickhouse-host")
-	} else if cfg.ClickHouse.Host == "" {
-		cfg.ClickHouse.Host = "localhost"
-	}
-
-	if cmd.IsSet("clickhouse-port") {
-		cfg.ClickHouse.Port = cmd.Int("clickhouse-port")
-	} else if cfg.ClickHouse.Port == 0 {
-		cfg.ClickHouse.Port = 8123
-	}
-
-	if cmd.IsSet("clickhouse-database") {
-		cfg.ClickHouse.Database = cmd.String("clickhouse-database")
-	} else if cfg.ClickHouse.Database == "" {
-		cfg.ClickHouse.Database = "default"
-	}
-
-	if cmd.IsSet("clickhouse-username") {
-		cfg.ClickHouse.Username = cmd.String("clickhouse-username")
-	} else if cfg.ClickHouse.Username == "" {
-		cfg.ClickHouse.Username = "default"
-	}
-
-	if cmd.IsSet("clickhouse-password") {
-		cfg.ClickHouse.Password = cmd.String("clickhouse-password")
-	}
-
-	if cmd.IsSet("clickhouse-protocol") {
-		cfg.ClickHouse.Protocol = chProtocol
-	} else if cfg.ClickHouse.Protocol == "" {
 		cfg.ClickHouse.Protocol = config.HTTPProtocol
 	}
-
-	if cmd.IsSet("read-only") {
-		cfg.ClickHouse.ReadOnly = cmd.Bool("read-only")
-	}
-
-	if cmd.IsSet("clickhouse-max-execution-time") {
-		cfg.ClickHouse.MaxExecutionTime = cmd.Int("clickhouse-max-execution-time")
-	} else if cfg.ClickHouse.MaxExecutionTime == 0 {
-		cfg.ClickHouse.MaxExecutionTime = 600
-	}
-
-	// Override TLS config with CLI flags
-	if cmd.IsSet("clickhouse-tls") {
-		cfg.ClickHouse.TLS.Enabled = cmd.Bool("clickhouse-tls")
-	}
-	if cmd.IsSet("clickhouse-tls-ca-cert") {
-		cfg.ClickHouse.TLS.CaCert = cmd.String("clickhouse-tls-ca-cert")
-	}
-	if cmd.IsSet("clickhouse-tls-client-cert") {
-		cfg.ClickHouse.TLS.ClientCert = cmd.String("clickhouse-tls-client-cert")
-	}
-	if cmd.IsSet("clickhouse-tls-client-key") {
-		cfg.ClickHouse.TLS.ClientKey = cmd.String("clickhouse-tls-client-key")
-	}
-	if cmd.IsSet("clickhouse-tls-insecure-skip-verify") {
-		cfg.ClickHouse.TLS.InsecureSkipVerify = cmd.Bool("clickhouse-tls-insecure-skip-verify")
-	}
-
-	if cmd.IsSet("clickhouse-cluster-name") {
-		cfg.ClickHouse.ClusterName = cmd.String("clickhouse-cluster-name")
-	}
-	if cmd.IsSet("clickhouse-cluster-secret") {
-		cfg.ClickHouse.ClusterSecret = cmd.String("clickhouse-cluster-secret")
-	}
-
-	// Override Server config with CLI flags
-	if cmd.IsSet("transport") {
-		cfg.Server.Transport = mcpTransport
-	} else if cfg.Server.Transport == "" {
+	switch strings.ToLower(string(cfg.Server.Transport)) {
+	case "http":
+		cfg.Server.Transport = config.HTTPTransport
+	case "sse":
+		cfg.Server.Transport = config.SSETransport
+	default:
 		cfg.Server.Transport = config.StdioTransport
 	}
-
-	if cmd.IsSet("address") {
-		cfg.Server.Address = cmd.String("address")
-	} else if cfg.Server.Address == "" {
-		cfg.Server.Address = "0.0.0.0"
+	switch strings.ToLower(string(cfg.Logging.Level)) {
+	case "debug":
+		cfg.Logging.Level = config.DebugLevel
+	case "warn":
+		cfg.Logging.Level = config.WarnLevel
+	case "error":
+		cfg.Logging.Level = config.ErrorLevel
+	default:
+		cfg.Logging.Level = config.InfoLevel
 	}
 
-	if cmd.IsSet("port") {
-		cfg.Server.Port = cmd.Int("port")
-	} else if cfg.Server.Port == 0 {
-		cfg.Server.Port = 8080
-	}
-
+	// --openapi: single string flag → two bool fields on OpenAPIConfig.
 	switch cmd.String("openapi") {
 	case "http":
 		cfg.Server.OpenAPI.Enabled = true
@@ -1074,68 +802,15 @@ func overrideWithCLIFlags(cfg *config.Config, cmd CommandInterface) {
 		cfg.Server.OpenAPI.TLS = true
 	}
 
-	// Override Server TLS config with CLI flags
-	if cmd.IsSet("server-tls") {
-		cfg.Server.TLS.Enabled = cmd.Bool("server-tls")
-	}
-	if cmd.IsSet("server-tls-cert-file") {
-		cfg.Server.TLS.CertFile = cmd.String("server-tls-cert-file")
-	}
-	if cmd.IsSet("server-tls-key-file") {
-		cfg.Server.TLS.KeyFile = cmd.String("server-tls-key-file")
-	}
-	if cmd.IsSet("server-tls-ca-cert") {
-		cfg.Server.TLS.CaCert = cmd.String("server-tls-ca-cert")
-	}
-
-	// Override JWE config with CLI flags
-	if cmd.IsSet("allow-jwe-auth") {
-		cfg.Server.JWE.Enabled = cmd.Bool("allow-jwe-auth")
-	}
-	if cmd.IsSet("jwe-secret-key") {
-		cfg.Server.JWE.JWESecretKey = cmd.String("jwe-secret-key")
-	}
-	if cmd.IsSet("jwt-secret-key") {
-		cfg.Server.JWE.JWTSecretKey = cmd.String("jwt-secret-key")
-	}
-
-	// Override Logging config with CLI flags
-	if cmd.IsSet("log-level") {
-		cfg.Logging.Level = logLevel
-	} else if cfg.Logging.Level == "" {
-		cfg.Logging.Level = config.InfoLevel
-	}
-
-	// Override ClickHouse Limit config with CLI flags
-	if cmd.IsSet("clickhouse-limit") {
-		cfg.ClickHouse.Limit = cmd.Int("clickhouse-limit")
-	}
-
-	// Override ClickHouse HTTP Headers with CLI flags
-	if len(cmd.StringMap("clickhouse-http-headers")) > 0 {
-		cfg.ClickHouse.HttpHeaders = cmd.StringMap("clickhouse-http-headers")
-	}
-
-	// Override CORS origin with CLI flags
-	if cmd.IsSet("cors-origin") {
-		cfg.Server.CORSOrigin = cmd.String("cors-origin")
-	} else if cfg.Server.CORSOrigin == "" {
-		cfg.Server.CORSOrigin = "*"
-	}
-
-	if cmd.IsSet("tool-input-settings") {
-		cfg.Server.ToolInputSettings = cmd.StringSlice("tool-input-settings")
-	}
+	// Validate tool-input-settings post-apply. Same behaviour as before:
+	// terminate the process on misconfiguration so operators see it on startup.
 	if len(cfg.Server.ToolInputSettings) > 0 {
 		if err := altinitymcp.ValidateToolInputSettings(cfg.Server.ToolInputSettings); err != nil {
 			log.Fatal().Err(err).Msg("invalid tool_input_settings configuration")
 		}
 	}
 
-	if cmd.IsSet("blocked-query-clauses") {
-		cfg.Server.BlockedQueryClauses = cmd.StringSlice("blocked-query-clauses")
-	}
-
+	// --config-reload-time precedence: CLI flag wins only when YAML left it at 0.
 	if cmd.IsSet("config-reload-time") && cmd.Int("config-reload-time") > 0 && cfg.ReloadTime == 0 {
 		cfg.ReloadTime = cmd.Int("config-reload-time")
 	}

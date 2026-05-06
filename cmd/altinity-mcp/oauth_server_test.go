@@ -108,15 +108,12 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
 		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com"
 		app.config.Server.OAuth.PublicAuthServerURL = "https://public.example.com/oauth"
-		app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
-		app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
-		app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
 		app.config.Server.OAuth.RegistrationPath = "/register"
 		app.config.Server.OAuth.AuthorizationPath = "/authorize"
 		app.config.Server.OAuth.CallbackPath = "/callback"
 		app.config.Server.OAuth.TokenPath = "/token"
 
-		req := httptest.NewRequest(http.MethodGet, "https://internal.example.com/auth-metadata", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://internal.example.com/.well-known/oauth-authorization-server", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthAuthorizationServerMetadata(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -124,7 +121,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Contains(t, rr.Body.String(), "\"authorization_endpoint\":\"https://public.example.com/oauth/authorize\"")
 		require.Contains(t, rr.Body.String(), "\"registration_endpoint\":\"https://public.example.com/oauth/register\"")
 
-		req = httptest.NewRequest(http.MethodGet, "https://internal.example.com/resource-metadata", nil)
+		req = httptest.NewRequest(http.MethodGet, "https://internal.example.com/.well-known/oauth-protected-resource", nil)
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -302,9 +299,6 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 		require.Equalf(t, http.StatusOK, rr.Code, "expected alias %s to resolve", path)
 	}
 
-	app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
-	app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
-	app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
 	app.config.Server.OAuth.RegistrationPath = "/register"
 	app.config.Server.OAuth.AuthorizationPath = "/authorize"
 	app.config.Server.OAuth.CallbackPath = "/callback"
@@ -314,9 +308,6 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app.registerOAuthHTTPRoutes(mux)
 
 	for _, path := range []string{
-		"/resource-metadata",
-		"/auth-metadata",
-		"/openid",
 		"/register",
 		"/authorize",
 		"/callback",

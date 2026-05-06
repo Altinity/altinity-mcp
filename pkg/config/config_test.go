@@ -545,18 +545,14 @@ func TestConfigStructs(t *testing.T) {
 			Scopes:                          []string{"read", "write"},
 			RequiredScopes:                  []string{"read"},
 			ClickHouseHeaderName:            "X-Custom-Token",
-			ClaimsToHeaders:                 map[string]string{"sub": "X-User", "email": "X-Email"},
-			ProtectedResourceMetadataPath:   "/resource-metadata",
-			AuthorizationServerMetadataPath: "/auth-metadata",
-			OpenIDConfigurationPath:         "/openid",
-			RegistrationPath:                "/register",
-			AuthorizationPath:               "/authorize",
-			CallbackPath:                    "/callback",
-			TokenPath:                       "/token",
-			UpstreamIssuerAllowlist:         []string{"https://accounts.google.com"},
-			AuthCodeTTLSeconds:              120,
-			AccessTokenTTLSeconds:           600,
-			RefreshTokenTTLSeconds:          86400,
+			ClaimsToHeaders:         map[string]string{"sub": "X-User", "email": "X-Email"},
+			RegistrationPath:        "/register",
+			AuthorizationPath:       "/authorize",
+			CallbackPath:            "/callback",
+			TokenPath:               "/token",
+			UpstreamIssuerAllowlist: []string{"https://accounts.google.com"},
+			AccessTokenTTLSeconds:   600,
+			RefreshTokenTTLSeconds:  86400,
 		}
 
 		require.True(t, cfg.Enabled)
@@ -574,15 +570,11 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
 		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
-		require.Equal(t, "/resource-metadata", cfg.ProtectedResourceMetadataPath)
-		require.Equal(t, "/auth-metadata", cfg.AuthorizationServerMetadataPath)
-		require.Equal(t, "/openid", cfg.OpenIDConfigurationPath)
 		require.Equal(t, "/register", cfg.RegistrationPath)
 		require.Equal(t, "/authorize", cfg.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.CallbackPath)
 		require.Equal(t, "/token", cfg.TokenPath)
 		require.Equal(t, []string{"https://accounts.google.com"}, cfg.UpstreamIssuerAllowlist)
-		require.Equal(t, 120, cfg.AuthCodeTTLSeconds)
 		require.Equal(t, 600, cfg.AccessTokenTTLSeconds)
 		require.Equal(t, 86400, cfg.RefreshTokenTTLSeconds)
 	})
@@ -619,16 +611,12 @@ server:
     client_secret: "secret-456"
     token_url: "https://auth.example.com/oauth/token"
     auth_url: "https://auth.example.com/oauth/authorize"
-    protected_resource_metadata_path: "/resource-metadata"
-    authorization_server_metadata_path: "/auth-metadata"
-    openid_configuration_path: "/openid"
     registration_path: "/register"
     authorization_path: "/authorize"
     callback_path: "/callback"
     token_path: "/token"
     upstream_issuer_allowlist:
       - "https://accounts.google.com"
-    auth_code_ttl_seconds: 120
     access_token_ttl_seconds: 600
     refresh_token_ttl_seconds: 86400
     scopes:
@@ -672,15 +660,11 @@ logging:
 		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
 		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
-		require.Equal(t, "/resource-metadata", cfg.Server.OAuth.ProtectedResourceMetadataPath)
-		require.Equal(t, "/auth-metadata", cfg.Server.OAuth.AuthorizationServerMetadataPath)
-		require.Equal(t, "/openid", cfg.Server.OAuth.OpenIDConfigurationPath)
 		require.Equal(t, "/register", cfg.Server.OAuth.RegistrationPath)
 		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
 		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)
 		require.Equal(t, []string{"https://accounts.google.com"}, cfg.Server.OAuth.UpstreamIssuerAllowlist)
-		require.Equal(t, 120, cfg.Server.OAuth.AuthCodeTTLSeconds)
 		require.Equal(t, 600, cfg.Server.OAuth.AccessTokenTTLSeconds)
 		require.Equal(t, 86400, cfg.Server.OAuth.RefreshTokenTTLSeconds)
 	})
