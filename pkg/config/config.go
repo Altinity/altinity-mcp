@@ -192,15 +192,24 @@ type OAuthConfig struct {
 	// form (confused-deputy mitigation, MCP §Confused Deputy Problem).
 	ConsentPath string `json:"consent_path" yaml:"consent_path" flag:"oauth-consent-path" env:"MCP_OAUTH_CONSENT_PATH" desc:"Relative path for OAuth consent endpoint"`
 
-	// DisableDCRConsent skips the per-DCR-client consent screen between the
-	// upstream IdP callback and the gating-code redirect. The MCP spec marks
-	// this consent as MUST when DCR is exposed (§Confused Deputy Problem) —
-	// disabling it is a deliberate spec deviation, only safe when the
-	// deployment has another trust gate (typically AllowedEmailDomains or
-	// AllowedHostedDomains) that prevents an attacker-DCR'd client from
-	// being usable against an arbitrary phished victim. See
-	// docs/oauth_compatibility_hypotheses.md for the trade-off discussion.
-	DisableDCRConsent bool `json:"disable_dcr_consent" yaml:"disable_dcr_consent" flag:"oauth-disable-dcr-consent" env:"MCP_OAUTH_DISABLE_DCR_CONSENT" desc:"Skip the per-DCR-client consent screen (spec-deviation, only safe when AllowedEmailDomains or AllowedHostedDomains is set)"`
+	// DCRConsent controls the per-DCR-client consent screen rendered between
+	// the upstream IdP callback and the gating-code redirect — MCP §Confused
+	// Deputy Problem mitigation when DCR is exposed.
+	//
+	// Three value modes:
+	//   - ""        : use the built-in default template (spec-compliant).
+	//   - "off"     : skip the consent screen entirely (also accepts
+	//                 "disable"/"disabled"/"none"/"false"/"no", case-insensitive).
+	//                 Spec deviation; only safe when AllowedEmailDomains or
+	//                 AllowedHostedDomains constrains who can authenticate.
+	//   - any other : a Go html/template body. Available data: ClientName,
+	//                 RedirectURI, RedirectURIHost, Resource, UserDisplay,
+	//                 Scope, ConsentID, ConsentPath. The form must POST
+	//                 `state` and `action` (=approve|deny) to ConsentPath.
+	//                 Parse errors fail the deploy at startup.
+	//
+	// See docs/oauth_authorization.md and docs/oauth_compatibility_hypotheses.md.
+	DCRConsent string `json:"dcr_consent" yaml:"dcr_consent" flag:"oauth-dcr-consent" env:"MCP_OAUTH_DCR_CONSENT" desc:"HTML template for the per-DCR-client consent screen. \"\"=built-in default (spec-compliant), \"off\"=skip the screen (spec deviation), otherwise a Go html/template body."`
 
 	// UpstreamIssuerAllowlist constrains which upstream identity token issuers are accepted during callback exchange.
 	UpstreamIssuerAllowlist []string `json:"upstream_issuer_allowlist" yaml:"upstream_issuer_allowlist" flag:"oauth-upstream-issuer-allowlist" env:"MCP_OAUTH_UPSTREAM_ISSUER_ALLOWLIST" desc:"Allowed upstream identity token issuers"`

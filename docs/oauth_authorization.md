@@ -31,19 +31,49 @@ Configure with:
 
 | Field | Env var | Default | Effect |
 |---|---|---|---|
-| `disable_dcr_consent` | `MCP_OAUTH_DISABLE_DCR_CONSENT` | `false` | Skip the consent screen; `/callback` 302's the gating code straight to the client redirect. **Spec deviation.** |
+| `dcr_consent` | `MCP_OAUTH_DCR_CONSENT` | `""` (built-in) | See modes below. |
 | `consent_path` | `MCP_OAUTH_CONSENT_PATH` | `/oauth/consent` | Override the consent endpoint path. |
 
-Disabling consent is reasonable for deployments where another trust gate (one
-of `allowed_email_domains` / `allowed_hosted_domains`) restricts who can
-authenticate through your IdP at all — the confused-deputy attack relies on
-phishing a logged-in upstream user, and an identity-domain allowlist removes
-that attack surface. The startup banner refuses silently if you disable
-consent without setting one of those gates.
+`dcr_consent` has three value modes:
+
+- **`""` (empty / unset)** — render the built-in spec-compliant consent
+  template. This is the default.
+- **`"off"`** — skip the consent screen entirely. Also accepts
+  `disable` / `disabled` / `none` / `false` / `no` (case-insensitive).
+  **Spec deviation.** Only safe when at least one of `allowed_email_domains` /
+  `allowed_hosted_domains` is set — the confused-deputy attack relies on
+  phishing a logged-in upstream user, and an identity-domain allowlist
+  removes that attack surface. The startup banner WARN's loudly if you
+  disable consent without one of those gates.
+- **anything else** — treated as a Go [`html/template`] body and rendered
+  in place of the built-in. Available data fields: `ClientName`,
+  `RedirectURI`, `RedirectURIHost`, `Resource`, `UserDisplay`, `Scope`,
+  `ConsentID`, `ConsentPath`. The form must POST `state` and `action`
+  (`approve`|`deny`) to `ConsentPath`. Parse errors fail the deploy at
+  startup.
+
+[`html/template`]: https://pkg.go.dev/html/template
 
 **Default-on / opt-out** is intentional: spec compliance is the secure default.
 Operators who explicitly opt out get a startup log line stating the
 identity-policy fallback they're relying on.
+
+Example custom template (Helm values):
+
+```yaml
+config:
+  server:
+    oauth:
+      dcr_consent: |
+        <!doctype html>
+        <h1>Authorize {{.ClientName}}?</h1>
+        <p>Will redirect to {{.RedirectURIHost}} as {{.UserDisplay}}.</p>
+        <form method="POST" action="{{.ConsentPath}}">
+          <input type="hidden" name="state" value="{{.ConsentID}}">
+          <button name="action" value="approve">Approve</button>
+          <button name="action" value="deny">Deny</button>
+        </form>
+```
 
 > **Spec deviation (deliberate).** MCP authorization spec 2025-11-25 §Access
 > Token Privilege Restriction says *"the MCP server **MUST NOT** pass through

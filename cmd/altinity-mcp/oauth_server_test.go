@@ -140,15 +140,18 @@ func TestOAuthConsentFlow(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
-	t.Run("disable_dcr_consent_skips_screen_and_redirects_directly", func(t *testing.T) {
-		// With DisableDCRConsent=true (operator opt-out), the /callback flow
+	t.Run("dcr_consent_off_skips_screen_and_redirects_directly", func(t *testing.T) {
+		// With dcr_consent=off (operator opt-out, accepted as off|disable|
+		// disabled|none|false|no, case-insensitive), the /callback flow
 		// must hand the gating code straight back to the client redirect URI
-		// without rendering the consent page. Used by deployments that gate
-		// access through AllowedEmailDomains instead of per-DCR consent.
+		// without rendering the consent page.
 		t.Parallel()
 		appCopy := *app
-		appCopy.config.Server.OAuth.DisableDCRConsent = true
+		appCopy.config.Server.OAuth.DCRConsent = "off"
 		appCopy.oauthState = newOAuthStateStore()
+
+		mode := appCopy.consentMode()
+		require.True(t, mode.disabled, "dcr_consent=off must resolve to disabled")
 
 		// Drive the same code path issueGatingCodeFromConsent runs from
 		// inside handleOAuthCallback when consent is disabled.
@@ -164,6 +167,40 @@ func TestOAuthConsentFlow(t *testing.T) {
 		require.Equal(t, "client-state-xyz", loc.Query().Get("state"))
 	})
 
+	t.Run("dcr_consent_custom_template_renders", func(t *testing.T) {
+		// Operator-supplied template parses + renders. Available data
+		// includes ClientName / RedirectURIHost / ConsentID / ConsentPath;
+		// here we keep it minimal to assert wiring.
+		t.Parallel()
+		appCopy := *app
+		appCopy.config.Server.OAuth.DCRConsent = `<form method="POST" action="{{.ConsentPath}}">
+<p>Authorize <b>{{.ClientName}}</b> at {{.RedirectURIHost}}?</p>
+<input type="hidden" name="state" value="{{.ConsentID}}">
+<button name="action" value="approve">OK</button>
+</form>`
+		appCopy.oauthState = newOAuthStateStore()
+
+		mode := appCopy.consentMode()
+		require.False(t, mode.disabled)
+		require.NotNil(t, mode.tpl)
+
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/", nil)
+		rr := httptest.NewRecorder()
+		appCopy.renderConsentPage(rr, req, mode.tpl, "ocs_custom", makeConsent())
+		require.Equal(t, http.StatusOK, rr.Code)
+		body := rr.Body.String()
+		require.Contains(t, body, "Test Client")
+		require.Contains(t, body, "client.example.com")
+		require.Contains(t, body, "ocs_custom")
+	})
+
+	t.Run("dcr_consent_invalid_template_rejected_at_startup", func(t *testing.T) {
+		t.Parallel()
+		_, err := resolveDCRConsentMode("{{ .Unclosed ")
+		require.Error(t, err, "broken html/template body must fail to parse")
+		require.Contains(t, err.Error(), "dcr_consent")
+	})
+
 	t.Run("rendered_consent_includes_redirect_host", func(t *testing.T) {
 		// Render the consent page directly and assert the redirect URI host
 		// (the field a user actually needs to verify) appears in the HTML.
@@ -172,7 +209,7 @@ func TestOAuthConsentFlow(t *testing.T) {
 		consent := makeConsent()
 		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/", nil)
 		rr := httptest.NewRecorder()
-		app.renderConsentPage(rr, req, consentID, consent)
+		app.renderConsentPage(rr, req, defaultConsentTemplate, consentID, consent)
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "text/html; charset=utf-8", rr.Header().Get("Content-Type"))
 		body := rr.Body.String()

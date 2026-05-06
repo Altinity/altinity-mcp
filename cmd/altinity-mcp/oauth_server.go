@@ -1412,12 +1412,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// DisableDCRConsent skips the consent screen for deployments that gate
+	// DCRConsent="off" skips the consent screen for deployments that gate
 	// access through identity policy (AllowedEmailDomains / AllowedHostedDomains)
 	// instead. Spec deviation; documented in oauth_compatibility_hypotheses.md.
-	// When disabled, fall straight through to the legacy gating-code path —
-	// behaves like the pre-Step-3 server.
-	if cfg.Server.OAuth.DisableDCRConsent {
+	// Behaves like the pre-Step-3 server: hand the gating code straight back.
+	mode := a.consentMode()
+	if mode.disabled {
 		a.issueGatingCodeFromConsent(w, r, consent)
 		return
 	}
@@ -1435,12 +1435,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 
 	consentID := randomToken("ocs_")
 	a.getOAuthStateStore().putPendingConsent(consentID, consent)
-	a.renderConsentPage(w, r, consentID, consent)
+	a.renderConsentPage(w, r, mode.tpl, consentID, consent)
 }
 
 // issueGatingCodeFromConsent promotes a pendingConsent record into a
 // redeemable auth code without showing the consent screen. Shared between:
-//   - DisableDCRConsent=true callers in handleOAuthCallback
+//   - dcr_consent=off callers in handleOAuthCallback
 //   - the user clicking Approve in handleOAuthConsent
 //
 // The two callers do byte-identical work after this point, so consolidating
@@ -1483,6 +1483,49 @@ func (a *application) issueGatingCodeFromConsent(w http.ResponseWriter, r *http.
 // defaultConsentPath is the route the consent form posts to.
 const defaultConsentPath = "/oauth/consent"
 
+// dcrConsentMode encodes the three DCRConsent semantics: built-in template,
+// disabled (spec deviation), or a custom html/template body. Computed once
+// at startup (and on config reload) and reused per request.
+type dcrConsentMode struct {
+	disabled bool
+	tpl      *template.Template
+}
+
+// resolveDCRConsentMode parses cfg.OAuth.DCRConsent into a dcrConsentMode.
+// Returns an error when the operator provided a custom template that fails
+// to parse — better to refuse to start than to silently fall back.
+func resolveDCRConsentMode(raw string) (dcrConsentMode, error) {
+	body := strings.TrimSpace(raw)
+	switch strings.ToLower(body) {
+	case "":
+		return dcrConsentMode{tpl: defaultConsentTemplate}, nil
+	case "off", "disable", "disabled", "none", "false", "no":
+		return dcrConsentMode{disabled: true}, nil
+	}
+	tpl, err := template.New("consent-custom").Parse(body)
+	if err != nil {
+		return dcrConsentMode{}, fmt.Errorf("oauth dcr_consent: failed to parse custom html/template: %w", err)
+	}
+	return dcrConsentMode{tpl: tpl}, nil
+}
+
+// consentMode returns the resolved DCRConsent mode for the current config.
+// Re-parses on every call so config-reload picks up edits without restart;
+// /callback runs at most once per user OAuth flow, so the cost is negligible.
+// Custom-template parse errors fall back to the spec-compliant built-in to
+// avoid silently bypassing the consent gate; the matching startup validator
+// guarantees this branch is unreachable for a clean config.
+func (a *application) consentMode() dcrConsentMode {
+	mode, err := resolveDCRConsentMode(a.GetCurrentConfig().Server.OAuth.DCRConsent)
+	if err != nil {
+		log.Error().Err(err).Msg("DCRConsent template invalid at request time; falling back to built-in")
+		return dcrConsentMode{tpl: defaultConsentTemplate}
+	}
+	return mode
+}
+
+// defaultConsentTemplate is used when DCRConsent is left empty.
+//
 // consentTemplate renders the per-DCR-client consent screen. The user sees
 // (a) the client_name the DCR'd client claimed (display-only, never trusted),
 // (b) the redirect URI hostname they will be sent to (the only field that
@@ -1492,7 +1535,7 @@ const defaultConsentPath = "/oauth/consent"
 //
 // HTML built with `html/template` so all interpolated fields are
 // automatically escaped — none of these come from server config.
-var consentTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE html>
+var defaultConsentTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1535,9 +1578,12 @@ If you do not recognise this client or the redirect URL above, do <b>not</b> app
 
 // renderConsentPage emits the HTML consent screen referenced from the
 // callback flow. Returns 200 OK with text/html. Sets a strict CSP so no
-// scripts can run from this page (defence-in-depth — the template doesn't
-// include any).
-func (a *application) renderConsentPage(w http.ResponseWriter, r *http.Request, consentID string, consent oauthPendingConsent) {
+// scripts can run from this page (defence-in-depth — the built-in template
+// doesn't include any; custom templates inherit the same headers).
+//
+// `tpl` is whatever the operator's DCRConsent setting resolved to (built-in
+// or custom); resolveDCRConsentMode guarantees it is non-nil here.
+func (a *application) renderConsentPage(w http.ResponseWriter, r *http.Request, tpl *template.Template, consentID string, consent oauthPendingConsent) {
 	redirectHost := consent.RedirectURI
 	if parsed, err := url.Parse(consent.RedirectURI); err == nil && parsed.Host != "" {
 		redirectHost = parsed.Host
@@ -1579,7 +1625,7 @@ func (a *application) renderConsentPage(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := consentTemplate.Execute(w, data); err != nil {
+	if err := tpl.Execute(w, data); err != nil {
 		log.Error().Err(err).Msg("Failed to render consent page")
 	}
 }
