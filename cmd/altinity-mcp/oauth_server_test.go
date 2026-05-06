@@ -32,7 +32,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 					Audience:            "https://mcp.example.com",
 					PublicResourceURL:   "https://mcp.example.com",
 					PublicAuthServerURL: "https://mcp.example.com/oauth",
-					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+					SigningSecret:     "test-gating-secret-32-byte-key!!",
 					Scopes:              []string{"openid", "email"},
 					AuthURL:             "https://accounts.google.com/o/oauth2/v2/auth",
 					TokenURL:            "https://oauth2.googleapis.com/token",
@@ -156,7 +156,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+					SigningSecret:     "test-gating-secret-32-byte-key!!",
 				},
 			},
 		},
@@ -166,7 +166,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+			SigningSecret:     "test-gating-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -456,7 +456,7 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 				ClientID:        "upstream-client-id",
 				ClientSecret:    "upstream-client-secret",
 				Scopes:          []string{"openid", "email"},
-				GatingSecretKey: "test-gating-secret-32-byte-key!!",
+				SigningSecret: "test-gating-secret-32-byte-key!!",
 			},
 		},
 	}
@@ -802,7 +802,7 @@ func newGatingModeTestApp(provider *testForwardModeOIDCProvider) *application {
 				ClientID:               "upstream-client-id",
 				ClientSecret:           "upstream-client-secret",
 				Scopes:                 []string{"openid", "email"},
-				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				SigningSecret:        "test-gating-secret-32-byte-key!!",
 				AccessTokenTTLSeconds:  300,
 				RefreshTokenTTLSeconds: 86400,
 			},
@@ -1053,7 +1053,7 @@ func newForwardModeRefreshTestApp(provider *testForwardModeOIDCProvider) *applic
 				ClientSecret:           "upstream-client-secret",
 				Scopes:                 []string{"openid", "email"},
 				UpstreamOfflineAccess:  true,
-				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				SigningSecret:        "test-gating-secret-32-byte-key!!",
 				RefreshTokenTTLSeconds: 86400,
 			},
 		},
@@ -1234,8 +1234,8 @@ func TestOAuthForwardModeRefresh(t *testing.T) {
 		clientID, resp := doInitialFlow(t, app)
 
 		// Rotate the symmetric secret used to encrypt the JWE.
-		app.config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
-		app.mcpServer.Config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
+		app.config.Server.OAuth.SigningSecret = "different-secret-32-bytes-long!!"
+		app.mcpServer.Config.Server.OAuth.SigningSecret = "different-secret-32-bytes-long!!"
 
 		// client_id is decrypted first in handleOAuthTokenRefresh, so a
 		// client_id JWE keyed by the prior secret fails before the refresh
@@ -1574,7 +1574,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 						ClientID:               "upstream-client-id",
 						ClientSecret:           "upstream-client-secret",
 						Scopes:                 []string{"openid", "email"},
-						GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+						SigningSecret:        "test-gating-secret-32-byte-key!!",
 						AccessTokenTTLSeconds:  300,
 						RefreshTokenTTLSeconds: 86400,
 					},

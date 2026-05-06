@@ -3239,7 +3239,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:         true,
 			Mode:            "custom",
-			GatingSecretKey: "secret",
+			SigningSecret: "secret",
 		}}}
 		err := validateOAuthRuntimeConfig(cfg)
 		require.Error(t, err)
@@ -3251,11 +3251,11 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:         true,
 			Mode:            "gating",
-			GatingSecretKey: "",
+			SigningSecret: "",
 		}}}
 		err := validateOAuthRuntimeConfig(cfg)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "gating_secret_key is required")
+		require.Contains(t, err.Error(), "signing_secret is required")
 	})
 
 	t.Run("forward_mode_requires_http", func(t *testing.T) {
@@ -3264,7 +3264,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:         true,
 				Mode:            "forward",
-				GatingSecretKey: "secret",
+				SigningSecret: "secret",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
 		}
@@ -3278,7 +3278,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:         true,
 			Mode:            "gating",
-			GatingSecretKey: "secret",
+			SigningSecret: "secret",
 		}}}
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
@@ -3289,7 +3289,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:         true,
 				Mode:            "forward",
-				GatingSecretKey: "secret",
+				SigningSecret: "secret",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
 		}

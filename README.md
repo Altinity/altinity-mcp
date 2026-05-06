@@ -238,7 +238,7 @@ export LOG_LEVEL=debug
 export MCP_OAUTH_ENABLED=true
 export MCP_OAUTH_MODE=gating
 export MCP_OAUTH_ISSUER=https://accounts.example.com
-export MCP_OAUTH_GATING_SECRET_KEY=...
+export MCP_OAUTH_SIGNING_SECRET=...
 
 ./altinity-mcp
 ```

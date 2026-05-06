@@ -1046,8 +1046,8 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
 	}
 
-	if strings.TrimSpace(cfg.Server.OAuth.GatingSecretKey) == "" {
-		return fmt.Errorf("oauth gating_secret_key is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
+	if strings.TrimSpace(cfg.Server.OAuth.SigningSecret) == "" {
+		return fmt.Errorf("oauth signing_secret is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
 	}
 
 	if cfg.Server.OAuth.IsForwardMode() && cfg.ClickHouse.Protocol != config.HTTPProtocol {

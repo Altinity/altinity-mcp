@@ -197,9 +197,12 @@ type OAuthConfig struct {
 	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
 	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" env:"MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS" desc:"Refresh token lifetime in seconds"`
 
-	// GatingSecretKey is the symmetric secret used for OAuth client registration artifacts
-	// and gating-mode self-issued token minting/validation.
-	GatingSecretKey string `json:"gating_secret_key" yaml:"gating_secret_key" flag:"oauth-gating-secret-key" env:"MCP_OAUTH_GATING_SECRET_KEY" desc:"Secret key for stateless OAuth facade artifacts"`
+	// SigningSecret is the server-side symmetric secret used to HMAC-sign every
+	// stateless OAuth artifact this server mints: self-issued JWT access tokens
+	// (HS256), authorization codes, refresh tokens, and RFC 7591 dynamic-client-
+	// registration `client_secret`s. Required whenever OAuth is enabled, in both
+	// forward and gating modes.
+	SigningSecret string `json:"signing_secret" yaml:"signing_secret" flag:"oauth-signing-secret" env:"MCP_OAUTH_SIGNING_SECRET" desc:"Server-side HMAC secret for all stateless OAuth artifacts (JWTs, auth codes, refresh tokens, DCR client_secrets)"`
 }
 
 func (cfg OAuthConfig) NormalizedMode() string {

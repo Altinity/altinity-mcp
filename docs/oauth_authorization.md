@@ -42,7 +42,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
     client_id: "<YOUR_CLIENT_ID>"
     client_secret: "<YOUR_CLIENT_SECRET>"
@@ -93,7 +93,7 @@ server:
   oauth:
     enabled: true
     mode: "gating"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
     public_auth_server_url: "https://mcp.example.com"
     client_id: "<YOUR_CLIENT_ID>"
@@ -143,7 +143,7 @@ server:
     enabled: true
     mode: gating
     issuer: https://accounts.google.com
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     # ... standard gating config ...
 ```
 
@@ -201,7 +201,7 @@ The literal value used for the ClickHouse username is the OAuth `email` claim wh
 - **ClickHouse protocol**: Forward mode requires `http`. Gating mode with static credentials works with both `http` and native `tcp`. Gating mode with cluster-secret authentication requires `tcp`.
 - **ClickHouse version**: Forward mode requires Altinity Antalya build 25.8+ (or any build that supports `token_processors`). Gating mode works with any ClickHouse version.
 - **Identity Provider**: Any OAuth 2.0 / OIDC-compliant provider (Keycloak, Azure AD, Google, AWS Cognito, etc.)
-- **`gating_secret_key`**: Required in both modes. Protects stateless client registration, authorization codes, and (in gating mode) refresh tokens.
+- **`signing_secret`**: Required in both modes. Protects stateless client registration, authorization codes, and (in gating mode) refresh tokens.
 - **Frontend / reverse proxy**: If published behind a proxy, configure explicit `public_resource_url` and `public_auth_server_url`. See [Frontend / Reverse Proxy Requirements](#frontend--reverse-proxy-requirements).
 
 ## MCP Client Discovery Flow
@@ -218,7 +218,7 @@ OAuth-capable MCP clients (e.g., Claude Desktop, Codex) discover authentication 
 
 ## Refresh Tokens
 
-Both modes can issue refresh tokens. The MCP refresh token is always a stateless JWE keyed by `gating_secret_key`; what it *wraps* differs by mode.
+Both modes can issue refresh tokens. The MCP refresh token is always a stateless JWE keyed by `signing_secret`; what it *wraps* differs by mode.
 
 ### Gating mode
 
@@ -235,7 +235,7 @@ By default, forward mode does not issue refresh tokens — MCP-client sessions d
 When enabled:
 
 1. MCP appends `offline_access` to the upstream authorize redirect.
-2. MCP captures the upstream IdP's `refresh_token` from the token-exchange response and wraps it in a JWE keyed by `gating_secret_key`. The MCP client sees only the opaque JWE.
+2. MCP captures the upstream IdP's `refresh_token` from the token-exchange response and wraps it in a JWE keyed by `signing_secret`. The MCP client sees only the opaque JWE.
 3. On `grant_type=refresh_token`, MCP decrypts the JWE, calls the upstream `/oauth/token` with `grant_type=refresh_token`, re-validates the new ID token (signature via JWKS, identity policy), mints a new JWE around the rotated upstream refresh, and returns the new pair. The new `access_token` is the fresh upstream ID token verbatim.
 
 Operator setup:
@@ -246,7 +246,7 @@ Operator setup:
 
 Limitations (apply to both modes):
 
-- No server-side revocation of individual MCP tokens. Rotate `gating_secret_key` to invalidate all outstanding JWEs.
+- No server-side revocation of individual MCP tokens. Rotate `signing_secret` to invalidate all outstanding JWEs.
 - No reuse detection for the MCP-side refresh token: a rotated-out JWE remains valid until its `exp`. In forward mode, the upstream IdP's reuse detection (if enabled) provides defense-in-depth.
 
 ## Identity Policy (Gating Mode)
@@ -284,7 +284,7 @@ server:
 
     # Symmetric secret for stateless OAuth artifacts (client registration,
     # authorization codes, refresh tokens). Required whenever OAuth is enabled.
-    gating_secret_key: ""
+    signing_secret: ""
 
     # Upstream OAuth/OIDC issuer URL (used for discovery and validation)
     issuer: ""
@@ -353,7 +353,7 @@ server:
 | Option | Description |
 |--------|-------------|
 | `mode` | `forward` passes tokens to ClickHouse for validation; `gating` validates upstream identity and mints local tokens |
-| `gating_secret_key` | Symmetric secret for all stateless OAuth artifacts. **Required** whenever OAuth is enabled |
+| `signing_secret` | Symmetric secret for all stateless OAuth artifacts. **Required** whenever OAuth is enabled |
 | `issuer` | Upstream IdP issuer URL for OIDC discovery and token validation |
 | `public_resource_url` | Externally visible MCP endpoint URL. **Required** behind a reverse proxy |
 | `public_auth_server_url` | Externally visible OAuth authorization server URL. **Required** behind a reverse proxy |
@@ -405,7 +405,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
     audience: "https://PUBLIC_HOST.example.com/"
     public_resource_url: "https://PUBLIC_HOST.example.com/"
@@ -527,7 +527,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "http://keycloak:8080/realms/mcp"
     audience: "clickhouse-mcp"
     client_id: "clickhouse-mcp"
@@ -584,7 +584,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
     audience: "<APPLICATION_CLIENT_ID>"
     client_id: "<APPLICATION_CLIENT_ID>"
@@ -630,7 +630,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://accounts.google.com"
     audience: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
     client_id: "<GOOGLE_CLIENT_ID>.apps.googleusercontent.com"
@@ -695,7 +695,7 @@ server:
   oauth:
     enabled: true
     mode: "forward"
-    gating_secret_key: "CHANGE_ME_TO_A_RANDOM_SECRET"
+    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
     issuer: "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>"
     audience: "<APP_CLIENT_ID>"
     client_id: "<APP_CLIENT_ID>"
@@ -740,9 +740,9 @@ Example values files are provided for each provider:
 
 ## Security Considerations
 
-- **`gating_secret_key`** protects all stateless OAuth artifacts (client registrations, authorization codes, refresh tokens). Treat it like a signing key. Rotate it to invalidate all outstanding registrations and tokens.
+- **`signing_secret`** protects all stateless OAuth artifacts (client registrations, authorization codes, refresh tokens). Treat it like a signing key. Rotate it to invalidate all outstanding registrations and tokens.
 - **Forward mode does not validate tokens locally.** It checks only that a bearer token is present, then forwards it to ClickHouse. Token validation is ClickHouse's responsibility via `token_processors`.
-- **Gating-mode refresh tokens are stateless.** There is no server-side state, so individual tokens cannot be revoked. The only way to invalidate all tokens is to rotate `gating_secret_key`. Use `refresh_token_ttl_seconds` to limit exposure.
+- **Gating-mode refresh tokens are stateless.** There is no server-side state, so individual tokens cannot be revoked. The only way to invalidate all tokens is to rotate `signing_secret`. Use `refresh_token_ttl_seconds` to limit exposure.
 - **Opaque bearer tokens are not supported.** Inbound OAuth validation on MCP/OpenAPI endpoints requires a signed JWT that can be validated via JWKS. The `userinfo` endpoint is used only during browser-login identity lookup, not for runtime token validation.
 - **Token preference during browser login.** When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
 

@@ -197,14 +197,14 @@ func (a *application) oauthForwardMode() bool {
 }
 
 func (a *application) oauthJWESecret() []byte {
-	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.GatingSecretKey)
+	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.SigningSecret)
 	return []byte(secret)
 }
 
 func (a *application) mustJWESecret() ([]byte, error) {
 	secret := a.oauthJWESecret()
 	if len(secret) == 0 {
-		return nil, fmt.Errorf("oauth gating_secret_key is required for OAuth client registration and gating-mode token minting")
+		return nil, fmt.Errorf("oauth signing_secret is required for OAuth client registration and gating-mode token minting")
 	}
 	return secret, nil
 }

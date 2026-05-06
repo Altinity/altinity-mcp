@@ -314,9 +314,9 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 }
 
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
-	secret := strings.TrimSpace(s.Config.Server.OAuth.GatingSecretKey)
+	secret := strings.TrimSpace(s.Config.Server.OAuth.SigningSecret)
 	if secret == "" {
-		return nil, fmt.Errorf("oauth gating_secret_key is required in gating mode")
+		return nil, fmt.Errorf("oauth signing_secret is required in gating mode")
 	}
 	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 

@@ -55,7 +55,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.Contains(t, byName, "oauth-audience")
 	require.Contains(t, byName, "oauth-client-id")
 	require.Contains(t, byName, "oauth-client-secret")
-	require.Contains(t, byName, "oauth-gating-secret-key")
+	require.Contains(t, byName, "oauth-signing-secret")
 	require.Contains(t, byName, "oauth-claims-to-headers")
 	require.Contains(t, byName, "oauth-scopes")
 	require.Contains(t, byName, "oauth-required-scopes")
@@ -76,7 +76,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.Equal(t, "stdio", byName["transport"].(*cli.StringFlag).Value)
 
 	// At least one OAuth field has no default — empty Value is correct.
-	require.Equal(t, "", byName["oauth-gating-secret-key"].(*cli.StringFlag).Value)
+	require.Equal(t, "", byName["oauth-signing-secret"].(*cli.StringFlag).Value)
 }
 
 func TestApplyFlags_SetsValues(t *testing.T) {
@@ -85,7 +85,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	cmd := &fakeCmd{
 		strs: map[string]string{
 			"clickhouse-host":         "ch.internal",
-			"oauth-gating-secret-key": "shh",
+			"oauth-signing-secret": "shh",
 			"transport":               "http",
 			"oauth-mode":              "forward",
 		},
@@ -98,7 +98,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 			"clickhouse-port":         true,
 			"server-tls":              true,
 			"oauth-enabled":           true,
-			"oauth-gating-secret-key": true,
+			"oauth-signing-secret": true,
 			"oauth-required-scopes":   true,
 			"oauth-claims-to-headers": true,
 			"transport":               true,
@@ -112,7 +112,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	require.Equal(t, 9000, cfg.ClickHouse.Port)
 	require.True(t, cfg.Server.TLS.Enabled)
 	require.True(t, cfg.Server.OAuth.Enabled)
-	require.Equal(t, "shh", cfg.Server.OAuth.GatingSecretKey)
+	require.Equal(t, "shh", cfg.Server.OAuth.SigningSecret)
 	require.Equal(t, []string{"openid", "email"}, cfg.Server.OAuth.RequiredScopes)
 	require.Equal(t, "X-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 
@@ -141,20 +141,20 @@ func TestApplyFlags_DefaultFallback(t *testing.T) {
 
 	// Fields without a `default:` tag stay zero.
 	require.Equal(t, "", cfg.ClickHouse.Password)
-	require.Equal(t, "", cfg.Server.OAuth.GatingSecretKey)
+	require.Equal(t, "", cfg.Server.OAuth.SigningSecret)
 }
 
 func TestApplyFlags_YAMLValuePreservedWhenNotSet(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{}
 	cfg.ClickHouse.Host = "from-yaml.example"
-	cfg.Server.OAuth.GatingSecretKey = "from-yaml-secret"
+	cfg.Server.OAuth.SigningSecret = "from-yaml-secret"
 	cmd := &fakeCmd{wasSet: map[string]bool{}}
 
 	ApplyFlags(cfg, cmd)
 
 	require.Equal(t, "from-yaml.example", cfg.ClickHouse.Host)
-	require.Equal(t, "from-yaml-secret", cfg.Server.OAuth.GatingSecretKey)
+	require.Equal(t, "from-yaml-secret", cfg.Server.OAuth.SigningSecret)
 }
 
 func TestApplyFlags_CLIBeatsYAML(t *testing.T) {
