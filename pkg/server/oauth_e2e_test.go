@@ -30,8 +30,11 @@ import (
 //     subprocess via embedded-clickhouse + an extracted Antalya binary
 //  3. MCP server forwarding Bearer tokens to ClickHouse
 //
-// Antalya is Linux-only (no darwin binaries published), so this test
-// auto-skips on non-Linux hosts via ensureAntalyaBinary. CI runs it on Linux.
+// On Linux the Antalya binary is auto-extracted from the published Docker
+// image on first run. On macOS/other hosts there is no published binary,
+// so the test requires a pre-cached binary at ~/.cache/embedded-clickhouse/
+// — see docs/build_antalya_macos.md and docs/development_and_testing.md.
+// The test fails (not skips) if the binary is missing.
 func TestOAuthE2EWithMockOIDC(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {

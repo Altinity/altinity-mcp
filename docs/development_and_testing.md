@@ -89,98 +89,46 @@ Tests under `internal/testutil/embeddedch` boot ClickHouse as a host subprocess 
 On Linux the Antalya binary is extracted once from the Antalya Docker image (`altinity/clickhouse-server:26.1.6.20001.altinityantalya`) on first use. 
 On macOS and other non-Linux hosts you must build it from source ahead of time — the Antalya Docker image only ships a Linux ELF, so it cannot run as a host subprocess on macOS.
 
-### Build the Antalya `clickhouse` binary on macOS
+### Antalya binary on macOS
 
-The Antalya tree shares the upstream ClickHouse build system, so the standard macOS build flow applies. Steps below are tailored for `~/.cache/embedded-clickhouse/` placement expected by the tests in this repo.
+Antalya does not publish macOS Docker images, so the binary cannot be auto-extracted on darwin. Build it once from source — see [build_antalya_macos.md](./build_antalya_macos.md) for the full guide — then place it in the test cache as described below.
 
-1. Install build prerequisites via Homebrew:
+#### Pin the checkout to AntalyaImageRef
 
-   ```bash
-   brew update
-   brew install ccache cmake ninja libtool gettext llvm lld binutils grep findutils nasm bash rust rustup
-   ```
+altinity-mcp's tests look for a binary that matches the `AntalyaImageRef` constant in `internal/testutil/embeddedch/embeddedch.go`. Derive the matching tag from the source so the build stays in lockstep:
 
-2. Extract the Antalya image ref/tag straight from the Go source so the build stays in lockstep with what the tests expect. Run this from the root of the `altinity-mcp` checkout:
+```bash
+ANTALYA_IMAGE_REF=$(grep -E '^\s*const AntalyaImageRef' internal/testutil/embeddedch/embeddedch.go | sed -E 's/.*"([^"]+)".*/\1/')
+ANTALYA_IMAGE_TAG="v${ANTALYA_IMAGE_REF##*:}"
+echo "image=$ANTALYA_IMAGE_REF tag=$ANTALYA_IMAGE_TAG"
+```
 
-   ```bash
-   # AntalyaImageRef looks like "altinity/clickhouse-server:26.1.6.20001.altinityantalya"
-   ANTALYA_IMAGE_REF=$(grep -E '^\s*const AntalyaImageRef' internal/testutil/embeddedch/embeddedch.go | sed -E 's/.*"([^"]+)".*/\1/')
-   # 26.1.6.20001.altinityantalya
-   ANTALYA_IMAGE_TAG="v${ANTALYA_IMAGE_REF##*:}"   
-   echo "image=$ANTALYA_IMAGE_REF tag=$ANTALYA_IMAGE_TAG"
-   ```
+In the build guide's `git checkout` step, use `"$ANTALYA_IMAGE_TAG"` instead of a moving branch like `antalya-26.1`. Keep this shell session open — `$ANTALYA_IMAGE_REF` is reused below.
 
-   Keep this shell session open — `ANTALYA_IMAGE_REF` and `ANTALYA_IMAGE_TAG` are reused in steps 3 and 5.
+#### Install the built binary into the cache
 
-3. Clone the Altinity ClickHouse fork (Antalya branches/tags live here) with submodules and check out the tag matching `ANTALYA_IMAGE_TAG`. The clone path **must not contain whitespace**:
+After the build produces `build/programs/clickhouse`:
 
-   ```bash
-   git clone https://github.com/Altinity/ClickHouse.git ~/src/github.com/altinity/ClickHouse
-   cd ~/src/github.com/altinity/ClickHouse
-   git fetch --tags
-   git checkout "$ANTALYA_IMAGE_TAG"
-   git submodule update --init --jobs 8
-   ```
+```bash
+mkdir -p ~/.cache/embedded-clickhouse
+ANTALYA_BIN_SUFFIX=$(printf '%s' "$ANTALYA_IMAGE_REF" | LC_ALL=C sed -E 's/[^A-Za-z0-9._-]/_/g')
+DEST=~/.cache/embedded-clickhouse/clickhouse-${ANTALYA_BIN_SUFFIX}
+cp /path/to/ClickHouse/build/programs/clickhouse "$DEST"
+chmod +x "$DEST"
+echo "installed: $DEST"
+```
 
-   If you skipped `--recurse-submodules` during clone, the explicit `git submodule update --init` step is required — submodules are not checked out by default.
+The filename suffix mirrors `safeFileName(AntalyaImageRef)` in the Go code — every char outside `[A-Za-z0-9._-]` becomes `_`. If unsure, run the tests once; the failure message prints the exact path it expected.
 
-4. Install the Rust nightly toolchain ClickHouse pins. The version is hardcoded in `contrib/corrosion-cmake/CMakeLists.txt` (`Rust_TOOLCHAIN`); if you skip this step `cmake` fails with `Cannot find nightly-YYYY-MM-DD Rust toolchain`. Extract it from the source so you always install exactly what the build expects:
+#### Verify
 
-   ```bash
-   cd ~/src/github.com/altinity/ClickHouse
-   # First time only: initialise rustup if you installed it via Homebrew.
-   # `brew install rustup` puts the binary on PATH but does not pick a default
-   # toolchain — running rustup-init -y is the supported one-shot setup.
-   command -v rustup-init >/dev/null && rustup-init -y --no-modify-path --default-toolchain stable
+```bash
+go test ./pkg/server/... -run Antalya -count=1 -v
+```
 
-   RUST_TOOLCHAIN=$(grep -E 'set\(Rust_TOOLCHAIN' contrib/corrosion-cmake/CMakeLists.txt | sed -E 's/.*"([^"]+)".*/\1/')
-   echo "required toolchain: $RUST_TOOLCHAIN"
+#### Refresh after AntalyaImageRef bumps
 
-   rustup toolchain install "$RUST_TOOLCHAIN"
-   # Sanity check — should list the nightly alongside stable:
-   rustup toolchain list
-   ```
-
-   The build does not need this nightly to be the default toolchain; corrosion picks it up by name. If you ever bump the ClickHouse checkout to a newer Antalya tag and `cmake` complains about a different missing nightly, just rerun the snippet above — it always reads the value from source.
-
-5. Build with Homebrew's Clang/LLD (Apple's system Clang is **not** supported):
-
-   ```bash
-   cd ~/src/github.com/altinity/ClickHouse
-   mkdir -p build
-   export PATH="$(brew --prefix llvm)/bin:$PATH"
-   cmake -S . -B build -G Ninja \
-     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-     -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang" \
-     -DCMAKE_CXX_COMPILER="$(brew --prefix llvm)/bin/clang++" \
-     -DCMAKE_AR="$(brew --prefix llvm)/bin/llvm-ar" \
-     -DCMAKE_RANLIB="$(brew --prefix llvm)/bin/llvm-ranlib"
-   cmake --build build --target clickhouse
-   # Resulting binary: build/programs/clickhouse
-   ```
-
-   If linking fails with `ld: archive member '/' not a mach-o file in ...`, double-check that `-DCMAKE_AR=$(brew --prefix llvm)/bin/llvm-ar` is set (Apple's `ar` does not support GNU thin archives).
-
-6. Copy the built binary into the cache directory using the exact filename the tests look for. The filename suffix is `safeFileName(AntalyaImageRef)` — every char outside `[A-Za-z0-9._-]` becomes `_` — which we reproduce here from `$ANTALYA_IMAGE_REF`:
-
-   ```bash
-   mkdir -p ~/.cache/embedded-clickhouse
-   ANTALYA_BIN_SUFFIX=$(printf '%s' "$ANTALYA_IMAGE_REF" | LC_ALL=C sed -E 's/[^A-Za-z0-9._-]/_/g')
-   DEST=~/.cache/embedded-clickhouse/clickhouse-${ANTALYA_BIN_SUFFIX}
-   cp ~/src/github.com/altinity/ClickHouse/build/programs/clickhouse "$DEST"
-   chmod +x "$DEST"
-   echo "installed: $DEST"
-   ```
-
-   If you're unsure what filename the loader expects, just run the Antalya tests once — the failure message prints the exact path it looked for.
-
-7. Re-run the embedded-CH tests:
-
-   ```bash
-   go test ./pkg/server/... -run Antalya -count=1 -v
-   ```
-
-If you want to refresh the macOS binary after `AntalyaImageRef` is bumped, re-run step 2 to refresh `ANTALYA_IMAGE_REF`/`ANTALYA_IMAGE_TAG`, then repeat steps 3 (`git pull && git checkout && git submodule update`), 4 (the pinned Rust nightly may have changed), 5, and 6. The cached binary is keyed by `AntalyaImageRef`, so bumping that constant invalidates the cache automatically.
+Re-run the "Pin the checkout" snippet to refresh `$ANTALYA_IMAGE_REF`/`$ANTALYA_IMAGE_TAG`, then redo the build (`git checkout` the new tag, `git submodule update`, possibly install a new pinned Rust nightly), and re-run the install step. The cached binary is keyed by `AntalyaImageRef`, so the old file is harmless to leave behind.
 
 ## Suggested Contributor Workflow
 
