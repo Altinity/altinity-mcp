@@ -16,6 +16,35 @@ Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The 
 4. The MCP server forwards the token to ClickHouse via HTTP headers
 5. ClickHouse validates the token using `token_processors` and authenticates the user
 
+### Per-DCR-client consent (and how to disable it)
+
+Both modes route through `/oauth/callback` after upstream IdP authentication.
+By default, the user is then shown a brief HTML consent screen listing the
+client name, the redirect URI hostname, the resource being authorized, and
+the identity from upstream. This satisfies MCP §Confused Deputy Problem:
+
+> "MCP proxy servers using static client IDs MUST obtain user consent for each
+> dynamically registered client before forwarding to third-party authorization
+> servers."
+
+Configure with:
+
+| Field | Env var | Default | Effect |
+|---|---|---|---|
+| `disable_dcr_consent` | `MCP_OAUTH_DISABLE_DCR_CONSENT` | `false` | Skip the consent screen; `/callback` 302's the gating code straight to the client redirect. **Spec deviation.** |
+| `consent_path` | `MCP_OAUTH_CONSENT_PATH` | `/oauth/consent` | Override the consent endpoint path. |
+
+Disabling consent is reasonable for deployments where another trust gate (one
+of `allowed_email_domains` / `allowed_hosted_domains`) restricts who can
+authenticate through your IdP at all — the confused-deputy attack relies on
+phishing a logged-in upstream user, and an identity-domain allowlist removes
+that attack surface. The startup banner refuses silently if you disable
+consent without setting one of those gates.
+
+**Default-on / opt-out** is intentional: spec compliance is the secure default.
+Operators who explicitly opt out get a startup log line stating the
+identity-policy fallback they're relying on.
+
 > **Spec deviation (deliberate).** MCP authorization spec 2025-11-25 §Access
 > Token Privilege Restriction says *"the MCP server **MUST NOT** pass through
 > the token it received from the MCP client"*. Forward mode does pass it

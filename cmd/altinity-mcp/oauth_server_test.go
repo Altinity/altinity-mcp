@@ -140,6 +140,30 @@ func TestOAuthConsentFlow(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 
+	t.Run("disable_dcr_consent_skips_screen_and_redirects_directly", func(t *testing.T) {
+		// With DisableDCRConsent=true (operator opt-out), the /callback flow
+		// must hand the gating code straight back to the client redirect URI
+		// without rendering the consent page. Used by deployments that gate
+		// access through AllowedEmailDomains instead of per-DCR consent.
+		t.Parallel()
+		appCopy := *app
+		appCopy.config.Server.OAuth.DisableDCRConsent = true
+		appCopy.oauthState = newOAuthStateStore()
+
+		// Drive the same code path issueGatingCodeFromConsent runs from
+		// inside handleOAuthCallback when consent is disabled.
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback", nil)
+		rr := httptest.NewRecorder()
+		appCopy.issueGatingCodeFromConsent(rr, req, makeConsent())
+		require.Equal(t, http.StatusFound, rr.Code, "consent-disabled callback must 302 directly")
+
+		loc, err := url.Parse(rr.Header().Get("Location"))
+		require.NoError(t, err)
+		require.Equal(t, "client.example.com", loc.Host)
+		require.NotEmpty(t, loc.Query().Get("code"), "gating code must be in the redirect")
+		require.Equal(t, "client-state-xyz", loc.Query().Get("state"))
+	})
+
 	t.Run("rendered_consent_includes_redirect_host", func(t *testing.T) {
 		// Render the consent page directly and assert the redirect URI host
 		// (the field a user actually needs to verify) appears in the HTML.

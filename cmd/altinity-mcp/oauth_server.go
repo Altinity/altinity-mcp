@@ -1412,6 +1412,16 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// DisableDCRConsent skips the consent screen for deployments that gate
+	// access through identity policy (AllowedEmailDomains / AllowedHostedDomains)
+	// instead. Spec deviation; documented in oauth_compatibility_hypotheses.md.
+	// When disabled, fall straight through to the legacy gating-code path —
+	// behaves like the pre-Step-3 server.
+	if cfg.Server.OAuth.DisableDCRConsent {
+		a.issueGatingCodeFromConsent(w, r, consent)
+		return
+	}
+
 	// Look up the registered client_name (set during DCR per RFC 7591 §2)
 	// for the consent screen. Untrusted, display-only — never used in any
 	// security decision.
@@ -1426,6 +1436,48 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	consentID := randomToken("ocs_")
 	a.getOAuthStateStore().putPendingConsent(consentID, consent)
 	a.renderConsentPage(w, r, consentID, consent)
+}
+
+// issueGatingCodeFromConsent promotes a pendingConsent record into a
+// redeemable auth code without showing the consent screen. Shared between:
+//   - DisableDCRConsent=true callers in handleOAuthCallback
+//   - the user clicking Approve in handleOAuthConsent
+//
+// The two callers do byte-identical work after this point, so consolidating
+// here avoids drift between the consent-on and consent-off paths.
+func (a *application) issueGatingCodeFromConsent(w http.ResponseWriter, r *http.Request, consent oauthPendingConsent) {
+	gatingCode := randomToken("oac_")
+	a.getOAuthStateStore().putAuthCode(gatingCode, oauthIssuedCode{
+		ClientID:             consent.ClientID,
+		RedirectURI:          consent.RedirectURI,
+		Scope:                consent.Scope,
+		CodeChallenge:        consent.CodeChallenge,
+		CodeChallengeMethod:  consent.CodeChallengeMethod,
+		Resource:             consent.Resource,
+		UpstreamBearerToken:  consent.UpstreamBearerToken,
+		UpstreamRefreshToken: consent.UpstreamRefreshToken,
+		UpstreamTokenType:    consent.UpstreamTokenType,
+		Subject:              consent.Subject,
+		Email:                consent.Email,
+		Name:                 consent.Name,
+		HostedDomain:         consent.HostedDomain,
+		EmailVerified:        consent.EmailVerified,
+		AccessTokenExpiry:    consent.AccessTokenExpiry,
+		ExpiresAt:            time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
+	})
+
+	redirect, err := url.Parse(consent.RedirectURI)
+	if err != nil {
+		http.Error(w, "Invalid redirect URI", http.StatusBadGateway)
+		return
+	}
+	params := redirect.Query()
+	params.Set("code", gatingCode)
+	if consent.ClientState != "" {
+		params.Set("state", consent.ClientState)
+	}
+	redirect.RawQuery = params.Encode()
+	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
 
 // defaultConsentPath is the route the consent form posts to.
@@ -1582,35 +1634,13 @@ func (a *application) handleOAuthConsent(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Approve — promote the consent record into a regular issued auth code.
-	gatingCode := randomToken("oac_")
-	a.getOAuthStateStore().putAuthCode(gatingCode, oauthIssuedCode{
-		ClientID:             consent.ClientID,
-		RedirectURI:          consent.RedirectURI,
-		Scope:                consent.Scope,
-		CodeChallenge:        consent.CodeChallenge,
-		CodeChallengeMethod:  consent.CodeChallengeMethod,
-		Resource:             consent.Resource,
-		UpstreamBearerToken:  consent.UpstreamBearerToken,
-		UpstreamRefreshToken: consent.UpstreamRefreshToken,
-		UpstreamTokenType:    consent.UpstreamTokenType,
-		Subject:              consent.Subject,
-		Email:                consent.Email,
-		Name:                 consent.Name,
-		HostedDomain:         consent.HostedDomain,
-		EmailVerified:        consent.EmailVerified,
-		AccessTokenExpiry:    consent.AccessTokenExpiry,
-		ExpiresAt:            time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
-	})
 	log.Info().
 		Str("client_id_prefix", truncateForLog(consent.ClientID, 12)).
 		Str("client_name", consent.ClientName).
 		Str("subject", consent.Subject).
 		Str("redirect_uri", consent.RedirectURI).
 		Msg("OAuth consent approved; gating code issued")
-
-	params.Set("code", gatingCode)
-	redirect.RawQuery = params.Encode()
-	http.Redirect(w, r, redirect.String(), http.StatusFound)
+	a.issueGatingCodeFromConsent(w, r, consent)
 }
 
 // gatingIdentity holds the identity fields needed to mint gating-mode tokens.

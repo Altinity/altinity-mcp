@@ -870,6 +870,25 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"Set MCP_OAUTH_ISSUER (single-tenant) or MCP_OAUTH_UPSTREAM_ISSUER_ALLOWLIST (multi-tenant) " +
 			"to constrain accepted issuers.")
 	}
+	if oauth.DisableDCRConsent {
+		// Loud warning: the operator has opted out of MCP §Confused Deputy
+		// Problem mitigation. Reasonable for deployments where another
+		// trust gate constrains who can authenticate (allowlist-based
+		// identity policy), high-risk for public-facing deployments.
+		hasIdentityGate := len(oauth.AllowedEmailDomains) > 0 ||
+			len(oauth.AllowedHostedDomains) > 0
+		if !hasIdentityGate {
+			log.Warn().Msg("OAuth: disable_dcr_consent=true with no AllowedEmailDomains / AllowedHostedDomains — " +
+				"public DCR is exposed and an attacker who phishes any logged-in upstream user can mint a token " +
+				"for this MCP server. Either re-enable consent or set MCP_OAUTH_ALLOWED_EMAIL_DOMAINS / " +
+				"MCP_OAUTH_ALLOWED_HOSTED_DOMAINS to restrict the user pool.")
+		} else {
+			log.Info().
+				Strs("allowed_email_domains", oauth.AllowedEmailDomains).
+				Strs("allowed_hosted_domains", oauth.AllowedHostedDomains).
+				Msg("OAuth: per-DCR-client consent disabled; identity policy gates the user pool instead")
+		}
+	}
 }
 
 // testConnection tests the connection to ClickHouse
