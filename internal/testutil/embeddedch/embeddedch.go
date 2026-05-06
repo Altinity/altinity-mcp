@@ -3,13 +3,15 @@
 // fixtures used across this repo, eliminating Docker/Ryuk/proxy plumbing for
 // any test that doesn't require Antalya-specific server features.
 //
-// Stock ClickHouse 26.3 is the default;
-// pass WithFlavor(FlavorAntalya) to extract and run the Altinity Antalya binary from the production Docker image.
-// Antalya tests auto-skip on non-Linux hosts because Antalya only
-// publishes Linux binaries.
+// Stock ClickHouse 26.3 is the default; pass WithFlavor(FlavorAntalya) to run
+// the Altinity Antalya binary. On Linux the binary is extracted once from the
+// production Docker image into ~/.cache/embedded-clickhouse/. On non-Linux
+// hosts (macOS, ...) the binary must be present at that location ahead of
+// time — see docs/development_and_testing.md for build/install steps.
 package embeddedch
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -29,7 +31,7 @@ import (
 // AntalyaImageRef is the Altinity Antalya image used as the source for the
 // extracted Antalya ClickHouse binary on Linux. Bump in lockstep with
 // production deployments.
-const AntalyaImageRef = "altinity/clickhouse-server:26.1.6.20001.altinityantalya"
+const AntalyaImageRef = "altinity/clickhouse-server:26.1.11.20001.altinityantalya"
 
 // Flavor selects which ClickHouse binary embedded-clickhouse runs.
 type Flavor int
@@ -38,10 +40,11 @@ const (
 	// FlavorStock uses the upstream ClickHouse binary that
 	// embedded-clickhouse fetches from GitHub releases.
 	FlavorStock Flavor = iota
-	// FlavorAntalya pulls the Altinity Antalya Docker image, extracts the
-	// clickhouse binary once, and points embedded-clickhouse at it via
-	// BinaryPath. Antalya only ships Linux binaries; tests using this
-	// flavor are auto-skipped on non-Linux hosts.
+	// FlavorAntalya runs the Altinity Antalya clickhouse binary cached at
+	// embeddedClickHouseCacheDir() (typically ~/.cache/embedded-clickhouse/).
+	// On Linux the binary is extracted once from AntalyaImageRef on first use.
+	// On non-Linux hosts the binary must be built locally and dropped into the
+	// cache dir — see docs/development_and_testing.md for instructions.
 	FlavorAntalya
 )
 
@@ -178,41 +181,53 @@ var (
 	antalyaBinaryErr  error
 )
 
-// EnsureAntalyaBinary returns the path to a cached Antalya clickhouse binary,
-// extracting it from the Altinity Docker image on first call.
+// EnsureAntalyaBinary returns the path to a cached Antalya clickhouse binary
+// at embeddedClickHouseCacheDir().
 //
-// Skips on non-Linux hosts — Altinity only publishes Antalya as Linux
-// binaries in their Docker images, so the Antalya server can't run as a host
-// subprocess on macOS or Windows.
+// On Linux the binary is extracted once from AntalyaImageRef via Docker.
+// On non-Linux hosts the binary must already be present at the expected path
+// (Antalya does not publish macOS/Windows Docker images, and a Linux ELF
+// cannot run as a host subprocess on macOS). When missing on non-Linux, this
+// fails with a message pointing at docs/development_and_testing.md, which
+// covers building clickhouse from source on macOS.
 func EnsureAntalyaBinary(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skipf("Antalya tests require linux (Antalya publishes Linux binaries only); skipping on %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-
 	antalyaBinaryOnce.Do(func() {
-		antalyaBinaryPath, antalyaBinaryErr = extractAntalyaBinary()
+		antalyaBinaryPath, antalyaBinaryErr = ensureAntalyaBinary()
 	})
-	require.NoError(t, antalyaBinaryErr, "failed to extract Antalya binary from %s", AntalyaImageRef)
-	require.NotEmpty(t, antalyaBinaryPath, "extracted Antalya binary path is empty")
+	require.NoError(t, antalyaBinaryErr, "failed to provide Antalya clickhouse binary")
+	require.NotEmpty(t, antalyaBinaryPath, "Antalya binary path is empty")
 	return antalyaBinaryPath
 }
 
-// extractAntalyaBinary pulls AntalyaImageRef and copies /usr/bin/clickhouse
-// out of a non-running container into a stable on-disk cache. Subsequent
-// callers reuse the cached file when the underlying tag hasn't changed.
-func extractAntalyaBinary() (string, error) {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		cacheDir = "/tmp"
-	}
-	cacheDir = filepath.Join(cacheDir, "altinity-mcp", "antalya-bin")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return "", err
-	}
-	binPath := filepath.Join(cacheDir, "clickhouse-"+safeFileName(AntalyaImageRef))
+// AntalyaBinaryPath is the on-disk location where EnsureAntalyaBinary looks
+// for (and on Linux, caches) the Antalya clickhouse binary.
+func AntalyaBinaryPath() string {
+	return filepath.Join(embeddedClickHouseCacheDir(), "clickhouse-"+safeFileName(AntalyaImageRef))
+}
+
+func ensureAntalyaBinary() (string, error) {
+	binPath := AntalyaBinaryPath()
 	if st, err := os.Stat(binPath); err == nil && st.Mode().IsRegular() && st.Size() > 0 {
 		return binPath, nil
+	}
+	if runtime.GOOS != "linux" {
+		return "", fmt.Errorf(
+			"Antalya clickhouse binary not found at %s.\n"+
+				"On %s/%s the binary cannot be extracted from the Antalya Docker image (Linux ELF only).\n"+
+				"Build clickhouse from source and copy the resulting binary into %s — see docs/development_and_testing.md.",
+			binPath, runtime.GOOS, runtime.GOARCH, embeddedClickHouseCacheDir(),
+		)
+	}
+	return extractAntalyaBinaryFromDocker(binPath)
+}
+
+// extractAntalyaBinaryFromDocker pulls AntalyaImageRef and copies
+// /usr/bin/clickhouse out of a non-running container into binPath. Subsequent
+// callers reuse the cached file when the underlying tag hasn't changed.
+func extractAntalyaBinaryFromDocker(binPath string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		return "", err
 	}
 
 	if out, err := exec.Command("docker", "pull", AntalyaImageRef).CombinedOutput(); err != nil {
@@ -249,17 +264,28 @@ func (e *extractErr) Error() string {
 	return e.stage + ": " + e.err.Error()
 }
 
+// embeddedClickHouseCacheDir is the on-disk cache shared between the Antalya
+// extraction path and the cross-process lock used by the stock-CH download
+// path. Always ~/.cache/embedded-clickhouse/ — we deliberately avoid
+// os.UserCacheDir() because it resolves to ~/Library/Caches on macOS, which
+// would split the cache between OSes and surprise developers who built the
+// Antalya binary by hand following docs/development_and_testing.md. Falls
+// back to /tmp only if $HOME cannot be determined.
+func embeddedClickHouseCacheDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "/tmp"
+	}
+	cacheDir := filepath.Join(home, ".cache", "embedded-clickhouse")
+	_ = os.MkdirAll(cacheDir, 0o755)
+	return cacheDir
+}
+
 // embeddedClickHouseCacheLockPath returns the path to a process-private lock
 // file used to serialize concurrent first-time stock-CH binary extractions
 // when go test runs packages in parallel.
 func embeddedClickHouseCacheLockPath() string {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		cacheDir = "/tmp"
-	}
-	cacheDir = filepath.Join(cacheDir, "embedded-clickhouse")
-	_ = os.MkdirAll(cacheDir, 0o755)
-	return filepath.Join(cacheDir, ".altinity-mcp-extract.lock")
+	return filepath.Join(embeddedClickHouseCacheDir(), ".altinity-mcp-extract.lock")
 }
 
 // acquireFileLock takes an exclusive flock on the given path, returning a
