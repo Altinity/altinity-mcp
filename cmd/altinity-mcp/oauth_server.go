@@ -386,29 +386,36 @@ func (a *application) oauthTokenPath() string {
 
 func (a *application) oauthChallengeHeader(r *http.Request) string {
 	baseURL := a.resourceBaseURL(r)
-	challenge := fmt.Sprintf("Bearer resource_metadata=%q", joinURLPath(baseURL, defaultProtectedResourceMetadataPath))
-	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
-	if len(scopes) == 0 {
-		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
-	}
-	if len(scopes) > 0 {
-		challenge += fmt.Sprintf(", scope=%q", strings.Join(scopes, " "))
-	}
-	return challenge
+	// error="invalid_token" signals to clients (incl. Anthropic's proxy) that
+	// Bearer auth is required and they should initiate the OAuth discovery flow.
+	// Omitting it causes some proxies to treat the 401 as a generic auth error
+	// and skip MCP OAuth entirely. Kapa and other working MCP servers include it.
+	return fmt.Sprintf(
+		"Bearer error=%q, error_description=%q, resource_metadata=%q",
+		"invalid_token",
+		"Authentication required",
+		joinURLPath(baseURL, defaultProtectedResourceMetadataPath),
+	)
 }
 
 func (a *application) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r))
-	switch {
-	case err == nil:
+	if err == nil {
 		return
-	case errors.Is(err, altinitymcp.ErrOAuthInsufficientScopes):
-		http.Error(w, "Insufficient OAuth scopes", http.StatusForbidden)
-	case errors.Is(err, altinitymcp.ErrOAuthTokenExpired):
-		http.Error(w, "OAuth token expired", http.StatusUnauthorized)
-	default:
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+	var code int
+	var oauthErr, desc string
+	switch {
+	case errors.Is(err, altinitymcp.ErrOAuthInsufficientScopes):
+		code, oauthErr, desc = http.StatusForbidden, "insufficient_scope", "Insufficient OAuth scopes"
+	case errors.Is(err, altinitymcp.ErrOAuthTokenExpired):
+		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "OAuth token expired"
+	default:
+		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "Authentication required"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": oauthErr, "error_description": desc})
 }
 
 func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler) http.Handler {
@@ -690,7 +697,10 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	baseURL := a.resourceBaseURL(r)
 	authServerBaseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
-		"resource":                 baseURL,
+		// Trailing slash is the canonical form per RFC 9728 §2: clients (incl.
+		// Anthropic's proxy) normalise the MCP server URL to include one and
+		// compare it against this field. A mismatch causes silent auth failure.
+		"resource":                 strings.TrimRight(baseURL, "/") + "/",
 		"authorization_servers":    []string{authServerBaseURL},
 		"scopes_supported":         a.GetCurrentConfig().Server.OAuth.Scopes,
 		"bearer_methods_supported": []string{"header"},
@@ -839,22 +849,33 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	expAt := time.Now().Add(30 * 24 * time.Hour).Unix()
 	// grant_types must include every grant the server will accept from this
 	// client. Per RFC 7591 §3.2.1 clients treat this list as authoritative,
 	// so omitting refresh_token here causes strict clients (e.g. Claude.ai)
 	// to skip grant_type=refresh_token even though /oauth/token would
 	// accept it and /.well-known/oauth-authorization-server advertises it
 	// via grant_types_supported.
+	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
+	if len(scopes) == 0 {
+		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
+	}
 	resp := map[string]interface{}{
 		"client_id":                  clientID,
+		"client_id_issued_at":        time.Now().Unix(),
 		"redirect_uris":              req.RedirectURIs,
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": authMethod,
-		"client_id_issued_at":        time.Now().Unix(),
+	}
+	if len(scopes) > 0 {
+		resp["scope"] = strings.Join(scopes, " ")
 	}
 	if clientSecret != "" {
 		resp["client_secret"] = clientSecret
+		// RFC 7591 §3.2.1: client_secret_expires_at is REQUIRED when a secret
+		// is issued. The JWE client_id embeds the same exp, so use it here too.
+		resp["client_secret_expires_at"] = expAt
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }

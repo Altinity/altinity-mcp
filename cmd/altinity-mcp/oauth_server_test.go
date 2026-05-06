@@ -52,7 +52,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "https://mcp.example.com", body["resource"])
+		require.Equal(t, "https://mcp.example.com/", body["resource"])
 		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
@@ -122,6 +122,8 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		cs, _ := reg["client_secret"].(string)
 		require.NotEmpty(t, cs, "confidential registration must include client_secret")
 		require.Len(t, cs, 64, "client_secret should be 32 random bytes hex-encoded")
+		_, hasExpiry := reg["client_secret_expires_at"]
+		require.True(t, hasExpiry, "RFC 7591 §3.2.1: client_secret_expires_at is required when secret is issued")
 	})
 
 	t.Run("dynamic_client_registration_explicit_none_still_public", func(t *testing.T) {
@@ -175,7 +177,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com\"")
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
@@ -242,6 +244,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "resource_metadata=")
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "error=\"invalid_token\"")
 	})
 
 	t.Run("valid_oauth_sets_context", func(t *testing.T) {
