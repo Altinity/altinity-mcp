@@ -2758,6 +2758,37 @@ func TestPkceChallenge(t *testing.T) {
 	require.NotEqual(t, challenge, pkceChallenge("other-verifier"))
 }
 
+func TestSafeUpstreamErrorFields(t *testing.T) {
+	t.Parallel()
+	t.Run("rfc6749_error_response_extracts_code", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"error":"invalid_grant","error_description":"refresh_token=secret123 has expired"}`)
+		errCode, length := safeUpstreamErrorFields(body)
+		require.Equal(t, "invalid_grant", errCode)
+		require.Equal(t, len(body), length)
+	})
+	t.Run("non_json_body_returns_blank_code", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`<html>502 Bad Gateway: secret123 was here</html>`)
+		errCode, length := safeUpstreamErrorFields(body)
+		require.Equal(t, "", errCode, "non-JSON body must not leak content into errCode")
+		require.Equal(t, len(body), length)
+	})
+	t.Run("empty_body", func(t *testing.T) {
+		t.Parallel()
+		errCode, length := safeUpstreamErrorFields(nil)
+		require.Equal(t, "", errCode)
+		require.Equal(t, 0, length)
+	})
+	t.Run("json_without_error_field", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"other":"thing"}`)
+		errCode, length := safeUpstreamErrorFields(body)
+		require.Equal(t, "", errCode)
+		require.Equal(t, len(body), length)
+	})
+}
+
 func TestTtlSeconds(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, 100, ttlSeconds(100, 60))

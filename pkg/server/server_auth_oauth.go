@@ -419,9 +419,9 @@ func issuerAllowed(got string, allowlist []string, singleIssuer string) bool {
 const SelfIssuedAccessTokenKid = "v1"
 
 // SelfIssuedAccessTokenHKDFInfo is the HKDF info label that mints the HS256
-// signing key for self-issued access tokens. Must match the label in
-// cmd/altinity-mcp/oauth_server.go (kept in sync there as
-// hkdfInfoOAuthAccessToken).
+// signing key for self-issued access tokens. Imported by the cmd-side minter
+// (cmd/altinity-mcp encodeSelfIssuedAccessToken) so both sides share one
+// source of truth.
 const SelfIssuedAccessTokenHKDFInfo = "altinity-mcp/oauth/access-token/v1"
 
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {

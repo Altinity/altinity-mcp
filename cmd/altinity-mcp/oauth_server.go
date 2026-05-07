@@ -236,22 +236,24 @@ func (a *application) mustJWESecret() ([]byte, error) {
 	return secret, nil
 }
 
-// oauthKidV1 is the kid header set on every newly-issued OAuth-related JWE
-// or JWS. Its presence selects the HKDF-derived key on decryption; absence
-// (kid="") selects the legacy SHA256(secret) key for backwards compat with
-// artifacts minted before the rotation cutover. After the longest legacy
-// artifact lifetime expires (refresh tokens, default 30 days), the legacy
-// fallback below can be removed.
+// oauthKidV1 is the kid header set on cmd-minted OAuth JWE artifacts
+// (client_id, refresh-token). Its presence selects the HKDF-derived key on
+// decryption; absence (kid="") selects the legacy SHA256(secret) key for
+// backwards compat with artifacts minted before the rotation cutover. After
+// the longest legacy artifact lifetime expires (refresh tokens, default 30
+// days), the legacy fallback below can be removed. Self-issued access-token
+// JWS artifacts use altinitymcp.SelfIssuedAccessTokenKid instead — pkg/server
+// is the verifier and owns that contract.
 const oauthKidV1 = "v1"
 
-// HKDF info labels for per-context OAuth key derivation. Each label produces
+// HKDF info labels for cmd-internal OAuth key derivation. Each label produces
 // an independent 32-byte key from the shared signing_secret (RFC 5869 §3.2).
 // Bumping the /vN suffix in any single label rotates that one key without
-// disturbing the others.
+// disturbing the others. The access-token label lives in pkg/server as
+// altinitymcp.SelfIssuedAccessTokenHKDFInfo because the verifier owns it.
 const (
-	hkdfInfoOAuthClientID    = "altinity-mcp/oauth/client-id/v1"
-	hkdfInfoOAuthRefresh     = "altinity-mcp/oauth/refresh-token/v1"
-	hkdfInfoOAuthAccessToken = "altinity-mcp/oauth/access-token/v1"
+	hkdfInfoOAuthClientID = "altinity-mcp/oauth/client-id/v1"
+	hkdfInfoOAuthRefresh  = "altinity-mcp/oauth/refresh-token/v1"
 )
 
 // encodeOAuthJWE emits a JWE-wrapped JSON document of `claims`, encrypted
@@ -532,6 +534,20 @@ func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, sc
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
+// safeUpstreamErrorFields extracts the RFC 6749 §5.2 `error` code from an
+// upstream OAuth error response body, if the body parses as JSON, and always
+// returns the body byte length. Used in lieu of logging the body verbatim:
+// IdPs sometimes echo the failed token, request parameters, or other
+// diagnostic data inside `error_description`, which would otherwise land in
+// centralized logs. The `error` field is an RFC-defined enum and safe to log.
+func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return parsed.Error, len(body)
+}
+
 // challengeScope returns the scope string for the WWW-Authenticate header.
 // Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
 // Scopes catalog so the client at least has something to request from. Empty
@@ -548,10 +564,6 @@ func (a *application) challengeScope() string {
 }
 
 func (a *application) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
-	if err == nil {
-		w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, "", "", a.challengeScope()))
-		return
-	}
 	var (
 		code           int
 		oauthErr, desc string
@@ -642,15 +654,17 @@ func randomToken(prefix string) string {
 
 func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
 	// Signing key is HKDF-derived per the access-token info label, separate
-	// from the JWE-encryption keys used for client_id and refresh_token. A
-	// kid="v1" header lets parseAndVerifySelfIssuedOAuthToken select this
-	// derivation; legacy tokens (no kid) verify against the old SHA256(secret).
-	signingKey := jwe_auth.DeriveKey(secret, hkdfInfoOAuthAccessToken)
+	// from the JWE-encryption keys used for client_id and refresh_token. The
+	// kid header lets parseAndVerifySelfIssuedOAuthToken (pkg/server) select
+	// this derivation; legacy tokens (no kid) verify against the old
+	// SHA256(secret). Both the kid value and the info label are imported
+	// from pkg/server — that package is the verifier and owns the contract.
+	signingKey := jwe_auth.DeriveKey(secret, altinitymcp.SelfIssuedAccessTokenHKDFInfo)
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.HS256, Key: signingKey},
 		(&jose.SignerOptions{}).
 			WithType("JWT").
-			WithHeader(jose.HeaderKey("kid"), oauthKidV1),
+			WithHeader(jose.HeaderKey("kid"), altinitymcp.SelfIssuedAccessTokenKid),
 	)
 	if err != nil {
 		return "", err
@@ -1225,7 +1239,8 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if resp.StatusCode >= 300 {
-		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth token exchange failed")
+		errCode, bodyLen := safeUpstreamErrorFields(body)
+		log.Error().Int("status", resp.StatusCode).Str("error_code", errCode).Int("body_len", bodyLen).Msg("Upstream OAuth token exchange failed")
 		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
 		return
 	}
@@ -1790,7 +1805,8 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		return
 	}
 	if resp.StatusCode >= 300 {
-		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth refresh rejected")
+		errCode, bodyLen := safeUpstreamErrorFields(body)
+		log.Error().Int("status", resp.StatusCode).Str("error_code", errCode).Int("body_len", bodyLen).Msg("Upstream OAuth refresh rejected")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "upstream rejected the refresh token")
 		return
 	}
