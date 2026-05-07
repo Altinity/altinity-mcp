@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -550,11 +551,18 @@ func TestOAuthValidateToken(t *testing.T) {
 			"aud": "clickhouse-api",
 			"exp": time.Now().Add(time.Hour).Unix(),
 		})
-		// Flip the last byte of the signature segment so verification fails.
-		idx := len(token) - 1
-		tampered := token[:idx] + flipBase64URLChar(token[idx:idx+1])
+		// Flip the FIRST char of the signature segment so verification fails.
+		// Flipping the LAST char is unsafe for RSA-2048 sigs (256 bytes →
+		// 342 base64url chars) because the last char encodes only 2 actual
+		// signature bits plus 4 padding bits; flipping among 'A'/'B'/'C'/'D'
+		// only changes padding bits, which lenient base64 decoders silently
+		// drop, producing an identical signature.
+		dot2 := strings.LastIndex(token, ".")
+		require.NotEqual(t, -1, dot2)
+		sigStart := dot2 + 1
+		tampered := token[:sigStart] + flipBase64URLChar(token[sigStart:sigStart+1]) + token[sigStart+1:]
 		_, err := srv.ValidateOAuthToken(tampered)
-		require.Error(t, err, "tampered forward-mode JWT must be rejected")
+		require.Error(t, err, "tampered forward-mode JWT must be rejected (orig token: %q tampered: %q)", token, tampered)
 	})
 
 	// C-1: forward-mode expired JWT is rejected at the MCP layer.
