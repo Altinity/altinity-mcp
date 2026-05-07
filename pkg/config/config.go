@@ -176,6 +176,14 @@ type OAuthConfig struct {
 	// RequireEmailVerified rejects identities where email_verified is false when an email claim is present.
 	RequireEmailVerified bool `json:"require_email_verified" yaml:"require_email_verified" flag:"oauth-require-email-verified" env:"MCP_OAUTH_REQUIRE_EMAIL_VERIFIED" desc:"Require email_verified=true on OAuth identities"`
 
+	// RefreshRevokesTracking enables refresh-token reuse detection (H-2).
+	// When true, every gating-mode refresh-token issuance carries a fresh jti
+	// and a stable family_id; redemption checks the consumed-jti / revoked-
+	// family tables in the `altinity` ClickHouse database and revokes the
+	// entire family if reuse is detected. Requires gating mode + a writable
+	// mcp_service CH connection (see docs/oauth-refresh-reuse-detection.md).
+	RefreshRevokesTracking bool `json:"refresh_revokes_tracking" yaml:"refresh_revokes_tracking" flag:"oauth-refresh-revokes-tracking" env:"MCP_OAUTH_REFRESH_REVOKES_TRACKING" desc:"Enable refresh-token reuse detection backed by ClickHouse (H-2)"`
+
 	// RegistrationPath configures the relative path for dynamic client registration.
 	RegistrationPath string `json:"registration_path" yaml:"registration_path" flag:"oauth-registration-path" env:"MCP_OAUTH_REGISTRATION_PATH" desc:"Relative path for OAuth client registration endpoint"`
 

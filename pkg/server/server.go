@@ -10,6 +10,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/altinity-mcp/pkg/oauth_state"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
@@ -34,6 +35,11 @@ type ClickHouseJWEServer struct {
 	oidcConfigMu       sync.RWMutex
 	oidcConfigTime     time.Time
 	blockedClauses     map[string]bool
+
+	// refreshStateStore is non-nil only when oauth.refresh_revokes_tracking
+	// is enabled (H-2). Constructed in NewClickHouseMCPServer; consumed by
+	// the gating-mode refresh handler.
+	refreshStateStore oauth_state.Store
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -76,6 +82,14 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
+	if cfg.Server.OAuth.IsGatingMode() && cfg.Server.OAuth.RefreshRevokesTracking {
+		chJweServer.refreshStateStore = oauth_state.NewClickHouseStore(
+			func(ctx context.Context) (oauth_state.CHClient, error) {
+				return chJweServer.GetClickHouseSystemClient(ctx)
+			},
+		)
+	}
+
 	// Register tools, resources, and prompts.
 	// Pass pointer to the server's Config so RegisterTools can store converted
 	// dynamic-tool rules back into Config.Server.DynamicTools for EnsureDynamicTools
@@ -93,6 +107,19 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
 	return chJweServer
+}
+
+// RefreshStateStore returns the H-2 reuse-detection store, or nil when
+// oauth.refresh_revokes_tracking is disabled.
+func (s *ClickHouseJWEServer) RefreshStateStore() oauth_state.Store {
+	return s.refreshStateStore
+}
+
+// SetRefreshStateStore overrides the H-2 store (test-only). Tests inject a
+// fake or in-memory implementation to exercise the refresh handler's
+// control flow without standing up a ClickHouse harness.
+func (s *ClickHouseJWEServer) SetRefreshStateStore(store oauth_state.Store) {
+	s.refreshStateStore = store
 }
 
 // AddTool registers a tool with the MCP server

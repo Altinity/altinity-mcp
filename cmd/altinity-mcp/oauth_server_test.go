@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/altinity-mcp/pkg/oauth_state"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
@@ -2806,6 +2809,409 @@ func TestWriteOAuthTokenError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 	require.Equal(t, "invalid_request", body["error"])
 	require.Equal(t, "bad thing happened", body["error_description"])
+}
+
+// ----------------------------------------------------------------------
+// H-2: refresh-token reuse detection (gating mode)
+// ----------------------------------------------------------------------
+
+// fakeRefreshStateStore is an in-memory oauth_state.Store for testing the
+// refresh-handler control flow without standing up a CH harness. The real
+// SQL is exercised by the live otel deployment's negative-replay test.
+type fakeRefreshStateStore struct {
+	mu        sync.Mutex
+	consumed  map[string]bool   // jti → true
+	revoked   map[string]string // family_id → reason
+	failNext  error             // when set, next call returns this error
+	calls     []fakeStoreCall
+}
+
+type fakeStoreCall struct {
+	JTI      string
+	FamilyID string
+	Reason   string
+}
+
+func newFakeRefreshStateStore() *fakeRefreshStateStore {
+	return &fakeRefreshStateStore{
+		consumed: map[string]bool{},
+		revoked:  map[string]string{},
+	}
+}
+
+func (f *fakeRefreshStateStore) CheckAndConsume(_ context.Context, jti, familyID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fakeStoreCall{JTI: jti, FamilyID: familyID, Reason: reason})
+
+	if f.failNext != nil {
+		err := f.failNext
+		f.failNext = nil
+		return err
+	}
+
+	if f.consumed[jti] || f.revoked[familyID] != "" {
+		f.revoked[familyID] = reason
+		return oauth_state.ErrRefreshReused
+	}
+
+	f.consumed[jti] = true
+	return nil
+}
+
+// newGatingModeTestAppWithH2 wires a gating-mode app with H-2 enabled and
+// a fake oauth_state.Store injected. ClickHouse config is not populated —
+// the fake store never touches CH.
+func newGatingModeTestAppWithH2(provider *testForwardModeOIDCProvider) (*application, *fakeRefreshStateStore) {
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "gating",
+				Issuer:                 provider.server.URL,
+				JWKSURL:                provider.server.URL + "/jwks",
+				AuthURL:                provider.server.URL + "/authorize",
+				TokenURL:               provider.server.URL + "/token",
+				UserInfoURL:            provider.server.URL + "/userinfo",
+				ClientID:               "upstream-client-id",
+				ClientSecret:           "upstream-client-secret",
+				Scopes:                 []string{"openid", "email"},
+				SigningSecret:          "test-gating-secret-32-byte-key!!",
+				AccessTokenTTLSeconds:  300,
+				RefreshTokenTTLSeconds: 86400,
+				RefreshRevokesTracking: true,
+			},
+		},
+	}
+	srv := altinitymcp.NewClickHouseMCPServer(cfg, "test")
+	store := newFakeRefreshStateStore()
+	srv.SetRefreshStateStore(store)
+	return &application{
+		config:    cfg,
+		mcpServer: srv,
+	}, store
+}
+
+// inspectRefreshJWE decrypts a refresh-token JWE with the test secret so
+// tests can assert on jti/family_id claims.
+func inspectRefreshJWE(t *testing.T, refreshToken string) map[string]interface{} {
+	t.Helper()
+	secret := []byte("test-gating-secret-32-byte-key!!")
+	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, refreshToken)
+	require.NoError(t, err, "failed to decode test refresh JWE")
+	return claims
+}
+
+func TestOAuthRefreshReuseDetection_HappyPath(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app, store := newGatingModeTestAppWithH2(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+
+	// Initial refresh JWE carries jti + family_id.
+	r1 := resp["refresh_token"].(string)
+	r1Claims := inspectRefreshJWE(t, r1)
+	r1Jti, _ := r1Claims["jti"].(string)
+	r1Family, _ := r1Claims["family_id"].(string)
+	require.NotEmpty(t, r1Jti, "refresh token must carry jti when H-2 enabled")
+	require.NotEmpty(t, r1Family, "refresh token must carry family_id when H-2 enabled")
+
+	// Refresh once.
+	rr1 := exchangeRefreshToken(t, app, clientID, r1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+	var resp1 map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr1.Body.Bytes(), &resp1))
+
+	r2 := resp1["refresh_token"].(string)
+	r2Claims := inspectRefreshJWE(t, r2)
+	r2Jti, _ := r2Claims["jti"].(string)
+	r2Family, _ := r2Claims["family_id"].(string)
+
+	require.NotEmpty(t, r2Jti, "rotated refresh token must have a fresh jti")
+	require.NotEqual(t, r1Jti, r2Jti, "jti must rotate on every refresh")
+	require.Equal(t, r1Family, r2Family, "family_id must be stable across the rotation chain")
+
+	// Refresh again — chain should keep the same family.
+	rr2 := exchangeRefreshToken(t, app, clientID, r2)
+	require.Equal(t, http.StatusOK, rr2.Code)
+	var resp2 map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &resp2))
+
+	r3 := resp2["refresh_token"].(string)
+	r3Claims := inspectRefreshJWE(t, r3)
+	require.Equal(t, r1Family, r3Claims["family_id"].(string), "family_id stays stable across N refreshes")
+	require.NotEqual(t, r2Jti, r3Claims["jti"].(string), "jti rotates on every refresh")
+
+	// Two refreshes recorded; nothing revoked.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Len(t, store.calls, 2, "store should see one CheckAndConsume per refresh (R1+R2 redeemed; R3 not yet redeemed)")
+	require.Empty(t, store.revoked, "no family revoked on a clean rotation chain")
+	require.True(t, store.consumed[r1Jti], "R1's jti must be marked consumed")
+	require.True(t, store.consumed[r2Jti], "R2's jti must be marked consumed")
+}
+
+func TestOAuthRefreshReuseDetection_ReplayRevokesFamily(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app, store := newGatingModeTestAppWithH2(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+
+	r1 := resp["refresh_token"].(string)
+	r1Family := inspectRefreshJWE(t, r1)["family_id"].(string)
+
+	// First redemption succeeds.
+	rr1 := exchangeRefreshToken(t, app, clientID, r1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	var resp1 map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr1.Body.Bytes(), &resp1))
+	r2 := resp1["refresh_token"].(string)
+
+	// Replay R1 → 400 invalid_grant, family revoked.
+	rrReplay := exchangeRefreshToken(t, app, clientID, r1)
+	require.Equal(t, http.StatusBadRequest, rrReplay.Code)
+	var replayBody map[string]interface{}
+	require.NoError(t, json.Unmarshal(rrReplay.Body.Bytes(), &replayBody))
+	require.Equal(t, "invalid_grant", replayBody["error"])
+	require.Contains(t, replayBody["error_description"], "reuse")
+
+	store.mu.Lock()
+	require.Equal(t, "reuse_detected", store.revoked[r1Family], "family must be in revoked set after replay")
+	store.mu.Unlock()
+
+	// Subsequent legit redemption of R2 — family is now revoked, so this also fails.
+	rrR2 := exchangeRefreshToken(t, app, clientID, r2)
+	require.Equal(t, http.StatusBadRequest, rrR2.Code)
+	var r2Body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rrR2.Body.Bytes(), &r2Body))
+	require.Equal(t, "invalid_grant", r2Body["error"])
+}
+
+func TestOAuthRefreshReuseDetection_LegacyTokenRejected(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	// Build app WITHOUT H-2 first to obtain a legacy-shaped refresh token
+	// (no jti, no family_id), then flip the flag to simulate a deploy that
+	// turns reuse-detection on while a legacy token is in flight.
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "gating",
+				Issuer:                 provider.server.URL,
+				JWKSURL:                provider.server.URL + "/jwks",
+				AuthURL:                provider.server.URL + "/authorize",
+				TokenURL:               provider.server.URL + "/token",
+				UserInfoURL:            provider.server.URL + "/userinfo",
+				ClientID:               "upstream-client-id",
+				ClientSecret:           "upstream-client-secret",
+				Scopes:                 []string{"openid", "email"},
+				SigningSecret:          "test-gating-secret-32-byte-key!!",
+				AccessTokenTTLSeconds:  300,
+				RefreshTokenTTLSeconds: 86400,
+				// RefreshRevokesTracking: false initially
+			},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+	legacyRefresh := resp["refresh_token"].(string)
+
+	// Sanity: legacy token has no jti or family_id claims.
+	legacyClaims := inspectRefreshJWE(t, legacyRefresh)
+	require.Empty(t, legacyClaims["jti"])
+	require.Empty(t, legacyClaims["family_id"])
+
+	// Now flip the flag (simulating helm upgrade) and inject a store.
+	cfg.Server.OAuth.RefreshRevokesTracking = true
+	app.config = cfg
+	srv := altinitymcp.NewClickHouseMCPServer(cfg, "test")
+	store := newFakeRefreshStateStore()
+	srv.SetRefreshStateStore(store)
+	app.mcpServer = srv
+
+	rr := exchangeRefreshToken(t, app, clientID, legacyRefresh)
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "invalid_grant", body["error"])
+	require.Contains(t, body["error_description"], "re-authenticate")
+
+	// Importantly, the store was never consulted — legacy rejection happens
+	// before the lookup. Otherwise we'd silently INSERT garbage families.
+	store.mu.Lock()
+	require.Empty(t, store.calls, "legacy refresh must be rejected before any store call")
+	store.mu.Unlock()
+}
+
+func TestOAuthRefreshReuseDetection_StateUnreachable(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app, store := newGatingModeTestAppWithH2(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+
+	// Arm the store to fail the next call with a generic CH error (simulates
+	// CH unreachable / RBAC denied / timeout).
+	store.mu.Lock()
+	store.failNext = errors.New("clickhouse: connection refused")
+	store.mu.Unlock()
+
+	rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+	require.Equal(t, http.StatusInternalServerError, rr.Code)
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, "server_error", body["error"])
+	require.Contains(t, body["error_description"], "refresh state unavailable")
+}
+
+func TestOAuthRefreshReuseDetection_ForwardModeRejectsConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "forward",
+				SigningSecret:          "test-gating-secret-32-byte-key!!",
+				RefreshRevokesTracking: true,
+			},
+		},
+		ClickHouse: config.ClickHouseConfig{
+			Database: "default",
+			Protocol: config.HTTPProtocol,
+		},
+	}
+	err := validateOAuthRuntimeConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "refresh_revokes_tracking is only supported in gating mode")
+}
+
+func TestOAuthRefreshReuseDetection_ReadOnlyRejectsConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "gating",
+				SigningSecret:          "test-gating-secret-32-byte-key!!",
+				RefreshRevokesTracking: true,
+			},
+		},
+		ClickHouse: config.ClickHouseConfig{
+			Database: "default",
+			ReadOnly: true,
+		},
+	}
+	err := validateOAuthRuntimeConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "clickhouse.read_only=false")
+}
+
+func TestOAuthRefreshReuseDetection_EmptyDatabaseRejectsConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:                true,
+				Mode:                   "gating",
+				SigningSecret:          "test-gating-secret-32-byte-key!!",
+				RefreshRevokesTracking: true,
+			},
+		},
+		ClickHouse: config.ClickHouseConfig{
+			Database: "",
+		},
+	}
+	err := validateOAuthRuntimeConfig(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-empty clickhouse.database")
 }
 
 func TestEncodeSelfIssuedAccessToken(t *testing.T) {

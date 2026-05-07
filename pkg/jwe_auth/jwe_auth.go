@@ -270,6 +270,10 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"name":                       true,
 		"hd":                         true,
 		"email_verified":             true,
+
+		// H-2 refresh-token reuse detection: stable across the rotation chain.
+		// jti is already covered above (JWT-standard).
+		"family_id": true,
 	}
 
 	// Check for any disallowed keys

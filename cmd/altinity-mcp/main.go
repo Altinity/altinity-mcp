@@ -881,6 +881,13 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"the MCP server will forward them as-is and rely entirely on ClickHouse-side validation. " +
 			"Set MCP_OAUTH_ISSUER or MCP_OAUTH_JWKS_URL to enable local validation per MCP authorization spec §Token Handling.")
 	}
+	if oauth.RefreshRevokesTracking {
+		log.Info().
+			Str("consumed_jtis_table", "altinity.oauth_refresh_consumed_jtis").
+			Str("revoked_families_table", "altinity.oauth_refresh_revoked_families").
+			Str("expected_pool_user", strings.TrimSpace(cfg.ClickHouse.Username)).
+			Msg("OAuth refresh-token reuse detection (H-2) is enabled — operator must have run docs/sql/oauth-state.sql and granted INSERT,SELECT on altinity.* to the pool user")
+	}
 }
 
 // testConnection tests the connection to ClickHouse
@@ -1106,6 +1113,23 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		!cfg.Server.OAuth.RequireEmailVerified {
 		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret requires oauth.require_email_verified=true (set MCP_OAUTH_REQUIRE_EMAIL_VERIFIED=true): " +
 			"without it, any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
+	}
+
+	// H-2: refresh-token reuse detection requires gating mode (forward mode
+	// is unsupported — Auth0 already rotates upstream refresh tokens) and a
+	// writable mcp_service connection. CH-side READONLY=1 profile must also
+	// be cleared, but that's the operator's responsibility — we can't
+	// inspect profile from this side without a CH round-trip.
+	if cfg.Server.OAuth.RefreshRevokesTracking {
+		if !cfg.Server.OAuth.IsGatingMode() {
+			return fmt.Errorf("oauth refresh_revokes_tracking is only supported in gating mode; forward mode delegates rotation+reuse-detection to the upstream IdP")
+		}
+		if cfg.ClickHouse.ReadOnly {
+			return fmt.Errorf("oauth refresh_revokes_tracking requires clickhouse.read_only=false (the H-2 reuse-detection store needs INSERT on altinity.oauth_refresh_consumed_jtis and altinity.oauth_refresh_revoked_families)")
+		}
+		if strings.TrimSpace(cfg.ClickHouse.Database) == "" {
+			return fmt.Errorf("oauth refresh_revokes_tracking requires a non-empty clickhouse.database (the connection's default database; the H-2 state tables themselves live in the literal `altinity` database, hardcoded in queries)")
+		}
 	}
 
 	return nil

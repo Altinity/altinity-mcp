@@ -20,6 +20,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/altinity-mcp/pkg/oauth_state"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/rs/zerolog/log"
@@ -650,6 +651,18 @@ func randomToken(prefix string) string {
 		panic(err)
 	}
 	return prefix + base64.RawURLEncoding.EncodeToString(buf)
+}
+
+// generateOAuthRandomID returns a 16-byte (128-bit) random hex-encoded
+// identifier suitable for refresh-token jti and family_id claims (H-2).
+// 32 hex characters; collision probability is negligible at our token
+// volume but verifiable via the consumed-jtis store regardless.
+func generateOAuthRandomID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
@@ -1378,6 +1391,15 @@ type gatingIdentity struct {
 	// as the `aud` claim — preserving trailing-slash form for byte-equality
 	// with what the client sent.
 	Resource string
+	// FamilyID is the OAuth refresh-token family identifier (H-2 reuse
+	// detection). At initial code→token exchange this is empty and
+	// mintGatingTokenResponse generates a fresh one. On refresh, the caller
+	// extracts the family_id from the old refresh JWE and passes it through
+	// so the new pair stays in the same family.
+	//
+	// Always non-empty in the minted refresh token's claims when
+	// oauth.refresh_revokes_tracking is enabled. Ignored otherwise.
+	FamilyID string
 }
 
 // mintGatingTokenResponse mints an access token and a stateless refresh token
@@ -1428,7 +1450,7 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	refreshToken, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
+	refreshClaims := map[string]interface{}{
 		"sub":            id.Subject,
 		"iss":            issuer,
 		"aud":            audience,
@@ -1440,7 +1462,36 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 		"hd":             id.HostedDomain,
 		"email_verified": id.EmailVerified,
 		"client_id":      id.ClientID,
-	})
+	}
+
+	// H-2: when refresh-token reuse detection is enabled, every issued
+	// refresh token carries a fresh jti and a stable family_id. The family
+	// is established at initial code→token exchange (FamilyID empty →
+	// generate) and propagated through every rotation (FamilyID supplied
+	// from the previous refresh's claims). When the flag is off we leave
+	// the claims unset so existing forward-mode and pre-H-2 deployments
+	// keep producing identical token shapes.
+	if cfg.Server.OAuth.RefreshRevokesTracking {
+		jti, gerr := generateOAuthRandomID()
+		if gerr != nil {
+			log.Error().Err(gerr).Msg("Failed to generate refresh-token jti")
+			writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", gerr.Error())
+			return
+		}
+		family := id.FamilyID
+		if family == "" {
+			family, gerr = generateOAuthRandomID()
+			if gerr != nil {
+				log.Error().Err(gerr).Msg("Failed to generate refresh-token family_id")
+				writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", gerr.Error())
+				return
+			}
+		}
+		refreshClaims["jti"] = jti
+		refreshClaims["family_id"] = family
+	}
+
+	refreshToken, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, refreshClaims)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to mint refresh token")
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", err.Error())
@@ -1737,6 +1788,54 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// H-2: refresh-token reuse detection. When enabled, the refresh JWE must
+	// carry both jti and family_id (added by mintGatingTokenResponse). We
+	// look up jti against the consumed-set and family_id against the revoked
+	// -set; on a hit we record the family as revoked and reject the request.
+	// On a miss we mark the jti consumed and propagate the family_id into
+	// the new token pair so the chain stays linkable.
+	//
+	// Pre-H-2 refresh tokens lack these claims and are rejected with
+	// invalid_grant — clients re-authenticate once. This is the documented
+	// rollout cost; "auto-promote on first use" was rejected because it
+	// would let a captured pre-deploy token be replayed exactly once before
+	// the server starts tracking.
+	familyID := ""
+	if store := a.mcpServer.RefreshStateStore(); store != nil {
+		jti, _ := claims["jti"].(string)
+		family, _ := claims["family_id"].(string)
+		if jti == "" || family == "" {
+			log.Error().
+				Str("client_id", clientID).
+				Str("sub", sub).
+				Bool("has_jti", jti != "").
+				Bool("has_family_id", family != "").
+				Msg("OAuth refresh token rejected: missing jti or family_id (legacy or malformed)")
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token format unsupported, please re-authenticate")
+			return
+		}
+
+		switch err := store.CheckAndConsume(r.Context(), jti, family, "reuse_detected"); {
+		case errors.Is(err, oauth_state.ErrRefreshReused):
+			log.Error().
+				Str("family_id", family).
+				Str("client_id", clientID).
+				Str("sub", sub).
+				Msg("OAuth refresh token reuse detected — family revoked")
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token reuse detected, please re-authenticate")
+			return
+		case err != nil:
+			log.Error().
+				Err(err).
+				Str("family_id", family).
+				Str("client_id", clientID).
+				Msg("OAuth refresh state lookup failed — hard fail")
+			writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "refresh state unavailable")
+			return
+		}
+		familyID = family
+	}
+
 	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      clientID,
 		Subject:       sub,
@@ -1746,6 +1845,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		EmailVerified: emailVerified,
 		Scope:         scope,
 		Resource:      resource,
+		FamilyID:      familyID,
 	})
 }
 

@@ -323,3 +323,31 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 
 	return client, nil
 }
+
+// GetClickHouseSystemClient creates a ClickHouse client that authorizes as the
+// configured pool user (config.ClickHouse.Username — typically `mcp_service`)
+// without applying the cluster-secret + initial_user impersonation that
+// GetClickHouseClientWithOAuth performs for end-user-bound queries.
+//
+// This is the connection used for server-internal state (e.g., the H-2
+// refresh-token reuse-detection tables in the `altinity` database). State
+// writes must NOT carry the requesting user's CH identity — they are
+// internal to MCP's OAuth bookkeeping.
+//
+// Constraints enforced by validateOAuthRuntimeConfig when H-2 is on:
+//   - cfg.ClickHouse.ReadOnly must be false
+//   - the CH-side user must lack READONLY=1 profile (operator's responsibility)
+func (s *ClickHouseJWEServer) GetClickHouseSystemClient(ctx context.Context) (*clickhouse.Client, error) {
+	chConfig := s.Config.ClickHouse
+	// Defensive: drop any tool-input settings that may have been injected
+	// for a parallel user-facing query path. State queries are server-
+	// internal; user-tunable settings have no business here.
+	chConfig.ExtraSettings = nil
+	// We deliberately do not consult oauthClaims, JWE claims, or
+	// tool-input settings — this is a system-level connection.
+	client, err := clickhouse.NewClient(ctx, chConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse system client: %w", err)
+	}
+	return client, nil
+}
