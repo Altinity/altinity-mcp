@@ -681,7 +681,9 @@ func TestIsNullableCHType(t *testing.T) {
 		{"NULLABLE(Int64)", true},
 		{"String", false},
 		{"UInt64", false},
-		{"LowCardinality(Nullable(String))", false}, // outer wrapper isn't Nullable
+		{"LowCardinality(Nullable(String))", true},
+		{"lowcardinality(nullable(int64))", true},
+		{"LowCardinality(String)", false},
 		{"", false},
 	}
 	for _, c := range cases {

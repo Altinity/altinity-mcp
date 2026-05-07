@@ -853,12 +853,15 @@ func parseViewParams(createSQL string) []dynamicToolParam {
 	return params
 }
 
-// isNullableCHType reports whether a ClickHouse type is `Nullable(...)`.
-// Used by the dynamic write tool to decide whether a column without a
-// DEFAULT expression should be marked required in the input schema:
-// non-nullable + no-default → required; nullable or has-default → optional.
+// isNullableCHType reports whether a ClickHouse type is `Nullable(...)`,
+// including the canonical `LowCardinality(Nullable(...))` wrap. Used by the
+// dynamic write tool to decide whether a column without a DEFAULT expression
+// should be marked required in the input schema: non-nullable + no-default →
+// required; nullable or has-default → optional.
 func isNullableCHType(chType string) bool {
-	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(chType)), "nullable(")
+	s := strings.ToLower(strings.TrimSpace(chType))
+	s = strings.TrimPrefix(s, "lowcardinality(")
+	return strings.HasPrefix(s, "nullable(")
 }
 
 // isUnsupportedCHType reports whether a ClickHouse type cannot be represented
