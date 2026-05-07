@@ -141,14 +141,7 @@ func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthCl
 			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Msg("OAuth token missing audience claim")
 			return nil, ErrInvalidOAuthToken
 		}
-		audienceValid := false
-		for _, aud := range claims.Audience {
-			if aud == s.Config.Server.OAuth.Audience {
-				audienceValid = true
-				break
-			}
-		}
-		if !audienceValid {
+		if !audienceMatchesResource(claims.Audience, s.Config.Server.OAuth.Audience) {
 			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Strs("got", claims.Audience).Msg("OAuth token audience mismatch")
 			return nil, ErrInvalidOAuthToken
 		}
@@ -238,6 +231,24 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+// audienceMatchesResource compares an incoming audience claim list against
+// an expected resource URL with trailing-slash tolerance. RFC 9728's
+// canonical form uses a trailing slash, but upstream IdPs (and prior
+// altinity-mcp metadata responses) sometimes emit the form without one,
+// so we match both. Falls back to exact match if either side isn't a URL.
+func audienceMatchesResource(claims []string, expected string) bool {
+	expectedTrimmed := strings.TrimRight(strings.TrimSpace(expected), "/")
+	for _, c := range claims {
+		if c == expected {
+			return true
+		}
+		if strings.TrimRight(strings.TrimSpace(c), "/") == expectedTrimmed {
+			return true
+		}
+	}
+	return false
+}
+
 func looksLikeJWT(token string) bool {
 	return strings.Count(token, ".") == 2
 }
@@ -300,7 +311,7 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 			issuerRejected = true
 			continue
 		}
-		if expectedAudience != "" && !containsString(claims.Audience, expectedAudience) {
+		if expectedAudience != "" && !audienceMatchesResource(claims.Audience, expectedAudience) {
 			audienceRejected = true
 			continue
 		}
@@ -314,9 +325,9 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 }
 
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
-	secret := strings.TrimSpace(s.Config.Server.OAuth.GatingSecretKey)
+	secret := strings.TrimSpace(s.Config.Server.OAuth.SigningSecret)
 	if secret == "" {
-		return nil, fmt.Errorf("oauth gating_secret_key is required in gating mode")
+		return nil, fmt.Errorf("oauth signing_secret is required in gating mode")
 	}
 	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 

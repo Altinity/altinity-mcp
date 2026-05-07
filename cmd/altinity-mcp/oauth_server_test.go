@@ -32,7 +32,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 					Audience:            "https://mcp.example.com",
 					PublicResourceURL:   "https://mcp.example.com",
 					PublicAuthServerURL: "https://mcp.example.com/oauth",
-					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+					SigningSecret:     "test-gating-secret-32-byte-key!!",
 					Scopes:              []string{"openid", "email"},
 					AuthURL:             "https://accounts.google.com/o/oauth2/v2/auth",
 					TokenURL:            "https://oauth2.googleapis.com/token",
@@ -52,7 +52,7 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 
 		var body map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-		require.Equal(t, "https://mcp.example.com", body["resource"])
+		require.Equal(t, "https://mcp.example.com/", body["resource"])
 		require.Equal(t, []interface{}{"https://mcp.example.com/oauth"}, body["authorization_servers"])
 	})
 
@@ -108,15 +108,12 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
 		app.config.Server.OAuth.PublicResourceURL = "https://public.example.com"
 		app.config.Server.OAuth.PublicAuthServerURL = "https://public.example.com/oauth"
-		app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
-		app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
-		app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
 		app.config.Server.OAuth.RegistrationPath = "/register"
 		app.config.Server.OAuth.AuthorizationPath = "/authorize"
 		app.config.Server.OAuth.CallbackPath = "/callback"
 		app.config.Server.OAuth.TokenPath = "/token"
 
-		req := httptest.NewRequest(http.MethodGet, "https://internal.example.com/auth-metadata", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://internal.example.com/.well-known/oauth-authorization-server", nil)
 		rr := httptest.NewRecorder()
 		app.handleOAuthAuthorizationServerMetadata(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -124,11 +121,11 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Contains(t, rr.Body.String(), "\"authorization_endpoint\":\"https://public.example.com/oauth/authorize\"")
 		require.Contains(t, rr.Body.String(), "\"registration_endpoint\":\"https://public.example.com/oauth/register\"")
 
-		req = httptest.NewRequest(http.MethodGet, "https://internal.example.com/resource-metadata", nil)
+		req = httptest.NewRequest(http.MethodGet, "https://internal.example.com/.well-known/oauth-protected-resource", nil)
 		rr = httptest.NewRecorder()
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
-		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com\"")
+		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
 		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
 	})
 }
@@ -159,7 +156,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+					SigningSecret:     "test-gating-secret-32-byte-key!!",
 				},
 			},
 		},
@@ -169,7 +166,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			GatingSecretKey:     "test-gating-secret-32-byte-key!!",
+			SigningSecret:     "test-gating-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -302,9 +299,6 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 		require.Equalf(t, http.StatusOK, rr.Code, "expected alias %s to resolve", path)
 	}
 
-	app.config.Server.OAuth.ProtectedResourceMetadataPath = "/resource-metadata"
-	app.config.Server.OAuth.AuthorizationServerMetadataPath = "/auth-metadata"
-	app.config.Server.OAuth.OpenIDConfigurationPath = "/openid"
 	app.config.Server.OAuth.RegistrationPath = "/register"
 	app.config.Server.OAuth.AuthorizationPath = "/authorize"
 	app.config.Server.OAuth.CallbackPath = "/callback"
@@ -314,9 +308,6 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app.registerOAuthHTTPRoutes(mux)
 
 	for _, path := range []string{
-		"/resource-metadata",
-		"/auth-metadata",
-		"/openid",
 		"/register",
 		"/authorize",
 		"/callback",
@@ -465,7 +456,7 @@ func newForwardModeBrowserLoginTestApp(provider *testForwardModeOIDCProvider) *a
 				ClientID:        "upstream-client-id",
 				ClientSecret:    "upstream-client-secret",
 				Scopes:          []string{"openid", "email"},
-				GatingSecretKey: "test-gating-secret-32-byte-key!!",
+				SigningSecret: "test-gating-secret-32-byte-key!!",
 			},
 		},
 	}
@@ -701,6 +692,23 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	return object.CompactSerialize()
 }
 
+func TestCanonicalResourceURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"  ", ""},
+		{"https://mcp.example.com", "https://mcp.example.com/"},
+		{"https://mcp.example.com/", "https://mcp.example.com/"},
+		{"https://mcp.example.com//", "https://mcp.example.com/"},
+		{"  https://mcp.example.com  ", "https://mcp.example.com/"},
+		{"https://mcp.example.com/path", "https://mcp.example.com/path/"},
+		{"https://mcp.example.com/path/", "https://mcp.example.com/path/"},
+	}
+	for _, c := range cases {
+		require.Equal(t, c.want, canonicalResourceURL(c.in), "input=%q", c.in)
+	}
+}
+
 func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {
 	t.Parallel()
 	token, err := encodeSelfIssuedAccessToken([]byte("short-secret"), map[string]interface{}{
@@ -811,7 +819,7 @@ func newGatingModeTestApp(provider *testForwardModeOIDCProvider) *application {
 				ClientID:               "upstream-client-id",
 				ClientSecret:           "upstream-client-secret",
 				Scopes:                 []string{"openid", "email"},
-				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				SigningSecret:        "test-gating-secret-32-byte-key!!",
 				AccessTokenTTLSeconds:  300,
 				RefreshTokenTTLSeconds: 86400,
 			},
@@ -1062,7 +1070,7 @@ func newForwardModeRefreshTestApp(provider *testForwardModeOIDCProvider) *applic
 				ClientSecret:           "upstream-client-secret",
 				Scopes:                 []string{"openid", "email"},
 				UpstreamOfflineAccess:  true,
-				GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+				SigningSecret:        "test-gating-secret-32-byte-key!!",
 				RefreshTokenTTLSeconds: 86400,
 			},
 		},
@@ -1243,8 +1251,8 @@ func TestOAuthForwardModeRefresh(t *testing.T) {
 		clientID, resp := doInitialFlow(t, app)
 
 		// Rotate the symmetric secret used to encrypt the JWE.
-		app.config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
-		app.mcpServer.Config.Server.OAuth.GatingSecretKey = "different-secret-32-bytes-long!!"
+		app.config.Server.OAuth.SigningSecret = "different-secret-32-bytes-long!!"
+		app.mcpServer.Config.Server.OAuth.SigningSecret = "different-secret-32-bytes-long!!"
 
 		// client_id is decrypted first in handleOAuthTokenRefresh, so a
 		// client_id JWE keyed by the prior secret fails before the refresh
@@ -1583,7 +1591,7 @@ func TestOAuthCallbackNegative(t *testing.T) {
 						ClientID:               "upstream-client-id",
 						ClientSecret:           "upstream-client-secret",
 						Scopes:                 []string{"openid", "email"},
-						GatingSecretKey:        "test-gating-secret-32-byte-key!!",
+						SigningSecret:        "test-gating-secret-32-byte-key!!",
 						AccessTokenTTLSeconds:  300,
 						RefreshTokenTTLSeconds: 86400,
 					},

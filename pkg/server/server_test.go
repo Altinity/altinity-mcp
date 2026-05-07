@@ -163,7 +163,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:         true,
 					Mode:            "gating",
-					GatingSecretKey: gatingSecret,
+					SigningSecret: gatingSecret,
 				},
 			},
 		}, "test")

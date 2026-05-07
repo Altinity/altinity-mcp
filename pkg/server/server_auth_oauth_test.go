@@ -830,7 +830,7 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					Issuer:          provider.server.URL,
 					JWKSURL:         provider.server.URL + "/jwks",
 					Audience:        "https://mcp.example.com",
-					GatingSecretKey: "test-gating-secret-32-byte-key!!",
+					SigningSecret: "test-gating-secret-32-byte-key!!",
 				},
 			},
 		}, "test")
@@ -896,7 +896,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:         true,
 					Mode:            "gating",
-					GatingSecretKey: gatingSecret,
+					SigningSecret: gatingSecret,
 				},
 			},
 		}, "test")
@@ -1344,7 +1344,7 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:         true,
 					Mode:            "gating",
-					GatingSecretKey: gatingSecret,
+					SigningSecret: gatingSecret,
 				},
 			},
 		}, "test")
@@ -1809,7 +1809,7 @@ func TestValidateOAuthClaimsTemporalEdgeCases(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled:         true,
 					Mode:            "gating",
-					GatingSecretKey: gatingSecret,
+					SigningSecret: gatingSecret,
 				},
 			},
 		}, "test")
@@ -1896,7 +1896,7 @@ func TestGatingModeIdentityPolicy(t *testing.T) {
 	newSrv := func(oauthCfg config.OAuthConfig) *ClickHouseJWEServer {
 		oauthCfg.Enabled = true
 		oauthCfg.Mode = "gating"
-		oauthCfg.GatingSecretKey = gatingSecret
+		oauthCfg.SigningSecret = gatingSecret
 		return NewClickHouseMCPServer(config.Config{
 			Server: config.ServerConfig{
 				OAuth: oauthCfg,
@@ -2224,6 +2224,30 @@ func TestValidateOAuthClaims(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidOAuthToken)
 	})
 
+	t.Run("audience_trailing_slash_tolerant", func(t *testing.T) {
+		t.Parallel()
+		// Configured without trailing slash, claim has one — and vice versa.
+		// Both must validate so the canonical /.well-known/oauth-protected-resource
+		// form (slash) and prior issued tokens (no slash) both round-trip.
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Audience: "https://mcp.example.com",
+		}}}
+		s := &ClickHouseJWEServer{Config: cfg}
+		_, err := s.validateOAuthClaims(&OAuthClaims{
+			Audience:  []string{"https://mcp.example.com/"},
+			ExpiresAt: time.Now().Unix() + 300,
+		})
+		require.NoError(t, err)
+
+		cfg.Server.OAuth.Audience = "https://mcp.example.com/"
+		s = &ClickHouseJWEServer{Config: cfg}
+		_, err = s.validateOAuthClaims(&OAuthClaims{
+			Audience:  []string{"https://mcp.example.com"},
+			ExpiresAt: time.Now().Unix() + 300,
+		})
+		require.NoError(t, err)
+	})
+
 	t.Run("token_expired", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
@@ -2289,17 +2313,17 @@ func TestParseAndVerifySelfIssuedOAuthToken(t *testing.T) {
 	t.Run("missing_secret", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			GatingSecretKey: "",
+			SigningSecret: "",
 		}}}}
 		_, err := s.parseAndVerifySelfIssuedOAuthToken("some.jwt.token")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "gating_secret_key is required")
+		require.Contains(t, err.Error(), "signing_secret is required")
 	})
 
 	t.Run("invalid_jwt_format", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			GatingSecretKey: "my-secret",
+			SigningSecret: "my-secret",
 		}}}}
 		_, err := s.parseAndVerifySelfIssuedOAuthToken("not-a-jwt")
 		require.Error(t, err)
