@@ -1,6 +1,8 @@
 # v1.5.0
 
 BREAKING CHANGES
+- **`--oauth-gating-secret-key` / `gating_secret_key` / `MCP_OAUTH_GATING_SECRET_KEY` renamed to `--oauth-signing-secret` / `signing_secret` / `MCP_OAUTH_SIGNING_SECRET`**: The "gating" prefix was misleading — the secret is used in both forward and gating modes to HMAC-sign all stateless artifacts (JWT access tokens, auth codes, refresh tokens, client_secrets). Update your Helm values, config files, and environment variables before upgrading.
+- **4 `OAuthConfig` fields removed**: `ProtectedResourceMetadataPath`, `AuthorizationServerMetadataPath`, `OpenIDConfigurationPath`, and `AuthCodeTTLSeconds` are no longer configurable — they were fixed by RFC spec or had safe hardcoded defaults. Remove them from any explicit config files.
 - **`server.tools[].regexp` split into `view_regexp` / `table_regexp`**: In the new unified `server.tools` config, the old `regexp` field is replaced by `view_regexp` (for `type: read` rules) and `table_regexp` (for `type: write` rules). Cross-type validation rejects `view_regexp` on write rules and vice versa. The legacy `server.dynamic_tools` block with `regexp` still works but is now **deprecated** — migrate to `server.tools` ([PR #84](https://github.com/Altinity/altinity-mcp/pull/84))
 - **`server.dynamic_tools` deprecated**: Replaced by the unified `server.tools` array that covers both static tools (by `name`) and dynamic tools (by `view_regexp`/`table_regexp`). Old config is preserved for backwards compatibility but will be removed in a future release ([PR #84](https://github.com/Altinity/altinity-mcp/pull/84))
 - **OAuth gating mode: ClickHouse username now derived from `email` claim first, `subject` as fallback**: Previously the opaque `subject` (numeric Google ID / UUID) was used as the ClickHouse username. If you pre-provisioned ClickHouse users by subject, they need to be re-provisioned by email address
@@ -25,6 +27,8 @@ FEATURES
 - add dynamic tool parameter descriptions from column `COMMENT`: JSON Schema `description` for each parameter is now resolved from (1) tool-level JSON `COMMENT` `params` map, (2) `system.columns.comment`, (3) ClickHouse type string as fallback ([PR #84](https://github.com/Altinity/altinity-mcp/pull/84))
 
 IMPROVEMENTS
+- all OAuth config fields are now auto-wired to CLI flags and env vars via struct tags (`pkg/config/cli_reflect.go`); every `OAuthConfig` field with a `flag:` tag gets a `--oauth-*` CLI flag and `MCP_OAUTH_*` env var automatically — no `main.go` edits needed for future fields ([PR #96](https://github.com/Altinity/altinity-mcp/pull/96))
+- OAuth protected-resource metadata now emits the canonical RFC 9728 trailing-slash resource URL; audience validation tolerates both slash and slash-less forms so existing tokens remain valid — fixes strict-comparison failures with Claude.ai
 - prefer `email` claim over `subject` as ClickHouse username in OAuth gating mode; fall back to `subject` for machine-to-machine flows that omit email ([PR #86](https://github.com/Altinity/altinity-mcp/pull/86))
 - fix `expires_in` in OAuth forward mode to match the actual JWT expiry instead of a fixed offset ([PR #88](https://github.com/Altinity/altinity-mcp/pull/88))
 - advertise `refresh_token` grant in OAuth dynamic client registration response ([PR #88](https://github.com/Altinity/altinity-mcp/pull/88))
