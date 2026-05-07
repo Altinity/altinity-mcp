@@ -2,6 +2,14 @@
 
 This document covers common issues encountered when deploying OAuth forward mode with ClickHouse `token_processors`, based on real-world debugging experience.
 
+> **claude.ai JSX artifact users:** if your connector works in the main chat
+> but not from a JSX artifact (`✗ No tools attached — proxy didn't expose this
+> connector`), see [`artifact-mcp-known-issues.md`](./artifact-mcp-known-issues.md).
+> That failure mode tracks to known unfixed Anthropic-side proxy bugs
+> ([claude-code#16848](https://github.com/anthropics/claude-code/issues/16848),
+> [claude-ai-mcp#123](https://github.com/anthropics/claude-ai-mcp/issues/123))
+> and is not something the MCP server can fix.
+
 ## ClickHouse returns "Authentication failed" but token_processors are configured
 
 **Symptom:** ClickHouse extracts the username from the token (e.g., `btyshkevich@altinity.com: Authentication failed`) but rejects the request with `AUTHENTICATION_FAILED` (Code 516).

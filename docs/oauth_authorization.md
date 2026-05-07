@@ -4,17 +4,104 @@ This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authen
 
 ## Overview
 
-OAuth 2.0 authorization supports two modes.
+OAuth 2.0 authorization supports two modes:
 
-### Forward mode
+- **`mode: forward`** — works only against ClickHouse builds with native JWT auth (Altinity Antalya 25.8+). The bearer claude.ai sends to MCP is the upstream IdP's id_token; MCP validates locally then forwards to ClickHouse, which re-validates via `token_processors`.
+- **`mode: gating`** — works against any ClickHouse. The MCP server brokers OAuth with the upstream IdP and mints its own HS256 access tokens for the MCP client; ClickHouse is reached via static credentials or `cluster_secret` impersonation.
 
-Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The MCP server passes the bearer token through; ClickHouse validates it.
+Detailed flows are in [Forward mode](#forward-mode) and [Gating mode](#gating-mode). The decision-rationale and trust-model differences are in [Choosing a mode](#choosing-a-mode) below.
 
-1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token
-2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header
-3. The MCP server requires only that a bearer token is present (it does **not** validate the token locally)
-4. The MCP server forwards the token to ClickHouse via HTTP headers
-5. ClickHouse validates the token using `token_processors` and authenticates the user
+## Choosing a mode
+
+If your ClickHouse can't natively validate JWTs, forward mode saves no work and adds a load-bearing dependency on the upstream JWKS — pick gating. If you specifically want CH to do per-request identity validation (stronger trust isolation) and to materialise users from JWT claims, pick forward.
+
+### What both modes do identically
+
+The MCP server is, in either mode:
+
+1. **An OAuth Authorization Server** to the MCP client. Claude.ai, Codex, MCP Inspector and friends hit the MCP server's `/oauth/register` (DCR), `/oauth/authorize`, `/oauth/callback`, `/oauth/token`, and the well-known discovery docs. They never talk to the upstream IdP directly.
+2. **An OAuth Relying Party** to the upstream IdP. The MCP server holds the IdP `client_secret`, runs the auth-code-with-PKCE dance, and handles refresh-token grants.
+
+Neither role can be delegated to ClickHouse. CH doesn't speak DCR, doesn't talk to a user's browser, doesn't refresh tokens. **Both modes need the upstream IdP URLs, the per-deployment IdP `client_id` / `client_secret`, and a `signing_secret`** (HKDF root for the DCR client_id JWE, refresh-token JWE wrapping the upstream refresh, and the self-issued auth-code state).
+
+### What's actually different
+
+| | Gating | Forward |
+|---|---|---|
+| Bearer the MCP client receives | MCP-minted HS256 JWT | Upstream IdP id_token (raw passthrough) |
+| MCP→ClickHouse credential | Static creds, OR `cluster_secret` + `initial_user=email` | `Authorization: Bearer <id_token>` over HTTP |
+| Who validates the bearer on every query | MCP server only | **ClickHouse** via `token_processors` (MCP also validates locally — see C-1 below) |
+| User provisioning in ClickHouse | Pre-create users (`CREATE USER alice@example.com …`) | Dynamic — `token_processors` materialises ephemeral users from JWT claims |
+| ClickHouse build requirement | Any | Altinity Antalya 25.8+ (or any CH with native JWT auth) |
+| ClickHouse protocol | TCP or HTTP | HTTP only |
+| Identity in `system.query_log` | The cluster-secret-impersonated user (or static service user) | The JWT subject directly |
+| Token lifetime | MCP-controlled (independent of IdP session) | IdP-controlled (revoking the upstream session breaks the next query) |
+
+### The trust-boundary argument for forward mode
+
+In **gating + cluster_secret**, the MCP pod holds the cluster-shared secret and tells ClickHouse "this query is by user `alice@example.com`". ClickHouse trusts that claim because MCP knows the secret. Compromise the MCP pod, impersonate any provisioned user.
+
+In **forward mode**, ClickHouse re-validates the upstream JWT signature on every query. A compromised MCP server cannot forge identity to ClickHouse — it can only forward whatever bearer it received from the user. The MCP-side bearer validation (per [C-1 below](#c-1-defense-in-depth-validation-in-forward-mode)) is defense-in-depth on top of CH's authoritative check.
+
+The honest summary: **forward mode is a stronger trust-isolation story when ClickHouse can independently validate the JWT.** Without that capability on the CH side, forward mode's bearer is just an opaque blob to CH (it 403s), and you fall back to gating.
+
+### Dynamic user provisioning
+
+Antalya's `token_processors` reads JWT claims (`email`, `roles`, custom claims) and materialises an ephemeral CH user with the right grants on the fly. This is forward-mode-exclusive — there is no plumbing in gating mode to give ClickHouse the JWT, so ClickHouse can't react to its claims.
+
+For a multi-tenant or per-customer deployment where you don't want to manually `CREATE USER` for every new identity, this is a real operational gain. For a fixed roster of internal users, it doesn't matter.
+
+### Token lifecycle
+
+In gating mode the MCP-issued access token is independent of the IdP session. The IdP revokes a session → the MCP-issued token keeps working until its own `exp`. The MCP-issued refresh token also keeps working until *its* `exp`, and on refresh the MCP server re-validates the upstream identity, so revocation is detected — but at refresh boundaries, not on every query.
+
+In forward mode every query carries the upstream id_token, so revocation lands at the next query (subject to JWKS cache TTL and ClickHouse's own caching). This is a stronger "log the user out and they're out" guarantee.
+
+### When forward mode is the wrong choice
+
+- ClickHouse build is anything other than Altinity Antalya 25.8+ or another build with native JWT auth. Forward sends the bearer; CH 403s every query.
+- You need TCP protocol to ClickHouse (forward only supports HTTP).
+- You need MCP-issued tokens with custom claims that the IdP doesn't emit. Gating mints its own JWT and can shape claims; forward passes whatever the IdP gave you.
+- You don't want CH fetching the upstream JWKS on every cold cache. Forward mode adds that load to CH.
+
+### When gating mode is the wrong choice
+
+- You specifically want CH to do per-request identity validation (the trust-isolation argument above).
+- You want ephemeral user provisioning from JWT claims.
+- You want CH `system.query_log` to show the JWT subject without a `cluster_secret` setup.
+- You want IdP-immediate revocation semantics on every query.
+
+### C-1: defense-in-depth validation in forward mode
+
+The MCP server validates JWT bearers locally before forwarding to CH (signature + iss + aud + exp) when `issuer` or `jwks_url` is configured — full defense-in-depth. With neither configured, it soft-passes with a startup warning, preserving "trust ClickHouse entirely" semantics for deployments that explicitly want that.
+
+So in current code:
+
+- **Forward + `issuer` set** → defense-in-depth: MCP validates, CH validates again.
+- **Forward + nothing set** → pure passthrough: only CH validates. Startup logs a warning.
+- **Forward + opaque (non-JWT) bearer** → soft-pass to CH. RFC 7662 introspection isn't implemented.
+
+For new deployments, set `issuer` to the upstream IdP. The cost is one local JWKS fetch (cached) per token; the benefit is malformed/expired/wrong-aud tokens get rejected at the MCP edge instead of consuming a CH connection.
+
+## Forward mode
+
+Use this when ClickHouse has native OAuth support (Altinity Antalya 25.8+). The MCP server validates the bearer locally (when `issuer` is configured) and forwards it to ClickHouse, which re-validates via `token_processors`.
+
+1. An MCP client authenticates with an Identity Provider (IdP) and obtains a token (via the MCP server brokering DCR + auth-code).
+2. The MCP client sends the token to the MCP server in the `Authorization: Bearer {token}` header.
+3. The MCP server validates the JWT locally (signature + iss + aud + exp) when `issuer`/`jwks_url` is configured; rejects bad tokens at 401. With neither configured, soft-passes the bearer to CH.
+4. The MCP server forwards the token to ClickHouse via HTTP headers.
+5. ClickHouse re-validates the token using `token_processors` and authenticates the user.
+
+> **Spec deviation (deliberate).** MCP authorization spec 2025-11-25 §Access
+> Token Privilege Restriction says *"the MCP server **MUST NOT** pass through
+> the token it received from the MCP client"*. Forward mode does pass it
+> through — by design. The architectural justification: ClickHouse re-validates
+> the same JWT against the upstream JWKS, extracts the same identity, and runs
+> its own RBAC. The MCP server is a transparent gateway, not a trust anchor.
+> Defense-in-depth is provided by C-1's local validation, but the *forwarded*
+> bearer is still the upstream token. Gating mode is the spec-clean
+> alternative when you don't have ClickHouse-side token validation set up.
 
 ```
 ┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
@@ -52,14 +139,14 @@ server:
 In forward mode, the bearer token is automatically forwarded to ClickHouse and static credentials are cleared. No additional flags needed.
 
 
-### Gating mode
+## Gating mode
 
 Use this when ClickHouse has no OAuth support. The MCP server itself authenticates users via the upstream IdP, mints its own tokens, and connects to ClickHouse with static credentials.
 
-1. An MCP client authenticates with an Identity Provider (IdP) via browser login
-2. The MCP server validates the upstream identity (email domain, hosted domain, email verification)
-3. The MCP server mints its own signed access and refresh tokens
-4. The MCP server connects to ClickHouse with its statically configured credentials
+1. An MCP client authenticates with an Identity Provider (IdP) via browser login.
+2. The MCP server validates the upstream identity (email domain, hosted domain, email verification).
+3. The MCP server mints its own signed access and refresh tokens for the MCP client.
+4. The MCP server connects to ClickHouse with its statically configured credentials (or `cluster_secret` impersonation — see [Cluster-secret authentication](#cluster-secret-authentication-optional)).
 
 This mode works even when ClickHouse has no native OAuth support.
 
@@ -102,7 +189,7 @@ server:
     allowed_email_domains: ["example.com"]
 ```
 
-#### Cluster-secret authentication (optional)
+### Cluster-secret authentication (optional)
 
 Gating mode's default connects to ClickHouse with a **single static username/password** shared across all MCP users. Queries land in `system.query_log` under that service account, so you lose per-user attribution.
 
