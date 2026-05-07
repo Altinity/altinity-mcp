@@ -185,22 +185,26 @@ func TestOAuthExtractToken(t *testing.T) {
 		require.Equal(t, "oauth-test-token", token)
 	})
 
-	t.Run("x_oauth_token_header", func(t *testing.T) {
+	t.Run("x_oauth_token_header_ignored", func(t *testing.T) {
+		// MCP authorization spec §Token Requirements: clients MUST use the
+		// Authorization header. Non-spec extension headers used to be honoured
+		// for legacy clients; we now reject them so the server doesn't have
+		// hidden alternative auth surfaces.
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-oauth-token", "header-oauth-token")
 
 		token := srv.ExtractOAuthTokenFromRequest(req)
-		require.Equal(t, "header-oauth-token", token)
+		require.Empty(t, token)
 	})
 
-	t.Run("x_altinity_oauth_token_header", func(t *testing.T) {
+	t.Run("x_altinity_oauth_token_header_ignored", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("x-altinity-oauth-token", "altinity-oauth-token")
 
 		token := srv.ExtractOAuthTokenFromRequest(req)
-		require.Equal(t, "altinity-oauth-token", token)
+		require.Empty(t, token)
 	})
 
 	t.Run("no_token", func(t *testing.T) {
@@ -211,7 +215,7 @@ func TestOAuthExtractToken(t *testing.T) {
 		require.Empty(t, token)
 	})
 
-	t.Run("bearer_takes_precedence", func(t *testing.T) {
+	t.Run("bearer_only_extension_headers_ignored", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("Authorization", "Bearer bearer-token")
@@ -471,6 +475,261 @@ func TestOAuthValidateToken(t *testing.T) {
 		_, err := srv.ValidateOAuthToken(token)
 		require.ErrorIs(t, err, ErrOAuthInsufficientScopes)
 	})
+
+	// C-1: forward-mode JWT with no JWKS source configured soft-passes — the
+	// MCP server cannot validate locally and defers to ClickHouse. Operators
+	// who want strict local validation set Issuer or JWKSURL.
+	t.Run("forward_mode_jwt_without_jwks_source_softpasses", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled: true,
+						Mode:    "forward",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		claims, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+		require.Nil(t, claims, "soft-pass returns nil claims to signal 'unvalidated, defer to ClickHouse'")
+	})
+
+	// C-1: opaque (non-JWT) bearers in forward mode soft-pass even when JWKS
+	// IS configured — there is no way to validate them without RFC 7662
+	// introspection, which we do not implement.
+	t.Run("forward_mode_opaque_bearer_softpasses_with_jwks_configured", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled: true,
+						Mode:    "forward",
+						Issuer:  provider.server.URL,
+						JWKSURL: provider.server.URL + "/jwks",
+					},
+				},
+			},
+		}
+		claims, err := srv.ValidateOAuthToken("opaque-bearer-not-a-jwt")
+		require.NoError(t, err)
+		require.Nil(t, claims)
+	})
+
+	// C-1: forward-mode JWT with JWKS configured AND a tampered signature is
+	// rejected at the MCP layer before reaching ClickHouse. Closes the
+	// pre-fix gap where any string in `Authorization: Bearer …` was accepted.
+	t.Run("forward_mode_jwt_with_bad_signature_rejected", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled: true,
+						Mode:    "forward",
+						Issuer:  provider.server.URL,
+						JWKSURL: provider.server.URL + "/jwks",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		// Flip the last byte of the signature segment so verification fails.
+		idx := len(token) - 1
+		tampered := token[:idx] + flipBase64URLChar(token[idx:idx+1])
+		_, err := srv.ValidateOAuthToken(tampered)
+		require.Error(t, err, "tampered forward-mode JWT must be rejected")
+	})
+
+	// C-1: forward-mode expired JWT is rejected at the MCP layer.
+	t.Run("forward_mode_expired_jwt_rejected", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   provider.server.URL,
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(-2 * time.Hour).Unix(),
+			"iat": time.Now().Add(-3 * time.Hour).Unix(),
+		})
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrOAuthTokenExpired)
+	})
+}
+
+// flipBase64URLChar returns a different valid base64url character than `c`,
+// used to tamper with a JWT signature segment in tests.
+func flipBase64URLChar(c string) string {
+	if c == "" {
+		return "A"
+	}
+	if c[0] == 'A' {
+		return "B"
+	}
+	return "A"
+}
+
+// TestOAuthRequiresLocalValidation locks in the C-1 invariant: the auth layer
+// MUST validate locally in both forward and gating modes. Pre-C-1 the gate
+// returned true only for gating, leaving forward-mode tokens unchecked.
+func TestOAuthRequiresLocalValidation(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{"gating_validates", "gating", true},
+		{"forward_validates", "forward", true},
+		{"empty_defaults_to_gating_validates", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := &ClickHouseJWEServer{
+				Config: config.Config{
+					Server: config.ServerConfig{
+						OAuth: config.OAuthConfig{Enabled: true, Mode: tc.mode},
+					},
+				},
+			}
+			require.Equal(t, tc.want, srv.oauthRequiresLocalValidation())
+		})
+	}
+	t.Run("disabled_skips_validation", func(t *testing.T) {
+		t.Parallel()
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{Enabled: false, Mode: "forward"},
+				},
+			},
+		}
+		require.False(t, srv.oauthRequiresLocalValidation())
+	})
+}
+
+// TestOAuthUpstreamIssuerAllowlist verifies that the operator-configured
+// allowlist actually constrains upstream IdP token validation. Before this
+// fix, the field was loaded into config but no handler consulted it — operators
+// who set it for hardening got zero enforcement.
+func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
+	t.Parallel()
+
+	t.Run("token_from_allowlisted_issuer_accepted", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:                 true,
+						Mode:                    "forward",
+						UpstreamIssuerAllowlist: []string{provider.server.URL, "https://other.example.com"},
+						JWKSURL:                 provider.server.URL + "/jwks",
+						Audience:                "clickhouse-api",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		claims, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+		require.Equal(t, provider.server.URL, claims.Issuer)
+	})
+
+	t.Run("token_from_non_allowlisted_issuer_rejected", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:                 true,
+						Mode:                    "forward",
+						UpstreamIssuerAllowlist: []string{"https://only-this-one.example.com"},
+						JWKSURL:                 provider.server.URL + "/jwks",
+						Audience:                "clickhouse-api",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		_, err := srv.ValidateOAuthToken(token)
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+	})
+
+	t.Run("allowlist_takes_precedence_over_singular_issuer", func(t *testing.T) {
+		// When both Issuer (singular) and UpstreamIssuerAllowlist are set, the
+		// allowlist wins. The singular Issuer is still used for OIDC/JWKS
+		// discovery if no JWKSURL is configured, but for *token validation*
+		// the allowlist is authoritative — otherwise the allowlist would be
+		// useless in single-issuer-but-multi-tenant deployments.
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:                 true,
+						Mode:                    "forward",
+						Issuer:                  "https://something-else.example.com",
+						UpstreamIssuerAllowlist: []string{provider.server.URL},
+						JWKSURL:                 provider.server.URL + "/jwks",
+						Audience:                "clickhouse-api",
+					},
+				},
+			},
+		}
+		token := provider.issueJWT(t, map[string]interface{}{
+			"sub": "user123",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		claims, err := srv.ValidateOAuthToken(token)
+		require.NoError(t, err)
+		require.Equal(t, provider.server.URL, claims.Issuer)
+	})
 }
 
 // TestOAuthBuildClickHouseHeaders tests building ClickHouse headers from OAuth
@@ -711,9 +970,12 @@ func TestOAuthAndJWECombined(t *testing.T) {
 
 		oauthToken := "opaque-access-token"
 
-		// Create request with only OAuth token (no JWE) → falls through to OAuth
+		// Create request with only OAuth token (no JWE) → falls through to OAuth.
+		// Per MCP authorization spec §Token Requirements, the bearer is only
+		// accepted in the Authorization header (the legacy x-oauth-token
+		// extension was dropped).
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("x-oauth-token", oauthToken)
+		req.Header.Set("Authorization", "Bearer "+oauthToken)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		jweTokenOut, jweClaims, oauthTokenOut, oauthClaims, err := srv.ValidateAuth(req)

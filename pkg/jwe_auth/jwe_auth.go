@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"golang.org/x/crypto/hkdf"
 )
 
 var (
@@ -18,10 +20,49 @@ var (
 	ErrInvalidToken = errors.New("invalid JWE token")
 )
 
-// HashSHA256 converts any string to a 32-byte key using SHA256 hash
+// HashSHA256 converts any string to a 32-byte key using SHA256 hash.
+//
+// Deprecated for new contexts: SHA-256 of a shared secret produces ONE key
+// that has to serve every cryptographic use of that secret. A leak of any
+// downstream artifact (a single decrypted JWE, an oracle on the HS256 MAC,
+// etc.) targets the same key that protects every other use. Prefer
+// DeriveKey(secret, "<context-namespace>/v<n>") for new code so each use
+// gets an independent key via HKDF-SHA256 (RFC 5869 §3.2 domain separation).
+//
+// HashSHA256 is retained because some artifacts in the wild were minted
+// against this derivation; rotating to HKDF requires accepting both during
+// the rotation window.
 func HashSHA256(input []byte) []byte {
 	hash := sha256.Sum256(input)
 	return hash[:]
+}
+
+// DeriveKey returns 32 bytes derived from the secret via HKDF-SHA256 with
+// the given info label (RFC 5869). Different info labels produce
+// independent keys, so a single shared secret can safely back multiple
+// cryptographic uses without one context's exposure compromising others.
+//
+// `info` is application-defined; conventionally namespaced per use, e.g.
+// "altinity-mcp/oauth/client-id/v1". The /vN suffix lets you rotate a
+// specific key without changing the unrelated ones.
+func DeriveKey(secret []byte, info string) []byte {
+	h := hkdf.New(sha256.New, secret, nil, []byte(info))
+	out := make([]byte, 32)
+	_, _ = io.ReadFull(h, out) // hkdf.Reader never errors before requested bytes
+	return out
+}
+
+// ValidateClaimsWhitelist exposes the JWE claim-key whitelist used by
+// ParseAndDecryptJWE so callers that decrypt JWE artifacts via a different
+// key-derivation path (e.g. HKDF) can apply the same security invariant.
+func ValidateClaimsWhitelist(claims map[string]interface{}) error {
+	return validateClaimsWhitelist(claims)
+}
+
+// ValidateExpiration exposes the JWE expiration check used by
+// ParseAndDecryptJWE for the same reason as ValidateClaimsWhitelist above.
+func ValidateExpiration(claims map[string]interface{}) error {
+	return validateExpiration(claims)
 }
 
 // GenerateJWEToken creates a JWE token by either:
@@ -215,6 +256,7 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"redirect_uris":              true,
 		"token_endpoint_auth_method": true,
 		"client_id":                  true,
+		"client_secret":              true,
 		"redirect_uri":               true,
 		"scope":                      true,
 		"client_state":               true,

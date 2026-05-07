@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,6 +21,126 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 )
+
+// decodeJWTSegment base64url-decodes a JWT segment (header/payload), padding-tolerant.
+func decodeJWTSegment(seg string) ([]byte, error) {
+	if pad := len(seg) % 4; pad != 0 {
+		seg += strings.Repeat("=", 4-pad)
+	}
+	return base64.URLEncoding.DecodeString(seg)
+}
+
+// TestOAuthJWEHKDFRoundtripAndLegacyFallback covers the v1 (HKDF) ↔ legacy
+// (SHA256) compatibility surface introduced in Step 2 of the OAuth review.
+// Three invariants:
+//
+//  1. Newly-issued artifacts emit kid="v1" in the JWE/JWS header.
+//  2. v1 artifacts decrypt/verify with the matching HKDF-derived key — and
+//     ONLY with that key (a leak in one info-namespace doesn't compromise
+//     another).
+//  3. Legacy artifacts (no kid, single SHA256(secret) key) still decrypt and
+//     verify, so existing refresh tokens / client_ids minted before the
+//     cutover keep working through the rotation window.
+func TestOAuthJWEHKDFRoundtripAndLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("test-signing-secret-32-byte-key!!")
+
+	t.Run("v1_artifact_carries_kid_header", func(t *testing.T) {
+		t.Parallel()
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthClientID, map[string]interface{}{
+			"sub": "user-1",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		// JWE compact serialisation: 5 dot-separated parts (header.cek.iv.ct.tag).
+		parts := strings.Split(token, ".")
+		require.Len(t, parts, 5)
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		require.Equal(t, oauthKidV1, hdr["kid"], "newly-issued JWE must carry kid=v1")
+	})
+
+	t.Run("v1_roundtrip", func(t *testing.T) {
+		t.Parallel()
+		original := map[string]interface{}{
+			"sub":      "user-1",
+			"exp":      float64(time.Now().Add(time.Hour).Unix()),
+			"scope":    "openid email",
+			"email":    "u@example.com",
+			"client_id": "test-client",
+		}
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, original)
+		require.NoError(t, err)
+		decrypted, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, token)
+		require.NoError(t, err)
+		require.Equal(t, original["sub"], decrypted["sub"])
+		require.Equal(t, original["scope"], decrypted["scope"])
+	})
+
+	t.Run("v1_domain_separation_blocks_cross_context_decrypt", func(t *testing.T) {
+		// A refresh token's JWE MUST NOT decrypt against the client_id key,
+		// even though both are minted from the same shared secret. This is
+		// the core HKDF benefit (RFC 5869 §3.2): different info → independent
+		// keys.
+		t.Parallel()
+		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
+			"sub": "user-1",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		_, err = decodeOAuthJWE(secret, hkdfInfoOAuthClientID, token)
+		require.Error(t, err, "decryption with the wrong info label MUST fail")
+	})
+
+	t.Run("legacy_artifact_decrypts_via_fallback", func(t *testing.T) {
+		// Mint a JWE the way the pre-Step-2 server did: jwe_auth.GenerateJWEToken
+		// with the raw secret, no kid header, JWT-signed inner content.
+		t.Parallel()
+		legacy, err := jwe_auth.GenerateJWEToken(map[string]interface{}{
+			"sub":   "user-legacy",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"scope": "openid",
+		}, secret, secret)
+		require.NoError(t, err)
+		// Sanity: legacy artifacts have no kid (or empty) in the protected header.
+		parts := strings.Split(legacy, ".")
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		_, hasKid := hdr["kid"]
+		require.False(t, hasKid, "legacy artifact must not carry kid")
+
+		// Now decode it via the new path — should succeed via the legacy
+		// fallback branch, regardless of which info label we ask for (the
+		// fallback ignores info because the legacy SHA256(secret) key is
+		// shared across contexts).
+		decoded, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, legacy)
+		require.NoError(t, err, "legacy JWE must remain decryptable during the rotation window")
+		require.Equal(t, "user-legacy", decoded["sub"])
+	})
+
+	t.Run("self_issued_access_token_v1_carries_kid", func(t *testing.T) {
+		t.Parallel()
+		token, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
+			"sub": "user-1",
+			"iss": "https://mcp.example.com",
+			"aud": "https://mcp.example.com",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		require.NoError(t, err)
+		parts := strings.Split(token, ".")
+		require.Len(t, parts, 3)
+		header, err := decodeJWTSegment(parts[0])
+		require.NoError(t, err)
+		var hdr map[string]interface{}
+		require.NoError(t, json.Unmarshal(header, &hdr))
+		require.Equal(t, oauthKidV1, hdr["kid"], "self-issued access token must carry kid=v1")
+	})
+}
 
 func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 	t.Parallel()
@@ -103,6 +224,181 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		app.handleOAuthAuthorize(authRR, authReq)
 		require.Equal(t, http.StatusFound, authRR.Code)
 		require.Contains(t, authRR.Header().Get("Location"), "https://accounts.google.com/o/oauth2/v2/auth")
+	})
+
+	t.Run("authorize_resource_indicator_accepted_when_matches_advertised_resource", func(t *testing.T) {
+		// RFC 8707 / MCP authorization spec: client passes `resource=<MCP URL>`
+		// on /authorize. We accept either trailing-slash form, but the bare-host
+		// form is the canonical advertised resource here (PublicResourceURL
+		// "https://mcp.example.com" — slashes get appended where needed).
+		regBody := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"],"token_endpoint_auth_method":"none"}`)
+		regReq := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", regBody)
+		regRR := httptest.NewRecorder()
+		app.handleOAuthRegister(regRR, regReq)
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(regRR.Body.Bytes(), &reg))
+		clientID, _ := reg["client_id"].(string)
+
+		base := "https://mcp.example.com/oauth/authorize?response_type=code&client_id=" + url.QueryEscape(clientID) +
+			"&redirect_uri=" + url.QueryEscape("http://127.0.0.1:3334/callback") +
+			"&scope=openid+email&state=s&code_challenge=c&code_challenge_method=S256"
+
+		// (a) resource present and matches advertised resource (trailing-slash form): 302
+		authReq := httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://mcp.example.com/"), nil)
+		authRR := httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "valid resource indicator must be accepted (slash form)")
+
+		// PKCE on the upstream-IdP leg: the redirect to upstream MUST include
+		// code_challenge + code_challenge_method=S256 (OAuth 2.1 §7.5.2).
+		// Without this, an attacker who intercepts the upstream auth code
+		// (e.g., via referrer or proxy logs between IdP and our /callback)
+		// could redeem it even though we hold the upstream client_secret.
+		upstreamRedirect, parseErr := url.Parse(authRR.Header().Get("Location"))
+		require.NoError(t, parseErr)
+		require.NotEmpty(t, upstreamRedirect.Query().Get("code_challenge"),
+			"upstream /authorize redirect must carry code_challenge (RFC 7636 / OAuth 2.1)")
+		require.Equal(t, "S256", upstreamRedirect.Query().Get("code_challenge_method"),
+			"upstream PKCE method must be S256 per OAuth 2.1 §4.1.1")
+
+		// (b) resource present and matches advertised resource (bare host form): 302
+		authReq = httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://mcp.example.com"), nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "valid resource indicator must be accepted (bare host form)")
+
+		// (c) resource present but identifies a different host: 400
+		authReq = httptest.NewRequest(http.MethodGet, base+"&resource="+url.QueryEscape("https://attacker.example/"), nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusBadRequest, authRR.Code, "mismatched resource indicator must be rejected")
+
+		// (d) resource absent (legacy clients): 302 (back-compat — RFC 8707 says SHOULD, not MUST)
+		authReq = httptest.NewRequest(http.MethodGet, base, nil)
+		authRR = httptest.NewRecorder()
+		app.handleOAuthAuthorize(authRR, authReq)
+		require.Equal(t, http.StatusFound, authRR.Code, "missing resource indicator must still authorize (legacy clients)")
+	})
+
+	t.Run("mint_gating_token_aud_mirrors_requested_resource", func(t *testing.T) {
+		// `aud` claim must byte-match what the client passed in `resource`.
+		// Anthropic's artifact-side proxy enforces this byte-equality; if we
+		// strip a trailing slash that the client included, the proxy silently
+		// drops the connector — see docs/artifact-mcp-known-issues.md.
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
+		// Audience field is set on app.config (= "https://mcp.example.com"),
+		// but Resource on the gatingIdentity must win.
+		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
+			ClientID:      "test-client",
+			Subject:       "user-123",
+			Email:         "u@example.com",
+			EmailVerified: true,
+			Scope:         "openid email",
+			Resource:      "https://mcp.example.com/",
+		})
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		accessToken, _ := resp["access_token"].(string)
+		require.NotEmpty(t, accessToken)
+
+		// Decode the JWS (3 parts) without verification; we only check the
+		// audience claim shape.
+		parts := strings.Split(accessToken, ".")
+		require.Len(t, parts, 3)
+		payload, err := decodeJWTSegment(parts[1])
+		require.NoError(t, err)
+		var claims map[string]interface{}
+		require.NoError(t, json.Unmarshal(payload, &claims))
+		require.Equal(t, "https://mcp.example.com/", claims["aud"], "aud must be the exact string the client passed in `resource` (trailing slash preserved)")
+	})
+
+	t.Run("mint_gating_token_aud_defaults_to_canonical_no_slash", func(t *testing.T) {
+		// When the client did NOT send a resource indicator (e.g., legacy
+		// codex / older mcp clients) the fallback `aud` matches the
+		// canonical advertised `resource` (no trailing slash) per
+		// MCP 2025-11-25 §Canonical Server URI.
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
+		// Clear the operator-configured Audience for this subtest so the
+		// fallback path runs (with Audience set, that wins).
+		savedAud := app.config.Server.OAuth.Audience
+		app.config.Server.OAuth.Audience = ""
+		t.Cleanup(func() { app.config.Server.OAuth.Audience = savedAud })
+
+		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
+			ClientID:      "test-client",
+			Subject:       "user-123",
+			Email:         "u@example.com",
+			EmailVerified: true,
+			Scope:         "openid email",
+			// Resource intentionally empty.
+		})
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		accessToken, _ := resp["access_token"].(string)
+		parts := strings.Split(accessToken, ".")
+		require.Len(t, parts, 3)
+		payload, err := decodeJWTSegment(parts[1])
+		require.NoError(t, err)
+		var claims map[string]interface{}
+		require.NoError(t, json.Unmarshal(payload, &claims))
+		require.Equal(t, "https://mcp.example.com", claims["aud"])
+	})
+
+	t.Run("dynamic_client_registration_default_is_confidential", func(t *testing.T) {
+		// When the client doesn't ask for a specific auth method, we now
+		// register it as confidential (client_secret_post). This unblocks
+		// Anthropic's mcp_servers-via-URL flow, which has no browser session
+		// for PKCE and needs server-to-server token-endpoint auth.
+		body := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"]}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+		rr := httptest.NewRecorder()
+		app.handleOAuthRegister(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code)
+
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+		require.Equal(t, "client_secret_post", reg["token_endpoint_auth_method"])
+		cs, _ := reg["client_secret"].(string)
+		require.NotEmpty(t, cs, "confidential registration must include client_secret")
+		require.Len(t, cs, 64, "client_secret should be 32 random bytes hex-encoded")
+		_, hasExpiry := reg["client_secret_expires_at"]
+		require.True(t, hasExpiry, "RFC 7591 §3.2.1: client_secret_expires_at is required when secret is issued")
+	})
+
+	t.Run("dynamic_client_registration_explicit_none_still_public", func(t *testing.T) {
+		// First-party flows that explicitly ask for the legacy public-client
+		// shape keep getting it — no client_secret in the response.
+		body := bytes.NewBufferString(`{"redirect_uris":["http://127.0.0.1:3334/callback"],"token_endpoint_auth_method":"none"}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/register", body)
+		rr := httptest.NewRecorder()
+		app.handleOAuthRegister(rr, req)
+		require.Equal(t, http.StatusCreated, rr.Code)
+
+		var reg map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &reg))
+		require.Equal(t, "none", reg["token_endpoint_auth_method"])
+		_, hasSecret := reg["client_secret"]
+		require.False(t, hasSecret, "public registration must not include client_secret")
+	})
+
+	t.Run("authentication_methods_advertised", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorizationServerMetadata(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var meta map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &meta))
+		methods, ok := meta["token_endpoint_auth_methods_supported"].([]interface{})
+		require.True(t, ok)
+		require.Contains(t, methods, "client_secret_post")
+		require.Contains(t, methods, "client_secret_basic")
+		require.Contains(t, methods, "none")
 	})
 
 	t.Run("custom_public_urls_and_paths", func(t *testing.T) {
@@ -192,6 +488,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "resource_metadata=")
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "error=\"invalid_token\"")
 	})
 
 	t.Run("valid_oauth_sets_context", func(t *testing.T) {
@@ -267,6 +564,120 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	require.True(t, called)
 	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestOAuthMCPAuthInjectorForwardModeValidatesJWT is the integration check
+// for the C-1 fix: forward mode used to skip ValidateOAuthToken entirely,
+// so any string in `Authorization: Bearer …` reached the inner handler
+// and was forwarded to ClickHouse. After C-1 the auth layer validates JWT
+// bearers when Issuer/JWKSURL is configured and rejects bad ones at 401.
+func TestOAuthMCPAuthInjectorForwardModeValidatesJWT(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestForwardModeOIDCProvider(t, nil, nil)
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:  true,
+				Mode:     "forward",
+				Issuer:   provider.server.URL,
+				JWKSURL:  provider.server.URL + "/jwks",
+				Audience: "clickhouse-api",
+			},
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+	}
+
+	t.Run("valid_jwt_reaches_handler_with_claims", func(t *testing.T) {
+		t.Parallel()
+		token := provider.issueIDToken(t, map[string]interface{}{
+			"sub": "user-good",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Unix(),
+		})
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			require.Equal(t, token, r.Context().Value(altinitymcp.OAuthTokenKey))
+			claims, ok := r.Context().Value(altinitymcp.OAuthClaimsKey).(*altinitymcp.OAuthClaims)
+			require.True(t, ok, "valid forward-mode JWT must populate OAuthClaims in context")
+			require.Equal(t, "user-good", claims.Subject)
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.True(t, called)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("jwt_with_wrong_audience_rejected_with_401", func(t *testing.T) {
+		t.Parallel()
+		token := provider.issueIDToken(t, map[string]interface{}{
+			"sub": "user-bad-aud",
+			"iss": provider.server.URL,
+			"aud": "some-other-api",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.False(t, called, "wrong-aud forward-mode JWT must NOT reach inner handler")
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "resource_metadata=")
+	})
+
+	t.Run("expired_jwt_rejected_with_401", func(t *testing.T) {
+		t.Parallel()
+		token := provider.issueIDToken(t, map[string]interface{}{
+			"sub": "user-expired",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(-2 * time.Hour).Unix(),
+			"iat": time.Now().Add(-3 * time.Hour).Unix(),
+		})
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.False(t, called, "expired forward-mode JWT must NOT reach inner handler")
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+
+	t.Run("opaque_bearer_softpasses_when_jwks_configured", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
+		req.Header.Set("Authorization", "Bearer not-a-jwt-just-an-opaque-string")
+		rr := httptest.NewRecorder()
+		called := false
+		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			require.Equal(t, "not-a-jwt-just-an-opaque-string", r.Context().Value(altinitymcp.OAuthTokenKey))
+			require.Nil(t, r.Context().Value(altinitymcp.OAuthClaimsKey))
+			w.WriteHeader(http.StatusOK)
+		}))
+		handler.ServeHTTP(rr, req)
+		require.True(t, called, "opaque forward-mode bearer soft-passes (deferred to ClickHouse)")
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
 }
 
 func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
@@ -1474,7 +1885,9 @@ func TestOAuthRegistrationNegative(t *testing.T) {
 
 	t.Run("unsupported_auth_method", func(t *testing.T) {
 		t.Parallel()
-		rr := post(`{"redirect_uris":["https://example.com/cb"],"token_endpoint_auth_method":"client_secret_post"}`)
+		// client_secret_post / client_secret_basic / none are now supported.
+		// Anything else (e.g. private_key_jwt) must still be rejected.
+		rr := post(`{"redirect_uris":["https://example.com/cb"],"token_endpoint_auth_method":"private_key_jwt"}`)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 	})
 }
@@ -2024,6 +2437,57 @@ func TestDecodeStringSlice(t *testing.T) {
 		t.Parallel()
 		result := decodeStringSlice([]interface{}{})
 		require.Empty(t, result)
+	})
+}
+
+func TestAuthenticateClientSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public_client_legacy_no_secret_required", func(t *testing.T) {
+		t.Parallel()
+		// Backward compat: client_id JWEs issued before this change have no
+		// client_secret claim; they continue to work with PKCE only.
+		client := &statelessRegisteredClient{}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_via_form", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token",
+			strings.NewReader("client_secret=abc123"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_via_basic_auth", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		req.SetBasicAuth("client-id-doesnt-matter", "abc123")
+		require.NoError(t, req.ParseForm())
+		require.NoError(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_missing", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+		require.NoError(t, req.ParseForm())
+		require.Error(t, authenticateClientSecret(client, req))
+	})
+
+	t.Run("confidential_client_secret_mismatch", func(t *testing.T) {
+		t.Parallel()
+		client := &statelessRegisteredClient{ClientSecret: "abc123"}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token",
+			strings.NewReader("client_secret=wrong"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		require.NoError(t, req.ParseForm())
+		require.Error(t, authenticateClientSecret(client, req))
 	})
 }
 

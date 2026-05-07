@@ -61,24 +61,21 @@ type OAuthClaims struct {
 	Extra         map[string]interface{}
 }
 
-// ExtractOAuthTokenFromRequest extracts an OAuth token from an HTTP request
+// ExtractOAuthTokenFromRequest extracts an OAuth bearer token from an HTTP
+// request, per MCP authorization spec §Token Requirements:
+//
+//	"MCP client MUST use the Authorization request header field defined in
+//	 OAuth 2.1 §5.1.1: Authorization: Bearer <access-token>"
+//	"Access tokens MUST NOT be included in the URI query string"
+//
+// Only the Authorization header is accepted. Earlier revisions of this server
+// also honoured `x-oauth-token` and `x-altinity-oauth-token` for legacy
+// clients; those have been removed for spec conformance.
 func (s *ClickHouseJWEServer) ExtractOAuthTokenFromRequest(r *http.Request) string {
-	// Try Authorization header (Bearer token)
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
-
-	// Try x-oauth-token header
-	if token := r.Header.Get("x-oauth-token"); token != "" {
-		return token
-	}
-
-	// Try x-altinity-oauth-token header
-	if token := r.Header.Get("x-altinity-oauth-token"); token != "" {
-		return token
-	}
-
 	return ""
 }
 
@@ -92,11 +89,38 @@ func (s *ClickHouseJWEServer) ExtractOAuthTokenFromCtx(ctx context.Context) stri
 	return ""
 }
 
+// oauthRequiresLocalValidation reports whether the auth layer should call
+// ValidateOAuthToken on inbound bearers. We always do, in both gating and
+// forward modes. Forward-mode JWTs are validated locally (signature + iss +
+// aud + exp) per MCP authorization spec §Token Handling and §Access Token
+// Privilege Restriction ("MCP servers MUST validate access tokens" /
+// "MUST only accept tokens specifically intended for themselves").
+// ValidateOAuthToken itself decides what kind of validation applies for the
+// configured mode and token shape.
 func (s *ClickHouseJWEServer) oauthRequiresLocalValidation() bool {
-	return s.Config.Server.OAuth.IsGatingMode()
+	return s.Config.Server.OAuth.Enabled
 }
 
-// ValidateOAuthToken validates an OAuth token and returns claims
+// ValidateOAuthToken validates an OAuth bearer and returns claims.
+//
+// Gating mode: the bearer is the self-issued HS256 JWT we minted on /token —
+// verify the HMAC and our claims policy.
+//
+// Forward mode: the bearer is the upstream IdP token. When it looks like a
+// JWT and the operator has configured a JWKS source (Issuer or JWKSURL),
+// validate signature + iss + aud + exp via the upstream JWKS. Two cases
+// soft-pass (return nil claims, nil error) — the auth layer accepts the
+// request and forwards to ClickHouse, which is then the sole validator:
+//
+//  1. Opaque (non-JWT) bearers — RFC 7662 introspection is not implemented;
+//     local validation isn't possible.
+//  2. JWT bearers with neither Issuer nor JWKSURL configured — operator
+//     hasn't told us where to fetch verification keys.
+//
+// Soft-pass preserves compatibility with deployments that pre-date C-1 and
+// rely entirely on ClickHouse-side validation. Operators who want full
+// C-1 coverage set Issuer or JWKSURL; warnOAuthMisconfiguration nudges
+// them at startup.
 func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, error) {
 	if !s.Config.Server.OAuth.Enabled {
 		return nil, nil
@@ -112,6 +136,19 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 		err    error
 	)
 	if mode == "forward" {
+		if !looksLikeJWT(token) {
+			// Opaque bearer — defer to ClickHouse for validation. Logged at
+			// debug only because this is the steady-state path for IdPs that
+			// issue opaque tokens.
+			log.Debug().Msg("Forward-mode bearer is opaque (not a JWT); skipping local validation, deferring to ClickHouse")
+			return nil, nil
+		}
+		if strings.TrimSpace(s.Config.Server.OAuth.JWKSURL) == "" && strings.TrimSpace(s.Config.Server.OAuth.Issuer) == "" {
+			// JWT but no JWKS source configured. Hot path; debug-only here —
+			// the per-startup warning surfaces this once via warnOAuthMisconfiguration.
+			log.Debug().Msg("Forward-mode JWT received but neither oauth_issuer nor jwks_url is configured; skipping local validation")
+			return nil, nil
+		}
 		claims, err = s.parseAndVerifyOAuthToken(token, s.Config.Server.OAuth.Audience)
 	} else {
 		claims, err = s.parseAndVerifySelfIssuedOAuthToken(token)
@@ -125,17 +162,34 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 }
 
 func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthClaims, error) {
-	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
-	if s.Config.Server.OAuth.IsGatingMode() && strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL) != "" {
-		expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
-	}
-	// Validate issuer if configured
-	if expectedIssuer != "" && claims.Issuer != expectedIssuer {
-		log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
-		return nil, ErrInvalidOAuthToken
+	// Issuer enforcement is mode-specific:
+	//
+	//   - Gating mode: the issuer MUST be us. Prefer PublicAuthServerURL when
+	//     configured (deployment-specific public URL), otherwise the operator's
+	//     `Issuer` field. Compare slash-normalised — operator config may or
+	//     may not include the slash; advertised issuer uses no-slash form.
+	//
+	//   - Forward mode: parseAndVerifyExternalJWT (the only path that reaches
+	//     here in forward mode) already enforced issuerAllowed against
+	//     UpstreamIssuerAllowlist (preferred) or the singular `Issuer`. We
+	//     do not re-validate here, because the singular `Issuer` may not be
+	//     authoritative when an allowlist is configured.
+	if s.Config.Server.OAuth.IsGatingMode() {
+		expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.PublicAuthServerURL)
+		if expectedIssuer == "" {
+			expectedIssuer = strings.TrimSpace(s.Config.Server.OAuth.Issuer)
+		}
+		if expectedIssuer != "" &&
+			strings.TrimRight(claims.Issuer, "/") != strings.TrimRight(expectedIssuer, "/") {
+			log.Error().Str("expected", expectedIssuer).Str("got", claims.Issuer).Msg("OAuth token issuer mismatch")
+			return nil, ErrInvalidOAuthToken
+		}
 	}
 
-	// Validate audience if configured
+	// Validate audience if configured. Compare slash-normalised — the token's
+	// `aud` claim is whatever string the client passed in `resource` at
+	// /authorize (RFC 8707), so it may legitimately differ in trailing slash
+	// from the operator's configured Audience. Either form is acceptable.
 	if s.Config.Server.OAuth.Audience != "" {
 		if len(claims.Audience) == 0 {
 			log.Error().Str("expected", s.Config.Server.OAuth.Audience).Msg("OAuth token missing audience claim")
@@ -293,6 +347,12 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 		}
 	}
 
+	// Issuer enforcement: when the operator has configured
+	// UpstreamIssuerAllowlist, require the token's `iss` to be in that set
+	// (multi-tenant deployments). Otherwise fall back to the singular
+	// `Issuer` config field for the standard single-tenant case. If neither
+	// is set, no issuer check happens (caller's responsibility to configure).
+	allowlist := s.Config.Server.OAuth.UpstreamIssuerAllowlist
 	expectedIssuer := strings.TrimSpace(s.Config.Server.OAuth.Issuer)
 	var (
 		rawClaims         map[string]interface{}
@@ -307,7 +367,7 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 		}
 		signatureVerified = true
 		claims := oauthClaimsFromRawClaims(rawClaims)
-		if expectedIssuer != "" && claims.Issuer != expectedIssuer {
+		if !issuerAllowed(claims.Issuer, allowlist, expectedIssuer) {
 			issuerRejected = true
 			continue
 		}
@@ -324,20 +384,67 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 	return nil, fmt.Errorf("failed to verify JWT signature with discovered JWKs")
 }
 
+// issuerAllowed implements the issuer policy used in upstream-token validation:
+// when UpstreamIssuerAllowlist is non-empty, the token's iss MUST be one of
+// the listed values (multi-tenant). Otherwise, when a singular Issuer is
+// configured, the token's iss MUST match it (single-tenant). With neither set,
+// no issuer check is performed (the caller is responsible for configuring at
+// least one of these — see warnOAuthMisconfiguration).
+func issuerAllowed(got string, allowlist []string, singleIssuer string) bool {
+	got = strings.TrimSpace(got)
+	if len(allowlist) > 0 {
+		for _, allowed := range allowlist {
+			if strings.TrimSpace(allowed) == got {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.TrimSpace(singleIssuer) != "" {
+		return got == strings.TrimSpace(singleIssuer)
+	}
+	return true
+}
+
+// SelfIssuedAccessTokenKid is the `kid` header value that selects the
+// HKDF-derived HS256 signing key for self-issued OAuth access tokens. Tokens
+// without a kid header are accepted with the legacy SHA256(secret) key for
+// the duration of the rotation window.
+const SelfIssuedAccessTokenKid = "v1"
+
+// SelfIssuedAccessTokenHKDFInfo is the HKDF info label that mints the HS256
+// signing key for self-issued access tokens. Must match the label in
+// cmd/altinity-mcp/oauth_server.go (kept in sync there as
+// hkdfInfoOAuthAccessToken).
+const SelfIssuedAccessTokenHKDFInfo = "altinity-mcp/oauth/access-token/v1"
+
 func (s *ClickHouseJWEServer) parseAndVerifySelfIssuedOAuthToken(token string) (*OAuthClaims, error) {
 	secret := strings.TrimSpace(s.Config.Server.OAuth.SigningSecret)
 	if secret == "" {
 		return nil, fmt.Errorf("oauth signing_secret is required in gating mode")
 	}
-	hashedSecret := jwe_auth.HashSHA256([]byte(secret))
 
 	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.HS256})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse self-issued JWT: %w", err)
 	}
+	if len(parsed.Headers) == 0 {
+		return nil, fmt.Errorf("missing JWT header")
+	}
+
+	// kid="v1" → HKDF-derived key (current). Absent kid → SHA256(secret)
+	// (legacy, accepted during the post-rotation window for tokens minted
+	// before the kid cutover; remove the fallback once all in-flight refresh
+	// tokens have expired).
+	var key []byte
+	if parsed.Headers[0].KeyID == SelfIssuedAccessTokenKid {
+		key = jwe_auth.DeriveKey([]byte(secret), SelfIssuedAccessTokenHKDFInfo)
+	} else {
+		key = jwe_auth.HashSHA256([]byte(secret))
+	}
 
 	var rawClaims map[string]interface{}
-	if err := parsed.Claims(hashedSecret, &rawClaims); err != nil {
+	if err := parsed.Claims(key, &rawClaims); err != nil {
 		return nil, fmt.Errorf("failed to verify self-issued JWT: %w", err)
 	}
 	return oauthClaimsFromRawClaims(rawClaims), nil
