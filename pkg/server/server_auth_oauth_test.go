@@ -740,6 +740,35 @@ func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
 	})
 }
 
+func TestIssuerAllowed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		got          string
+		allowlist    []string
+		singleIssuer string
+		want         bool
+	}{
+		{"exact match in allowlist", "https://idp.example.com/", []string{"https://idp.example.com/"}, "", true},
+		{"got has slash, allowlist entry doesn't", "https://idp.example.com/", []string{"https://idp.example.com"}, "", true},
+		{"got missing slash, allowlist entry has it", "https://idp.example.com", []string{"https://idp.example.com/"}, "", true},
+		{"allowlist with surrounding whitespace", "https://idp.example.com", []string{"  https://idp.example.com/  "}, "", true},
+		{"allowlist non-empty and got not in it", "https://attacker.example.com", []string{"https://idp.example.com/"}, "", false},
+		{"allowlist takes precedence over singular issuer", "https://idp.example.com/", []string{"https://other.example.com/"}, "https://idp.example.com/", false},
+		{"singular issuer match with mixed slash", "https://idp.example.com", nil, "https://idp.example.com/", true},
+		{"singular issuer mismatch", "https://attacker.example.com", nil, "https://idp.example.com/", false},
+		{"no allowlist, no single issuer accepts everything", "https://anything.example.com", nil, "", true},
+		{"no allowlist, blank single issuer accepts everything", "https://anything.example.com", nil, "   ", true},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, c.want, issuerAllowed(c.got, c.allowlist, c.singleIssuer))
+		})
+	}
+}
+
 // TestOAuthBuildClickHouseHeaders tests building ClickHouse headers from OAuth
 func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 	t.Parallel()

@@ -1086,6 +1086,95 @@ func TestOAuthForwardModeBrowserLoginUsesUpstreamBearerToken(t *testing.T) {
 	})
 }
 
+// TestOAuthForwardModeTokenResourceMismatch pins the RFC 8707 §2.2 enforcement
+// in forward mode: a /token (auth-code grant) request whose `resource` differs
+// from the one already pinned at /authorize must be rejected with
+// invalid_target, regardless of which mode we're running in.
+func TestOAuthForwardModeTokenResourceMismatch(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI    = "http://127.0.0.1:3334/callback"
+		codeVerifier   = "test-code-verifier"
+		clientState    = "client-state"
+		pinnedResource = "https://mcp.example.com"
+		otherResource  = "https://attacker.example.com"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app := newForwardModeBrowserLoginTestApp(provider)
+	clientID := registerOAuthBrowserClient(t, app, redirectURI)
+
+	authReq := httptest.NewRequest(
+		http.MethodGet,
+		"https://mcp.example.com/oauth/authorize?response_type=code&client_id="+url.QueryEscape(clientID)+
+			"&redirect_uri="+url.QueryEscape(redirectURI)+
+			"&scope=openid+email&state="+url.QueryEscape(clientState)+
+			"&code_challenge="+url.QueryEscape(pkceChallenge(codeVerifier))+
+			"&code_challenge_method=S256"+
+			"&resource="+url.QueryEscape(pinnedResource),
+		nil,
+	)
+	authRR := httptest.NewRecorder()
+	app.handleOAuthAuthorize(authRR, authReq)
+	require.Equal(t, http.StatusFound, authRR.Code, "authorize must accept canonical resource")
+
+	location, err := url.Parse(authRR.Header().Get("Location"))
+	require.NoError(t, err)
+	state := location.Query().Get("state")
+	require.NotEmpty(t, state)
+
+	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
+	callbackRR := httptest.NewRecorder()
+	app.handleOAuthCallback(callbackRR, callbackReq)
+	require.Equal(t, http.StatusFound, callbackRR.Code)
+
+	redirectLocation, err := url.Parse(callbackRR.Header().Get("Location"))
+	require.NoError(t, err)
+	code := redirectLocation.Query().Get("code")
+	require.NotEmpty(t, code)
+
+	exchange := func(t *testing.T, formResource string) *httptest.ResponseRecorder {
+		t.Helper()
+		form := url.Values{}
+		form.Set("grant_type", "authorization_code")
+		form.Set("client_id", clientID)
+		form.Set("code", code)
+		form.Set("redirect_uri", redirectURI)
+		form.Set("code_verifier", codeVerifier)
+		if formResource != "" {
+			form.Set("resource", formResource)
+		}
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		app.handleOAuthToken(rr, req)
+		return rr
+	}
+
+	t.Run("mismatched_resource_rejected", func(t *testing.T) {
+		rr := exchange(t, otherResource)
+		require.Equal(t, http.StatusBadRequest, rr.Code, "forward mode must reject /token resource that differs from /authorize")
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_target", body["error"])
+	})
+}
+
 func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	payload, err := json.Marshal(claims)
 	if err != nil {

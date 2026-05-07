@@ -1543,6 +1543,22 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// RFC 8707 §2.2: clients MAY also send `resource` on /token. When the same
+	// resource was already pinned at /authorize, both must agree; if /authorize
+	// omitted it but /token includes it, accept and use the latter. Enforced in
+	// both gating and forward modes — in forward mode the value is only used
+	// for the rejection check (the response carries the upstream bearer token
+	// which has its own `aud`).
+	resource := issued.Resource
+	if formResource := r.Form.Get("resource"); formResource != "" {
+		if resource == "" {
+			resource = formResource
+		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the one used at /authorize")
+			return
+		}
+	}
+
 	if a.oauthForwardMode() {
 		bearerToken := issued.UpstreamBearerToken
 		if bearerToken == "" {
@@ -1584,18 +1600,6 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// RFC 8707 §2.2: clients MAY also send `resource` on /token. When the same
-	// resource was already pinned at /authorize, both must agree; if /authorize
-	// omitted it but /token includes it, accept and use the latter.
-	resource := issued.Resource
-	if formResource := r.Form.Get("resource"); formResource != "" {
-		if resource == "" {
-			resource = formResource
-		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
-			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the one used at /authorize")
-			return
-		}
-	}
 	a.mintGatingTokenResponse(w, r, secret, gatingIdentity{
 		ClientID:      issued.ClientID,
 		Subject:       issued.Subject,
@@ -1734,6 +1738,14 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 // The decrypted JWE carries the upstream IdP refresh token; we exchange it
 // upstream for a fresh ID token + (rotated) refresh token, re-validate the
 // new ID token, and mint a new JWE wrapping the rotated upstream refresh.
+//
+// RFC 8707 §2.2 note: this path does not validate the optional `resource`
+// form parameter. The forward refresh JWE (mintForwardRefreshToken) does not
+// embed `aud`, so there is nothing to compare against. Audience enforcement
+// in forward mode is delegated to the upstream IdP, which re-issues the ID
+// token with its own `aud` claim. Closing this gap requires embedding `aud`
+// in the forward refresh JWE — deliberately deferred to keep this change
+// small; see the "Out of scope" note in the branch's review-fix plan.
 func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *http.Request, secret []byte, clientID string, claims map[string]interface{}) {
 	upstreamRefresh, _ := claims["upstream_refresh_token"].(string)
 	if upstreamRefresh == "" {

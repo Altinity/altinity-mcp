@@ -390,18 +390,24 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 // configured, the token's iss MUST match it (single-tenant). With neither set,
 // no issuer check is performed (the caller is responsible for configuring at
 // least one of these — see warnOAuthMisconfiguration).
+//
+// Comparison is slash-normalised on both sides — operator config and the
+// token's `iss` may legitimately differ in trailing slash (e.g. Auth0 emits
+// the form with a slash; some configs omit it). Matches the convention used
+// by validateOAuthClaims for self-issued tokens.
 func issuerAllowed(got string, allowlist []string, singleIssuer string) bool {
-	got = strings.TrimSpace(got)
+	norm := func(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }
+	got = norm(got)
 	if len(allowlist) > 0 {
 		for _, allowed := range allowlist {
-			if strings.TrimSpace(allowed) == got {
+			if norm(allowed) == got {
 				return true
 			}
 		}
 		return false
 	}
-	if strings.TrimSpace(singleIssuer) != "" {
-		return got == strings.TrimSpace(singleIssuer)
+	if norm(singleIssuer) != "" {
+		return got == norm(singleIssuer)
 	}
 	return true
 }
