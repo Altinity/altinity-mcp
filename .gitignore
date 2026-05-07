@@ -12,7 +12,9 @@ GEMINI.md
 .kilocode/
 .crush/
 .code/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/commands/
 .omc/
 build/
 dist/
