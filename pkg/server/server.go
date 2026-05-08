@@ -40,6 +40,29 @@ type ClickHouseJWEServer struct {
 	// is enabled (H-2). Constructed in NewClickHouseMCPServer; consumed by
 	// the gating-mode refresh handler.
 	refreshStateStore oauth_state.Store
+
+	// refreshStateCleanupCancel stops the H-2 cleanup goroutine. Non-nil
+	// only when the cleanup loop was started (i.e., refresh_revokes_tracking
+	// enabled at server-startup time). Tests call this to avoid leaked
+	// goroutines; production lets it run for the process lifetime.
+	refreshStateCleanupCancel func()
+}
+
+// serverCleanupRunner adapts *ClickHouseJWEServer to oauth_state.CleanupRunner.
+// It reads s.refreshStateStore on each tick so that SetRefreshStateStore
+// (test-only) takes effect on the cleanup loop too — without this, tests
+// that swap in a fake store would still see the production store fire
+// noisy WARN logs from a (typically broken) CH connection factory.
+type serverCleanupRunner struct {
+	s *ClickHouseJWEServer
+}
+
+func (r *serverCleanupRunner) Cleanup(ctx context.Context, retention time.Duration) error {
+	store := r.s.RefreshStateStore()
+	if store == nil {
+		return nil
+	}
+	return store.Cleanup(ctx, retention)
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -87,6 +110,18 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 			func(ctx context.Context) (oauth_state.CHClient, error) {
 				return chJweServer.GetClickHouseSystemClient(ctx)
 			},
+		)
+		// H-2 cleanup loop. KeeperMap doesn't support CH-native TTL, so
+		// we run ALTER TABLE … DELETE on a goroutine ticker. The cancel
+		// function is stored so tests / shutdown paths can stop the loop;
+		// in production the loop runs for the server's lifetime and exits
+		// when the process does.
+		chJweServer.refreshStateCleanupCancel = oauth_state.StartCleanupLoop(
+			context.Background(),
+			&serverCleanupRunner{s: chJweServer},
+			oauth_state.DefaultCleanupInterval,
+			oauth_state.DefaultCleanupRetention,
+			0, // attemptTimeout: use default
 		)
 	}
 

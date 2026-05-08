@@ -2859,6 +2859,14 @@ func (f *fakeRefreshStateStore) CheckAndConsume(_ context.Context, jti, familyID
 	return nil
 }
 
+// Cleanup is a no-op for the fake; the real KeeperMap-backed store runs
+// `ALTER TABLE altinity.oauth_refresh_consumed_jtis DELETE WHERE
+// consumed_at < now() - INTERVAL …` to bound storage. Tests that exercise
+// the cleanup loop do so via a separate counter-based runner.
+func (f *fakeRefreshStateStore) Cleanup(_ context.Context, _ time.Duration) error {
+	return nil
+}
+
 // newGatingModeTestAppWithH2 wires a gating-mode app with H-2 enabled and
 // a fake oauth_state.Store injected. ClickHouse config is not populated —
 // the fake store never touches CH.
@@ -3212,6 +3220,113 @@ func TestOAuthRefreshReuseDetection_EmptyDatabaseRejectsConfig(t *testing.T) {
 	err := validateOAuthRuntimeConfig(cfg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "non-empty clickhouse.database")
+}
+
+// TestOAuthRefreshReuseDetection_AtomicConcurrentClaim hammers the H-2
+// refresh handler with N goroutines all redeeming the SAME refresh JWE in
+// parallel. Verifies the atomicity property promised by KeeperMap strict
+// mode: exactly one redeemer wins, all others see invalid_grant with
+// reuse_detected. The fake store synchronises via sync.Mutex (faithful to
+// the production semantics — Keeper Raft serialises through a single
+// leader); this test exercises the handler's branching, not the wire
+// protocol of CH.
+//
+// This is the regression test for the parallel-replay race that the
+// previous SELECT-then-INSERT design left open and that prompted the
+// switch to KeeperMap. If a future refactor reintroduces a check-then-act
+// pattern, this test catches it.
+func TestOAuthRefreshReuseDetection_AtomicConcurrentClaim(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+		concurrency  = 50
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app, store := newGatingModeTestAppWithH2(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+	r1 := resp["refresh_token"].(string)
+	r1Family := inspectRefreshJWE(t, r1)["family_id"].(string)
+	r1Jti := inspectRefreshJWE(t, r1)["jti"].(string)
+
+	// Synchronise N goroutines on a barrier so they all release into the
+	// refresh handler at once — maximises the chance of overlapping
+	// CheckAndConsume calls. Buffered channels cap on the receiver side.
+	type result struct {
+		status int
+		body   map[string]interface{}
+	}
+	results := make(chan result, concurrency)
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rr := exchangeRefreshToken(t, app, clientID, r1)
+			var body map[string]interface{}
+			_ = json.Unmarshal(rr.Body.Bytes(), &body)
+			results <- result{status: rr.Code, body: body}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	reuseDetected := 0
+	for r := range results {
+		switch r.status {
+		case http.StatusOK:
+			successes++
+		case http.StatusBadRequest:
+			require.Equal(t, "invalid_grant", r.body["error"], "non-200 must be invalid_grant")
+			require.Contains(t, r.body["error_description"], "reuse",
+				"non-200 must be reuse-detected variant of invalid_grant")
+			reuseDetected++
+		default:
+			t.Fatalf("unexpected status %d body %v", r.status, r.body)
+		}
+	}
+
+	require.Equal(t, 1, successes,
+		"exactly one redeemer must win — the atomicity property of KeeperMap strict mode")
+	require.Equal(t, concurrency-1, reuseDetected,
+		"all other redeemers must be rejected with reuse-detected invalid_grant")
+
+	// Inspect store state. The winning JTI is in consumed_jtis exactly once;
+	// the family is in revoked_families because at least one loser wrote it.
+	store.mu.Lock()
+	require.True(t, store.consumed[r1Jti], "winning jti must be marked consumed")
+	require.NotEmpty(t, store.revoked[r1Family],
+		"family must be marked revoked by at least one losing redeemer")
+	require.Equal(t, "reuse_detected", store.revoked[r1Family])
+	store.mu.Unlock()
+
+	// Even though one redeemer "won" — could be the legitimate owner OR
+	// the attacker — the family is now revoked. Subsequent refresh of the
+	// winner's NEW token (which carries the same family_id) is also
+	// rejected. RFC 9700 §refresh-token rotation: server can't tell which
+	// party is legitimate, so the family dies on detection.
 }
 
 func TestEncodeSelfIssuedAccessToken(t *testing.T) {
