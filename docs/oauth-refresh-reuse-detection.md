@@ -62,19 +62,22 @@ attacker now presents R1: server sees A already in consumed
                         → user re-auths from scratch
 ```
 
-State lives in two ClickHouse tables in the `altinity` database:
+State lives in two ClickHouse tables in the `altinity` database. **Both
+are KeeperMap** so reads and writes are linearizable through Keeper Raft —
+there is no replication-lag window where a pod talking to one CH replica
+fails to see another pod's recent write.
 
-| Table                                        | Engine                  | Atomicity  | Cleanup                    |
-| -------------------------------------------- | ----------------------- | ---------- | -------------------------- |
-| `altinity.oauth_refresh_consumed_jtis`       | KeeperMap (strict mode) | linearizable | in-process `ALTER TABLE … DELETE` goroutine, hourly, 35-day retention |
-| `altinity.oauth_refresh_revoked_families`    | ReplicatedMergeTree     | (idempotent INSERT) | CH-native TTL, 35-day retention |
+| Table                                        | Engine                  | Strict mode | Cleanup                    |
+| -------------------------------------------- | ----------------------- | ----------- | -------------------------- |
+| `altinity.oauth_refresh_consumed_jtis`       | KeeperMap               | yes (per-INSERT) — duplicate jti throws `KEEPER_EXCEPTION` | in-process `ALTER TABLE … DELETE` goroutine, hourly, 35-day retention |
+| `altinity.oauth_refresh_revoked_families`    | KeeperMap               | no — duplicate family_id idempotently overwrites (parallel revokes are fine) | same goroutine, same retention |
 
 Each refresh = 1 cheap `SELECT count() FROM revoked_families` (point lookup
 by family_id) + 1 atomic `INSERT … SETTINGS keeper_map_strict_mode = 1`
 into consumed_jtis. At realistic load (~hundreds of clients refreshing
 ~once per hour) that's on the order of 0.5 qps cluster-wide. Negligible.
 
-### Why KeeperMap and not just ReplicatedMergeTree
+### Why KeeperMap (for both tables) and not ReplicatedMergeTree
 
 The earlier H-2 design used `SELECT count() WHERE jti = ?` followed by
 `INSERT` into a `ReplicatedMergeTree` consumed-jtis table. That pattern
@@ -84,19 +87,54 @@ the INSERT, and the family forks before any reuse is detected. From
 that point an attacker who steals a single token has their own valid
 branch of the family chain and never needs the original token again.
 
-KeeperMap (with `keeper_map_strict_mode=1`) is the fix. It's a key-value
-table engine backed by ClickHouse Keeper's Raft consensus. Concurrent
-INSERTs of the same primary key are serialised through the Keeper
-leader; exactly one wins, the rest receive `KEEPER_EXCEPTION:
-Transaction failed (Node exists)` (Code 999). The MCP store detects
-this signature and returns `ErrRefreshReused` to the handler, which
-records the family revocation and rejects the request. RFC 9700
-§refresh-token rotation: the server cannot tell which of two concurrent
-redeemers is legitimate, so the family dies on detection.
+KeeperMap with `keeper_map_strict_mode=1` is the fix for the consumed-
+jti claim. It's a key-value table engine backed by ClickHouse Keeper's
+Raft consensus. Concurrent INSERTs of the same primary key are
+serialised through the Keeper leader; exactly one wins, the rest
+receive `KEEPER_EXCEPTION: Transaction failed (Node exists)` (Code 999).
+The MCP store detects this signature and proceeds to record the family
+revocation. RFC 9700 §refresh-token rotation: the server cannot tell
+which of two concurrent redeemers is legitimate, so the family dies on
+detection.
+
+The `revoked_families` table is **also** KeeperMap, for a parallel
+reason. Without linearizable reads on revocation state, the refresh
+path's pre-check `SELECT count() FROM revoked_families WHERE
+family_id = F` could miss a recent revoke on a CH replica that hasn't
+yet seen the loser's INSERT. The winner of a forked family could then
+keep refreshing its branch on different MCP pods/replicas while
+replication catches up — exactly the window the design is supposed to
+close. With both tables on Keeper, every refresh sees the
+authoritative state.
 
 KeeperMap doesn't add a Keeper dependency — `ReplicatedMergeTree` is
 already on Keeper for replication coordination. KeeperMap simply
 exposes the linearizable primitive Keeper already provides.
+
+### Revoke must persist (not best-effort)
+
+When the consumed-jti INSERT fails with the duplicate-key exception,
+the handler attempts to record the family revocation. If THAT INSERT
+also fails (Keeper unavailable, etc.), the handler does NOT fall back
+to a "best-effort" rejection. The previous design logged a WARN and
+returned `ErrRefreshReused` regardless; that left the winner's branch
+of the forked family alive for every subsequent refresh against any
+MCP pod, because no row landed in `revoked_families`. The current
+code promotes a failed revoke INSERT to a **hard error** (HTTP 500
+`server_error`); operators page on the ERR log line, the underlying
+Keeper or grant issue gets fixed, and the next attempt to redeem the
+same R0 hits the same code path and writes the revoke for real.
+
+### Post-claim revocation re-check
+
+The pre-check in step (1) of `CheckAndConsume` and the atomic claim in
+step (2) are not a single Keeper transaction. There's a microsecond
+window between them where another pod could revoke the family. The
+store closes this TOCTOU by re-checking revocation **after** the claim
+succeeds. If revocation arrived during the window, the response is
+`ErrRefreshReused` (HTTP 400 invalid_grant); the consumed-jti slot is
+spent but no token is minted. The family stays revoked, all subsequent
+refreshes fail at step (1), the user re-auths.
 
 ### `keeper_map_strict_mode` is per-query
 
@@ -220,6 +258,8 @@ pair anyway" — that would defeat the security control.
 | Refresh JWE missing `jti` or `family_id` (legacy or malformed) | 400 `invalid_grant` "refresh token format unsupported, please re-authenticate" | ERR `OAuth refresh token rejected: missing jti or family_id` |
 | Family already in `revoked_families` (legitimate owner refreshing post-revocation) | 400 `invalid_grant` "refresh token reuse detected" | ERR `OAuth refresh token reuse detected — family revoked` |
 | Concurrent or sequential jti replay (KeeperMap dup-key) | 400 `invalid_grant` "refresh token reuse detected" | ERR `OAuth refresh token reuse detected — family revoked` |
+| Reuse detected but revoke INSERT fails (security-critical) | 500 `server_error` "refresh state unavailable" | ERR `oauth_state: SECURITY: reuse detected but revoke INSERT failed — family is NOT revoked` |
+| Family revoked during pre-check→claim TOCTOU window | 400 `invalid_grant` "refresh token reuse detected" | (handled silently — claim slot is spent, no token minted, family already revoked) |
 | CH unreachable / RBAC denied / timeout         | 500 `server_error` "refresh state unavailable" | ERR `OAuth refresh state lookup failed — hard fail` |
 | Cleanup `ALTER DELETE` fails                   | (no user impact)           | WARN `oauth_state cleanup attempt failed (non-fatal)` |
 

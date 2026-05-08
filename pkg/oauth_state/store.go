@@ -97,7 +97,13 @@ const (
 )
 
 // selectRevokedQuery returns 1 if the family is already revoked, 0 otherwise.
-// Cheap point-lookup (ORDER BY family_id) on a small ReplicatedMergeTree.
+// Both consumed_jtis and revoked_families are KeeperMap-backed; KeeperMap
+// reads are linearizable via Keeper Raft, so a write on pod A is visible
+// to pod B's next read regardless of which CH replica each pod talks to.
+// (Crucially this does NOT hold for ReplicatedMergeTree, whose async
+// replication leaves a window where pod B can fail to see pod A's recent
+// revoke. That window is what an attacker exploits to keep refreshing
+// the winning branch of a forked family.)
 const selectRevokedQuery = `SELECT count() FROM ` + revokedFamiliesTable + ` WHERE family_id = ?`
 
 // insertConsumedQuery atomically claims a jti slot in the KeeperMap-backed
@@ -113,12 +119,17 @@ const selectRevokedQuery = `SELECT count() FROM ` + revokedFamiliesTable + ` WHE
 const insertConsumedQuery = `INSERT INTO ` + consumedJtisTable + ` (jti, family_id) ` +
 	`SETTINGS keeper_map_strict_mode = 1 VALUES (?, ?)`
 
+// insertRevokedQuery records a family revocation. NOT strict mode: parallel
+// losers writing the same family_id are an idempotent overwrite (the second
+// loser's reason replaces the first, both succeed). KeeperMap silently
+// overwrites duplicate keys without strict mode set.
 const insertRevokedQuery = `INSERT INTO ` + revokedFamiliesTable + ` (family_id, reason) VALUES (?, ?)`
 
-// deleteOldConsumedQuery is the cleanup statement: KeeperMap doesn't support
-// CH-native TTL, so we run this on a goroutine ticker. Uses INTERVAL with a
-// bound seconds value (driver-side parametrization).
+// deleteOld* are the cleanup statements: KeeperMap doesn't support
+// CH-native TTL on either table, so the cleanup goroutine runs both on
+// the same ticker.
 const deleteOldConsumedQuery = `ALTER TABLE ` + consumedJtisTable + ` DELETE WHERE consumed_at < now() - toIntervalSecond(?)`
+const deleteOldRevokedQuery = `ALTER TABLE ` + revokedFamiliesTable + ` DELETE WHERE revoked_at < now() - toIntervalSecond(?)`
 
 func (s *chStore) CheckAndConsume(ctx context.Context, jti, familyID, reason string) error {
 	if jti == "" || familyID == "" {
@@ -131,10 +142,11 @@ func (s *chStore) CheckAndConsume(ctx context.Context, jti, familyID, reason str
 	}
 	defer func() { _ = cli.Close() }()
 
-	// 1. Cheap revocation check. If the family is already in
-	// revoked_families, fast-reject without burning a KeeperMap slot.
-	// Catches the case where a prior race-loser pod revoked the family
-	// and the legitimate owner is now refreshing.
+	// 1. Cheap revocation pre-check. KeeperMap point-lookup is linearizable
+	// (Keeper Raft); fast-rejects the legitimate owner refreshing after a
+	// prior race-loser pod revoked the family. Doesn't fully close the
+	// pre-check→claim TOCTOU window — see step 4 below for the post-claim
+	// re-check that does.
 	revoked, err := s.familyRevoked(ctx, cli, familyID)
 	if err != nil {
 		return fmt.Errorf("oauth_state: select revoked: %w", err)
@@ -143,28 +155,55 @@ func (s *chStore) CheckAndConsume(ctx context.Context, jti, familyID, reason str
 		return ErrRefreshReused
 	}
 
-	// 2. Atomic claim. KeeperMap strict-mode INSERT is linearized through
-	// Keeper Raft: exactly one of N concurrent redeemers wins, the rest
-	// see a duplicate-key exception. The winner returns nil; the losers
+	// 2. Atomic jti claim. KeeperMap strict-mode INSERT is serialised
+	// through Keeper Raft: exactly one of N concurrent redeemers wins,
+	// the rest see a duplicate-key exception. Winners proceed; losers
 	// fall into the reuse-detected branch below.
 	if _, ierr := cli.ExecuteQuery(ctx, insertConsumedQuery, jti, familyID); ierr != nil {
 		if !isKeeperMapDuplicateKeyError(ierr) {
 			return fmt.Errorf("oauth_state: insert consumed jti: %w", ierr)
 		}
-		// 3. Reuse detected. Record the family revocation. Idempotent
-		// across parallel losers (multiple INSERTs to revoked_families
-		// merge / TTL-expire). If the revoke INSERT itself fails we
-		// still return ErrRefreshReused — better to over-reject than
-		// silently mint a duplicate, and the family is logically
-		// revoked for the next refresh attempt either way (the
-		// duplicate-key error is the SECURITY signal; the revoke
-		// table is the audit trail).
+		// 3. Reuse detected. The revoke MUST persist before we tell the
+		// caller "family revoked" — if the row doesn't land, the
+		// winner's branch of the forked family stays alive on every
+		// MCP pod that subsequently reads revoked_families. The
+		// previous code logged WARN and returned ErrRefreshReused
+		// anyway; that left an attacker's chain extendable while the
+		// loser's request looked properly rejected. RFC 9700 requires
+		// family-wide revocation to be authoritative, not best-effort.
+		// On revoke INSERT failure we hard-fail the response (HTTP 500
+		// server_error) so the caller sees a security-relevant error
+		// and the operator pages.
 		if _, rerr := cli.ExecuteQuery(ctx, insertRevokedQuery, familyID, reason); rerr != nil {
-			log.Warn().
+			log.Error().
 				Err(rerr).
 				Str("family_id", familyID).
-				Msg("oauth_state: revoked-family insert failed (non-fatal — family is logically revoked anyway)")
+				Str("jti", jti).
+				Msg("oauth_state: SECURITY: reuse detected but revoke INSERT failed — family is NOT revoked")
+			return fmt.Errorf("oauth_state: revoke INSERT failed (security-critical): %w", rerr)
 		}
+		return ErrRefreshReused
+	}
+
+	// 4. Post-claim revocation re-check. Closes the TOCTOU window where
+	// another pod revoked the family between step 1 and step 2. Without
+	// this, a pod whose pre-check (step 1) raced ahead of a sibling pod's
+	// revoke (step 3 in that pod) can win step 2 and mint a token in an
+	// already-revoked family. KeeperMap reads are linearizable, so this
+	// re-check definitively reflects all revokes that committed before
+	// our claim landed.
+	revoked, err = s.familyRevoked(ctx, cli, familyID)
+	if err != nil {
+		// We claimed the jti slot but can't verify revocation state.
+		// Hard-fail; subsequent refresh of this token will hit the same
+		// checkpoint. The slot is "wasted" — fine, jtis are 128-bit random.
+		return fmt.Errorf("oauth_state: post-claim revoked re-check failed: %w", err)
+	}
+	if revoked {
+		// Family was revoked between our pre-check and our claim. Reject
+		// this redemption. The jti slot is consumed (good — prevents
+		// later replay of this same jti), and the family stays revoked
+		// (good — kills the chain).
 		return ErrRefreshReused
 	}
 
@@ -231,10 +270,20 @@ func (s *chStore) Cleanup(ctx context.Context, retention time.Duration) error {
 	if cutoffSeconds <= 0 {
 		return fmt.Errorf("oauth_state cleanup: retention must be positive (got %v)", retention)
 	}
+	// Both KeeperMap tables need application-side cleanup. Run them
+	// independently so a failure on one table doesn't mask a failure on
+	// the other; aggregate errors at the end.
+	var firstErr error
 	if _, err := cli.ExecuteQuery(ctx, deleteOldConsumedQuery, cutoffSeconds); err != nil {
-		return fmt.Errorf("oauth_state cleanup: ALTER DELETE: %w", err)
+		firstErr = fmt.Errorf("oauth_state cleanup: consumed_jtis ALTER DELETE: %w", err)
 	}
-	return nil
+	if _, err := cli.ExecuteQuery(ctx, deleteOldRevokedQuery, cutoffSeconds); err != nil {
+		if firstErr != nil {
+			return fmt.Errorf("%w; revoked_families ALTER DELETE: %v", firstErr, err)
+		}
+		return fmt.Errorf("oauth_state cleanup: revoked_families ALTER DELETE: %w", err)
+	}
+	return firstErr
 }
 
 // readUInt64 normalizes count() return values across driver paths

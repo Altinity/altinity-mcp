@@ -2819,11 +2819,18 @@ func TestWriteOAuthTokenError(t *testing.T) {
 // refresh-handler control flow without standing up a CH harness. The real
 // SQL is exercised by the live otel deployment's negative-replay test.
 type fakeRefreshStateStore struct {
-	mu        sync.Mutex
-	consumed  map[string]bool   // jti → true
-	revoked   map[string]string // family_id → reason
-	failNext  error             // when set, next call returns this error
-	calls     []fakeStoreCall
+	mu sync.Mutex
+	consumed map[string]bool   // jti → true
+	revoked  map[string]string // family_id → reason
+	// failNext: next CheckAndConsume call returns this error verbatim
+	// (simulates pre-claim infrastructure failure: CH unreachable, etc.).
+	failNext error
+	// failRevoke: when true and the next call hits the duplicate-key
+	// reuse-detected branch, the revoke INSERT "fails" — the call must
+	// return a non-Err­RefreshReused error (hard fail) per the
+	// security-critical revoke-must-persist invariant.
+	failRevoke bool
+	calls      []fakeStoreCall
 }
 
 type fakeStoreCall struct {
@@ -2851,6 +2858,15 @@ func (f *fakeRefreshStateStore) CheckAndConsume(_ context.Context, jti, familyID
 	}
 
 	if f.consumed[jti] || f.revoked[familyID] != "" {
+		// Reuse-detected branch. If failRevoke is armed, simulate the
+		// security-critical revoke-INSERT-failed case: the call must
+		// return a non-ErrRefreshReused error so the handler hard-fails
+		// (HTTP 500). This guards the invariant that family revocation
+		// must persist before we tell the caller "revoked".
+		if f.failRevoke {
+			f.failRevoke = false
+			return errors.New("simulated revoke INSERT failure (security-critical)")
+		}
 		f.revoked[familyID] = reason
 		return oauth_state.ErrRefreshReused
 	}
@@ -3158,6 +3174,73 @@ func TestOAuthRefreshReuseDetection_StateUnreachable(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 	require.Equal(t, "server_error", body["error"])
 	require.Contains(t, body["error_description"], "refresh state unavailable")
+}
+
+// TestOAuthRefreshReuseDetection_RevokeInsertFailureHardFails locks in the
+// invariant that family revocation MUST persist before the handler returns
+// an "invalid_grant reuse_detected" response. Returning ErrRefreshReused
+// would silently leave the winning fork of a forked family alive on every
+// MCP pod that later reads revoked_families. The fix in
+// pkg/oauth_state/store.go promotes revoke-INSERT failures to hard errors
+// (HTTP 500 server_error). This test pins that behavior so a future
+// refactor doesn't quietly downgrade it back to a WARN log.
+func TestOAuthRefreshReuseDetection_RevokeInsertFailureHardFails(t *testing.T) {
+	t.Parallel()
+	const (
+		redirectURI  = "http://127.0.0.1:3334/callback"
+		codeVerifier = "test-code-verifier"
+	)
+
+	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
+		"access_token": "upstream-access-token",
+		"token_type":   "Bearer",
+		"expires_in":   1800,
+		"scope":        "openid email",
+	}, nil)
+	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
+		"sub":            "user-1",
+		"iss":            provider.server.URL,
+		"aud":            "upstream-client-id",
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "user@example.com",
+		"email_verified": true,
+	})
+
+	app, store := newGatingModeTestAppWithH2(provider)
+	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
+	clientID := resp["_client_id"].(string)
+
+	// Redeem R0 once — claims its jti, mints R1.
+	rr1 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+	require.Equal(t, http.StatusOK, rr1.Code)
+
+	// Arm the fake to fail the next revoke. The replay below will hit the
+	// duplicate-detected branch in CheckAndConsume; the fake's failRevoke
+	// kicks in and returns a generic error instead of ErrRefreshReused.
+	store.mu.Lock()
+	store.failRevoke = true
+	store.mu.Unlock()
+
+	// Replay R0 — duplicate detected, but revoke INSERT "fails". Handler
+	// must hard-fail (500 server_error), NOT 400 invalid_grant. Returning
+	// 400 here would be a regression — it would tell the caller "family
+	// revoked" while the row didn't actually persist.
+	rrReplay := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
+	require.Equal(t, http.StatusInternalServerError, rrReplay.Code,
+		"revoke-INSERT failure must hard-fail with 500 server_error, NOT 400 invalid_grant — "+
+			"otherwise the winning fork of a forked family stays alive across pods")
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rrReplay.Body.Bytes(), &body))
+	require.Equal(t, "server_error", body["error"])
+
+	// Sanity: the family was NOT recorded as revoked (because the simulated
+	// INSERT failed). Operators paging on the ERR log line would investigate
+	// the underlying CH/Keeper failure.
+	store.mu.Lock()
+	require.Empty(t, store.revoked,
+		"failed revoke INSERT must NOT show as revoked in store state")
+	store.mu.Unlock()
 }
 
 func TestOAuthRefreshReuseDetection_ForwardModeRejectsConfig(t *testing.T) {

@@ -1,11 +1,25 @@
 -- Altinity MCP — OAuth refresh-token reuse-detection state (H-2).
 --
--- Two tables: KeeperMap-backed consumed-jti store (atomic insert-or-error,
--- exactly-one-winner across MCP pods via ClickHouse Keeper Raft consensus)
--- and a ReplicatedMergeTree revoked-families log. Run this on the cluster
--- BEFORE flipping `oauth.refresh_revokes_tracking: true` in helm values.
--- Run as an admin user (the pool user `mcp_service` intentionally lacks
--- CREATE privileges).
+-- Two KeeperMap tables, both linearizable via ClickHouse Keeper Raft:
+--
+--   - consumed_jtis: atomic insert-or-error (exactly-one-winner across
+--     MCP pods regardless of which CH replica each pod talks to). Strict
+--     mode is set per-INSERT in the Go code; without it concurrent
+--     redemptions of the same captured refresh token both succeed and
+--     the family forks before any reuse is detected.
+--
+--   - revoked_families: also KeeperMap. The refresh path checks this
+--     table BEFORE allowing a refresh; if it were ReplicatedMergeTree,
+--     async replication would let the WINNER of a forked family keep
+--     refreshing its branch on a CH replica that hasn't yet seen the
+--     loser's revoke INSERT. KeeperMap reads are linearizable, so the
+--     revoke is visible to every MCP pod immediately after Keeper
+--     consensus. Idempotent overwrite on duplicate family_id (no strict
+--     mode) — multiple parallel losers writing the same family is fine.
+--
+-- Run this on the cluster BEFORE flipping `oauth.refresh_revokes_tracking:
+-- true` in helm values. Run as an admin user (the pool user `mcp_service`
+-- intentionally lacks CREATE privileges).
 --
 -- See docs/oauth-refresh-reuse-detection.md for the full design rationale,
 -- threat model, and operator-side knobs.
@@ -53,18 +67,22 @@ ENGINE = KeeperMap('/altinity_mcp/oauth_refresh_consumed_jtis')
 PRIMARY KEY jti
 SETTINGS keeper_map_strict_mode = 1;  -- documentation only; query-level is what enforces
 
--- Revoked-families audit log. Plain ReplicatedMergeTree — INSERTs are
--- idempotent (multiple parallel revokes of the same family collapse via
--- TTL), and CH-native TTL handles cleanup automatically.
+-- Revoked-families enforcement table. KeeperMap (linearizable reads) so
+-- that a revoke on pod A is visible to pod B's next refresh-path read
+-- regardless of which CH replica each pod talks to. Idempotent overwrite
+-- on duplicate family_id (no strict mode here) — parallel losers writing
+-- the same revoke is fine; the second write replaces the reason field
+-- with whichever loser was scheduled last. KeeperMap doesn't support
+-- CH-native TTL, so cleanup is application-side via ALTER TABLE …
+-- DELETE in the MCP cleanup goroutine.
 CREATE TABLE IF NOT EXISTS altinity.oauth_refresh_revoked_families ON CLUSTER 'all-replicated'
 (
     family_id  String,
     revoked_at DateTime DEFAULT now(),
     reason     LowCardinality(String)
 )
-ENGINE = ReplicatedMergeTree
-ORDER BY family_id
-TTL revoked_at + INTERVAL 35 DAY;
+ENGINE = KeeperMap('/altinity_mcp/oauth_refresh_revoked_families')
+PRIMARY KEY family_id;
 
 -- Grants needed by the MCP pool user.
 --   INSERT — both tables (claim a jti, log a revoke).
@@ -103,9 +121,8 @@ GRANT INSERT, SELECT, ALTER DELETE ON altinity.* TO mcp_service ON CLUSTER 'all-
 --     revoked_at DateTime DEFAULT now(),
 --     reason     LowCardinality(String)
 -- )
--- ENGINE = MergeTree
--- ORDER BY family_id
--- TTL revoked_at + INTERVAL 35 DAY;
+-- ENGINE = KeeperMap('/altinity_mcp/oauth_refresh_revoked_families')
+-- PRIMARY KEY family_id;
 --
 -- GRANT INSERT, SELECT, ALTER DELETE ON altinity.* TO mcp_service;
 
