@@ -6,36 +6,115 @@ This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authen
 
 OAuth 2.0 authorization supports two modes:
 
-- **`mode: forward`** — works only against ClickHouse builds with native JWT auth (Altinity Antalya 25.8+). The bearer claude.ai sends to MCP is the upstream IdP's id_token; MCP validates locally then forwards to ClickHouse, which re-validates via `token_processors`.
-- **`mode: gating`** — works against any ClickHouse. The MCP server brokers OAuth with the upstream IdP and mints its own HS256 access tokens for the MCP client; ClickHouse is reached via static credentials or `cluster_secret` impersonation.
+- **`mode: gating`** *(default for v1+, redefined in #109)* — MCP is a pure OAuth resource server. The upstream IdP (Auth0 Enterprise, Authentik, Keycloak, Okta) handles DCR, `/authorize`, `/token`, and refresh-token rotation natively. MCP validates AS-issued JWTs and authorizes per-tool scopes. Use when the IdP supports DCR + RFC 8707 resource indicators.
+- **`mode: forward`** *(unchanged)* — MCP proxies DCR + `/authorize` + `/token` to upstream and relays upstream tokens to clients. Use when the IdP does NOT support DCR (Google direct, basic-tier Auth0).
 
 Detailed flows are in [Forward mode](#forward-mode) and [Gating mode](#gating-mode). The decision-rationale and trust-model differences are in [Choosing a mode](#choosing-a-mode) below.
 
+## Mode taxonomy
+
+| Mode | What MCP does | When to use |
+|---|---|---|
+| **`gating`** *(redefined in #109)* | Validates AS-issued JWTs via JWKS (RS256/ES256/EdDSA); enforces `aud` byte-equality (RFC 8707); enforces per-tool scopes (`mcp:read` / `mcp:write`); impersonates the user to ClickHouse via `cluster_secret` + `Auth.Username`. Does **not** run `/register`, `/authorize`, `/token`, `/callback`, `/consent`. | Default for v1+. Use when the upstream IdP supports DCR (Auth0 Enterprise, Authentik, Keycloak ≥ 18, Okta). |
+| **`forward`** *(unchanged)* | Proxies DCR + `/authorize` + `/token` to upstream; relays upstream tokens to clients. MCP appears to be the AS to clients but isn't really. JWE-wraps the upstream refresh token for stateless rotation. | Use when the upstream IdP does NOT support DCR (Google direct, basic-tier Auth0). IdP-agnostic. |
+
+### Required helm values per mode
+
+**Gating mode** (live example: `$MCP_DEPLOY_DIR/otel/mcp-values.yaml`):
+
+```yaml
+config:
+  server:
+    oauth:
+      enabled: true
+      mode: gating
+      issuer: "https://altinity.auth0.com/"
+      jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
+      audience: "https://otel-mcp.demo.altinity.cloud"   # RFC 8707 byte-equal with Auth0 API identifier
+      required_scopes:
+        - mcp:read
+        - mcp:write
+      require_email_verified: true
+      public_urls:
+        - "https://otel-mcp.demo.altinity.cloud"
+      # signing_secret injected via MCP_OAUTH_SIGNING_SECRET env var
+```
+
+Fields that **must not be present** under gating (startup refuses with a clear error naming the field): `client_id`, `client_secret` / `MCP_OAUTH_CLIENT_SECRET`, `token_url`, `auth_url`, `userinfo_url`, `public_auth_server_url`, `refresh_revokes_tracking`, `callback_path`.
+
+**Forward mode** (live example: `$MCP_DEPLOY_DIR/antalya/mcp-values.yaml`):
+
+```yaml
+config:
+  server:
+    oauth:
+      enabled: true
+      mode: forward
+      issuer: "https://altinity.auth0.com/"
+      auth_url: "https://altinity.auth0.com/authorize"
+      token_url: "https://altinity.auth0.com/oauth/token"
+      callback_path: "/callback"
+      client_id: "<per-cluster-client-id>"
+      # client_secret injected via MCP_OAUTH_CLIENT_SECRET env var
+      public_auth_server_url: "https://antalya-mcp.demo.altinity.cloud"
+      public_resource_url: "https://antalya-mcp.demo.altinity.cloud"
+      scopes: [openid, email, profile, offline_access]
+      upstream_offline_access: true
+```
+
+### Auth0 setup checklist for gating mode
+
+1. **Tenant-level DCR enabled** — already done at `altinity.auth0.com`.
+2. **RFC 8707 resource indicators configured** — already done at tenant level.
+3. **Per-cluster Auth0 API resource** (create one per cluster, otel example already exists):
+   - Identifier (audience) = MCP public URL byte-equal (e.g. `https://otel-mcp.demo.altinity.cloud`)
+   - Signing algorithm: `RS256`
+   - RBAC enabled; "Add Permissions in the Access Token" enabled; token dialect: `access_token_authz`
+   - Scopes: `mcp:read`, `mcp:write`
+   - Token Expiration: 600 s (10 min — revocation-latency mitigation)
+   - Allow Offline Access: on
+   - Refresh Token Rotation: Rotating; Reuse Interval: 0 s; Absolute expiry: 30 d; Inactivity: 7 d
+4. **`otel` cluster** — API resource already created (W2): resource-server id `69ff99639b974225b2bab5cd`, identifier `https://otel-mcp.demo.altinity.cloud`.
+
+> **Known security gap (action required before relying on gating-mode security posture):** Refresh-token rotation policy is set per-Application in Auth0. The existing per-cluster Application (`altinity-mcp-otel`, client_id `fAkf9qpOo0HBI2lA8Nc2R1fOqXdJEshx`) is currently non-rotating and non-expiring. DCR-registered clients (claude.ai, ChatGPT) inherit tenant-level DCR-template defaults at registration time, not the per-cluster Application's settings. Tenant-level DCR-template defaults must be set to enable rotation before OAuth 2.1 §4.13.2 reuse detection will actually take effect for dynamically registered clients.
+
+### Migration from old gating (pre-#109)
+
+An operator moving from the old gating (MCP-as-AS) to new gating (pure resource server) must **remove** the following helm values fields; if any are present at startup the server exits with an error naming the offending field:
+
+- `client_id`
+- `client_secret` env injection (`MCP_OAUTH_CLIENT_SECRET`)
+- `token_url`
+- `auth_url`
+- `userinfo_url`
+- `public_auth_server_url`
+- `refresh_revokes_tracking`
+- `callback_path`
+
+The canonical diff pattern is the `otel` values change committed on `feature/dcr-via-auth0` (`$MCP_DEPLOY_DIR/otel/mcp-values.yaml`).
+
+Fields that must be **added**:
+- `audience` (RFC 8707 byte-equal with the Auth0 API identifier)
+- `jwks_url` (or rely on OIDC discovery from `issuer`)
+- `required_scopes: [mcp:read, mcp:write]`
+
 ## Choosing a mode
 
-If your ClickHouse can't natively validate JWTs, forward mode saves no work and adds a load-bearing dependency on the upstream JWKS — pick gating. If you specifically want CH to do per-request identity validation (stronger trust isolation) and to materialise users from JWT claims, pick forward.
-
-### What both modes do identically
-
-The MCP server is, in either mode:
-
-1. **An OAuth Authorization Server** to the MCP client. Claude.ai, Codex, MCP Inspector and friends hit the MCP server's `/oauth/register` (DCR), `/oauth/authorize`, `/oauth/callback`, `/oauth/token`, and the well-known discovery docs. They never talk to the upstream IdP directly.
-2. **An OAuth Relying Party** to the upstream IdP. The MCP server holds the IdP `client_secret`, runs the auth-code-with-PKCE dance, and handles refresh-token grants.
-
-Neither role can be delegated to ClickHouse. CH doesn't speak DCR, doesn't talk to a user's browser, doesn't refresh tokens. **Both modes need the upstream IdP URLs, the per-deployment IdP `client_id` / `client_secret`, and a `signing_secret`** (HKDF root for the DCR client_id JWE, refresh-token JWE wrapping the upstream refresh, and the self-issued auth-code state).
+Use **gating** when the IdP supports DCR + RFC 8707 (Auth0 Enterprise, Authentik, Keycloak ≥ 18, Okta) and you don't need ClickHouse to independently validate the JWT. Use **forward** when the IdP lacks DCR support (Google direct, basic-tier Auth0) or when you specifically need ClickHouse to do per-request identity validation for stronger trust isolation.
 
 ### What's actually different
 
-| | Gating | Forward |
+| | Gating (#109+) | Forward |
 |---|---|---|
-| Bearer the MCP client receives | MCP-minted HS256 JWT | Upstream IdP id_token (raw passthrough) |
-| MCP→ClickHouse credential | Static creds, OR `cluster_secret` + `initial_user=email` | `Authorization: Bearer <id_token>` over HTTP |
-| Who validates the bearer on every query | MCP server only | **ClickHouse** via `token_processors` (MCP also validates locally — see C-1 below) |
+| Who runs DCR / authorize / token | Upstream IdP | MCP (proxied to upstream) |
+| Bearer the MCP client receives | AS-issued JWT (RS256, 10-min TTL) | Upstream IdP id_token (raw passthrough) |
+| MCP→ClickHouse credential | `cluster_secret` + `Auth.Username` = email | `Authorization: Bearer <id_token>` over HTTP |
+| Who validates the bearer on every query | MCP (JWKS + RFC 8707 aud + scopes) | **ClickHouse** via `token_processors` (MCP also validates locally — see [C-1](#c-1-defense-in-depth-validation-in-forward-mode)) |
 | User provisioning in ClickHouse | Pre-create users (`CREATE USER alice@example.com …`) | Dynamic — `token_processors` materialises ephemeral users from JWT claims |
 | ClickHouse build requirement | Any | Altinity Antalya 25.8+ (or any CH with native JWT auth) |
-| ClickHouse protocol | TCP or HTTP | HTTP only |
-| Identity in `system.query_log` | The cluster-secret-impersonated user (or static service user) | The JWT subject directly |
-| Token lifetime | MCP-controlled (independent of IdP session) | IdP-controlled (revoking the upstream session breaks the next query) |
+| ClickHouse protocol | TCP (cluster_secret) or HTTP (static creds) | HTTP only |
+| Identity in `system.query_log` | The cluster-secret-impersonated user | The JWT subject directly |
+| Refresh-token rotation + reuse detection | Auth0 native (when DCR-template defaults are set — see security gap above) | Upstream IdP (when `upstream_offline_access: true`) |
 
 ### The trust-boundary argument for forward mode
 
@@ -47,13 +126,13 @@ The honest summary: **forward mode is a stronger trust-isolation story when Clic
 
 ### Dynamic user provisioning
 
-Antalya's `token_processors` reads JWT claims (`email`, `roles`, custom claims) and materialises an ephemeral CH user with the right grants on the fly. This is forward-mode-exclusive — there is no plumbing in gating mode to give ClickHouse the JWT, so ClickHouse can't react to its claims.
+Antalya's `token_processors` reads JWT claims (`email`, `roles`, custom claims) and materialises an ephemeral CH user with the right grants on the fly. This is forward-mode-exclusive — gating mode never hands the JWT to ClickHouse, so ClickHouse can't react to its claims.
 
 For a multi-tenant or per-customer deployment where you don't want to manually `CREATE USER` for every new identity, this is a real operational gain. For a fixed roster of internal users, it doesn't matter.
 
 ### Token lifecycle
 
-In gating mode the MCP-issued access token is independent of the IdP session. The IdP revokes a session → the MCP-issued token keeps working until its own `exp`. The MCP-issued refresh token also keeps working until *its* `exp`, and on refresh the MCP server re-validates the upstream identity, so revocation is detected — but at refresh boundaries, not on every query.
+In gating mode the AS-issued access token has a 10-minute TTL (operator-controlled via `access_token_ttl_seconds`). The IdP revokes a session → tokens expire within 10 min. Refresh-token rotation and reuse detection are handled by Auth0, not MCP.
 
 In forward mode every query carries the upstream id_token, so revocation lands at the next query (subject to JWKS cache TTL and ClickHouse's own caching). This is a stronger "log the user out and they're out" guarantee.
 
@@ -61,8 +140,8 @@ In forward mode every query carries the upstream id_token, so revocation lands a
 
 - ClickHouse build is anything other than Altinity Antalya 25.8+ or another build with native JWT auth. Forward sends the bearer; CH 403s every query.
 - You need TCP protocol to ClickHouse (forward only supports HTTP).
-- You need MCP-issued tokens with custom claims that the IdP doesn't emit. Gating mints its own JWT and can shape claims; forward passes whatever the IdP gave you.
-- You don't want CH fetching the upstream JWKS on every cold cache. Forward mode adds that load to CH.
+- The IdP supports DCR and RFC 8707 — gating is simpler in that case.
+- You don't want CH fetching the upstream JWKS on every cold cache.
 
 ### When gating mode is the wrong choice
 
@@ -141,52 +220,58 @@ In forward mode, the bearer token is automatically forwarded to ClickHouse and s
 
 ## Gating mode
 
-Use this when ClickHouse has no OAuth support. The MCP server itself authenticates users via the upstream IdP, mints its own tokens, and connects to ClickHouse with static credentials.
+Use this when ClickHouse has no native OAuth support and the upstream IdP supports DCR + RFC 8707 resource indicators (Auth0 Enterprise, Authentik, Keycloak ≥ 18, Okta).
 
-1. An MCP client authenticates with an Identity Provider (IdP) via browser login.
-2. The MCP server validates the upstream identity (email domain, hosted domain, email verification).
-3. The MCP server mints its own signed access and refresh tokens for the MCP client.
-4. The MCP server connects to ClickHouse with its statically configured credentials (or `cluster_secret` impersonation — see [Cluster-secret authentication](#cluster-secret-authentication-optional)).
+Under #109, MCP is a **pure OAuth resource server** in gating mode. The upstream IdP owns the entire OAuth AS surface (DCR, `/authorize`, `/token`, refresh-token rotation, reuse detection). MCP only validates and authorizes:
 
-This mode works even when ClickHouse has no native OAuth support.
+1. An MCP client (claude.ai, ChatGPT, Codex) discovers the IdP via `/.well-known/oauth-protected-resource` and completes the auth-code-with-PKCE flow directly against the IdP. MCP plays no role in that dance.
+2. The client presents the AS-issued access token (RS256 JWT) on every MCP request.
+3. MCP validates: JWKS signature, `iss` match, `aud` byte-equality (RFC 8707), `exp`, and per-tool required scopes (`mcp:read` / `mcp:write`). Rejects invalid tokens at 401.
+4. MCP connects to ClickHouse via `cluster_secret` + `Auth.Username = email` (per-user attribution) or static credentials. ClickHouse never sees the JWT.
 
 ```
-┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
-│  MCP   │─────>│   IdP    │      │   MCP    │      │ ClickHouse │
-│ Client │<─────│(Keycloak,│      │  Server  │      │            │
-│        │      │ Azure AD,│      │          │      │            │
-│        │      │ Google)  │      │          │      │            │
-│        │      └──────────┘      │          │      │            │
-│        │                        │          │      │            │
-│        │──Browser login────────>│──Verify──>│     │            │
-│        │<─────────MCP token─────│  identity │     │            │
-│        │                        │          │      │            │
-│        │──MCP token────────────>│          │      │            │
-│        │                        │─Static──>│      │            │
-│        │                        │  creds   │─────>│ Authn via  │
-│        │<───────────────────────│<─────────│<─────│ config user│
-│        │      query results     │          │      │            │
-└────────┘                        └──────────┘      └────────────┘
+┌────────┐      ┌────────────┐      ┌──────────┐      ┌────────────┐
+│  MCP   │─────>│  Auth0 /   │      │   MCP    │      │ ClickHouse │
+│ Client │<─────│  Keycloak  │      │  Server  │      │            │
+│        │      │  (IdP/AS)  │      │          │      │            │
+│        │      └────────────┘      │          │      │            │
+│        │                          │          │      │            │
+│        │──AS-issued JWT──────────>│          │      │            │
+│        │                          │ validate │      │            │
+│        │                          │ JWKS+aud │      │            │
+│        │                          │ +scopes  │      │            │
+│        │                          │─cluster─>│      │  verifies  │
+│        │                          │ secret + │─────>│  HMAC, runs│
+│        │                          │ initial  │      │  as email  │
+│        │                          │ _user    │      │            │
+│        │<─────────────────────────│<─────────│<─────│            │
+│        │         query results    │          │      │            │
+└────────┘                          └──────────┘      └────────────┘
 ```
 
 ```yaml
-clickhouse:
-  host: "clickhouse.example.com"
-  port: 9000
-  protocol: tcp
-  username: "default"
-  password: "<CLICKHOUSE_PASSWORD>"
-server:
-  oauth:
-    enabled: true
-    mode: "gating"
-    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
-    issuer: "https://accounts.google.com"
-    public_auth_server_url: "https://mcp.example.com"
-    client_id: "<YOUR_CLIENT_ID>"
-    client_secret: "<YOUR_CLIENT_SECRET>"
-    scopes: ["openid", "email"]
-    allowed_email_domains: ["example.com"]
+config:
+  clickhouse:
+    host: "clickhouse.example.com"
+    port: 9000
+    protocol: tcp
+    cluster_name: "mcp_cluster"
+    cluster_secret: "CHANGE_ME_SHARED_SECRET"
+    username: default   # fallback; real queries run as OAuth email
+  server:
+    oauth:
+      enabled: true
+      mode: gating
+      issuer: "https://altinity.auth0.com/"
+      jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
+      audience: "https://mcp.example.com"   # RFC 8707 byte-equal with Auth0 API identifier
+      required_scopes: [mcp:read, mcp:write]
+      require_email_verified: true
+      public_urls:
+        - "https://mcp.example.com"
+      # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
+      # DO NOT set: client_id, client_secret, token_url, auth_url,
+      #             userinfo_url, public_auth_server_url, refresh_revokes_tracking
 ```
 
 ### Cluster-secret authentication (optional)
@@ -197,22 +282,22 @@ The **cluster-secret path** removes both limitations. altinity-mcp handshakes wi
 
 ```
 ┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
-│  MCP   │      │   IdP    │      │   MCP    │      │ ClickHouse │
-│ Client │      │          │      │  Server  │      │            │
-│        │──login──>│     │      │          │      │            │
-│        │<─MCP tok─│     │      │          │      │            │
+│  MCP   │      │  IdP/AS  │      │   MCP    │      │ ClickHouse │
+│ Client │      │  (Auth0) │      │  Server  │      │            │
+│        │──DCR+login──────>│      │          │      │            │
+│        │<─AS JWT──────────│      │          │      │            │
 │        │                        │          │      │            │
-│        │──query + MCP token────>│          │      │            │
+│        │──query + AS JWT────────>│          │      │            │
 │        │                        │─cluster─>│      │  verifies  │
 │        │                        │ secret + │      │  HMAC, runs│
-│        │                        │ initial  │─────>│  as claim. │
-│        │                        │ _user =  │      │  subject   │
-│        │                        │ claim.sub│      │            │
+│        │                        │ initial  │─────>│  as email  │
+│        │                        │ _user =  │      │  claim     │
+│        │                        │ email    │      │            │
 │        │<───────────────────────│<─────────│<─────│            │
 └────────┘                        └──────────┘      └────────────┘
 ```
 
-**altinity-mcp config:**
+**altinity-mcp config** (abbreviated — see [Required helm values per mode](#required-helm-values-per-mode) for the full gating snippet):
 
 ```yaml
 clickhouse:
@@ -229,9 +314,12 @@ server:
   oauth:
     enabled: true
     mode: gating
-    issuer: https://accounts.google.com
-    signing_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
-    # ... standard gating config ...
+    issuer: "https://altinity.auth0.com/"
+    jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
+    audience: "https://mcp.example.com"
+    required_scopes: [mcp:read, mcp:write]
+    require_email_verified: true
+    # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
 ```
 
 Or via env: `CLICKHOUSE_CLUSTER_NAME`, `CLICKHOUSE_CLUSTER_SECRET`, `CLICKHOUSE_PROTOCOL=tcp`.
@@ -288,20 +376,19 @@ The literal value used for the ClickHouse username is the OAuth `email` claim wh
 - **ClickHouse protocol**: Forward mode requires `http`. Gating mode with static credentials works with both `http` and native `tcp`. Gating mode with cluster-secret authentication requires `tcp`.
 - **ClickHouse version**: Forward mode requires Altinity Antalya build 25.8+ (or any build that supports `token_processors`). Gating mode works with any ClickHouse version.
 - **Identity Provider**: Any OAuth 2.0 / OIDC-compliant provider (Keycloak, Azure AD, Google, AWS Cognito, etc.)
-- **`signing_secret`**: Required in both modes. Protects stateless client registration, authorization codes, and (in gating mode) refresh tokens.
-- **Frontend / reverse proxy**: If published behind a proxy, configure explicit `public_resource_url` and `public_auth_server_url`. See [Frontend / Reverse Proxy Requirements](#frontend--reverse-proxy-requirements).
+- **`signing_secret`**: Required in both modes. Protects stateless OAuth artifacts: DCR client-id JWE, forward-mode refresh-token JWE, and HKDF-derived key material.
+- **Frontend / reverse proxy**: If published behind a proxy, configure `public_resource_url` (both modes) and `public_auth_server_url` (forward mode only). See [Frontend / Reverse Proxy Requirements](#frontend--reverse-proxy-requirements).
 
 ## MCP Client Discovery Flow
 
 OAuth-capable MCP clients (e.g., Claude Desktop, Codex) discover authentication automatically:
 
-1. Client fetches `/.well-known/oauth-protected-resource` from the MCP endpoint
-2. Response points to the authorization server URL
-3. Client fetches `/.well-known/oauth-authorization-server` for endpoint metadata
-4. Client dynamically registers via the registration endpoint (PKCE, public client)
-5. Client initiates authorization code flow with S256 PKCE
-6. After login, client exchanges the code for access + refresh tokens
-7. Client uses the access token for MCP requests and refreshes silently when it expires
+1. Client fetches `/.well-known/oauth-protected-resource` from the MCP endpoint.
+2. **Gating**: response `authorization_servers` points to the upstream IdP (e.g. `https://altinity.auth0.com/`). Client fetches `/.well-known/oauth-authorization-server` **from the IdP**. MCP's `/.well-known/oauth-authorization-server` returns 404 (route removed under #109). **Forward**: response points to MCP itself; client fetches MCP's `/.well-known/oauth-authorization-server`.
+3. Client dynamically registers (DCR) with the authorization server — the IdP in gating mode, MCP in forward mode.
+4. Client initiates authorization code flow with S256 PKCE.
+5. After login, client exchanges the code for access + refresh tokens.
+6. Client presents the access token on every MCP request and refreshes silently via the AS when it expires.
 
 ## Refresh Tokens
 
@@ -309,11 +396,11 @@ Both modes can issue refresh tokens. The MCP refresh token is always a stateless
 
 ### Gating mode
 
-The token endpoint returns a `refresh_token` alongside the `access_token`. Clients exchange it via `grant_type=refresh_token` to get a new access token without re-authorizing through the browser.
+Refresh tokens are issued and rotated entirely by the upstream IdP (Auth0, Keycloak, etc.). MCP does not issue, rotate, or validate gating-mode refresh tokens — it never sees them. The client exchanges refresh tokens directly against the IdP's `/token` endpoint.
 
-- **TTL**: Controlled by `refresh_token_ttl_seconds` (default: 30 days)
-- **Rotation**: Each refresh returns a new refresh token (the old one remains valid until expiry)
-- **Stateless**: Refresh tokens are encrypted JWE blobs with no server-side state. There is no revocation or reuse detection.
+- **TTL**: Set on the Auth0 API resource (absolute: 30 d; inactivity: 7 d per the otel setup).
+- **Rotation**: Rotating with reuse interval = 0 s (when the Auth0 DCR-template defaults are configured — see the security gap in the Auth0 setup checklist above).
+- **Reuse detection**: RFC 6749 §10.4 / OAuth 2.1 §4.13.2 — handled by Auth0, not MCP.
 
 ### Forward mode (opt-in)
 
@@ -331,22 +418,22 @@ Operator setup:
 - Configure refresh-token rotation + reuse detection at the IdP if available. This provides revocation outside MCP, since the JWE itself is stateless.
 - The default is `false` so existing forward-mode deployments are unaffected unless an operator opts in. Three reasons for the default: (1) turning on refresh widens the stolen-token blast radius from the upstream ID-token TTL (~1 h) to `refresh_token_ttl_seconds` (default 30 d) — operators must consciously accept that envelope; (2) `offline_access` requires upstream IdP configuration that may not yet be in place; (3) refresh-rotation policy is a separate operator decision (often owned by the identity team).
 
-Limitations (apply to both modes):
+Limitations:
 
-- No server-side revocation of individual MCP tokens. Rotate `signing_secret` to invalidate all outstanding JWEs.
-- No reuse detection for the MCP-side refresh token: a rotated-out JWE remains valid until its `exp`. In forward mode, the upstream IdP's reuse detection (if enabled) provides defense-in-depth.
+- **Gating**: no MCP-side revocation; token validity is bounded by Auth0's access-token TTL (600 s). Grant revocations take effect within one TTL window.
+- **Forward**: no server-side revocation of the JWE-wrapped refresh token. Rotate `signing_secret` to invalidate all outstanding JWEs. The upstream IdP's reuse detection (if enabled) provides defense-in-depth when `upstream_offline_access: true`.
 
-## Identity Policy (Gating Mode)
+## Identity Policy
 
-Gating mode can restrict access based on verified identity claims from the upstream IdP:
+MCP can restrict access based on identity claims extracted from the validated JWT on every request. These checks apply to both modes; in gating mode they are MCP's primary admission gate (the IdP is still the authority for authentication, but MCP enforces the domain/email policy at authorization time).
 
 | Option | Description |
 |--------|-------------|
-| `allowed_email_domains` | Only allow users with email addresses in these domains (e.g., `["example.com"]`) |
-| `allowed_hosted_domains` | Only allow users from these Google Workspace / hosted domains (checks the `hd` claim) |
-| `require_email_verified` | Reject users whose `email_verified` claim is false |
+| `allowed_email_domains` | Only allow principals with an `email` claim in these domains (e.g., `["example.com"]`) |
+| `allowed_hosted_domains` | Only allow principals with an `hd` (hosted/workspace domain) claim in this set — Google Workspace / Auth0 organization |
+| `require_email_verified` | Reject principals whose `email_verified` claim is `false` or absent. **Required when using `cluster_secret` impersonation** (H-1 safety rule: gating + cluster_secret refuses to start without this set). |
 
-These checks run on every token mint and refresh. Identity claims come from the upstream IdP's signed id_token or userinfo response and cannot be forged by the client.
+Claims come from the AS-issued JWT (gating) or the upstream id_token (forward) and cannot be forged by the client.
 
 ```yaml
 server:
@@ -365,9 +452,13 @@ server:
     enabled: false
 
     # OAuth operating mode:
-    # - "forward": pass bearer tokens through to ClickHouse for validation
-    # - "gating": validate upstream identity and mint local MCP tokens
-    mode: "forward"
+    # - "gating": pure resource server — validate AS-issued JWTs (JWKS + RFC 8707 aud + scopes).
+    #             Upstream IdP handles DCR/authorize/token. Requires issuer + audience.
+    #             Forbidden fields: client_id, client_secret, token_url, auth_url,
+    #             userinfo_url, public_auth_server_url, refresh_revokes_tracking.
+    # - "forward": MCP proxies DCR + authorize + token to upstream; relays upstream tokens.
+    #              Requires client_id, client_secret, auth_url, token_url.
+    mode: "gating"
 
     # Symmetric secret for stateless OAuth artifacts (client registration,
     # authorization codes, refresh tokens). Required whenever OAuth is enabled.
@@ -382,16 +473,16 @@ server:
     # Expected audience claim in incoming tokens
     audience: ""
 
-    # Upstream OAuth client credentials (for browser-login facade)
+    # Forward mode only: upstream OAuth client credentials and endpoint URLs.
+    # FORBIDDEN in gating mode — startup refuses if any of these are set.
     client_id: ""
     client_secret: ""
-
-    # Upstream OAuth endpoint URLs (discovered from issuer if empty)
     token_url: ""
     auth_url: ""
     userinfo_url: ""
+    public_auth_server_url: ""
 
-    # OAuth scopes to request from upstream IdP
+    # Forward mode only: OAuth scopes to request from upstream IdP
     scopes: ["openid", "profile", "email"]
 
     # Forward mode: opt into requesting offline_access upstream and issuing
@@ -399,35 +490,34 @@ server:
     # Tokens / Forward mode (opt-in)" for trust model and operator setup.
     upstream_offline_access: false
 
-    # Scopes required in incoming tokens (gating mode only)
+    # Gating mode: scopes required in every incoming AS-issued JWT
     required_scopes: []
 
-    # Allowed upstream IdP issuers for identity tokens during callback exchange
+    # Forward mode: allowed upstream IdP issuers for identity tokens
     upstream_issuer_allowlist: []
 
-    # Identity policy (gating mode)
+    # Identity policy — applies to both modes (claims from JWT)
     allowed_email_domains: []
     allowed_hosted_domains: []
     require_email_verified: false
 
-    # Token lifetimes (auth code TTL is hardcoded to 300s per RFC 6749)
-    access_token_ttl_seconds: 3600    # 1 hour
-    refresh_token_ttl_seconds: 2592000 # 30 days (gating mode only)
+    # Token lifetimes
+    access_token_ttl_seconds: 3600    # 1 hour (gating: reduce to 600 for revocation latency)
+    refresh_token_ttl_seconds: 2592000 # 30 days (forward mode only — gating refresh tokens are IdP-managed)
 
-    # Header name for forwarding. Default "Authorization" sends "Bearer {token}".
+    # Header name for forwarding (forward mode). Default "Authorization" sends "Bearer {token}".
     # Set to a custom name to send the raw token without "Bearer " prefix.
     clickhouse_header_name: ""
 
-    # Map token claims to ClickHouse HTTP headers (gating mode with claims)
+    # Map token claims to ClickHouse HTTP headers (forward mode with claims)
     claims_to_headers:
       sub: "X-ClickHouse-User"
       email: "X-ClickHouse-Email"
 
-    # Externally visible URLs (required behind a reverse proxy)
+    # Externally visible MCP endpoint URL. Required behind a reverse proxy (both modes).
     public_resource_url: ""
-    public_auth_server_url: ""
 
-    # Endpoint paths (defaults shown; override for custom proxy layouts).
+    # Forward mode only: endpoint paths (defaults shown; override for custom proxy layouts).
     # The .well-known metadata paths are spec-fixed and not configurable.
     registration_path: "/register"
     authorization_path: "/authorize"
@@ -439,22 +529,24 @@ server:
 
 | Option | Description |
 |--------|-------------|
-| `mode` | `forward` passes tokens to ClickHouse for validation; `gating` validates upstream identity and mints local tokens |
+| `mode` | `gating` validates AS-issued JWTs (JWKS + RFC 8707 aud + scopes); `forward` proxies DCR/authorize/token to upstream and relays tokens to ClickHouse |
 | `signing_secret` | Symmetric secret for all stateless OAuth artifacts. **Required** whenever OAuth is enabled |
 | `issuer` | Upstream IdP issuer URL for OIDC discovery and token validation |
 | `public_resource_url` | Externally visible MCP endpoint URL. **Required** behind a reverse proxy |
-| `public_auth_server_url` | Externally visible OAuth authorization server URL. **Required** behind a reverse proxy |
-| `refresh_token_ttl_seconds` | Lifetime of stateless refresh tokens (default 30 days). Applies to gating mode and to forward mode when `upstream_offline_access` is on |
+| `public_auth_server_url` | Externally visible OAuth authorization server URL. **Forward mode only** — required behind a reverse proxy. Forbidden in gating mode. |
+| `refresh_token_ttl_seconds` | Lifetime of JWE-wrapped refresh tokens (default 30 days). Applies to forward mode when `upstream_offline_access` is on. Not applicable to gating mode (refresh tokens are IdP-managed). |
 | `upstream_offline_access` | Forward mode only: request `offline_access` upstream and issue JWE-wrapped refresh tokens to MCP clients. Default `false` |
 
 ## Frontend / Reverse Proxy Requirements
 
 For direct bearer-token use, a plain reverse proxy is usually enough.
 
-For browser-based MCP login, the frontend must expose two public URL spaces:
+For browser-based MCP login in **forward mode**, the frontend must expose two public URL spaces:
 
 - the protected resource, for example `https://PUBLIC_HOST.example.com/`
 - the OAuth authorization server, for example `https://PUBLIC_HOST.example.com/oauth`
+
+In **gating mode**, only the protected resource URL needs to be proxied. The authorization server is the upstream IdP and is not proxied through MCP.
 
 The proxy must:
 
@@ -829,7 +921,7 @@ Example values files are provided for each provider:
 
 - **`signing_secret`** protects all stateless OAuth artifacts (client registrations, authorization codes, refresh tokens). Treat it like a signing key. Rotate it to invalidate all outstanding registrations and tokens.
 - **Forward mode does not validate tokens locally.** It checks only that a bearer token is present, then forwards it to ClickHouse. Token validation is ClickHouse's responsibility via `token_processors`.
-- **Gating-mode refresh tokens are stateless.** There is no server-side state, so individual tokens cannot be revoked. The only way to invalidate all tokens is to rotate `signing_secret`. Use `refresh_token_ttl_seconds` to limit exposure.
+- **Gating-mode tokens are AS-issued JWTs.** MCP does not mint or revoke them. Revocation propagates to MCP within one access-token TTL window (default 600 s). Refresh-token revocation is handled entirely by the upstream IdP.
 - **Opaque bearer tokens are not supported.** Inbound OAuth validation on MCP/OpenAPI endpoints requires a signed JWT that can be validated via JWKS. The `userinfo` endpoint is used only during browser-login identity lookup, not for runtime token validation.
 - **Token preference during browser login.** When both `id_token` and `access_token` are returned by the upstream provider, `altinity-mcp` prefers `id_token` as the MCP bearer token and falls back to `access_token` only when no `id_token` is available.
 
@@ -845,7 +937,7 @@ Ensure the `issuer` in your MCP config matches exactly what your IdP puts in the
 - Trailing slash mismatch (`https://accounts.google.com` vs `https://accounts.google.com/`)
 - Missing `/v2.0` suffix for Azure AD
 
-In gating mode, also ensure `public_auth_server_url` is set when `issuer` is configured. The server mints tokens with `public_auth_server_url` as the issuer but validates against `issuer` if `public_auth_server_url` is empty.
+In gating mode, `issuer` must exactly match the `iss` claim in the AS-issued JWT. `public_auth_server_url` is a **forward-mode-only** field and must not be set under gating (startup refuses).
 
 ### ClickHouse authenticates but user has no permissions
 
