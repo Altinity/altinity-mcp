@@ -123,23 +123,6 @@ func TestOAuthJWEHKDFRoundtripAndLegacyFallback(t *testing.T) {
 		require.Equal(t, "user-legacy", decoded["sub"])
 	})
 
-	t.Run("self_issued_access_token_v1_carries_kid", func(t *testing.T) {
-		t.Parallel()
-		token, err := encodeSelfIssuedAccessToken(secret, map[string]interface{}{
-			"sub": "user-1",
-			"iss": "https://mcp.example.com",
-			"aud": "https://mcp.example.com",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
-		require.NoError(t, err)
-		parts := strings.Split(token, ".")
-		require.Len(t, parts, 3)
-		header, err := decodeJWTSegment(parts[0])
-		require.NoError(t, err)
-		var hdr map[string]interface{}
-		require.NoError(t, json.Unmarshal(header, &hdr))
-		require.Equal(t, oauthKidV1, hdr["kid"], "self-issued access token must carry kid=v1")
-	})
 }
 
 func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
@@ -280,75 +263,6 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		require.Equal(t, http.StatusFound, authRR.Code, "missing resource indicator must still authorize (legacy clients)")
 	})
 
-	t.Run("mint_gating_token_aud_mirrors_requested_resource", func(t *testing.T) {
-		// `aud` claim must byte-match what the client passed in `resource`.
-		// Anthropic's artifact-side proxy enforces this byte-equality; if we
-		// strip a trailing slash that the client included, the proxy silently
-		// drops the connector — see docs/artifact-mcp-known-issues.md.
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
-		// Audience field is set on app.config (= "https://mcp.example.com"),
-		// but Resource on the gatingIdentity must win.
-		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
-			ClientID:      "test-client",
-			Subject:       "user-123",
-			Email:         "u@example.com",
-			EmailVerified: true,
-			Scope:         "openid email",
-			Resource:      "https://mcp.example.com/",
-		})
-		require.Equal(t, http.StatusOK, w.Code)
-
-		var resp map[string]interface{}
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		accessToken, _ := resp["access_token"].(string)
-		require.NotEmpty(t, accessToken)
-
-		// Decode the JWS (3 parts) without verification; we only check the
-		// audience claim shape.
-		parts := strings.Split(accessToken, ".")
-		require.Len(t, parts, 3)
-		payload, err := decodeJWTSegment(parts[1])
-		require.NoError(t, err)
-		var claims map[string]interface{}
-		require.NoError(t, json.Unmarshal(payload, &claims))
-		require.Equal(t, "https://mcp.example.com/", claims["aud"], "aud must be the exact string the client passed in `resource` (trailing slash preserved)")
-	})
-
-	t.Run("mint_gating_token_aud_defaults_to_canonical_no_slash", func(t *testing.T) {
-		// When the client did NOT send a resource indicator (e.g., legacy
-		// codex / older mcp clients) the fallback `aud` matches the
-		// canonical advertised `resource` (no trailing slash) per
-		// MCP 2025-11-25 §Canonical Server URI.
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", nil)
-		// Clear the operator-configured Audience for this subtest so the
-		// fallback path runs (with Audience set, that wins).
-		savedAud := app.config.Server.OAuth.Audience
-		app.config.Server.OAuth.Audience = ""
-		t.Cleanup(func() { app.config.Server.OAuth.Audience = savedAud })
-
-		app.mintGatingTokenResponse(w, req, []byte(app.config.Server.OAuth.SigningSecret), gatingIdentity{
-			ClientID:      "test-client",
-			Subject:       "user-123",
-			Email:         "u@example.com",
-			EmailVerified: true,
-			Scope:         "openid email",
-			// Resource intentionally empty.
-		})
-		require.Equal(t, http.StatusOK, w.Code)
-		var resp map[string]interface{}
-		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-		accessToken, _ := resp["access_token"].(string)
-		parts := strings.Split(accessToken, ".")
-		require.Len(t, parts, 3)
-		payload, err := decodeJWTSegment(parts[1])
-		require.NoError(t, err)
-		var claims map[string]interface{}
-		require.NoError(t, json.Unmarshal(payload, &claims))
-		require.Equal(t, "https://mcp.example.com", claims["aud"])
-	})
-
 	t.Run("dynamic_client_registration_default_is_confidential", func(t *testing.T) {
 		// When the client doesn't ask for a specific auth method, we now
 		// register it as confidential (client_secret_post). This unblocks
@@ -422,21 +336,14 @@ func TestOAuthHTTPDiscoveryAndRegistration(t *testing.T) {
 		app.handleOAuthProtectedResource(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Contains(t, rr.Body.String(), "\"resource\":\"https://public.example.com/\"")
-		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://public.example.com/oauth\"]")
+		// In gating mode the protected-resource metadata advertises the upstream
+		// IdP (cfg.Issuer) as the AS, not MCP's own PublicAuthServerURL.
+		require.Contains(t, rr.Body.String(), "\"authorization_servers\":[\"https://mcp.example.com/oauth\"]")
 	})
 }
 
 func TestOAuthMCPAuthInjector(t *testing.T) {
 	t.Parallel()
-	token, err := generateOAuthTokenForApp(map[string]interface{}{
-		"sub":   "user123",
-		"iss":   "https://mcp.example.com",
-		"aud":   "https://mcp.example.com",
-		"exp":   time.Now().Add(time.Hour).Unix(),
-		"scope": "openid email",
-		"email": "user@example.com",
-	})
-	require.NoError(t, err)
 
 	app := &application{
 		config: config.Config{
@@ -489,24 +396,6 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "resource_metadata=")
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), "error=\"invalid_token\"")
-	})
-
-	t.Run("valid_oauth_sets_context", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/"+jweToken, nil)
-		req.SetPathValue("token", jweToken)
-		req.Header.Set("Authorization", "Bearer "+token)
-		rr := httptest.NewRecorder()
-		called := false
-		handler := app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			called = true
-			require.Equal(t, jweToken, r.Context().Value(altinitymcp.JWETokenKey))
-			require.Equal(t, token, r.Context().Value(altinitymcp.OAuthTokenKey))
-			w.WriteHeader(http.StatusOK)
-		}))
-		handler.ServeHTTP(rr, req)
-		require.True(t, called)
-		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
 	t.Run("jwe_with_credentials_skips_oauth", func(t *testing.T) {
@@ -687,6 +576,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled:  true,
+					Mode:     "forward",
 					Issuer:   "https://mcp.example.com/oauth",
 					Audience: "https://mcp.example.com",
 					Scopes:   []string{"openid", "email"},
@@ -1209,18 +1099,6 @@ func TestCanonicalResourceURL(t *testing.T) {
 	}
 }
 
-func TestEncodeSelfIssuedAccessTokenShortSecret(t *testing.T) {
-	t.Parallel()
-	token, err := encodeSelfIssuedAccessToken([]byte("short-secret"), map[string]interface{}{
-		"sub": "user-1",
-		"iss": "https://issuer.example.com",
-		"aud": "https://resource.example.com",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, token)
-}
-
 func TestOAuthStateStoreSizeCap(t *testing.T) {
 	t.Parallel()
 	t.Run("pending_auth_evicts_oldest_at_cap", func(t *testing.T) {
@@ -1368,143 +1246,6 @@ func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken
 	rr := httptest.NewRecorder()
 	app.handleOAuthToken(rr, req)
 	return rr
-}
-
-func TestOAuthRefreshTokenGatingMode(t *testing.T) {
-	t.Parallel()
-	const (
-		redirectURI  = "http://127.0.0.1:3334/callback"
-		codeVerifier = "test-code-verifier"
-	)
-
-	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
-		"access_token": "upstream-access-token",
-		"token_type":   "Bearer",
-		"expires_in":   1800,
-		"scope":        "openid email",
-	}, nil)
-	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
-		"sub":            "user-1",
-		"iss":            provider.server.URL,
-		"aud":            "upstream-client-id",
-		"exp":            time.Now().Add(time.Hour).Unix(),
-		"iat":            time.Now().Unix(),
-		"email":          "user@example.com",
-		"email_verified": true,
-	})
-
-	app := newGatingModeTestApp(provider)
-	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
-	clientID := resp["_client_id"].(string)
-
-	t.Run("auth_code_response_includes_refresh_token", func(t *testing.T) {
-		t.Parallel()
-		require.NotEmpty(t, resp["access_token"])
-		require.NotEmpty(t, resp["refresh_token"], "gating mode should return a refresh_token")
-		require.Equal(t, "Bearer", resp["token_type"])
-		require.Greater(t, resp["expires_in"].(float64), float64(0))
-	})
-
-	t.Run("refresh_grants_new_tokens", func(t *testing.T) {
-		t.Parallel()
-		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		var refreshResp map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &refreshResp))
-		require.NotEmpty(t, refreshResp["access_token"])
-		require.NotEmpty(t, refreshResp["refresh_token"], "refresh response should include rotated refresh_token")
-		require.Equal(t, "Bearer", refreshResp["token_type"])
-		require.Greater(t, refreshResp["expires_in"].(float64), float64(0))
-
-		// Refresh token is JWE (random IV) so always differs; access token is
-		// deterministic HS256 JWT so may match within the same second — only
-		// check the refresh token is rotated.
-		require.NotEqual(t, resp["refresh_token"], refreshResp["refresh_token"])
-	})
-
-	t.Run("chained_refresh_works", func(t *testing.T) {
-		t.Parallel()
-		// First refresh
-		rr1 := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr1.Code)
-		var resp1 map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr1.Body.Bytes(), &resp1))
-
-		// Second refresh using rotated token
-		rr2 := exchangeRefreshToken(t, app, clientID, resp1["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr2.Code)
-		var resp2 map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &resp2))
-		require.NotEmpty(t, resp2["access_token"])
-		require.NotEmpty(t, resp2["refresh_token"])
-	})
-}
-
-func TestOAuthRefreshTokenInvalidGrant(t *testing.T) {
-	t.Parallel()
-	const redirectURI = "http://127.0.0.1:3334/callback"
-
-	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
-		"access_token": "upstream-access-token",
-		"token_type":   "Bearer",
-		"expires_in":   1800,
-		"scope":        "openid email",
-	}, nil)
-	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
-		"sub":            "user-1",
-		"iss":            provider.server.URL,
-		"aud":            "upstream-client-id",
-		"exp":            time.Now().Add(time.Hour).Unix(),
-		"iat":            time.Now().Unix(),
-		"email":          "user@example.com",
-		"email_verified": true,
-	})
-
-	app := newGatingModeTestApp(provider)
-	resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, "verifier1")
-	clientID := resp["_client_id"].(string)
-
-	t.Run("wrong_client_id", func(t *testing.T) {
-		t.Parallel()
-		otherClientID := registerOAuthBrowserClient(t, app, redirectURI)
-		rr := exchangeRefreshToken(t, app, otherClientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-		require.Contains(t, rr.Body.String(), "not issued to this client")
-	})
-
-	t.Run("malformed_refresh_token", func(t *testing.T) {
-		t.Parallel()
-		rr := exchangeRefreshToken(t, app, clientID, "garbage-token")
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-		require.Contains(t, rr.Body.String(), "invalid refresh token")
-	})
-
-	t.Run("missing_refresh_token", func(t *testing.T) {
-		t.Parallel()
-		form := url.Values{}
-		form.Set("grant_type", "refresh_token")
-		form.Set("client_id", clientID)
-		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		rr := httptest.NewRecorder()
-		app.handleOAuthToken(rr, req)
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-		require.Contains(t, rr.Body.String(), "missing refresh token")
-	})
-
-	t.Run("forward_mode_rejects_gating_refresh_token", func(t *testing.T) {
-		t.Parallel()
-		// Forward mode now supports refresh when UpstreamOfflineAccess is on,
-		// but a refresh token minted by gating mode is not transferable: the
-		// client_id encoded in the JWE belongs to the gating-mode app, not the
-		// forward-mode app's freshly registered client.
-		fwdApp := newForwardModeBrowserLoginTestApp(provider)
-		fwdClientID := registerOAuthBrowserClient(t, fwdApp, redirectURI)
-		rr := exchangeRefreshToken(t, fwdApp, fwdClientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-		require.Contains(t, rr.Body.String(), "not issued to this client")
-	})
 }
 
 func TestOAuthForwardModeNoRefreshToken(t *testing.T) {
@@ -1812,128 +1553,6 @@ func TestOAuthAuthorizeOfflineAccessScope(t *testing.T) {
 		require.NotContains(t, scopes, "offline_access", "default forward mode must not request offline_access")
 	})
 
-	t.Run("gating_mode_ignores_flag", func(t *testing.T) {
-		t.Parallel()
-		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
-			"access_token": "irrelevant",
-			"token_type":   "Bearer",
-		}, nil)
-		app := newGatingModeTestApp(provider)
-		// Even if the flag were set in gating mode, offline_access is forward-only.
-		app.config.Server.OAuth.UpstreamOfflineAccess = true
-		app.mcpServer.Config.Server.OAuth.UpstreamOfflineAccess = true
-		scopes := scopeFromRedirect(t, app)
-		require.NotContains(t, scopes, "offline_access", "gating mode must not request offline_access regardless of flag")
-	})
-}
-
-func TestOAuthRefreshTokenPolicyRevalidation(t *testing.T) {
-	t.Parallel()
-	const (
-		redirectURI  = "http://127.0.0.1:3334/callback"
-		codeVerifier = "test-code-verifier-policy"
-	)
-
-	setupProviderAndApp := func(t *testing.T, email string, emailVerified bool, hd string) (*testForwardModeOIDCProvider, *application, map[string]interface{}) {
-		t.Helper()
-		idTokenClaims := map[string]interface{}{
-			"sub":            "user-1",
-			"aud":            "upstream-client-id",
-			"exp":            time.Now().Add(time.Hour).Unix(),
-			"iat":            time.Now().Unix(),
-			"email":          email,
-			"email_verified": emailVerified,
-		}
-		if hd != "" {
-			idTokenClaims["hd"] = hd
-		}
-
-		provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
-			"access_token": "upstream-access-token",
-			"token_type":   "Bearer",
-			"expires_in":   1800,
-			"scope":        "openid email",
-		}, nil)
-		idTokenClaims["iss"] = provider.server.URL
-		provider.tokenResponse["id_token"] = provider.issueIDToken(t, idTokenClaims)
-
-		app := newGatingModeTestApp(provider)
-		resp := doGatingAuthCodeFlow(t, app, provider, redirectURI, codeVerifier)
-		return provider, app, resp
-	}
-
-	t.Run("refresh_rejected_when_email_domain_removed", func(t *testing.T) {
-		t.Parallel()
-		_, app, resp := setupProviderAndApp(t, "user@allowed.com", true, "")
-		app.config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
-		app.mcpServer.Config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
-
-		// Verify refresh works before policy change
-		clientID := resp["_client_id"].(string)
-		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		// Change policy to remove the allowed domain
-		app.config.Server.OAuth.AllowedEmailDomains = []string{"other.com"}
-		app.mcpServer.Config.Server.OAuth.AllowedEmailDomains = []string{"other.com"}
-
-		rr = exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusForbidden, rr.Code)
-		require.Contains(t, rr.Body.String(), "access_denied")
-	})
-
-	t.Run("refresh_rejected_when_email_verification_required", func(t *testing.T) {
-		t.Parallel()
-		_, app, resp := setupProviderAndApp(t, "user@example.com", false, "")
-		clientID := resp["_client_id"].(string)
-
-		// Works when not required
-		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		// Now require email verification
-		app.config.Server.OAuth.RequireEmailVerified = true
-		app.mcpServer.Config.Server.OAuth.RequireEmailVerified = true
-
-		rr = exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusForbidden, rr.Code)
-		require.Contains(t, rr.Body.String(), "access_denied")
-	})
-
-	t.Run("refresh_rejected_when_hosted_domain_removed", func(t *testing.T) {
-		t.Parallel()
-		_, app, resp := setupProviderAndApp(t, "user@corp.com", true, "corp.com")
-		app.config.Server.OAuth.AllowedHostedDomains = []string{"corp.com"}
-		app.mcpServer.Config.Server.OAuth.AllowedHostedDomains = []string{"corp.com"}
-
-		clientID := resp["_client_id"].(string)
-		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		// Change policy
-		app.config.Server.OAuth.AllowedHostedDomains = []string{"other.com"}
-		app.mcpServer.Config.Server.OAuth.AllowedHostedDomains = []string{"other.com"}
-
-		rr = exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusForbidden, rr.Code)
-		require.Contains(t, rr.Body.String(), "access_denied")
-	})
-
-	t.Run("refresh_succeeds_when_policy_still_satisfied", func(t *testing.T) {
-		t.Parallel()
-		_, app, resp := setupProviderAndApp(t, "user@allowed.com", true, "")
-		app.config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
-		app.mcpServer.Config.Server.OAuth.AllowedEmailDomains = []string{"allowed.com"}
-
-		clientID := resp["_client_id"].(string)
-		rr := exchangeRefreshToken(t, app, clientID, resp["refresh_token"].(string))
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		var refreshResp map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &refreshResp))
-		require.NotEmpty(t, refreshResp["access_token"])
-		require.NotEmpty(t, refreshResp["refresh_token"])
-	})
 }
 
 func TestOAuthRegistrationNegative(t *testing.T) {
@@ -2227,101 +1846,6 @@ func TestOAuthTokenExchangeNegative(t *testing.T) {
 		rr := postToken(form)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 		require.Contains(t, rr.Body.String(), "unsupported_grant_type")
-	})
-}
-
-func TestOAuthGatingFlowE2E(t *testing.T) {
-	t.Parallel()
-	provider := newTestForwardModeOIDCProvider(t, map[string]interface{}{
-		"access_token": "upstream-access-token",
-		"token_type":   "Bearer",
-		"expires_in":   1800,
-		"scope":        "openid email",
-	}, nil)
-	provider.tokenResponse["id_token"] = provider.issueIDToken(t, map[string]interface{}{
-		"sub":            "user-1",
-		"iss":            provider.server.URL,
-		"aud":            "upstream-client-id",
-		"exp":            time.Now().Add(time.Hour).Unix(),
-		"iat":            time.Now().Unix(),
-		"email":          "user@example.com",
-		"email_verified": true,
-		"name":           "Test User",
-	})
-
-	app := newGatingModeTestApp(provider)
-	// Set PublicAuthServerURL so self-issued tokens use a stable issuer
-	app.config.Server.OAuth.PublicAuthServerURL = "https://mcp.example.com"
-	app.mcpServer.Config.Server.OAuth.PublicAuthServerURL = "https://mcp.example.com"
-	const redirectURI = "http://127.0.0.1:3334/callback"
-	const codeVerifier = "e2e-code-verifier-for-pkce-test"
-
-	// Step 1: Discovery document
-	t.Run("discovery_document", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/.well-known/oauth-authorization-server", nil)
-		rr := httptest.NewRecorder()
-		app.handleOAuthAuthorizationServerMetadata(rr, req)
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		var meta map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &meta))
-		require.NotEmpty(t, meta["token_endpoint"])
-		require.NotEmpty(t, meta["authorization_endpoint"])
-		require.NotEmpty(t, meta["registration_endpoint"])
-	})
-
-	// Step 2: Register client
-	clientID := registerOAuthBrowserClient(t, app, redirectURI)
-
-	// Step 3: Authorize with PKCE S256
-	state := startOAuthBrowserLogin(t, app, clientID, redirectURI, "client-state-123", codeVerifier)
-
-	// Step 4: Callback with upstream code + state
-	callbackReq := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?code=upstream-auth-code&state="+url.QueryEscape(state), nil)
-	callbackRR := httptest.NewRecorder()
-	app.handleOAuthCallback(callbackRR, callbackReq)
-	require.Equal(t, http.StatusFound, callbackRR.Code)
-
-	loc, err := url.Parse(callbackRR.Header().Get("Location"))
-	require.NoError(t, err)
-	authCode := loc.Query().Get("code")
-	require.NotEmpty(t, authCode)
-	require.Equal(t, "client-state-123", loc.Query().Get("state"))
-
-	// Step 5: Token exchange with PKCE verifier
-	tokenRR := exchangeOAuthBrowserCode(t, app, clientID, authCode, redirectURI, codeVerifier)
-	require.Equal(t, http.StatusOK, tokenRR.Code)
-
-	var tokenResp map[string]interface{}
-	require.NoError(t, json.Unmarshal(tokenRR.Body.Bytes(), &tokenResp))
-	accessToken := tokenResp["access_token"].(string)
-	refreshToken := tokenResp["refresh_token"].(string)
-	require.NotEmpty(t, accessToken)
-	require.NotEmpty(t, refreshToken)
-	require.Equal(t, "Bearer", tokenResp["token_type"])
-
-	// Step 6: Verify access token is valid HS256 JWT
-	t.Run("access_token_is_valid_jwt", func(t *testing.T) {
-		t.Parallel()
-		claims, err := app.mcpServer.ValidateOAuthToken(accessToken)
-		require.NoError(t, err)
-		require.Equal(t, "user-1", claims.Subject)
-		require.Equal(t, "user@example.com", claims.Email)
-	})
-
-	// Step 7: Refresh token exchange
-	t.Run("refresh_token_exchange", func(t *testing.T) {
-		t.Parallel()
-		rr := exchangeRefreshToken(t, app, clientID, refreshToken)
-		require.Equal(t, http.StatusOK, rr.Code)
-
-		var refreshResp map[string]interface{}
-		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &refreshResp))
-		require.NotEmpty(t, refreshResp["access_token"])
-		require.NotEmpty(t, refreshResp["refresh_token"])
-		require.Equal(t, "Bearer", refreshResp["token_type"])
-		require.NotEqual(t, refreshToken, refreshResp["refresh_token"])
 	})
 }
 
@@ -2808,18 +2332,3 @@ func TestWriteOAuthTokenError(t *testing.T) {
 	require.Equal(t, "bad thing happened", body["error_description"])
 }
 
-func TestEncodeSelfIssuedAccessToken(t *testing.T) {
-	t.Parallel()
-	secret := []byte("test-secret-key")
-	claims := map[string]interface{}{
-		"sub": "user-123",
-		"iss": "test-issuer",
-		"exp": float64(time.Now().Add(time.Hour).Unix()),
-	}
-	token, err := encodeSelfIssuedAccessToken(secret, claims)
-	require.NoError(t, err)
-	require.NotEmpty(t, token)
-	// Token should have 3 parts separated by dots (JWT compact format)
-	parts := strings.Split(token, ".")
-	require.Equal(t, 3, len(parts))
-}
