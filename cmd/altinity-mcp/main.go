@@ -1108,6 +1108,36 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 			"without it, any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
 	}
 
+	// #109: gating mode is now a pure OAuth resource server (Auth0-fronted).
+	// The fields below belong to the gating-AS role that is being removed.
+	// Refuse at startup so operators notice and clean up helm values.
+	if cfg.Server.OAuth.IsGatingMode() {
+		if cfg.Server.OAuth.ClientID != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.client_id — remove from helm values; client_id is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.ClientSecret != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.client_secret — remove from helm values; client_secret is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.TokenURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.token_url — remove from helm values; token_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.AuthURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.auth_url — remove from helm values; auth_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.UserInfoURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.userinfo_url — remove from helm values; userinfo_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.PublicAuthServerURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is now Auth0's responsibility under #109")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
+			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/) to be set")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
+			return fmt.Errorf("oauth: gating mode requires oauth.audience to byte-equal the MCP public URL (RFC 8707)")
+		}
+	}
+
 	return nil
 }
 
