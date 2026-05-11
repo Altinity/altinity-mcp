@@ -3239,11 +3239,23 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:         true,
 			Mode:            "custom",
-			SigningSecret: "secret",
+			SigningSecret: "test-signing-secret-32-byte-key!!",
 		}}}
 		err := validateOAuthRuntimeConfig(cfg)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unsupported oauth mode")
+	})
+
+	t.Run("short_signing_secret_rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:       true,
+			Mode:          "gating",
+			SigningSecret: "too-short",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "at least 32 bytes")
 	})
 
 	t.Run("missing_gating_secret", func(t *testing.T) {
@@ -3264,7 +3276,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:         true,
 				Mode:            "forward",
-				SigningSecret: "secret",
+				SigningSecret: "test-signing-secret-32-byte-key!!",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
 		}
@@ -3278,7 +3290,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:         true,
 			Mode:            "gating",
-			SigningSecret: "secret",
+			SigningSecret: "test-signing-secret-32-byte-key!!",
 		}}}
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
@@ -3289,7 +3301,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:         true,
 				Mode:            "forward",
-				SigningSecret: "secret",
+				SigningSecret: "test-signing-secret-32-byte-key!!",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
 		}

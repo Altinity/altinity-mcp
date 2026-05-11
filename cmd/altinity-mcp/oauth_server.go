@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,9 +35,16 @@ const (
 	defaultAuthorizationPath               = "/oauth/authorize"
 	defaultCallbackPath                    = "/oauth/callback"
 	defaultTokenPath                       = "/oauth/token"
-	defaultAuthCodeTTLSeconds              = 5 * 60
-	defaultAccessTokenTTLSeconds           = 60 * 60
-	defaultRefreshTokenTTLSeconds          = 30 * 24 * 60 * 60
+	// defaultPendingAuthTTLSeconds bounds /authorize → /callback (the user has
+	// to log in upstream). 10 minutes per RFC 6749 §3.1.2 guidance for the
+	// authorization request lifetime.
+	defaultPendingAuthTTLSeconds = 10 * 60
+	// defaultAuthCodeTTLSeconds bounds /callback → /token (the legitimate
+	// client redeems immediately). 60 seconds per OAuth 2.1 §4.1.2 — auth
+	// codes "should be redeemed within seconds, never minutes."
+	defaultAuthCodeTTLSeconds     = 60
+	defaultAccessTokenTTLSeconds  = 60 * 60
+	defaultRefreshTokenTTLSeconds = 30 * 24 * 60 * 60
 )
 
 type statelessRegisteredClient struct {
@@ -43,6 +52,11 @@ type statelessRegisteredClient struct {
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	GrantType               string   `json:"grant_type"`
 	ExpiresAt               int64    `json:"exp"`
+	// ClientSecret is the per-registration secret issued during DCR for
+	// confidential clients (token_endpoint_auth_method: client_secret_post |
+	// client_secret_basic). When empty, the client is public (PKCE-only) —
+	// retained for backward compat with previously-issued client_ids.
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 type oauthPendingAuth struct {
@@ -52,7 +66,19 @@ type oauthPendingAuth struct {
 	ClientState         string `json:"client_state"`
 	CodeChallenge       string `json:"code_challenge"`
 	CodeChallengeMethod string `json:"code_challenge_method"`
-	ExpiresAt           time.Time
+	// Resource is the RFC 8707 resource indicator the client passed on
+	// /authorize. Stored verbatim (trailing-slash form preserved) so that
+	// the eventual `aud` claim byte-matches what the client requested —
+	// claude.ai's artifact proxy enforces this byte-equality.
+	Resource string `json:"resource,omitempty"`
+	// UpstreamPKCEVerifier is *our* PKCE verifier for the upstream-IdP leg
+	// (RFC 7636 / OAuth 2.1 §7.5.2). The MCP-client→us leg uses its own
+	// verifier (CodeChallenge above); this is the second, independent PKCE
+	// pair we use as the OAuth client to the upstream IdP. Required by
+	// OAuth 2.1 even when we hold the upstream client_secret, because PKCE
+	// also defends against auth-code interception between IdP and our /callback.
+	UpstreamPKCEVerifier string `json:"upstream_pkce_verifier,omitempty"`
+	ExpiresAt            time.Time
 }
 
 type oauthIssuedCode struct {
@@ -61,6 +87,7 @@ type oauthIssuedCode struct {
 	Scope                string `json:"scope"`
 	CodeChallenge        string `json:"code_challenge"`
 	CodeChallengeMethod  string `json:"code_challenge_method"`
+	Resource             string `json:"resource,omitempty"`
 	UpstreamBearerToken  string `json:"upstream_bearer_token"`
 	UpstreamRefreshToken string `json:"upstream_refresh_token,omitempty"`
 	UpstreamTokenType    string `json:"upstream_token_type"`
@@ -209,13 +236,94 @@ func (a *application) mustJWESecret() ([]byte, error) {
 	return secret, nil
 }
 
-func encodeJWEArtifact(secret []byte, claims map[string]interface{}) (string, error) {
-	return jwe_auth.GenerateJWEToken(claims, secret, secret)
+// oauthKidV1 is the kid header set on cmd-minted OAuth JWE artifacts
+// (client_id, refresh-token). Its presence selects the HKDF-derived key on
+// decryption; absence (kid="") selects the legacy SHA256(secret) key for
+// backwards compat with artifacts minted before the rotation cutover. After
+// the longest legacy artifact lifetime expires (refresh tokens, default 30
+// days), the legacy fallback below can be removed. Self-issued access-token
+// JWS artifacts use altinitymcp.SelfIssuedAccessTokenKid instead — pkg/server
+// is the verifier and owns that contract.
+const oauthKidV1 = "v1"
+
+// HKDF info labels for cmd-internal OAuth key derivation. Each label produces
+// an independent 32-byte key from the shared signing_secret (RFC 5869 §3.2).
+// Bumping the /vN suffix in any single label rotates that one key without
+// disturbing the others. The access-token label lives in pkg/server as
+// altinitymcp.SelfIssuedAccessTokenHKDFInfo because the verifier owns it.
+const (
+	hkdfInfoOAuthClientID = "altinity-mcp/oauth/client-id/v1"
+	hkdfInfoOAuthRefresh  = "altinity-mcp/oauth/refresh-token/v1"
+)
+
+// encodeOAuthJWE emits a JWE-wrapped JSON document of `claims`, encrypted
+// with a key HKDF-derived from `secret` and the per-context `info` label.
+// kid="v1" is set in the protected header so decoders pick the same key.
+func encodeOAuthJWE(secret []byte, info string, claims map[string]interface{}) (string, error) {
+	key := jwe_auth.DeriveKey(secret, info)
+	plaintext, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	encrypter, err := jose.NewEncrypter(
+		jose.A256GCM,
+		jose.Recipient{Algorithm: jose.A256KW, Key: key},
+		(&jose.EncrypterOptions{}).
+			WithType("JWE").
+			WithContentType("JSON").
+			WithHeader(jose.HeaderKey("kid"), oauthKidV1),
+	)
+	if err != nil {
+		return "", err
+	}
+	jweObj, err := encrypter.Encrypt(plaintext)
+	if err != nil {
+		return "", err
+	}
+	return jweObj.CompactSerialize()
 }
 
-func decodeJWEArtifact(secret []byte, token string) (map[string]interface{}, error) {
+// decodeOAuthJWE decrypts a JWE produced by encodeOAuthJWE OR by the legacy
+// jwe_auth.GenerateJWEToken path used before this commit. The kid header
+// selects the derivation:
+//
+//   - kid == oauthKidV1 → key = HKDF(secret, info)
+//   - kid == ""         → key = SHA256(secret) (legacy)
+//
+// The same RFC 7591/JWE-claim whitelist + expiration check applies to both
+// paths via the exported jwe_auth.ValidateClaimsWhitelist / ValidateExpiration
+// helpers.
+func decodeOAuthJWE(secret []byte, info string, token string) (map[string]interface{}, error) {
+	jweObj, err := jose.ParseEncrypted(token,
+		[]jose.KeyAlgorithm{jose.A256KW},
+		[]jose.ContentEncryption{jose.A256GCM})
+	if err != nil {
+		return nil, jwe_auth.ErrInvalidToken
+	}
+	if jweObj.Header.KeyID == oauthKidV1 {
+		key := jwe_auth.DeriveKey(secret, info)
+		decrypted, err := jweObj.Decrypt(key)
+		if err != nil {
+			return nil, jwe_auth.ErrInvalidToken
+		}
+		var claims map[string]interface{}
+		if err := json.Unmarshal(decrypted, &claims); err != nil {
+			return nil, jwe_auth.ErrInvalidToken
+		}
+		if err := jwe_auth.ValidateClaimsWhitelist(claims); err != nil {
+			return nil, err
+		}
+		if err := jwe_auth.ValidateExpiration(claims); err != nil {
+			return nil, err
+		}
+		return claims, nil
+	}
+	// Legacy path: jwe_auth.ParseAndDecryptJWE knows the SHA256(secret)
+	// derivation AND the legacy JWT-signed-inside-JWE content type. Routing
+	// through it keeps a single source of truth for every legacy variant.
 	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
 }
+
 
 func normalizeURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
@@ -393,31 +501,89 @@ func (a *application) oauthTokenPath() string {
 	return normalizedPath(a.GetCurrentConfig().Server.OAuth.TokenPath, defaultTokenPath)
 }
 
-func (a *application) oauthChallengeHeader(r *http.Request) string {
+// oauthChallengeHeader builds the WWW-Authenticate Bearer challenge.
+//
+//   - error: distinguishes the failure (invalid_token | insufficient_scope) per
+//     RFC 6750 §3 / 3.1. error="invalid_token" is what triggers Anthropic's
+//     proxy to start the OAuth discovery flow; without it, some clients treat
+//     the 401 as a generic auth failure and skip MCP OAuth entirely.
+//   - error_description: human-readable detail for logs/UI.
+//   - resource_metadata: where to fetch the RFC 9728 protected-resource doc.
+//   - scope: the scopes the client should request to access the resource. MCP
+//     authorization spec 2025-11-25 §Protected Resource Metadata Discovery
+//     Requirements marks this as SHOULD on initial 401, MUST on
+//     insufficient_scope (§Runtime Insufficient Scope Errors). Populated from
+//     challengeScope() on both paths.
+func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
-	challenge := fmt.Sprintf("Bearer resource_metadata=%q", joinURLPath(baseURL, defaultProtectedResourceMetadataPath))
-	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
-	if len(scopes) == 0 {
-		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
+	resourceMetadata := joinURLPath(baseURL, defaultProtectedResourceMetadataPath)
+	if errCode == "" {
+		errCode = "invalid_token"
 	}
-	if len(scopes) > 0 {
-		challenge += fmt.Sprintf(", scope=%q", strings.Join(scopes, " "))
+	if errDesc == "" {
+		errDesc = "Authentication required"
 	}
-	return challenge
+	parts := []string{
+		fmt.Sprintf("error=%q", errCode),
+		fmt.Sprintf("error_description=%q", errDesc),
+		fmt.Sprintf("resource_metadata=%q", resourceMetadata),
+	}
+	if scope != "" {
+		parts = append(parts, fmt.Sprintf("scope=%q", scope))
+	}
+	return "Bearer " + strings.Join(parts, ", ")
+}
+
+// safeUpstreamErrorFields extracts the RFC 6749 §5.2 `error` code from an
+// upstream OAuth error response body, if the body parses as JSON, and always
+// returns the body byte length. Used in lieu of logging the body verbatim:
+// IdPs sometimes echo the failed token, request parameters, or other
+// diagnostic data inside `error_description`, which would otherwise land in
+// centralized logs. The `error` field is an RFC-defined enum and safe to log.
+func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
+	var parsed struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return parsed.Error, len(body)
+}
+
+// challengeScope returns the scope string for the WWW-Authenticate header.
+// Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
+// Scopes catalog so the client at least has something to request from. Empty
+// string when neither is configured — caller will then omit the attribute.
+func (a *application) challengeScope() string {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	switch {
+	case len(cfg.RequiredScopes) > 0:
+		return strings.Join(cfg.RequiredScopes, " ")
+	case len(cfg.Scopes) > 0:
+		return strings.Join(cfg.Scopes, " ")
+	}
+	return ""
 }
 
 func (a *application) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
-	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r))
+	var (
+		code           int
+		oauthErr, desc string
+	)
 	switch {
-	case err == nil:
-		return
 	case errors.Is(err, altinitymcp.ErrOAuthInsufficientScopes):
-		http.Error(w, "Insufficient OAuth scopes", http.StatusForbidden)
+		// MUST per RFC 6750 §3.1 / MCP §Runtime Insufficient Scope Errors.
+		code, oauthErr, desc = http.StatusForbidden, "insufficient_scope", "Insufficient OAuth scopes"
 	case errors.Is(err, altinitymcp.ErrOAuthTokenExpired):
-		http.Error(w, "OAuth token expired", http.StatusUnauthorized)
+		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "OAuth token expired"
 	default:
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		code, oauthErr, desc = http.StatusUnauthorized, "invalid_token", "Authentication required"
 	}
+	// SHOULD per MCP §Protected Resource Metadata Discovery Requirements on the
+	// 401 path; same source list as the insufficient_scope case (RequiredScopes
+	// preferred, Scopes as fallback).
+	w.Header().Set("WWW-Authenticate", a.oauthChallengeHeader(r, oauthErr, desc, a.challengeScope()))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": oauthErr, "error_description": desc})
 }
 
 func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler) http.Handler {
@@ -434,7 +600,11 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 				if token != "" {
 					jweClaims, err := a.mcpServer.ParseJWEClaims(token)
 					if err != nil {
-						http.Error(w, "Invalid JWE token", http.StatusUnauthorized)
+						// Route through the OAuth challenge writer when OAuth is also
+						// enabled — clients hitting a malformed JWE then need OAuth
+						// discovery to recover. With OAuth disabled this path returns
+						// the same JSON error shape minus the WWW-Authenticate header.
+						a.writeOAuthError(w, r, altinitymcp.ErrInvalidOAuthToken)
 						return
 					}
 					ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
@@ -449,14 +619,14 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
-				var claims *altinitymcp.OAuthClaims
-				if cfg.Server.OAuth.IsGatingMode() {
-					var err error
-					claims, err = a.mcpServer.ValidateOAuthToken(oauthToken)
-					if err != nil {
-						a.writeOAuthError(w, r, err)
-						return
-					}
+				// C-1: validate locally in both gating and forward modes per MCP
+				// authorization spec §Token Handling. Forward-mode opaque tokens
+				// and JWTs without a configured JWKS source soft-pass with nil
+				// claims; ValidateOAuthToken decides which is which.
+				claims, err := a.mcpServer.ValidateOAuthToken(oauthToken)
+				if err != nil {
+					a.writeOAuthError(w, r, err)
+					return
 				}
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
 				ctx = context.WithValue(ctx, altinitymcp.OAuthClaimsKey, claims)
@@ -483,8 +653,19 @@ func randomToken(prefix string) string {
 }
 
 func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (string, error) {
-	hashedSecret := jwe_auth.HashSHA256(secret)
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
+	// Signing key is HKDF-derived per the access-token info label, separate
+	// from the JWE-encryption keys used for client_id and refresh_token. The
+	// kid header lets parseAndVerifySelfIssuedOAuthToken (pkg/server) select
+	// this derivation; legacy tokens (no kid) verify against the old
+	// SHA256(secret). Both the kid value and the info label are imported
+	// from pkg/server — that package is the verifier and owns the contract.
+	signingKey := jwe_auth.DeriveKey(secret, altinitymcp.SelfIssuedAccessTokenHKDFInfo)
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.HS256, Key: signingKey},
+		(&jose.SignerOptions{}).
+			WithType("JWT").
+			WithHeader(jose.HeaderKey("kid"), altinitymcp.SelfIssuedAccessTokenKid),
+	)
 	if err != nil {
 		return "", err
 	}
@@ -502,6 +683,17 @@ func encodeSelfIssuedAccessToken(secret []byte, claims map[string]interface{}) (
 func pkceChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// newPKCEVerifier generates a 32-byte random PKCE verifier per RFC 7636 §4.1
+// (43–128 char URL-safe string). Used for the upstream-IdP leg only —
+// downstream MCP-client verifiers come from the client itself.
+func newPKCEVerifier() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func decodeStringSlice(value interface{}) []string {
@@ -525,6 +717,35 @@ func sanitizeScope(scope string) string {
 	return strings.Join(strings.Fields(scope), " ")
 }
 
+// authenticateClientSecret validates the inbound `client_secret` against the
+// one stored in the registered client's metadata. RFC 6749 §2.3.1 allows the
+// secret to be presented either via the form body (client_secret_post) or
+// the Authorization: Basic header (client_secret_basic); we accept both.
+//
+// For backward compat with previously-registered public (PKCE-only) clients
+// — those whose JWE-encoded client_id has no `client_secret` claim — we
+// return nil even when the client supplied no secret. New registrations
+// always carry a client_secret, so this fallback only applies to legacy
+// client_ids issued before this change.
+func authenticateClientSecret(client *statelessRegisteredClient, r *http.Request) error {
+	if client.ClientSecret == "" {
+		return nil
+	}
+	got := r.Form.Get("client_secret")
+	if got == "" {
+		if user, pass, ok := r.BasicAuth(); ok && user != "" {
+			got = pass
+		}
+	}
+	if got == "" {
+		return fmt.Errorf("client_secret is required")
+	}
+	if subtle.ConstantTimeCompare([]byte(got), []byte(client.ClientSecret)) != 1 {
+		return fmt.Errorf("client_secret mismatch")
+	}
+	return nil
+}
+
 func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRegisteredClient, error) {
 	client := &statelessRegisteredClient{
 		RedirectURIs: decodeStringSlice(claims["redirect_uris"]),
@@ -537,6 +758,9 @@ func parseStatelessRegisteredClient(claims map[string]interface{}) (*statelessRe
 	}
 	if exp, ok := claims["exp"].(float64); ok {
 		client.ExpiresAt = int64(exp)
+	}
+	if cs, ok := claims["client_secret"].(string); ok {
+		client.ClientSecret = cs
 	}
 	if client.TokenEndpointAuthMethod == "" {
 		client.TokenEndpointAuthMethod = "none"
@@ -667,8 +891,15 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	baseURL := a.resourceBaseURL(r)
 	authServerBaseURL := a.oauthAuthorizationServerBaseURL(r)
 	resp := map[string]interface{}{
+		// `resource` is the canonical RFC 9728 protected-resource identifier
+		// (with trailing slash, per canonicalResourceURL); claude.ai's artifact
+		// proxy compares the metadata field literally and round-trips it to the
+		// `aud` claim. Inbound `aud` validation tolerates either form via
+		// audienceMatchesResource. `authorization_servers` follows the RFC 8414
+		// issuer convention (no trailing slash) so as[0] == issuer holds byte-
+		// for-byte.
 		"resource":                 canonicalResourceURL(baseURL),
-		"authorization_servers":    []string{authServerBaseURL},
+		"authorization_servers":    []string{strings.TrimRight(authServerBaseURL, "/")},
 		"scopes_supported":         a.GetCurrentConfig().Server.OAuth.Scopes,
 		"bearer_methods_supported": []string{"header"},
 	}
@@ -682,15 +913,20 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		return
 	}
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
+	// `issuer` is published without a trailing slash to match the RFC 8414 §2
+	// convention (issuer == authorization_servers[i] in the resource document).
+	// mintGatingTokenResponse mints `iss` in the same form, and
+	// validateOAuthClaims still normalises slashes defensively.
+	issuer := strings.TrimRight(baseURL, "/")
 	resp := map[string]interface{}{
-		"issuer":                                baseURL,
+		"issuer":                                issuer,
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -703,15 +939,16 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		return
 	}
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
+	issuer := strings.TrimRight(baseURL, "/")
 	resp := map[string]interface{}{
-		"issuer":                                baseURL,
+		"issuer":                                issuer,
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
 		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	}
 	if !a.oauthForwardMode() {
@@ -763,45 +1000,88 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	// We register every new client as confidential (client_secret_post). The
+	// stored secret lives inside the JWE-encoded client_id, so the server
+	// remains stateless. Anthropic's `mcp_servers`-via-URL flow requires a
+	// confidential AS (it has no browser to perform PKCE on); leaving the
+	// "none" path as the only option silently 401s every artifact-side call.
+	// Public-client (PKCE-only) registrations from clients that explicitly ask
+	// for token_endpoint_auth_method:none are still honoured for back-compat
+	// with first-party apps that use only the browser auth-code path.
 	authMethod := req.TokenEndpointAuthMethod
 	if authMethod == "" {
-		authMethod = "none"
+		authMethod = "client_secret_post"
 	}
-	if authMethod != "none" {
-		http.Error(w, "Only public clients with PKCE are supported", http.StatusBadRequest)
+	switch authMethod {
+	case "client_secret_post", "client_secret_basic", "none":
+	default:
+		http.Error(w, "Unsupported token_endpoint_auth_method", http.StatusBadRequest)
 		return
 	}
+
 	secret, err := a.mustJWESecret()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientID, err := encodeJWEArtifact(secret, map[string]interface{}{
+
+	var clientSecret string
+	if authMethod != "none" {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			http.Error(w, "Failed to generate client_secret", http.StatusInternalServerError)
+			return
+		}
+		clientSecret = hex.EncodeToString(raw[:])
+	}
+
+	clientIDClaims := map[string]interface{}{
 		"redirect_uris":              req.RedirectURIs,
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": authMethod,
 		"grant_type":                 "authorization_code",
 		"exp":                        time.Now().Add(30 * 24 * time.Hour).Unix(),
-	})
+	}
+	if clientSecret != "" {
+		// Embed the secret inside the JWE so the token endpoint can compare
+		// it against the inbound form parameter without server-side state.
+		clientIDClaims["client_secret"] = clientSecret
+	}
+	clientID, err := encodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientIDClaims)
 	if err != nil {
 		http.Error(w, "Failed to create stateless client registration", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	expAt := time.Now().Add(30 * 24 * time.Hour).Unix()
 	// grant_types must include every grant the server will accept from this
 	// client. Per RFC 7591 §3.2.1 clients treat this list as authoritative,
 	// so omitting refresh_token here causes strict clients (e.g. Claude.ai)
 	// to skip grant_type=refresh_token even though /oauth/token would
 	// accept it and /.well-known/oauth-authorization-server advertises it
 	// via grant_types_supported.
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
+	if len(scopes) == 0 {
+		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
+	}
+	resp := map[string]interface{}{
 		"client_id":                  clientID,
+		"client_id_issued_at":        time.Now().Unix(),
 		"redirect_uris":              req.RedirectURIs,
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "none",
-		"client_id_issued_at":        time.Now().Unix(),
-	})
+		"token_endpoint_auth_method": authMethod,
+	}
+	if len(scopes) > 0 {
+		resp["scope"] = strings.Join(scopes, " ")
+	}
+	if clientSecret != "" {
+		resp["client_secret"] = clientSecret
+		// RFC 7591 §3.2.1: client_secret_expires_at is REQUIRED when a secret
+		// is issued. The JWE client_id embeds the same exp, so use it here too.
+		resp["client_secret_expires_at"] = expAt
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -825,7 +1105,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
@@ -839,15 +1119,44 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
 		return
 	}
+	// RFC 8707 §2 / MCP authorization spec: clients SHOULD include `resource`.
+	// Validate it identifies *this* MCP server. Compare slash-normalised so the
+	// client can pass either form, but preserve the exact string sent so the
+	// eventual `aud` claim byte-matches what the client requested. Anthropic's
+	// artifact proxy validates aud byte-equality against the resource it sent.
+	resource := q.Get("resource")
+	if resource != "" {
+		want := strings.TrimRight(a.resourceBaseURL(r), "/")
+		got := strings.TrimRight(resource, "/")
+		if got != want {
+			log.Debug().Str("got", resource).Str("want", a.resourceBaseURL(r)).Msg("OAuth /authorize rejected: resource indicator mismatch")
+			http.Error(w, "Invalid resource indicator", http.StatusBadRequest)
+			return
+		}
+	}
+	// Upstream-leg PKCE (OAuth 2.1 §7.5.2): we generate a fresh verifier
+	// independent of the MCP-client's PKCE, then send code_challenge=SHA256
+	// to the upstream IdP. Defends the upstream auth code from interception
+	// between IdP and our /oauth/callback even if we hold the upstream
+	// client_secret. Verifier stays in pendingAuth and is replayed during
+	// the /token exchange in handleOAuthCallback.
+	upstreamVerifier, err := newPKCEVerifier()
+	if err != nil {
+		http.Error(w, "Failed to generate PKCE verifier", http.StatusInternalServerError)
+		return
+	}
+
 	callbackState := randomToken("oas_")
 	a.getOAuthStateStore().putPendingAuth(callbackState, oauthPendingAuth{
-		ClientID:            clientID,
-		RedirectURI:         redirectURI,
-		Scope:               sanitizeScope(q.Get("scope")),
-		ClientState:         q.Get("state"),
-		CodeChallenge:       q.Get("code_challenge"),
-		CodeChallengeMethod: q.Get("code_challenge_method"),
-		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		Scope:                sanitizeScope(q.Get("scope")),
+		ClientState:          q.Get("state"),
+		CodeChallenge:        q.Get("code_challenge"),
+		CodeChallengeMethod:  q.Get("code_challenge_method"),
+		Resource:             resource,
+		UpstreamPKCEVerifier: upstreamVerifier,
+		ExpiresAt:            time.Now().Add(time.Duration(defaultPendingAuthTTLSeconds) * time.Second),
 	})
 
 	cfg := a.GetCurrentConfig()
@@ -870,6 +1179,8 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
+	upstream.Set("code_challenge", pkceChallenge(upstreamVerifier))
+	upstream.Set("code_challenge_method", "S256")
 	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
 
@@ -899,6 +1210,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	form.Set("client_id", cfg.Server.OAuth.ClientID)
 	form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
 	form.Set("redirect_uri", callbackURL)
+	// Replay our upstream PKCE verifier (set during /authorize) per RFC 7636
+	// §4.5. Skipped only for legacy pending entries that predate the PKCE
+	// upgrade — those expire within 10 minutes and stop appearing.
+	if pending.UpstreamPKCEVerifier != "" {
+		form.Set("code_verifier", pending.UpstreamPKCEVerifier)
+	}
 
 	tokenURL, err := a.resolveUpstreamTokenURL()
 	if err != nil {
@@ -922,7 +1239,8 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if resp.StatusCode >= 300 {
-		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth token exchange failed")
+		errCode, bodyLen := safeUpstreamErrorFields(body)
+		log.Error().Int("status", resp.StatusCode).Str("error_code", errCode).Int("body_len", bodyLen).Msg("Upstream OAuth token exchange failed")
 		http.Error(w, "Failed to exchange upstream auth code", http.StatusBadGateway)
 		return
 	}
@@ -1008,6 +1326,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		Scope:               tokenResp.Scope,
 		CodeChallenge:       pending.CodeChallenge,
 		CodeChallengeMethod: pending.CodeChallengeMethod,
+		Resource:            pending.Resource,
 		ExpiresAt:           time.Now().Add(time.Duration(defaultAuthCodeTTLSeconds) * time.Second),
 	}
 	if a.oauthForwardMode() {
@@ -1054,16 +1373,36 @@ type gatingIdentity struct {
 	HostedDomain  string
 	EmailVerified bool
 	Scope         string
+	// Resource is the RFC 8707 resource indicator the client requested.
+	// Empty when the client did not pass one. When set, it is used verbatim
+	// as the `aud` claim — preserving trailing-slash form for byte-equality
+	// with what the client sent.
+	Resource string
 }
 
 // mintGatingTokenResponse mints an access token and a stateless refresh token
 // for gating mode, then writes the JSON response.
 func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Request, secret []byte, id gatingIdentity) {
 	cfg := a.GetCurrentConfig()
-	issuer := strings.TrimSuffix(a.oauthAuthorizationServerBaseURL(r), "/")
-	audience := strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
-	if audience == "" {
-		audience = strings.TrimSuffix(a.resourceBaseURL(r), "/")
+	// Match the no-trailing-slash form advertised in /.well-known/oauth-authorization-server
+	// (RFC 8414 §2 requires byte-identical issuer between metadata and iss claim).
+	issuer := strings.TrimRight(a.oauthAuthorizationServerBaseURL(r), "/")
+	// RFC 8707 §2.2 / MCP authorization spec: when the client requested a
+	// resource indicator, the `aud` claim MUST identify that resource. Echo
+	// the requested string verbatim so byte-equality with what the client sent
+	// holds — this is what claude.ai's artifact proxy enforces.
+	//
+	// When the client did NOT send a resource indicator, fall back to the
+	// canonical no-trailing-slash form (matches the advertised `resource`
+	// field per MCP 2025-11-25 §Canonical Server URI).
+	var audience string
+	switch {
+	case id.Resource != "":
+		audience = id.Resource
+	case cfg.Server.OAuth.Audience != "":
+		audience = strings.TrimSuffix(cfg.Server.OAuth.Audience, "/")
+	default:
+		audience = strings.TrimRight(a.resourceBaseURL(r), "/")
 	}
 	scope := id.Scope
 	if scope == "" {
@@ -1089,7 +1428,7 @@ func (a *application) mintGatingTokenResponse(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	refreshToken, err := encodeJWEArtifact(secret, map[string]interface{}{
+	refreshToken, err := encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
 		"sub":            id.Subject,
 		"iss":            issuer,
 		"aud":            audience,
@@ -1127,7 +1466,7 @@ func (a *application) mintForwardRefreshToken(secret []byte, upstreamRefresh, up
 	if tokenType == "" {
 		tokenType = "Bearer"
 	}
-	return encodeJWEArtifact(secret, map[string]interface{}{
+	return encodeOAuthJWE(secret, hkdfInfoOAuthRefresh, map[string]interface{}{
 		"upstream_refresh_token": upstreamRefresh,
 		"upstream_token_type":    tokenType,
 		"scope":                  scope,
@@ -1174,19 +1513,24 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
 	}
 	client, err := parseStatelessRegisteredClient(clientClaims)
-	if err != nil || time.Now().Unix() > client.ExpiresAt || client.TokenEndpointAuthMethod != "none" {
+	if err != nil || time.Now().Unix() > client.ExpiresAt {
 		log.Debug().
 			Err(err).
 			Int64("client_expires_at", client.ExpiresAt).
 			Str("token_endpoint_auth_method", client.TokenEndpointAuthMethod).
 			Msg("OAuth token request rejected: invalid client metadata")
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	if err := authenticateClientSecret(client, r); err != nil {
+		log.Debug().Err(err).Msg("OAuth token request rejected: client_secret authentication failed")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	issued, ok := a.getOAuthStateStore().consumeAuthCode(r.Form.Get("code"))
@@ -1210,6 +1554,22 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		if pkceChallenge(r.Form.Get("code_verifier")) != issued.CodeChallenge {
 			log.Debug().Msg("OAuth token request rejected: invalid PKCE verifier")
 			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid PKCE verifier")
+			return
+		}
+	}
+
+	// RFC 8707 §2.2: clients MAY also send `resource` on /token. When the same
+	// resource was already pinned at /authorize, both must agree; if /authorize
+	// omitted it but /token includes it, accept and use the latter. Enforced in
+	// both gating and forward modes — in forward mode the value is only used
+	// for the rejection check (the response carries the upstream bearer token
+	// which has its own `aud`).
+	resource := issued.Resource
+	if formResource := r.Form.Get("resource"); formResource != "" {
+		if resource == "" {
+			resource = formResource
+		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the one used at /authorize")
 			return
 		}
 	}
@@ -1263,6 +1623,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		HostedDomain:  issued.HostedDomain,
 		EmailVerified: issued.EmailVerified,
 		Scope:         issued.Scope,
+		Resource:      resource,
 	})
 }
 
@@ -1297,7 +1658,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 
 	// Validate client_id
 	clientID := r.Form.Get("client_id")
-	clientClaims, err := decodeJWEArtifact(secret, clientID)
+	clientClaims, err := decodeOAuthJWE(secret, hkdfInfoOAuthClientID, clientID)
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
@@ -1307,6 +1668,11 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
 	}
+	if err := authenticateClientSecret(client, r); err != nil {
+		log.Debug().Err(err).Msg("OAuth refresh request rejected: client_secret authentication failed")
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
 
 	// Decrypt and validate refresh token
 	refreshTokenStr := r.Form.Get("refresh_token")
@@ -1314,7 +1680,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "missing refresh token")
 		return
 	}
-	claims, err := decodeJWEArtifact(secret, refreshTokenStr)
+	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthRefresh, refreshTokenStr)
 	if err != nil {
 		log.Warn().Err(err).Msg("OAuth refresh_token grant: JWE decode failed")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
@@ -1347,6 +1713,19 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 	hd, _ := claims["hd"].(string)
 	emailVerified, _ := claims["email_verified"].(bool)
 	scope, _ := claims["scope"].(string)
+	resource, _ := claims["aud"].(string)
+
+	// RFC 8707 §2.2: a /token refresh request MAY narrow the resource to a
+	// subset of those originally granted. We don't track multi-resource grants,
+	// so the only supported case is "same as original" — reject any mismatch.
+	if formResource := r.Form.Get("resource"); formResource != "" {
+		if resource == "" {
+			resource = formResource
+		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the original grant")
+			return
+		}
+	}
 
 	policyClaims := &altinitymcp.OAuthClaims{
 		Email:         email,
@@ -1366,6 +1745,7 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 		HostedDomain:  hd,
 		EmailVerified: emailVerified,
 		Scope:         scope,
+		Resource:      resource,
 	})
 }
 
@@ -1373,6 +1753,14 @@ func (a *application) handleOAuthTokenRefresh(w http.ResponseWriter, r *http.Req
 // The decrypted JWE carries the upstream IdP refresh token; we exchange it
 // upstream for a fresh ID token + (rotated) refresh token, re-validate the
 // new ID token, and mint a new JWE wrapping the rotated upstream refresh.
+//
+// RFC 8707 §2.2 note: this path does not validate the optional `resource`
+// form parameter. The forward refresh JWE (mintForwardRefreshToken) does not
+// embed `aud`, so there is nothing to compare against. Audience enforcement
+// in forward mode is delegated to the upstream IdP, which re-issues the ID
+// token with its own `aud` claim. Closing this gap requires embedding `aud`
+// in the forward refresh JWE — deliberately deferred to keep this change
+// small; see the "Out of scope" note in the branch's review-fix plan.
 func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *http.Request, secret []byte, clientID string, claims map[string]interface{}) {
 	upstreamRefresh, _ := claims["upstream_refresh_token"].(string)
 	if upstreamRefresh == "" {
@@ -1417,7 +1805,8 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 		return
 	}
 	if resp.StatusCode >= 300 {
-		log.Error().Int("status", resp.StatusCode).Bytes("body", body).Msg("Upstream OAuth refresh rejected")
+		errCode, bodyLen := safeUpstreamErrorFields(body)
+		log.Error().Int("status", resp.StatusCode).Str("error_code", errCode).Int("body_len", bodyLen).Msg("Upstream OAuth refresh rejected")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "upstream rejected the refresh token")
 		return
 	}
