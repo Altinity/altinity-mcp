@@ -3288,9 +3288,11 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	t.Run("valid_gating_config", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:         true,
-			Mode:            "gating",
+			Enabled:       true,
+			Mode:          "gating",
 			SigningSecret: "test-signing-secret-32-byte-key!!",
+			Issuer:        "https://example.auth0.com/",
+			Audience:      "https://example-mcp.test/",
 		}}}
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
@@ -3317,6 +3319,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				Enabled:              true,
 				Mode:                 "gating",
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				Issuer:               "https://example.auth0.com/",
 				RequireEmailVerified: false,
 			}},
 			ClickHouse: config.ClickHouseConfig{
@@ -3337,6 +3340,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				Enabled:              true,
 				Mode:                 "gating",
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				Issuer:               "https://example.auth0.com/",
+				Audience:             "https://example-mcp.test/",
 				RequireEmailVerified: true,
 			}},
 			ClickHouse: config.ClickHouseConfig{
@@ -3357,6 +3362,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				Enabled:              true,
 				Mode:                 "gating",
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				Issuer:               "https://example.auth0.com/",
+				Audience:             "https://example-mcp.test/",
 				RequireEmailVerified: false,
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},

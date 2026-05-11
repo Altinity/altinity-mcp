@@ -2088,106 +2088,6 @@ func TestParseAndVerifyExternalJWTUnknownKid(t *testing.T) {
 	require.Contains(t, err.Error(), "no JWK found for kid")
 }
 
-func TestValidateOAuthClaimsTemporalEdgeCases(t *testing.T) {
-	t.Parallel()
-	const gatingSecret = "test-gating-secret-32-byte-key!!"
-	now := time.Now().Unix()
-
-	baseClaims := func() map[string]interface{} {
-		return map[string]interface{}{
-			"sub":   "user-1",
-			"iss":   "https://mcp.example.com",
-			"aud":   "https://mcp.example.com",
-			"email": "user@example.com",
-		}
-	}
-
-	newSrv := func() *ClickHouseJWEServer {
-		return NewClickHouseMCPServer(config.Config{
-			Server: config.ServerConfig{
-				OAuth: config.OAuthConfig{
-					Enabled:         true,
-					Mode:            "gating",
-					SigningSecret: gatingSecret,
-				},
-			},
-		}, "test")
-	}
-
-	// NOTE: subtests are NOT parallel — they share a `now` timestamp and are timing-sensitive
-	t.Run("expired_token", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now - 120
-		c["iat"] = now - 300
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrOAuthTokenExpired)
-	})
-
-	t.Run("expired_within_clock_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now - 30
-		c["iat"] = now - 300
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.NoError(t, err)
-	})
-
-	t.Run("expired_beyond_clock_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now - 61
-		c["iat"] = now - 300
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrOAuthTokenExpired)
-	})
-
-	t.Run("future_nbf_within_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now + 3600
-		c["iat"] = now
-		c["nbf"] = now + 30
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.NoError(t, err)
-	})
-
-	t.Run("future_nbf_beyond_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now + 3600
-		c["iat"] = now
-		c["nbf"] = now + 120
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("future_iat_within_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now + 3600
-		c["iat"] = now + 30
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.NoError(t, err)
-	})
-
-	t.Run("future_iat_beyond_skew", func(t *testing.T) {
-		c := baseClaims()
-		c["exp"] = now + 3600
-		c["iat"] = now + 120
-		token := mintSelfIssuedToken(t, gatingSecret, c)
-		srv := newSrv()
-		_, err := srv.ValidateOAuthToken(token)
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-}
-
 func TestGatingModeIdentityPolicy(t *testing.T) {
 	t.Parallel()
 	const gatingSecret = "test-gating-secret-32-byte-key!!"
@@ -2496,15 +2396,6 @@ func TestLooksLikeJWT(t *testing.T) {
 func TestValidateOAuthClaims(t *testing.T) {
 	t.Parallel()
 
-	t.Run("issuer_mismatch", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Issuer: "https://expected.example.com",
-		}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://wrong.example.com"})
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
 	t.Run("audience_missing_when_required", func(t *testing.T) {
 		t.Parallel()
 		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
@@ -2594,40 +2485,6 @@ func TestValidateOAuthClaims(t *testing.T) {
 		require.Equal(t, "https://issuer.example.com", claims.Issuer)
 	})
 
-	t.Run("gating_mode_uses_public_auth_server_url_as_issuer", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Mode:                "gating",
-			Issuer:              "https://original-issuer.com",
-			PublicAuthServerURL: "https://public-auth.com",
-		}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{Issuer: "https://public-auth.com"})
-		require.NoError(t, err)
-	})
-}
-
-func TestParseAndVerifySelfIssuedOAuthToken(t *testing.T) {
-	t.Parallel()
-
-	t.Run("missing_secret", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			SigningSecret: "",
-		}}}}
-		_, err := s.parseAndVerifySelfIssuedOAuthToken("some.jwt.token")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "signing_secret is required")
-	})
-
-	t.Run("invalid_jwt_format", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			SigningSecret: "my-secret",
-		}}}}
-		_, err := s.parseAndVerifySelfIssuedOAuthToken("not-a-jwt")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "failed to parse self-issued JWT")
-	})
 }
 
 func TestHasRequiredScopes(t *testing.T) {
