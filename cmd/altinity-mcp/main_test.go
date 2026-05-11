@@ -3307,6 +3307,87 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		}
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
+
+	// H-1: gating + cluster_secret + !RequireEmailVerified = unverified-email
+	// impersonation risk. Refuse to start.
+	t.Run("gating_with_cluster_secret_requires_email_verified", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "gating",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				RequireEmailVerified: false,
+			}},
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.TCPProtocol,
+				ClusterName:   "demo",
+				ClusterSecret: "shared-cluster-interserver-secret",
+			},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "require_email_verified=true")
+	})
+
+	t.Run("gating_with_cluster_secret_and_email_verified_passes", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "gating",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				RequireEmailVerified: true,
+			}},
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.TCPProtocol,
+				ClusterName:   "demo",
+				ClusterSecret: "shared-cluster-interserver-secret",
+			},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("gating_without_cluster_secret_doesnt_require_email_verified", func(t *testing.T) {
+		t.Parallel()
+		// Static-creds gating mode: the email claim never reaches CH as
+		// initial_user, so RequireEmailVerified isn't load-bearing here.
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "gating",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				RequireEmailVerified: false,
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("forward_with_cluster_secret_doesnt_trigger_check", func(t *testing.T) {
+		t.Parallel()
+		// Forward mode never uses oauthClaims.Email as initial_user — CH
+		// re-validates the bearer itself. The H-1 check is gating-specific.
+		// (Note: forward+cluster_secret is also rejected for being
+		// http-only-vs-tcp incompatible elsewhere; we just want to confirm
+		// the H-1 check doesn't fire.)
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "forward",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				RequireEmailVerified: false,
+			}},
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.HTTPProtocol,
+				ClusterName:   "demo",
+				ClusterSecret: "shared-cluster-interserver-secret",
+			},
+		}
+		// Should pass H-1 (forward mode); other checks may fail elsewhere
+		// but validateOAuthRuntimeConfig itself should not fail on H-1.
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
 }
 
 func TestValidateClusterSecretConfig(t *testing.T) {

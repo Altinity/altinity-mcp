@@ -1093,6 +1093,21 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
 	}
 
+	// H-1: gating + cluster_secret uses oauthClaims.Email verbatim as the
+	// ClickHouse `initial_user`; ClickHouse trusts the impersonation because
+	// the cluster_secret authenticates the peer. Without RequireEmailVerified,
+	// any IdP-issued token with email_verified=false (e.g. an Auth0 Database
+	// Connection that forgot to require verification, a self-hosted OIDC, a
+	// federated partner IdP) lets the bearer impersonate any provisioned CH
+	// user just by typing their email at registration. Refuse to start unless
+	// the operator explicitly opts in to the verified-email check.
+	if cfg.Server.OAuth.IsGatingMode() &&
+		strings.TrimSpace(cfg.ClickHouse.ClusterSecret) != "" &&
+		!cfg.Server.OAuth.RequireEmailVerified {
+		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret requires oauth.require_email_verified=true (set MCP_OAUTH_REQUIRE_EMAIL_VERIFIED=true): " +
+			"without it, any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
+	}
+
 	return nil
 }
 
