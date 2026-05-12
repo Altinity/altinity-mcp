@@ -299,13 +299,26 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	// impersonate. When OAuth is enabled, prefer the authenticated user's
 	// email so `system.query_log` attributes the query to a human-readable
 	// identity that matches how operators typically provision ClickHouse
-	// users. Fall back to `sub` for IdPs that don't emit an email claim.
+	// users.
+	//
+	// Auth0 enhanced-security third-party (DCR) tokens strip the OIDC `email`
+	// claim from access tokens. Operators work around this with a post-login
+	// Action that re-adds email under a namespaced URL claim (Auth0 only
+	// allows non-standard claims when they're URL-prefixed for third-party
+	// clients). We accept either the standard `email` claim or any namespaced
+	// `*/email` claim from the Extra map. Fall back to `sub` for IdPs that
+	// don't emit any email claim.
 	if chConfig.ClusterSecret != "" && oauthClaims != nil {
-		switch {
-		case strings.TrimSpace(oauthClaims.Email) != "":
-			chConfig.Username = strings.TrimSpace(oauthClaims.Email)
-		case strings.TrimSpace(oauthClaims.Subject) != "":
-			chConfig.Username = strings.TrimSpace(oauthClaims.Subject)
+		var impersonateAs string
+		if e := strings.TrimSpace(oauthClaims.Email); e != "" {
+			impersonateAs = e
+		} else if e := emailFromNamespacedExtra(oauthClaims.Extra); e != "" {
+			impersonateAs = e
+		} else if s := strings.TrimSpace(oauthClaims.Subject); s != "" {
+			impersonateAs = s
+		}
+		if impersonateAs != "" {
+			chConfig.Username = impersonateAs
 		}
 		chConfig.Password = ""
 	}
@@ -322,4 +335,24 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	}
 
 	return client, nil
+}
+
+// emailFromNamespacedExtra returns the first string-valued claim whose key
+// ends with `/email` from the JWT's non-standard claim map. Auth0 third-party
+// (DCR) tokens in enhanced security mode silently drop non-namespaced custom
+// claims, forcing operators to set email under a URL-prefixed key (e.g.
+// `https://mcp.altinity.cloud/email`). Looking up by suffix lets MCP accept
+// any namespace the operator chose.
+func emailFromNamespacedExtra(extra map[string]interface{}) string {
+	for k, v := range extra {
+		if !strings.HasSuffix(k, "/email") {
+			continue
+		}
+		if s, ok := v.(string); ok {
+			if t := strings.TrimSpace(s); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
 }

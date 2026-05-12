@@ -1093,6 +1093,51 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
 	}
 
+	// H-1: gating + cluster_secret uses oauthClaims.Email verbatim as the
+	// ClickHouse `initial_user`; ClickHouse trusts the impersonation because
+	// the cluster_secret authenticates the peer. Without RequireEmailVerified,
+	// any IdP-issued token with email_verified=false (e.g. an Auth0 Database
+	// Connection that forgot to require verification, a self-hosted OIDC, a
+	// federated partner IdP) lets the bearer impersonate any provisioned CH
+	// user just by typing their email at registration. Refuse to start unless
+	// the operator explicitly opts in to the verified-email check.
+	if cfg.Server.OAuth.IsGatingMode() &&
+		strings.TrimSpace(cfg.ClickHouse.ClusterSecret) != "" &&
+		!cfg.Server.OAuth.RequireEmailVerified {
+		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret requires oauth.require_email_verified=true (set MCP_OAUTH_REQUIRE_EMAIL_VERIFIED=true): " +
+			"without it, any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
+	}
+
+	// #109: gating mode is now a pure OAuth resource server (Auth0-fronted).
+	// The fields below belong to the gating-AS role that is being removed.
+	// Refuse at startup so operators notice and clean up helm values.
+	if cfg.Server.OAuth.IsGatingMode() {
+		if cfg.Server.OAuth.ClientID != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.client_id — remove from helm values; client_id is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.ClientSecret != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.client_secret — remove from helm values; client_secret is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.TokenURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.token_url — remove from helm values; token_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.AuthURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.auth_url — remove from helm values; auth_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.UserInfoURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.userinfo_url — remove from helm values; userinfo_url is now Auth0's responsibility under #109")
+		}
+		if cfg.Server.OAuth.PublicAuthServerURL != "" {
+			return fmt.Errorf("oauth: gating mode forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is now Auth0's responsibility under #109")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
+			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/) to be set")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
+			return fmt.Errorf("oauth: gating mode requires oauth.audience to byte-equal the MCP public URL (RFC 8707)")
+		}
+	}
+
 	return nil
 }
 
