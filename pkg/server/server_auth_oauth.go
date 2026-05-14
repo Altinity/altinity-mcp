@@ -131,6 +131,10 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 
 	mode := s.Config.Server.OAuth.NormalizedMode()
 	if !looksLikeJWT(token) {
+		if s.Config.Server.OAuth.IsGatingMode() {
+			log.Error().Str("mode", mode).Msg("OAuth token is not a JWT; gating mode requires a signed JWT from the upstream AS")
+			return nil, ErrInvalidOAuthToken
+		}
 		log.Debug().Str("mode", mode).Msg("Bearer is opaque (not a JWT); skipping local validation, deferring to ClickHouse")
 		return nil, nil
 	}

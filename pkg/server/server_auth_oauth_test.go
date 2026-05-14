@@ -527,6 +527,31 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.Nil(t, claims)
 	})
 
+	// Gating mode rejects opaque bearers outright (MCP is a pure resource
+	// server; only AS-issued JWTs are valid; opaque tokens are never forwarded
+	// to ClickHouse in gating mode, so soft-passing them would be a silent
+	// auth bypass).
+	t.Run("gating_mode_opaque_bearer_rejected", func(t *testing.T) {
+		t.Parallel()
+		provider := newTestOAuthProvider(t, nil)
+		srv := &ClickHouseJWEServer{
+			Config: config.Config{
+				Server: config.ServerConfig{
+					OAuth: config.OAuthConfig{
+						Enabled:  true,
+						Mode:     "gating",
+						Issuer:   provider.server.URL,
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "https://mcp.example.com/",
+					},
+				},
+			},
+		}
+		claims, err := srv.ValidateOAuthToken("opaque-bearer-not-a-jwt")
+		require.ErrorIs(t, err, ErrInvalidOAuthToken)
+		require.Nil(t, claims)
+	})
+
 	// C-1: forward-mode JWT with JWKS configured AND a tampered signature is
 	// rejected at the MCP layer before reaching ClickHouse. Closes the
 	// pre-fix gap where any string in `Authorization: Bearer …` was accepted.
