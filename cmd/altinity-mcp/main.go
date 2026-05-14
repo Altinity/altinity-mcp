@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -1064,6 +1065,34 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	return app, nil
 }
 
+// requireHTTPSOAuthURL enforces https:// on operator-supplied OAuth URLs that
+// MCP fetches over the network (issuer for OIDC discovery, jwks_url for
+// signing keys). An empty value is accepted — callers gate the
+// required-vs-optional check separately. http:// is allowed only for
+// localhost/127.0.0.1/::1, mirroring the DCR redirect-URI policy.
+func requireHTTPSOAuthURL(field, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("%s is not a valid URL: %q", field, raw)
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := parsed.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+		return fmt.Errorf("%s must use https:// (got %q) — http on a remote host lets a network attacker inject signing keys and forge any bearer", field, raw)
+	default:
+		return fmt.Errorf("%s must use https:// (got scheme %q in %q)", field, parsed.Scheme, raw)
+	}
+}
+
 func validateOAuthRuntimeConfig(cfg config.Config) error {
 	if !cfg.Server.OAuth.Enabled {
 		return nil
@@ -1073,6 +1102,19 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	case "forward", "gating":
 	default:
 		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
+	}
+
+	// M5: refuse to start when the operator points issuer/jwks_url at a
+	// plaintext http:// endpoint. We fetch JWKS and openid-configuration from
+	// these URLs and trust the response to validate signatures — a MitM on
+	// the wire can inject its own signing key and forge any bearer. Mirror
+	// the DCR redirect-URI policy (oauth_server.go:981) by allowing http
+	// for localhost only, so tests + local dev still work.
+	if err := requireHTTPSOAuthURL("oauth.issuer", cfg.Server.OAuth.Issuer); err != nil {
+		return err
+	}
+	if err := requireHTTPSOAuthURL("oauth.jwks_url", cfg.Server.OAuth.JWKSURL); err != nil {
+		return err
 	}
 
 	signingSecret := strings.TrimSpace(cfg.Server.OAuth.SigningSecret)
@@ -1095,46 +1137,94 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 
 	// H-1: gating + cluster_secret uses oauthClaims.Email verbatim as the
 	// ClickHouse `initial_user`; ClickHouse trusts the impersonation because
-	// the cluster_secret authenticates the peer. Without RequireEmailVerified,
+	// the cluster_secret authenticates the peer. With allow_unverified_email,
 	// any IdP-issued token with email_verified=false (e.g. an Auth0 Database
 	// Connection that forgot to require verification, a self-hosted OIDC, a
 	// federated partner IdP) lets the bearer impersonate any provisioned CH
-	// user just by typing their email at registration. Refuse to start unless
-	// the operator explicitly opts in to the verified-email check.
+	// user just by typing their email at registration. Refuse to start when
+	// the operator has explicitly opted out of the verified-email check.
 	if cfg.Server.OAuth.IsGatingMode() &&
 		strings.TrimSpace(cfg.ClickHouse.ClusterSecret) != "" &&
-		!cfg.Server.OAuth.RequireEmailVerified {
-		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret requires oauth.require_email_verified=true (set MCP_OAUTH_REQUIRE_EMAIL_VERIFIED=true): " +
-			"without it, any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
+		cfg.Server.OAuth.AllowUnverifiedEmail {
+		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret forbids oauth.allow_unverified_email=true (unset MCP_OAUTH_ALLOW_UNVERIFIED_EMAIL): " +
+			"any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
 	}
 
-	// #109: gating mode is now a pure OAuth resource server (Auth0-fronted).
-	// The fields below belong to the gating-AS role that is being removed.
-	// Refuse at startup so operators notice and clean up helm values.
+	// M3: AllowedEmailDomains / AllowedHostedDomains are syntactic checks on
+	// the email / hd claims. Without email_verified enforcement an attacker
+	// whose IdP issues unverified emails can claim any address in the
+	// allow-list and sail through. Refuse to start if the operator combined
+	// a domain allow-list with allow_unverified_email=true.
+	if cfg.Server.OAuth.IsGatingMode() &&
+		(len(cfg.Server.OAuth.AllowedEmailDomains) > 0 || len(cfg.Server.OAuth.AllowedHostedDomains) > 0) &&
+		cfg.Server.OAuth.AllowUnverifiedEmail {
+		return fmt.Errorf("oauth.allowed_email_domains / allowed_hosted_domains forbid oauth.allow_unverified_email=true: " +
+			"a token with email_verified=false can claim any address in the allow-list and defeat the policy")
+	}
+
+	// Gating-mode validation has two shapes depending on broker_upstream:
+	//
+	//   broker_upstream=false (default, #109): MCP is a pure OAuth resource
+	//   server. The external AS (Auth0/CIMD) owns client registration and
+	//   the auth-code flow. Setting any of client_id/client_secret/auth_url/
+	//   token_url/userinfo_url/public_auth_server_url is a misconfiguration.
+	//
+	//   broker_upstream=true: MCP also acts as the AS to MCP clients
+	//   (DCR-via-MCP), brokering an upstream IdP that does not natively
+	//   support CIMD (e.g. Google). The fields above become REQUIRED.
+	//   The /mcp request path still uses cluster_secret + Auth.Username
+	//   impersonation, as in standard gating mode — only the OAuth dance
+	//   changes shape.
 	if cfg.Server.OAuth.IsGatingMode() {
-		if cfg.Server.OAuth.ClientID != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.client_id — remove from helm values; client_id is now Auth0's responsibility under #109")
-		}
-		if cfg.Server.OAuth.ClientSecret != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.client_secret — remove from helm values; client_secret is now Auth0's responsibility under #109")
-		}
-		if cfg.Server.OAuth.TokenURL != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.token_url — remove from helm values; token_url is now Auth0's responsibility under #109")
-		}
-		if cfg.Server.OAuth.AuthURL != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.auth_url — remove from helm values; auth_url is now Auth0's responsibility under #109")
-		}
-		if cfg.Server.OAuth.UserInfoURL != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.userinfo_url — remove from helm values; userinfo_url is now Auth0's responsibility under #109")
-		}
-		if cfg.Server.OAuth.PublicAuthServerURL != "" {
-			return fmt.Errorf("oauth: gating mode forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is now Auth0's responsibility under #109")
+		if !cfg.Server.OAuth.BrokerUpstream {
+			if cfg.Server.OAuth.ClientID != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_id — remove from helm values; client_id is the external AS's responsibility under #109. To act as the AS yourself, set oauth.broker_upstream=true")
+			}
+			if cfg.Server.OAuth.ClientSecret != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_secret — remove from helm values; client_secret is the external AS's responsibility under #109")
+			}
+			if cfg.Server.OAuth.TokenURL != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.token_url — remove from helm values; token_url is the external AS's responsibility under #109")
+			}
+			if cfg.Server.OAuth.AuthURL != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.auth_url — remove from helm values; auth_url is the external AS's responsibility under #109")
+			}
+			if cfg.Server.OAuth.UserInfoURL != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.userinfo_url — remove from helm values; userinfo_url is the external AS's responsibility under #109")
+			}
+			if cfg.Server.OAuth.PublicAuthServerURL != "" {
+				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is the external AS's responsibility under #109")
+			}
+		} else {
+			// broker_upstream=true: opposite — the broker fields are required.
+			missing := []string{}
+			if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
+				missing = append(missing, "client_id")
+			}
+			if strings.TrimSpace(cfg.Server.OAuth.ClientSecret) == "" {
+				missing = append(missing, "client_secret")
+			}
+			if strings.TrimSpace(cfg.Server.OAuth.AuthURL) == "" {
+				missing = append(missing, "auth_url")
+			}
+			if strings.TrimSpace(cfg.Server.OAuth.TokenURL) == "" {
+				missing = append(missing, "token_url")
+			}
+			if len(missing) > 0 {
+				return fmt.Errorf("oauth: gating mode with broker_upstream=true requires upstream-IdP fields to be set: %s. Without these MCP cannot broker the upstream OAuth dance", strings.Join(missing, ", "))
+			}
+			log.Warn().
+				Str("issuer", cfg.Server.OAuth.Issuer).
+				Str("client_id", cfg.Server.OAuth.ClientID).
+				Str("auth_url", cfg.Server.OAuth.AuthURL).
+				Str("token_url", cfg.Server.OAuth.TokenURL).
+				Msg("oauth: gating mode + broker_upstream=true — altinity-mcp is acting as the OAuth AS to MCP clients, brokering an upstream IdP. /oauth/{register,authorize,callback,token} are exposed. claude.ai/ChatGPT do DCR against this MCP, not against the upstream. Single Google redirect URI: <public_url>/oauth/callback. This is the post-#109 hybrid; see deploy/otel-google-gating/EXPERIMENT.md.")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/) to be set")
+			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com) to be set so MCP can validate JWTs against its JWKS")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.audience to byte-equal the MCP public URL (RFC 8707)")
+			return fmt.Errorf("oauth: gating mode requires oauth.audience — under !broker_upstream it must byte-equal the MCP public URL (RFC 8707); under broker_upstream it must byte-equal the upstream OAuth client_id (the value in the upstream id_token's `aud` claim)")
 		}
 	}
 
