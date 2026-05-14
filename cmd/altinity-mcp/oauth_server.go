@@ -561,15 +561,26 @@ func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
 
 // challengeScope returns the scope string for the WWW-Authenticate header.
 // Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
-// Scopes catalog so the client at least has something to request from. Empty
-// string when neither is configured — caller will then omit the attribute.
+// Scopes catalog so the client at least has something to request from. Both
+// candidate lists are passed through oidcScopesForAdvertisement to strip
+// upstream URI-form scopes and any non-allowlisted values that would otherwise
+// confuse MCP clients (ChatGPT renders a "permissions not granted" warning
+// when it compares the scope hint here against what the upstream IdP grants).
+// Empty string when no allowed scopes remain — caller then omits the attribute.
 func (a *application) challengeScope() string {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	switch {
 	case len(cfg.RequiredScopes) > 0:
-		return strings.Join(cfg.RequiredScopes, " ")
+		filtered := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: cfg.RequiredScopes})
+		if len(filtered) > 0 {
+			return strings.Join(filtered, " ")
+		}
+		fallthrough
 	case len(cfg.Scopes) > 0:
-		return strings.Join(cfg.Scopes, " ")
+		filtered := oidcScopesForAdvertisement(cfg)
+		if len(filtered) > 0 {
+			return strings.Join(filtered, " ")
+		}
 	}
 	return ""
 }
@@ -698,6 +709,95 @@ func decodeStringSlice(value interface{}) []string {
 
 func sanitizeScope(scope string) string {
 	return strings.Join(strings.Fields(scope), " ")
+}
+
+// normalizeUpstreamScopeForClient maps upstream-IdP-specific scope URIs back to
+// the OIDC standard names the MCP client originally requested. Google's
+// /oauth/token response emits id-token-equivalent scopes in URI form (e.g.
+// "https://www.googleapis.com/auth/userinfo.email" instead of "email"); when
+// altinity-mcp echoes that string verbatim, ChatGPT compares its requested
+// scope ("email") against the response ("…/userinfo.email") and surfaces a
+// "permissions not granted" warning even though the identity claims are
+// present. Mapping the three OIDC-equivalent Google aliases back to standard
+// names makes request and response shapes agree.
+//
+// Unknown values pass through unchanged. Standard names (openid/email/profile/
+// offline_access) pass through unchanged. The helper is used only for the
+// client-facing `scope` field in /oauth/token responses; upstream-stored scope
+// (oauthIssuedCode.Scope, refresh-JWE claims) keeps Google's original form so
+// subsequent upstream refresh calls hit Google with the same scope value Google
+// itself returned.
+func normalizeUpstreamScopeForClient(scope string) string {
+	if scope == "" {
+		return ""
+	}
+	parts := strings.Fields(scope)
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		var mapped string
+		switch p {
+		case "https://www.googleapis.com/auth/userinfo.email":
+			mapped = "email"
+		case "https://www.googleapis.com/auth/userinfo.profile":
+			mapped = "profile"
+		case "https://www.googleapis.com/auth/openid":
+			mapped = "openid"
+		default:
+			mapped = p
+		}
+		if _, dup := seen[mapped]; dup {
+			continue
+		}
+		seen[mapped] = struct{}{}
+		out = append(out, mapped)
+	}
+	return strings.Join(out, " ")
+}
+
+// oidcScopesForAdvertisement returns the subset of cfg.Scopes that altinity-mcp
+// will surface to MCP clients via discovery metadata (protected-resource doc,
+// authorization-server metadata, openid-configuration), DCR responses, and the
+// WWW-Authenticate challenge. Only an explicit OIDC-identity allowlist plus
+// Auth0's offline_access refresh-token gate is passed through; anything else
+// (URI-form upstream scopes like Google's https://www.googleapis.com/auth/…,
+// resource-server scopes like mcp:read, custom API scopes like calendar) is
+// filtered out.
+//
+// Why explicit allowlist instead of "filter URI / filter offline_access":
+// scope-based tool authorization is not exercised anywhere in altinity-mcp
+// today (RequiredScopes is empty in every helm values file). Anything beyond
+// identity-shaped names is junk from the MCP-client's perspective and tends
+// to provoke "permissions not granted" warnings from ChatGPT. When scope-based
+// authorization is added in the future, extend this allowlist explicitly.
+//
+// Why offline_access is on the list (Auth0 vs Google): Auth0 uses the
+// offline_access scope as the gate for issuing refresh tokens (RFC 6749 §6 +
+// Auth0 docs); production antalya-mcp depends on advertising it. Google does
+// NOT use this scope — it uses access_type=offline as a separate auth param —
+// so for Google deployments cfg.Scopes simply omits offline_access and the
+// helper naturally doesn't advertise it. Behaviour is therefore config-driven
+// per deployment without per-mode branching here.
+func oidcScopesForAdvertisement(cfg config.OAuthConfig) []string {
+	allowed := map[string]struct{}{
+		"openid":         {},
+		"email":          {},
+		"profile":        {},
+		"offline_access": {},
+	}
+	out := make([]string, 0, len(cfg.Scopes))
+	seen := make(map[string]struct{})
+	for _, s := range cfg.Scopes {
+		if _, ok := allowed[s]; !ok {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // authenticateClientSecret validates the inbound `client_secret` against the
@@ -902,7 +1002,7 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 		// audienceMatchesResource.
 		"resource":                 canonicalResourceURL(baseURL),
 		"authorization_servers":    authorizationServers,
-		"scopes_supported":         cfg.Scopes,
+		"scopes_supported":         oidcScopesForAdvertisement(cfg),
 		"bearer_methods_supported": []string{"header"},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -925,7 +1025,7 @@ func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWrit
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
-		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
+		"scopes_supported":                      oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
@@ -947,7 +1047,7 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
 		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
 		"registration_endpoint":                 joinURLPath(baseURL, a.oauthRegistrationPath()),
-		"scopes_supported":                      a.GetCurrentConfig().Server.OAuth.Scopes,
+		"scopes_supported":                      oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
@@ -1062,9 +1162,13 @@ func (a *application) handleOAuthRegister(w http.ResponseWriter, r *http.Request
 	// to skip grant_type=refresh_token even though /oauth/token would
 	// accept it and /.well-known/oauth-authorization-server advertises it
 	// via grant_types_supported.
-	scopes := a.GetCurrentConfig().Server.OAuth.Scopes
+	// scope advertised on the DCR response goes through the same allowlist as
+	// metadata + WWW-Authenticate so DCR clients never see URI-form scopes or
+	// non-identity scopes (mcp:*, calendar, …). See oidcScopesForAdvertisement.
+	cfgOAuth := a.GetCurrentConfig().Server.OAuth
+	scopes := oidcScopesForAdvertisement(cfgOAuth)
 	if len(scopes) == 0 {
-		scopes = a.GetCurrentConfig().Server.OAuth.RequiredScopes
+		scopes = oidcScopesForAdvertisement(config.OAuthConfig{Scopes: cfgOAuth.RequiredScopes})
 	}
 	resp := map[string]interface{}{
 		"client_id":                  clientID,
@@ -1561,7 +1665,14 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		"access_token": bearerToken,
 		"token_type":   issued.UpstreamTokenType,
 		"expires_in":   expiresIn,
-		"scope":        issued.Scope,
+	}
+	// Normalize Google URI-form scopes back to OIDC standard names before
+	// echoing to the MCP client. ChatGPT compares request vs response shape
+	// and warns when they differ; round-tripping standard names eliminates
+	// the cosmetic "permissions not granted" warning. Omit when empty —
+	// RFC 6749 §5.1 makes scope OPTIONAL when identical to the request.
+	if s := normalizeUpstreamScopeForClient(issued.Scope); s != "" {
+		response["scope"] = s
 	}
 	if issued.UpstreamRefreshToken != "" {
 		refreshToken, err := a.mintForwardRefreshToken(secret, issued.UpstreamRefreshToken, issued.UpstreamTokenType, issued.Scope, clientID, a.oauthAuthorizationServerBaseURL(r))
@@ -1722,14 +1833,21 @@ func (a *application) handleOAuthTokenRefreshForward(w http.ResponseWriter, r *h
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	refreshResp := map[string]interface{}{
 		"access_token":  bearerToken,
 		"refresh_token": newRefreshJWE,
 		"token_type":    newTokenType,
 		"expires_in":    expiresIn,
-		"scope":         newScope,
-	})
+	}
+	// Mirror handleOAuthTokenAuthCode: normalize URI-form scopes to OIDC
+	// standard names for the client; the upstream-stored newScope (now in the
+	// rotated refresh JWE) keeps Google's original form for the next upstream
+	// refresh call.
+	if s := normalizeUpstreamScopeForClient(newScope); s != "" {
+		refreshResp["scope"] = s
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(refreshResp)
 }
 
 func truncateForLog(value string, max int) string {

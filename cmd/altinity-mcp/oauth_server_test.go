@@ -2271,6 +2271,109 @@ func TestSanitizeScope(t *testing.T) {
 	require.Equal(t, "", sanitizeScope("   "))
 }
 
+func TestNormalizeUpstreamScopeForClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("google_uri_form_collapses_to_oidc_names", func(t *testing.T) {
+		t.Parallel()
+		got := normalizeUpstreamScopeForClient("openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile")
+		require.Equal(t, "openid email profile", got)
+	})
+
+	t.Run("already_normalised_passthrough", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "openid email profile", normalizeUpstreamScopeForClient("openid email profile"))
+	})
+
+	t.Run("empty_input_empty_output", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "", normalizeUpstreamScopeForClient(""))
+		require.Equal(t, "", normalizeUpstreamScopeForClient("   "))
+	})
+
+	t.Run("unknown_scopes_pass_through", func(t *testing.T) {
+		t.Parallel()
+		// We only collapse the 3 known Google OIDC aliases; everything else
+		// passes through verbatim (including non-Google URI scopes that we
+		// don't have a mapping for and arbitrary custom scopes).
+		got := normalizeUpstreamScopeForClient("openid offline_access https://example.com/auth/custom mcp:read")
+		require.Equal(t, "openid offline_access https://example.com/auth/custom mcp:read", got)
+	})
+
+	t.Run("dedup_after_mapping", func(t *testing.T) {
+		t.Parallel()
+		// "email" + ".../userinfo.email" both map to "email" — dedup keeps one.
+		got := normalizeUpstreamScopeForClient("email https://www.googleapis.com/auth/userinfo.email")
+		require.Equal(t, "email", got)
+	})
+
+	t.Run("openid_uri_alias_collapses", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "openid", normalizeUpstreamScopeForClient("https://www.googleapis.com/auth/openid"))
+	})
+
+	t.Run("preserves_order", func(t *testing.T) {
+		t.Parallel()
+		// First occurrence of each unique mapped name wins, original order kept.
+		got := normalizeUpstreamScopeForClient("profile https://www.googleapis.com/auth/userinfo.email openid")
+		require.Equal(t, "profile email openid", got)
+	})
+}
+
+func TestOidcScopesForAdvertisement(t *testing.T) {
+	t.Parallel()
+
+	t.Run("google_three_oidc_scopes_pass_through", func(t *testing.T) {
+		t.Parallel()
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile"}})
+		require.Equal(t, []string{"openid", "email", "profile"}, got)
+	})
+
+	t.Run("auth0_with_offline_access_passes_through", func(t *testing.T) {
+		t.Parallel()
+		// Auth0 production antalya-mcp depends on advertising offline_access
+		// to receive refresh tokens. The allowlist must include it.
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile", "offline_access"}})
+		require.Equal(t, []string{"openid", "email", "profile", "offline_access"}, got)
+	})
+
+	t.Run("google_api_uri_filtered_out", func(t *testing.T) {
+		t.Parallel()
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "https://www.googleapis.com/auth/calendar", "email"}})
+		require.Equal(t, []string{"openid", "email"}, got)
+	})
+
+	t.Run("custom_mcp_scope_filtered_out", func(t *testing.T) {
+		t.Parallel()
+		// Custom resource-server scopes (mcp:read, mcp:write, calendar.list)
+		// are filtered out because scope-based tool authorization is not
+		// exercised anywhere in altinity-mcp today. If/when it lands, extend
+		// the allowlist in oidcScopesForAdvertisement.
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "mcp:read", "mcp:write", "calendar.list"}})
+		require.Equal(t, []string{"openid"}, got)
+	})
+
+	t.Run("empty_input_empty_output", func(t *testing.T) {
+		t.Parallel()
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: nil})
+		require.Empty(t, got)
+		got = oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{}})
+		require.Empty(t, got)
+	})
+
+	t.Run("duplicates_collapsed", func(t *testing.T) {
+		t.Parallel()
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "openid", "email"}})
+		require.Equal(t, []string{"openid", "email"}, got)
+	})
+
+	t.Run("order_preserved", func(t *testing.T) {
+		t.Parallel()
+		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"profile", "openid", "email"}})
+		require.Equal(t, []string{"profile", "openid", "email"}, got)
+	})
+}
+
 func TestPkceChallenge(t *testing.T) {
 	t.Parallel()
 	// Deterministic test: given a known verifier, check output matches SHA256(verifier) base64url
