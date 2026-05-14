@@ -316,7 +316,21 @@ func (s *ClickHouseJWEServer) parseAndVerifyExternalJWT(token string, expectedAu
 	if keyID != "" {
 		keys = keySet.Key(keyID)
 		if len(keys) == 0 {
-			return nil, fmt.Errorf("no JWK found for kid %q", keyID)
+			// kid absent from the cached JWKS — the AS may have rotated its
+			// signing key since the last fetch. Invalidate the cache and
+			// retry once before giving up.
+			s.jwksCacheMu.Lock()
+			s.jwksCacheTime = time.Time{}
+			s.jwksCacheMu.Unlock()
+			keySet, err = s.fetchOAuthJWKSet(jwksURI)
+			if err != nil {
+				return nil, err
+			}
+			keys = keySet.Key(keyID)
+			if len(keys) == 0 {
+				return nil, fmt.Errorf("no JWK found for kid %q", keyID)
+			}
+			log.Info().Str("kid", keyID).Msg("oauth: JWKS re-fetched after key rotation; new kid found")
 		}
 	}
 

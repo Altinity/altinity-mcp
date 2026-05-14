@@ -2113,6 +2113,82 @@ func TestParseAndVerifyExternalJWTUnknownKid(t *testing.T) {
 	require.Contains(t, err.Error(), "no JWK found for kid")
 }
 
+// TestJWKSRefetchOnKidMiss verifies that a kid absent from the cached JWKS
+// triggers a one-shot cache-bypass re-fetch, allowing tokens issued after
+// a key rotation to be accepted without waiting for the TTL to expire.
+func TestJWKSRefetchOnKidMiss(t *testing.T) {
+	t.Parallel()
+
+	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	const oldKid = "old-signing-key"
+	const newKid = "new-signing-key"
+
+	// The mock JWKS endpoint always serves the new key. The test seeds
+	// the server's in-memory cache with the old key to simulate a stale
+	// cache from before the rotation.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/jwks":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+				{Key: &newKey.PublicKey, KeyID: newKid, Algorithm: "RS256", Use: "sig"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockServer.Close()
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Issuer:  mockServer.URL,
+					JWKSURL: mockServer.URL + "/jwks",
+				},
+			},
+		},
+	}
+
+	// Seed the JWKS cache with the old key and a far-future TTL so that a
+	// normal fetch would not re-fetch.
+	srv.jwksCacheMu.Lock()
+	srv.jwksCache = jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+		{Key: &oldKey.PublicKey, KeyID: oldKid, Algorithm: "RS256", Use: "sig"},
+	}}
+	srv.jwksCacheURL = mockServer.URL + "/jwks"
+	srv.jwksCacheTime = time.Now().Add(10 * time.Minute) // far future — won't expire naturally
+	srv.jwksCacheMu.Unlock()
+
+	// Issue a JWT signed with the new key (kid = newKid).
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: newKey},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", newKid),
+	)
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]interface{}{
+		"sub": "user-1",
+		"iss": mockServer.URL,
+		"aud": "test-audience",
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	})
+	require.NoError(t, err)
+	obj, err := signer.Sign(payload)
+	require.NoError(t, err)
+	token, err := obj.CompactSerialize()
+	require.NoError(t, err)
+
+	// Should succeed: kid-miss triggers a cache-bypass re-fetch that finds newKid.
+	claims, err := srv.parseAndVerifyExternalJWT(token, "test-audience")
+	require.NoError(t, err)
+	require.Equal(t, "user-1", claims.Subject)
+}
+
 func TestGatingModeIdentityPolicy(t *testing.T) {
 	t.Parallel()
 	const gatingSecret = "test-gating-secret-32-byte-key!!"
