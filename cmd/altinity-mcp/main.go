@@ -964,8 +964,6 @@ type application struct {
 	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
 	httpSrvMutex     sync.RWMutex
-	oauthState       *oauthStateStore
-	oauthStateMu     sync.Mutex
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
@@ -983,15 +981,6 @@ func (a *application) getHTTPServer() *http.Server {
 	a.httpSrvMutex.RLock()
 	defer a.httpSrvMutex.RUnlock()
 	return a.httpSrv
-}
-
-func (a *application) getOAuthStateStore() *oauthStateStore {
-	a.oauthStateMu.Lock()
-	defer a.oauthStateMu.Unlock()
-	if a.oauthState == nil {
-		a.oauthState = newOAuthStateStore()
-	}
-	return a.oauthState
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
@@ -1052,7 +1041,6 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	app := &application{
 		config:           cfg,
 		mcpServer:        mcpServer,
-		oauthState:       newOAuthStateStore(),
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
 	}
