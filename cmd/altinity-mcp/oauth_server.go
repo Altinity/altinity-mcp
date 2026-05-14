@@ -223,6 +223,21 @@ func (a *application) oauthForwardMode() bool {
 	return a.oauthMode() == "forward"
 }
 
+// oauthBrokerMode reports whether altinity-mcp is acting as the OAuth AS to
+// MCP clients (DCR + /authorize + /token + /callback). True for forward mode
+// always; true for gating mode iff the operator opts in via
+// oauth.broker_upstream. When true, /oauth/* routes are registered and the
+// broker-flow handlers fire. The /mcp request path still differs per mode —
+// forward forwards the upstream bearer to CH; gating impersonates via
+// cluster_secret + Auth.Username.
+func (a *application) oauthBrokerMode() bool {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	if cfg.IsForwardMode() {
+		return true
+	}
+	return cfg.IsGatingMode() && cfg.BrokerUpstream
+}
+
 func (a *application) oauthJWESecret() []byte {
 	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.SigningSecret)
 	return []byte(secret)
@@ -858,16 +873,26 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	}
 	cfg := a.GetCurrentConfig().Server.OAuth
 	baseURL := a.resourceBaseURL(r)
-	// Under gating, MCP is a pure resource server and the upstream IdP
-	// (configured via `oauth.issuer`) is the AS — advertise it byte-equal to
-	// what tokens carry in their `iss` claim. Under forward, MCP fronts the
-	// upstream IdP and is itself the AS, so we advertise our own auth-server
-	// base URL with no trailing slash (RFC 8414 §2 issuer convention).
+	// authorization_servers advertises where the MCP client should go to get
+	// a token. Three shapes:
+	//   - Pure gating (#109, no broker): MCP is a pure resource server and
+	//     the external AS (configured via `oauth.issuer`) is responsible for
+	//     DCR / authorize / token. Advertise the upstream issuer byte-equal
+	//     to what tokens carry in their `iss` claim.
+	//   - Forward mode: MCP fronts the upstream IdP and is itself the AS to
+	//     MCP clients. Advertise our own auth-server base URL.
+	//   - Gating + broker_upstream: same as forward mode from the
+	//     MCP-client's perspective — MCP exposes /oauth/{register,authorize,
+	//     callback,token} and brokers the upstream IdP behind the scenes.
+	//     Advertise our own auth-server base URL, NOT the upstream issuer.
+	//     If we advertised the upstream issuer here, claude.ai/ChatGPT would
+	//     try to DCR against it directly (which most upstreams reject) and
+	//     never discover our broker endpoints.
 	var authorizationServers []string
-	if cfg.IsGatingMode() {
-		authorizationServers = []string{strings.TrimSpace(cfg.Issuer)}
-	} else {
+	if a.oauthBrokerMode() {
 		authorizationServers = []string{strings.TrimRight(a.oauthAuthorizationServerBaseURL(r), "/")}
+	} else {
+		authorizationServers = []string{strings.TrimSpace(cfg.Issuer)}
 	}
 	resp := map[string]interface{}{
 		// `resource` is the canonical RFC 9728 protected-resource identifier
@@ -1151,7 +1176,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	if scope == "" {
 		scope = "openid email"
 	}
-	if a.oauthForwardMode() && cfg.Server.OAuth.UpstreamOfflineAccess && !slices.Contains(strings.Fields(scope), "offline_access") {
+	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess && !slices.Contains(strings.Fields(scope), "offline_access") {
 		scope = strings.TrimSpace(scope + " offline_access")
 	}
 	upstream.Set("scope", scope)
@@ -1716,14 +1741,16 @@ func truncateForLog(value string, max int) string {
 
 func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	// RFC 9728 protected-resource metadata is the only OAuth endpoint MCP
-	// itself owns under gating mode (#109): MCP is a pure resource server
-	// and points clients at the upstream IdP for everything else. Under
-	// forward mode MCP also fronts the upstream IdP as a proxying AS —
-	// /oauth/register, /authorize, /callback, /token, and the
-	// AS-discovery metadata endpoints stay registered on that path.
+	// itself owns under pure gating mode (#109): MCP is a pure resource
+	// server and points clients at the upstream IdP for everything else.
+	// Under forward mode — and under gating mode with `broker_upstream=true`
+	// — MCP also fronts the upstream IdP as a proxying AS, so
+	// /oauth/register, /authorize, /callback, /token, and the AS-discovery
+	// metadata endpoints stay registered on that path. The decision is
+	// centralised in oauthBrokerMode().
 	mux.HandleFunc(defaultProtectedResourceMetadataPath, a.handleOAuthProtectedResource)
 
-	if a.GetCurrentConfig().Server.OAuth.IsGatingMode() {
+	if !a.oauthBrokerMode() {
 		return
 	}
 

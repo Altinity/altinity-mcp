@@ -204,7 +204,7 @@ func (s *ClickHouseJWEServer) validateOAuthClaims(claims *OAuthClaims) (*OAuthCl
 
 func (s *ClickHouseJWEServer) validateOAuthIdentityPolicy(claims *OAuthClaims) error {
 	oauthCfg := s.Config.Server.OAuth
-	if oauthCfg.RequireEmailVerified && claims.Email != "" && !claims.EmailVerified {
+	if !oauthCfg.AllowUnverifiedEmail && claims.Email != "" && !claims.EmailVerified {
 		log.Error().Str("email", claims.Email).Msg("OAuth identity email is not verified")
 		return ErrOAuthEmailNotVerified
 	}

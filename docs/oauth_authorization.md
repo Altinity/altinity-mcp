@@ -34,7 +34,6 @@ config:
       required_scopes:
         - mcp:read
         - mcp:write
-      require_email_verified: true
       public_urls:
         - "https://otel-mcp.demo.altinity.cloud"
       # signing_secret injected via MCP_OAUTH_SIGNING_SECRET env var
@@ -266,7 +265,6 @@ config:
       jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
       audience: "https://mcp.example.com"   # RFC 8707 byte-equal with Auth0 API identifier
       required_scopes: [mcp:read, mcp:write]
-      require_email_verified: true
       public_urls:
         - "https://mcp.example.com"
       # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
@@ -318,7 +316,6 @@ server:
     jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
     audience: "https://mcp.example.com"
     required_scopes: [mcp:read, mcp:write]
-    require_email_verified: true
     # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
 ```
 
@@ -431,7 +428,7 @@ MCP can restrict access based on identity claims extracted from the validated JW
 |--------|-------------|
 | `allowed_email_domains` | Only allow principals with an `email` claim in these domains (e.g., `["example.com"]`) |
 | `allowed_hosted_domains` | Only allow principals with an `hd` (hosted/workspace domain) claim in this set — Google Workspace / Auth0 organization |
-| `require_email_verified` | Reject principals whose `email_verified` claim is `false` or absent. **Required when using `cluster_secret` impersonation** (H-1 safety rule: gating + cluster_secret refuses to start without this set). |
+| `allow_unverified_email` | Opt out of the default `email_verified=true` requirement. Default `false` (verified required) — set `true` only when the IdP omits the claim or the operator trusts upstream verification. **Forbidden** combined with `cluster_secret` (H-1: would let any token impersonate any CH user) or with `allowed_email_domains` / `allowed_hosted_domains` (M3: a forged unverified email would defeat the domain policy). Startup refuses in either combination. |
 
 Claims come from the AS-issued JWT (gating) or the upstream id_token (forward) and cannot be forged by the client.
 
@@ -440,7 +437,8 @@ server:
   oauth:
     allowed_email_domains: ["altinity.com", "example.com"]
     allowed_hosted_domains: ["altinity.com"]
-    require_email_verified: true
+    # allow_unverified_email defaults to false (verified required). Setting
+    # true here would be a startup error because of the domain allow-list.
 ```
 
 ## Full Configuration Reference
@@ -499,7 +497,10 @@ server:
     # Identity policy — applies to both modes (claims from JWT)
     allowed_email_domains: []
     allowed_hosted_domains: []
-    require_email_verified: false
+
+    # Accept tokens with email_verified=false. Default false (verified required).
+    # Forbidden together with cluster_secret or allowed_*_domains — startup errors.
+    allow_unverified_email: false
 
     # Token lifetimes
     access_token_ttl_seconds: 3600    # 1 hour (gating: reduce to 600 for revocation latency)

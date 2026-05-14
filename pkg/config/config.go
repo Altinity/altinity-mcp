@@ -155,6 +155,23 @@ type OAuthConfig struct {
 	// Default false: forward mode behaves exactly as before (no refresh token issued, refresh grant rejected).
 	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" env:"MCP_OAUTH_UPSTREAM_OFFLINE_ACCESS" desc:"Forward mode: request offline_access upstream and issue JWE-wrapped refresh tokens"`
 
+	// BrokerUpstream opts gating mode into the DCR-via-MCP broker pattern that
+	// forward mode uses by default. When true under gating mode, altinity-mcp:
+	//   - Acts as the OAuth AS to claude.ai/ChatGPT (hosts /oauth/{register,
+	//     authorize,callback,token}, mints stateless DCR client_ids).
+	//   - Brokers an upstream IdP using a static OAuth application
+	//     (ClientID/ClientSecret/AuthURL/TokenURL config).
+	//   - Returns the upstream id_token unchanged as the access_token to the
+	//     MCP-client; on /mcp the gating-mode JWKS-validation path validates
+	//     it against the upstream issuer's JWKS and impersonates the user to
+	//     ClickHouse via cluster_secret + Auth.Username.
+	// This is the same shape as forward mode minus the JWT-passthrough-to-CH:
+	// CH is reached via interserver auth + email impersonation as in standard
+	// gating mode. Use when the upstream IdP does not support CIMD natively
+	// (e.g. Google directly) but you don't want to expose CH to per-query JWT
+	// validation. Default false: gating remains pure resource server (#109).
+	BrokerUpstream bool `json:"broker_upstream" yaml:"broker_upstream" flag:"oauth-broker-upstream" env:"MCP_OAUTH_BROKER_UPSTREAM" desc:"Gating mode: enable DCR-via-MCP broker pattern (act as AS to clients, broker upstream IdP). Requires client_id/client_secret/auth_url/token_url/issuer to be set."`
+
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" env:"MCP_OAUTH_REQUIRED_SCOPES" desc:"Required OAuth scopes for access"`
 
@@ -173,8 +190,10 @@ type OAuthConfig struct {
 	// AllowedHostedDomains constrains accepted principals by hosted/workspace domain claim such as Google hd.
 	AllowedHostedDomains []string `json:"allowed_hosted_domains" yaml:"allowed_hosted_domains" flag:"oauth-allowed-hosted-domains" env:"MCP_OAUTH_ALLOWED_HOSTED_DOMAINS" desc:"Allowed hosted/workspace domains for verified OAuth identities"`
 
-	// RequireEmailVerified rejects identities where email_verified is false when an email claim is present.
-	RequireEmailVerified bool `json:"require_email_verified" yaml:"require_email_verified" flag:"oauth-require-email-verified" env:"MCP_OAUTH_REQUIRE_EMAIL_VERIFIED" desc:"Require email_verified=true on OAuth identities"`
+	// AllowUnverifiedEmail opts out of the email_verified=true requirement.
+	// Default zero value (false) rejects tokens carrying email with email_verified=false.
+	// Set true only when the IdP omits email_verified or the operator trusts upstream verification.
+	AllowUnverifiedEmail bool `json:"allow_unverified_email" yaml:"allow_unverified_email" flag:"oauth-allow-unverified-email" env:"MCP_OAUTH_ALLOW_UNVERIFIED_EMAIL" desc:"Accept OAuth identities with email_verified=false (default: reject)"`
 
 	// RegistrationPath configures the relative path for dynamic client registration.
 	RegistrationPath string `json:"registration_path" yaml:"registration_path" flag:"oauth-registration-path" env:"MCP_OAUTH_REGISTRATION_PATH" desc:"Relative path for OAuth client registration endpoint"`

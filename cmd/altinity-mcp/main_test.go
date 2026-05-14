@@ -3310,9 +3310,9 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
 
-	// H-1: gating + cluster_secret + !RequireEmailVerified = unverified-email
+	// H-1: gating + cluster_secret + AllowUnverifiedEmail = unverified-email
 	// impersonation risk. Refuse to start.
-	t.Run("gating_with_cluster_secret_requires_email_verified", func(t *testing.T) {
+	t.Run("gating_with_cluster_secret_forbids_allow_unverified_email", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
@@ -3320,7 +3320,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				Mode:                 "gating",
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
 				Issuer:               "https://example.auth0.com/",
-				RequireEmailVerified: false,
+				AllowUnverifiedEmail: true,
 			}},
 			ClickHouse: config.ClickHouseConfig{
 				Protocol:      config.TCPProtocol,
@@ -3330,19 +3330,18 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		}
 		err := validateOAuthRuntimeConfig(cfg)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "require_email_verified=true")
+		require.Contains(t, err.Error(), "allow_unverified_email=true")
 	})
 
-	t.Run("gating_with_cluster_secret_and_email_verified_passes", func(t *testing.T) {
+	t.Run("gating_with_cluster_secret_default_passes", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
-				Enabled:              true,
-				Mode:                 "gating",
-				SigningSecret:        "test-signing-secret-32-byte-key!!",
-				Issuer:               "https://example.auth0.com/",
-				Audience:             "https://example-mcp.test/",
-				RequireEmailVerified: true,
+				Enabled:       true,
+				Mode:          "gating",
+				SigningSecret: "test-signing-secret-32-byte-key!!",
+				Issuer:        "https://example.auth0.com/",
+				Audience:      "https://example-mcp.test/",
 			}},
 			ClickHouse: config.ClickHouseConfig{
 				Protocol:      config.TCPProtocol,
@@ -3353,10 +3352,10 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
 	})
 
-	t.Run("gating_without_cluster_secret_doesnt_require_email_verified", func(t *testing.T) {
+	t.Run("gating_without_cluster_secret_allows_unverified_email", func(t *testing.T) {
 		t.Parallel()
 		// Static-creds gating mode: the email claim never reaches CH as
-		// initial_user, so RequireEmailVerified isn't load-bearing here.
+		// initial_user, so the verified-email gate isn't load-bearing here.
 		cfg := config.Config{
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:              true,
@@ -3364,7 +3363,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
 				Issuer:               "https://example.auth0.com/",
 				Audience:             "https://example-mcp.test/",
-				RequireEmailVerified: false,
+				AllowUnverifiedEmail: true,
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
 		}
@@ -3383,7 +3382,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 				Enabled:              true,
 				Mode:                 "forward",
 				SigningSecret:        "test-signing-secret-32-byte-key!!",
-				RequireEmailVerified: false,
+				AllowUnverifiedEmail: true,
 			}},
 			ClickHouse: config.ClickHouseConfig{
 				Protocol:      config.HTTPProtocol,
@@ -3394,6 +3393,150 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		// Should pass H-1 (forward mode); other checks may fail elsewhere
 		// but validateOAuthRuntimeConfig itself should not fail on H-1.
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	// M3: domain allow-list + allow_unverified_email = unverified-email bypass.
+	t.Run("gating_with_email_domains_forbids_allow_unverified_email", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "gating",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				Issuer:               "https://example.auth0.com/",
+				Audience:             "https://example-mcp.test/",
+				AllowedEmailDomains:  []string{"altinity.com"},
+				AllowUnverifiedEmail: true,
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "allowed_email_domains")
+	})
+
+	t.Run("gating_with_hosted_domains_forbids_allow_unverified_email", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:              true,
+				Mode:                 "gating",
+				SigningSecret:        "test-signing-secret-32-byte-key!!",
+				Issuer:               "https://example.auth0.com/",
+				Audience:             "https://example-mcp.test/",
+				AllowedHostedDomains: []string{"altinity.com"},
+				AllowUnverifiedEmail: true,
+			}},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "allowed_hosted_domains")
+	})
+
+	// Gating-mode with broker_upstream: opt-in DCR-via-MCP hybrid. The pure-
+	// resource-server gating shape stays the default; broker shape unlocks
+	// the AS handlers and requires the upstream-IdP fields to be present.
+	gatingBrokerBase := func() config.OAuthConfig {
+		return config.OAuthConfig{
+			Enabled:              true,
+			Mode:                 "gating",
+			SigningSecret:        "test-signing-secret-32-byte-key!!",
+			Issuer:               "https://accounts.google.com",
+			Audience:             "some-google-client-id.apps.googleusercontent.com",
+			BrokerUpstream:       true,
+			ClientID:             "some-google-client-id.apps.googleusercontent.com",
+			ClientSecret:         "GOCSPX-redacted",
+			AuthURL:              "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:             "https://oauth2.googleapis.com/token",
+			UserInfoURL:          "https://openidconnect.googleapis.com/v1/userinfo",
+		}
+	}
+
+	t.Run("gating_broker_valid_full_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{Server: config.ServerConfig{OAuth: gatingBrokerBase()}}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("gating_broker_missing_client_id_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := gatingBrokerBase()
+		o.ClientID = ""
+		cfg := config.Config{Server: config.ServerConfig{OAuth: o}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "broker_upstream=true requires upstream-IdP fields")
+		require.ErrorContains(t, err, "client_id")
+	})
+
+	t.Run("gating_broker_missing_client_secret_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := gatingBrokerBase()
+		o.ClientSecret = ""
+		cfg := config.Config{Server: config.ServerConfig{OAuth: o}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "client_secret")
+	})
+
+	t.Run("gating_broker_missing_auth_url_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := gatingBrokerBase()
+		o.AuthURL = ""
+		cfg := config.Config{Server: config.ServerConfig{OAuth: o}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "auth_url")
+	})
+
+	t.Run("gating_broker_missing_token_url_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := gatingBrokerBase()
+		o.TokenURL = ""
+		cfg := config.Config{Server: config.ServerConfig{OAuth: o}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "token_url")
+	})
+
+	t.Run("gating_broker_with_cluster_secret_forbids_allow_unverified_email", func(t *testing.T) {
+		t.Parallel()
+		// H-1 mandate applies under broker_upstream too — the broker has no
+		// effect on cluster_secret + email-as-initial_user semantics at /mcp.
+		o := gatingBrokerBase()
+		o.AllowUnverifiedEmail = true
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{
+				Protocol:      config.TCPProtocol,
+				ClusterName:   "otel",
+				ClusterSecret: "shared",
+			},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "allow_unverified_email=true")
+	})
+
+	t.Run("gating_non_broker_still_forbids_client_id", func(t *testing.T) {
+		t.Parallel()
+		// Default gating (broker_upstream=false) must still reject the
+		// upstream-IdP fields per #109; broker_upstream is an explicit opt-in.
+		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:       true,
+			Mode:          "gating",
+			SigningSecret: "test-signing-secret-32-byte-key!!",
+			Issuer:        "https://altinity.auth0.com/",
+			Audience:      "https://example-mcp.test/",
+			ClientID:      "some-client",
+		}}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "without broker_upstream")
+	})
+
+	t.Run("gating_broker_still_requires_audience", func(t *testing.T) {
+		t.Parallel()
+		o := gatingBrokerBase()
+		o.Audience = ""
+		cfg := config.Config{Server: config.ServerConfig{OAuth: o}}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "oauth.audience")
 	})
 }
 

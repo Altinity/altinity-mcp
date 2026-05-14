@@ -298,8 +298,7 @@ func TestOAuthValidateToken(t *testing.T) {
 						JWKSURL:              provider.server.URL + "/jwks",
 						Audience:             "clickhouse-api",
 						RequiredScopes:       []string{"query:execute"},
-						AllowedEmailDomains:  []string{"gmail.com"},
-						RequireEmailVerified: true,
+						AllowedEmailDomains: []string{"gmail.com"},
 					},
 				},
 			},
@@ -334,12 +333,11 @@ func TestOAuthValidateToken(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled:              true,
-						Mode:                 "forward",
-						Issuer:               provider.server.URL,
-						JWKSURL:              provider.server.URL + "/jwks",
-						Audience:             "clickhouse-api",
-						RequireEmailVerified: true,
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   provider.server.URL,
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
 					},
 				},
 			},
@@ -2222,7 +2220,7 @@ func TestGatingModeIdentityPolicy(t *testing.T) {
 
 	t.Run("require_email_verified_pass", func(t *testing.T) {
 		t.Parallel()
-		srv := newSrv(config.OAuthConfig{RequireEmailVerified: true})
+		srv := newSrv(config.OAuthConfig{})
 		claims := &OAuthClaims{Email: "user@example.com", EmailVerified: true}
 		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
 		require.NoError(t, err)
@@ -2230,10 +2228,18 @@ func TestGatingModeIdentityPolicy(t *testing.T) {
 
 	t.Run("require_email_verified_fail", func(t *testing.T) {
 		t.Parallel()
-		srv := newSrv(config.OAuthConfig{RequireEmailVerified: true})
+		srv := newSrv(config.OAuthConfig{})
 		claims := &OAuthClaims{Email: "user@example.com", EmailVerified: false}
 		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
 		require.ErrorIs(t, err, ErrOAuthEmailNotVerified)
+	})
+
+	t.Run("allow_unverified_email_bypasses_check", func(t *testing.T) {
+		t.Parallel()
+		srv := newSrv(config.OAuthConfig{AllowUnverifiedEmail: true})
+		claims := &OAuthClaims{Email: "user@example.com", EmailVerified: false}
+		err := srv.ValidateOAuthIdentityPolicyClaims(claims)
+		require.NoError(t, err)
 	})
 
 	t.Run("allowed_hosted_domain_reject", func(t *testing.T) {
