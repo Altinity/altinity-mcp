@@ -266,6 +266,7 @@ func validateClaimsWhitelist(claims map[string]interface{}) error {
 		"upstream_refresh_token":     true,
 		"upstream_token_type":        true,
 		"upstream_pkce_verifier":     true,
+		"upstream_auth_code":         true,
 		"resource":                   true,
 		"access_token_exp":           true,
 		"email":                      true,
