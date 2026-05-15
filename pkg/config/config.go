@@ -150,10 +150,15 @@ type OAuthConfig struct {
 	// Scopes is the list of OAuth scopes to request
 	Scopes []string `json:"scopes" yaml:"scopes" flag:"oauth-scopes" env:"MCP_OAUTH_SCOPES" desc:"OAuth scopes to request"`
 
-	// UpstreamOfflineAccess opts forward mode into requesting offline_access from the upstream IdP
-	// and wrapping the returned refresh token in a stateless JWE handed back to the MCP client.
-	// Default false: forward mode behaves exactly as before (no refresh token issued, refresh grant rejected).
-	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" env:"MCP_OAUTH_UPSTREAM_OFFLINE_ACCESS" desc:"Forward mode: request offline_access upstream and issue JWE-wrapped refresh tokens"`
+	// UpstreamOfflineAccess opts forward/broker mode into appending
+	// `offline_access` to the scope sent upstream. Used mainly so the IdP's
+	// consent screen offers long-lived sessions; the upstream refresh token
+	// MCP receives is currently discarded. v1 issues NO downstream refresh
+	// tokens to CIMD clients — they re-authorize via /oauth/authorize when
+	// the access token expires. See #115 § Refresh-token policy.
+	// Default false. Effect is upstream-only; this flag does not turn on
+	// any downstream refresh-token issuance.
+	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" env:"MCP_OAUTH_UPSTREAM_OFFLINE_ACCESS" desc:"Append offline_access to the upstream scope so the IdP's consent screen offers long-lived sessions. v1 does NOT issue downstream refresh tokens regardless of this flag — clients re-authorize via /oauth/authorize."`
 
 	// BrokerUpstream opts gating mode into the DCR-via-MCP broker pattern that
 	// forward mode uses by default. When true under gating mode, altinity-mcp:
@@ -194,9 +199,6 @@ type OAuthConfig struct {
 	// Default zero value (false) rejects tokens carrying email with email_verified=false.
 	// Set true only when the IdP omits email_verified or the operator trusts upstream verification.
 	AllowUnverifiedEmail bool `json:"allow_unverified_email" yaml:"allow_unverified_email" flag:"oauth-allow-unverified-email" env:"MCP_OAUTH_ALLOW_UNVERIFIED_EMAIL" desc:"Accept OAuth identities with email_verified=false (default: reject)"`
-
-	// RegistrationPath configures the relative path for dynamic client registration.
-	RegistrationPath string `json:"registration_path" yaml:"registration_path" flag:"oauth-registration-path" env:"MCP_OAUTH_REGISTRATION_PATH" desc:"Relative path for OAuth client registration endpoint"`
 
 	// AuthorizationPath configures the relative path for the authorization endpoint.
 	AuthorizationPath string `json:"authorization_path" yaml:"authorization_path" flag:"oauth-authorization-path" env:"MCP_OAUTH_AUTHORIZATION_PATH" desc:"Relative path for OAuth authorization endpoint"`
