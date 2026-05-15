@@ -1263,18 +1263,29 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			return
 		}
 	case "private_key_jwt":
-		if assertionType != clientAssertionType {
-			log.Debug().Str("assertion_type", assertionType).Msg("OAuth /token rejected: missing/wrong client_assertion_type")
-			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion_type must be jwt-bearer")
-			return
+		// Lenient: if the client supplied an assertion we verify it (strict
+		// RFC 7523 semantics). If it didn't, we accept anyway — CIMD URL
+		// ownership over HTTPS already proves client identity, and PKCE
+		// binds the auth code. This matches Auth0's observed behaviour for
+		// CIMD clients that declare private_key_jwt but whose
+		// implementations don't ship the assertion yet (ChatGPT dev-mode
+		// apps as of 2026-05-15). Strict enforcement blanket-blocks them.
+		if assertion != "" || assertionType != "" {
+			if assertionType != clientAssertionType {
+				log.Debug().Str("assertion_type", assertionType).Msg("OAuth /token rejected: missing/wrong client_assertion_type")
+				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion_type must be jwt-bearer")
+				return
+			}
+			tokenEndpointURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
+			if err := a.verifyClientAssertion(r.Context(), client, clientID, assertion, tokenEndpointURL); err != nil {
+				log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Str("token_endpoint", tokenEndpointURL).Msg("OAuth /token rejected: client_assertion invalid")
+				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion invalid")
+				return
+			}
+			log.Debug().Msg("OAuth /token: client_assertion verified")
+		} else {
+			log.Debug().Msg("OAuth /token: private_key_jwt CIMD client provided no assertion — accepting on PKCE + CIMD URL ownership")
 		}
-		tokenEndpointURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
-		if err := a.verifyClientAssertion(r.Context(), client, clientID, assertion, tokenEndpointURL); err != nil {
-			log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Str("token_endpoint", tokenEndpointURL).Msg("OAuth /token rejected: client_assertion invalid")
-			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion invalid")
-			return
-		}
-		log.Debug().Msg("OAuth /token: client_assertion verified")
 	default:
 		// Defence-in-depth: parseCIMDMetadata already rejects anything other
 		// than none / private_key_jwt; this branch only fires on stale cache
