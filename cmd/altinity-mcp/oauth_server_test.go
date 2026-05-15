@@ -25,17 +25,6 @@ func decodeJWTSegment(seg string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(seg)
 }
 
-// TestOAuthJWEHKDFRoundtripAndLegacyFallback covers the v1 (HKDF) ↔ legacy
-// (SHA256) compatibility surface introduced in Step 2 of the OAuth review.
-// Three invariants:
-//
-//  1. Newly-issued artifacts emit kid="v1" in the JWE/JWS header.
-//  2. v1 artifacts decrypt/verify with the matching HKDF-derived key — and
-//     ONLY with that key (a leak in one info-namespace doesn't compromise
-//     another).
-//  3. Legacy artifacts (no kid, single SHA256(secret) key) still decrypt and
-//     verify, so existing refresh tokens / client_ids minted before the
-//     cutover keep working through the rotation window.
 func TestOAuthMCPAuthInjector(t *testing.T) {
 	t.Parallel()
 
@@ -380,38 +369,6 @@ func TestTruncateForLog(t *testing.T) {
 			require.Equal(t, tt.want, truncateForLog(tt.value, tt.max))
 		})
 	}
-}
-
-func TestDecodeStringSlice(t *testing.T) {
-	t.Parallel()
-	t.Run("string_slice", func(t *testing.T) {
-		t.Parallel()
-		result := decodeStringSlice([]string{"a", "b"})
-		require.Equal(t, []string{"a", "b"}, result)
-	})
-	t.Run("interface_slice", func(t *testing.T) {
-		t.Parallel()
-		result := decodeStringSlice([]interface{}{"a", "b"})
-		require.Equal(t, []string{"a", "b"}, result)
-	})
-	t.Run("interface_slice_non_strings_skipped", func(t *testing.T) {
-		t.Parallel()
-		result := decodeStringSlice([]interface{}{"a", 123, "b"})
-		require.Equal(t, []string{"a", "b"}, result)
-	})
-	t.Run("nil_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		require.Nil(t, decodeStringSlice(nil))
-	})
-	t.Run("unsupported_type_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		require.Nil(t, decodeStringSlice("not-a-slice"))
-	})
-	t.Run("empty_interface_slice", func(t *testing.T) {
-		t.Parallel()
-		result := decodeStringSlice([]interface{}{})
-		require.Empty(t, result)
-	})
 }
 
 func TestOAuthClaimsFromUserInfo(t *testing.T) {

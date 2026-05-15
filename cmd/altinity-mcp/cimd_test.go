@@ -22,6 +22,10 @@ func TestValidateCIMDClientIDURL_OK(t *testing.T) {
 		"https://chatgpt.com/.well-known/oauth-client-id",
 		"https://example.com:443/x.json",
 		"https://example.com/a/b/c.json",
+		// RFC 3986 trailing slashes are legal and significant; regression
+		// guard for the path.Clean rejection bug fixed in this PR.
+		"https://example.com/oauth/cimd/",
+		"https://example.com/a/b/c.json/",
 	}
 	for _, c := range cases {
 		if _, err := validateCIMDClientIDURL(c); err != nil {
@@ -51,6 +55,13 @@ func TestValidateCIMDClientIDURL_Reject(t *testing.T) {
 		"encoded_slash":     "https://example.com/a%2fb/x.json",
 		"encoded_backslash": "https://example.com/a%5cb/x.json",
 		"uppercase_host":    "https://Example.com/x.json",
+		// IDN normalization: Cyrillic 'а' (U+0430) is a confusable for ASCII
+		// 'a'. idna.Lookup.ToASCII converts the IDN to its xn-- form, which
+		// won't equal the raw input, so we reject.
+		"cyrillic_a_idn":   "https://exаmple.com/x.json",
+		"data_scheme":      "data:application/json,{}",
+		"javascript_scheme": "javascript:alert(1)",
+		"file_scheme":      "file:///etc/passwd",
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -124,6 +135,12 @@ func TestCacheTTLFromHeader(t *testing.T) {
 		{"no-storage (substring of no-store) must NOT match", "no-storage", cimdDefaultCacheTTL},
 		{"malformed max-age value ignored, falls to default", "max-age=banana", cimdDefaultCacheTTL},
 		{"no-store wins over max-age", "max-age=300, no-store", 0},
+		// Regression for int64 overflow on n * time.Second when n is huge.
+		// Pre-fix this returned cimdDefaultCacheTTL (5m) because the multiply
+		// wrapped to a negative time.Duration, hitting the "sentinel = absent"
+		// branch. Now we clamp before multiplying.
+		{"max-age=9999999999 (n*1e9 overflows int64) → cap", "max-age=9999999999", cimdMaxCacheTTL},
+		{"max-age=int64.max → cap", "max-age=9223372036854775807", cimdMaxCacheTTL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,7 +168,7 @@ func TestParseCIMDMetadata_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected ok, got %v", err)
 	}
-	if c.TokenEndpointAuthMethod != "none" || len(c.RedirectURIs) != 1 {
+	if len(c.RedirectURIs) != 1 || c.RedirectURIs[0] != "https://claude.ai/api/mcp/auth_callback" {
 		t.Errorf("unexpected client: %#v", c)
 	}
 }
@@ -384,6 +401,25 @@ func TestCIMDResolve_OversizeBodyRejected(t *testing.T) {
 	}
 }
 
+func TestIsApplicationJSON(t *testing.T) {
+	cases := map[string]bool{
+		"application/json":               true,
+		"application/json; charset=utf-8": true,
+		"APPLICATION/JSON":               true, // RFC 7231: media types are case-insensitive
+		"application/json-ld":            false,
+		"application/jsonpatch+json":     false,
+		"application/json5":              false,
+		"application/jose":               false,
+		"text/json":                      false,
+		"":                               false,
+	}
+	for ct, want := range cases {
+		if got := isApplicationJSON(ct); got != want {
+			t.Errorf("isApplicationJSON(%q) = %v, want %v", ct, got, want)
+		}
+	}
+}
+
 func TestCIMDResolve_NonJSONRejected(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -409,19 +445,77 @@ func TestCIMDResolve_RedirectRejected(t *testing.T) {
 	}
 }
 
-func TestCIMDResolve_NegativeCache(t *testing.T) {
+func TestCIMDResolve_TransientFetchErrorDoesNotPoisonCache(t *testing.T) {
+	// Issue #115 review-followup: a transient upstream 5xx (or client
+	// disconnect propagating as context.Canceled) must NOT write a negative
+	// cache entry — otherwise one bad fetch locks all users of that
+	// client_id URL out for cimdNegativeCacheTTL. errCIMDFetch is the
+	// "transient" bucket and is explicitly skipped by resolve().
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 	r := testResolver(t, server)
-	u := cimdTestURL("d.example.com", "/x.json")
+	u := cimdTestURL("d.example.com", "/transient.json")
+	if _, err := r.resolve(context.Background(), u); err == nil {
+		t.Fatal("expected error")
+	}
+	if _, ok := r.cache.get(u, time.Now()); ok {
+		t.Errorf("transient fetch error must NOT produce a cache entry")
+	}
+}
+
+func TestCIMDResolve_InvalidMetadataNegativeCache(t *testing.T) {
+	// Conversely, a stably-malformed metadata response IS cached
+	// (abuse-control per issue #115 § Caching) — the document is wrong
+	// every time, so hammering the upstream is pointless.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// client_id in doc deliberately mismatches the requested URL.
+		w.Write([]byte(`{"client_id":"https://other/x","client_name":"X","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none"}`))
+	}))
+	defer server.Close()
+	r := testResolver(t, server)
+	u := cimdTestURL("d.example.com", "/invalid.json")
 	if _, err := r.resolve(context.Background(), u); err == nil {
 		t.Fatal("expected error")
 	}
 	e, ok := r.cache.get(u, time.Now())
 	if !ok || e.err == nil {
-		t.Errorf("expected negative cache entry")
+		t.Errorf("invalid-metadata error must produce a negative cache entry")
+	}
+}
+
+func TestCIMDResolve_ClientCancellationDoesNotPoisonCache(t *testing.T) {
+	// Mid-fetch client disconnect: simulate by cancelling the caller's
+	// context before the response can be sent. fetchAndValidate uses
+	// context.WithoutCancel internally so the fetch survives, but if a
+	// future regression re-couples the contexts, this test catches the
+	// "first-user-cancel locks everyone out" failure mode.
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // hold until the test cancels the caller's ctx
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":["https://d.example.com/cb"],"token_endpoint_auth_method":"none"}`, cimdTestURL("d.example.com", "/cancel.json"))
+	}))
+	defer server.Close()
+	defer close(release)
+	r := testResolver(t, server)
+	u := cimdTestURL("d.example.com", "/cancel.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = r.resolve(ctx, u)
+	}()
+	cancel()
+	release <- struct{}{}
+	<-done
+	// The fetch detached its context from the caller, so it succeeded and
+	// the resolver wrote a positive cache entry. Either way, no negative
+	// poisoning: subsequent callers either hit a valid cache or refetch.
+	if e, ok := r.cache.get(u, time.Now()); ok && e.err != nil {
+		t.Errorf("client cancellation must NOT produce a negative cache entry; got err=%v", e.err)
 	}
 }
 

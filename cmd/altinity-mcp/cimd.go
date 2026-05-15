@@ -114,7 +114,11 @@ func validateCIMDPath(rawPath string) error {
 	if err != nil {
 		return fmt.Errorf("%w: invalid percent-encoding in path", errCIMDInvalidURL)
 	}
-	if path.Clean(decoded) != decoded {
+	// path.Clean strips trailing slashes ("/a/" → "/a"), but RFC 3986
+	// treats a trailing slash as a significant, legal path. Accept the path
+	// if it differs from its Clean form only by a single trailing slash.
+	cleaned := path.Clean(decoded)
+	if cleaned != decoded && cleaned+"/" != decoded {
 		return fmt.Errorf("%w: dot-segment in path", errCIMDInvalidURL)
 	}
 	return nil
@@ -271,6 +275,7 @@ func (a *application) resolveCIMDClient(ctx context.Context, clientIDURL string)
 
 func (r *cimdResolver) resolve(ctx context.Context, clientIDURL string) (*statelessRegisteredClient, error) {
 	if _, err := validateCIMDClientIDURL(clientIDURL); err != nil {
+		r.cache.put(clientIDURL, &cimdCacheEntry{err: err, expiresAt: r.now().Add(cimdNegativeCacheTTL)}, r.now())
 		return nil, err
 	}
 	if e, ok := r.cache.get(clientIDURL, r.now()); ok {
@@ -282,7 +287,17 @@ func (r *cimdResolver) resolve(ctx context.Context, clientIDURL string) (*statel
 	client, ttl, err := r.fetchAndValidate(ctx, clientIDURL)
 	now := r.now()
 	if err != nil {
-		r.cache.put(clientIDURL, &cimdCacheEntry{err: err, expiresAt: now.Add(cimdNegativeCacheTTL)}, now)
+		// Negative-cache only stably-wrong outcomes (abuse control per #115
+		// § Caching). Transient fetch failures — upstream 5xx, timeouts,
+		// client disconnects that propagate as context.Canceled — must NOT
+		// poison the cache: a single bad fetch from one user would lock all
+		// users of that client_id URL out for cimdNegativeCacheTTL.
+		switch {
+		case errors.Is(err, errCIMDInvalidMetadata),
+			errors.Is(err, errCIMDInvalidURL),
+			errors.Is(err, errCIMDSSRFBlocked):
+			r.cache.put(clientIDURL, &cimdCacheEntry{err: err, expiresAt: now.Add(cimdNegativeCacheTTL)}, now)
+		}
 		return nil, err
 	}
 	if ttl > 0 {
@@ -292,7 +307,11 @@ func (r *cimdResolver) resolve(ctx context.Context, clientIDURL string) (*statel
 }
 
 func (r *cimdResolver) fetchAndValidate(ctx context.Context, clientIDURL string) (*statelessRegisteredClient, time.Duration, error) {
-	ctx, cancel := context.WithTimeout(ctx, cimdFetchTimeout)
+	// Detach the fetch from the inbound request's cancellation. The fetch is
+	// shared across goroutines via the cache, so an inbound disconnect must
+	// not abort it (and produce a context.Canceled error that other waiters
+	// observe). The dedicated cimdFetchTimeout still bounds the call.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cimdFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, clientIDURL, nil)
 	if err != nil {
@@ -310,9 +329,8 @@ func (r *cimdResolver) fetchAndValidate(ctx context.Context, clientIDURL string)
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("%w: HTTP %d", errCIMDFetch, resp.StatusCode)
 	}
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		return nil, 0, fmt.Errorf("%w: content-type %q not application/json", errCIMDFetch, ct)
+	if !isApplicationJSON(resp.Header.Get("Content-Type")) {
+		return nil, 0, fmt.Errorf("%w: content-type %q not application/json", errCIMDFetch, resp.Header.Get("Content-Type"))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(cimdMaxBodyBytes+1)))
 	if err != nil {
@@ -341,6 +359,16 @@ func (r *cimdResolver) fetchAndValidate(ctx context.Context, clientIDURL string)
 //
 // Directive matching is exact: a stray substring like "x-no-storage" does
 // NOT trigger no-store.
+// isApplicationJSON matches RFC 7231 §3.1.1.5 media-type syntax: the bare
+// type is "application/json", optionally followed by ";" parameters
+// (charset, boundary, etc.). A bare prefix match would falsely accept
+// "application/json-ld", "application/jsonpatch+json", and similar
+// distinct media types whose bodies don't shape-match CIMD documents.
+func isApplicationJSON(ct string) bool {
+	mt, _, _ := strings.Cut(ct, ";")
+	return strings.EqualFold(strings.TrimSpace(mt), "application/json")
+}
+
 func cacheTTLFromHeader(cc string) time.Duration {
 	if cc == "" {
 		return cimdDefaultCacheTTL
@@ -361,6 +389,15 @@ func cacheTTLFromHeader(cc string) time.Duration {
 			}
 			if n <= 0 {
 				return 0 // RFC 7234: max-age=0 (or negative) means uncached.
+			}
+			// Clamp n before the *time.Second multiply so we don't overflow
+			// int64 nanoseconds for absurd max-age values (n*1e9 overflows
+			// when n > ~9.22e9). Without this, a CIMD doc with
+			// "Cache-Control: max-age=9999999999" would wrap to negative
+			// and silently fall back to cimdDefaultCacheTTL.
+			const maxSeconds = int(cimdMaxCacheTTL / time.Second)
+			if n > maxSeconds {
+				return cimdMaxCacheTTL
 			}
 			maxAge = time.Duration(n) * time.Second
 		}
@@ -383,14 +420,14 @@ func cacheTTLFromHeader(cc string) time.Duration {
 // struct. Extra fields the SDK knows about (logo_uri, tos_uri, jwks, etc.) are
 // safely ignored because we don't read them.
 func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredClient, error) {
+	// json.Unmarshal here rather than json.Decoder: oauthex.ClientRegistrationResponse
+	// has a custom UnmarshalJSON that bypasses outer-decoder settings (UseNumber
+	// would be a no-op), and we don't need trailing-token detection — a
+	// well-formed CIMD doc is a single JSON object. The body was already
+	// bounded by io.LimitReader at fetch time.
 	var doc oauthex.ClientRegistrationResponse
-	dec := json.NewDecoder(strings.NewReader(string(body)))
-	dec.UseNumber()
-	if err := dec.Decode(&doc); err != nil {
+	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("%w: decode: %v", errCIMDInvalidMetadata, err)
-	}
-	if dec.More() {
-		return nil, fmt.Errorf("%w: trailing tokens after object", errCIMDInvalidMetadata)
 	}
 	if doc.ClientID != clientIDURL {
 		return nil, fmt.Errorf("%w: client_id mismatch", errCIMDInvalidMetadata)
@@ -456,10 +493,7 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 			return nil, fmt.Errorf("%w: response_types must include code", errCIMDInvalidMetadata)
 		}
 	}
-	return &statelessRegisteredClient{
-		RedirectURIs:            doc.RedirectURIs,
-		TokenEndpointAuthMethod: "none",
-	}, nil
+	return &statelessRegisteredClient{RedirectURIs: doc.RedirectURIs}, nil
 }
 
 // validateCIMDRedirectURI: v1 requires https for all redirect URIs. Loopback

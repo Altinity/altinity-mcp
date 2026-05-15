@@ -22,7 +22,17 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const maxOAuthResponseBytes = 1 << 20 // 1 MB
+const (
+	maxOAuthResponseBytes = 1 << 20 // 1 MB cap on upstream IdP response bodies.
+
+	// oauthUpstreamHTTPTimeout bounds the broker's outbound HTTP calls to the
+	// upstream IdP (`/token` exchange + `/userinfo` fetch). Mirrors
+	// pkg/server.oauthHTTPTimeout used for JWKS / OIDC discovery — both call
+	// the same set of upstream hosts and should fail-fast together. Not
+	// shared as one cross-package constant to keep cmd/altinity-mcp free of
+	// pkg/server import-loop risk.
+	oauthUpstreamHTTPTimeout = 10 * time.Second
+)
 
 const (
 	defaultProtectedResourceMetadataPath   = "/.well-known/oauth-protected-resource"
@@ -39,14 +49,16 @@ const (
 	// defaultAuthCodeTTLSeconds bounds /callback → /token (the legitimate
 	// client redeems immediately). 60 seconds per OAuth 2.1 §4.1.2 — auth
 	// codes "should be redeemed within seconds, never minutes."
-	defaultAuthCodeTTLSeconds     = 60
-	defaultAccessTokenTTLSeconds  = 60 * 60
-	defaultRefreshTokenTTLSeconds = 30 * 24 * 60 * 60
+	defaultAuthCodeTTLSeconds    = 60
+	defaultAccessTokenTTLSeconds = 60 * 60
 )
 
+// statelessRegisteredClient is the in-memory shape parseCIMDMetadata
+// returns. After DCR removal the only field anything reads is RedirectURIs
+// — parseCIMDMetadata's `token_endpoint_auth_method` check happens at
+// parse-time and never reaches the struct.
 type statelessRegisteredClient struct {
-	RedirectURIs            []string `json:"redirect_uris"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	RedirectURIs []string `json:"redirect_uris"`
 }
 
 type oauthPendingAuth struct {
@@ -145,17 +157,18 @@ func (a *application) oauthJWESecret() []byte {
 func (a *application) mustJWESecret() ([]byte, error) {
 	secret := a.oauthJWESecret()
 	if len(secret) == 0 {
-		return nil, fmt.Errorf("oauth signing_secret is required for OAuth client registration and forward-mode token wrapping")
+		return nil, fmt.Errorf("oauth signing_secret is required for JWE-wrapped pending-auth state and downstream auth-code minting")
 	}
 	return secret, nil
 }
 
 // oauthKidV1 is the kid header set on cmd-minted OAuth JWE artifacts
-// (client_id, refresh-token). Its presence selects the HKDF-derived key on
-// decryption; absence (kid="") selects the legacy SHA256(secret) key for
-// backwards compat with artifacts minted before the rotation cutover. After
-// the longest legacy artifact lifetime expires (refresh tokens, default 30
-// days), the legacy fallback below can be removed.
+// (pending-auth and auth-code). Its presence selects the HKDF-derived key
+// on decryption; absence (kid="") selects the legacy SHA256(secret) key
+// for backwards compat with artifacts minted before the HKDF rotation.
+// Post-#115 the longest legacy artifact in flight is the 10-minute
+// pending-auth JWE — the legacy fallback can be deleted in a follow-up
+// after a >10-minute rolling restart window has passed.
 const oauthKidV1 = "v1"
 
 // HKDF info labels for cmd-internal OAuth key derivation. Each label produces
@@ -516,10 +529,6 @@ func (a *application) oauthAuthorizationServerBaseURL(r *http.Request) string {
 	return a.schemeAndHost(r) + a.oauthPrefix(r)
 }
 
-func (a *application) oauthRegistrationPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.RegistrationPath, defaultRegistrationPath)
-}
-
 func (a *application) oauthAuthorizationPath() string {
 	return normalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationPath, defaultAuthorizationPath)
 }
@@ -702,23 +711,6 @@ func newPKCEVerifier() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-func decodeStringSlice(value interface{}) []string {
-	switch typed := value.(type) {
-	case []string:
-		return append([]string{}, typed...)
-	case []interface{}:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if str, ok := item.(string); ok {
-				out = append(out, str)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
 func sanitizeScope(scope string) string {
 	return strings.Join(strings.Fields(scope), " ")
 }
@@ -769,7 +761,7 @@ func normalizeUpstreamScopeForClient(scope string) string {
 
 // oidcScopesForAdvertisement returns the subset of cfg.Scopes that altinity-mcp
 // will surface to MCP clients via discovery metadata (protected-resource doc,
-// authorization-server metadata, openid-configuration), DCR responses, and the
+// authorization-server metadata, openid-configuration) and the
 // WWW-Authenticate challenge. Only an explicit OIDC-identity allowlist plus
 // Auth0's offline_access refresh-token gate is passed through; anything else
 // (URI-form upstream scopes like Google's https://www.googleapis.com/auth/…,
@@ -863,7 +855,7 @@ func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaim
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: oauthUpstreamHTTPTimeout}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -962,6 +954,20 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleOAuthRegisterRemoved is the tombstone handler at /oauth/register.
+// DCR was removed under #115 in favour of CIMD; this responds with an
+// RFC 7591 §3.2.2-shaped JSON error so DCR clients in the wild see a
+// diagnosable response rather than the bare mux 404. Always 410 Gone —
+// the route is permanently retired, not "endpoint unavailable".
+func handleOAuthRegisterRemoved(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             "registration_not_supported",
+		"error_description": "Dynamic Client Registration is no longer supported; clients must use OAuth Client ID Metadata Documents (CIMD). See client_id_metadata_document_supported on /.well-known/oauth-authorization-server.",
+	})
 }
 
 // oauthASMetadata returns the field set shared by RFC 8414 (oauth-authorization-server)
@@ -1288,7 +1294,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	form.Set("redirect_uri", callbackURL)
 	form.Set("code_verifier", issued.UpstreamPKCEVerifier)
 
-	upstreamResp, err := (&http.Client{Timeout: 10 * time.Second}).PostForm(tokenURL, form)
+	upstreamResp, err := (&http.Client{Timeout: oauthUpstreamHTTPTimeout}).PostForm(tokenURL, form)
 	if err != nil {
 		log.Error().Err(err).Str("token_url", tokenURL).Msg("OAuth /token: upstream code exchange transport error")
 		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "upstream code exchange failed")
@@ -1324,10 +1330,29 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int64  `json:"expires_in"`
 		Scope        string `json:"scope"`
+		// Error is present on non-RFC-compliant IdPs that signal failure
+		// via 200 OK + RFC 6749 §5.2 error JSON. Status-only checks miss
+		// this; treating a non-empty Error as upstream rejection keeps the
+		// HA replay contract intact (downstream sees invalid_grant).
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
-	if err := json.Unmarshal(body, &tokenResp); err != nil || (tokenResp.AccessToken == "" && tokenResp.IDToken == "") {
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		log.Error().Err(err).Msg("OAuth /token: upstream response not JSON")
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "upstream returned non-JSON response")
+		return
+	}
+	if tokenResp.Error != "" {
+		log.Warn().
+			Int("status", upstreamResp.StatusCode).
+			Str("upstream_error", tokenResp.Error).
+			Str("client_id", truncateForLog(clientID, 80)).
+			Msg("OAuth /token: upstream 2xx with RFC 6749 error body — treat as invalid_grant")
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "upstream rejected the authorization code")
+		return
+	}
+	if tokenResp.AccessToken == "" && tokenResp.IDToken == "" {
 		log.Error().
-			Err(err).
 			Bool("has_access_token", tokenResp.AccessToken != "").
 			Bool("has_id_token", tokenResp.IDToken != "").
 			Msg("OAuth /token: upstream response missing usable token")
@@ -1344,12 +1369,13 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		Msg("OAuth /token: upstream code exchange succeeded")
 
 	// Validate the upstream identity before handing the bearer to the MCP
-	// client. We do NOT bind these claims into the downstream token in v1
-	// (audience binding is deferred — see #115 § Non-goals); validation here
-	// exists purely to fail-fast on a malformed upstream response with a
-	// proper 502. Do not delete the underscored assignment without first
-	// re-introducing claim binding, or this side-effecting validation will
-	// look like dead code and get pruned.
+	// client. Claims are NOT bound into the downstream token (audience
+	// binding deferred per #115 § Non-goals); the validation has three
+	// jobs: fail-fast on a malformed upstream response with a proper 502,
+	// confirm the upstream id_token signature/audience for forward mode,
+	// and surface the id_token `exp` so we report an accurate `expires_in`
+	// to the MCP client below (used at the "expiresIn = identityClaims..."
+	// line further down).
 	var identityClaims *altinitymcp.OAuthClaims
 	if tokenResp.IDToken != "" {
 		identityClaims, err = a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID)
@@ -1366,8 +1392,6 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	_ = identityClaims // validation-only; intentionally unused in v1.
-
 	if tokenResp.Scope == "" {
 		tokenResp.Scope = issued.Scope
 	}
@@ -1445,10 +1469,12 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 		mux.HandleFunc(path, a.handleOAuthOpenIDConfiguration)
 	}
 
-	// /oauth/register is intentionally NOT mounted: DCR was removed in
-	// favour of CIMD per #115. Old clients calling /oauth/register get the
-	// mux's default 404. The .well-known metadata no longer advertises
-	// registration_endpoint either.
+	// DCR was removed in favour of CIMD per #115. Mount /oauth/register
+	// with a stub that returns HTTP 410 Gone + an RFC 7591 §3.2.2-shaped
+	// JSON error so an in-the-wild DCR client sees a diagnosable response
+	// rather than the bare mux 404.
+	mux.HandleFunc(defaultRegistrationPath, handleOAuthRegisterRemoved)
+
 	for _, path := range uniquePaths(a.oauthAuthorizationPath(), defaultAuthorizationPath) {
 		mux.HandleFunc(path, a.handleOAuthAuthorize)
 	}

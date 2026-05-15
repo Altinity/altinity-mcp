@@ -546,7 +546,6 @@ func TestConfigStructs(t *testing.T) {
 			RequiredScopes:                  []string{"read"},
 			ClickHouseHeaderName:            "X-Custom-Token",
 			ClaimsToHeaders:         map[string]string{"sub": "X-User", "email": "X-Email"},
-			RegistrationPath:        "/register",
 			AuthorizationPath:       "/authorize",
 			CallbackPath:            "/callback",
 			TokenPath:               "/token",
@@ -570,7 +569,6 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
 		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
-		require.Equal(t, "/register", cfg.RegistrationPath)
 		require.Equal(t, "/authorize", cfg.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.CallbackPath)
 		require.Equal(t, "/token", cfg.TokenPath)
@@ -611,7 +609,6 @@ server:
     client_secret: "secret-456"
     token_url: "https://auth.example.com/oauth/token"
     auth_url: "https://auth.example.com/oauth/authorize"
-    registration_path: "/register"
     authorization_path: "/authorize"
     callback_path: "/callback"
     token_path: "/token"
@@ -660,7 +657,6 @@ logging:
 		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
 		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
-		require.Equal(t, "/register", cfg.Server.OAuth.RegistrationPath)
 		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
 		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)

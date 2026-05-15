@@ -1,5 +1,30 @@
 # OAuth 2.0 Authorization for Altinity MCP Server
 
+> **Updated 2026-05-15 (#115 landing):** Dynamic Client Registration (DCR) has
+> been removed. Inbound MCP OAuth clients must use the spec-track replacement,
+> OAuth Client ID Metadata Documents ([draft-ietf-oauth-client-id-metadata-document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)).
+> claude.ai and ChatGPT both publish CIMD documents today. The
+> `/.well-known/oauth-authorization-server` document advertises
+> `client_id_metadata_document_supported: true`, drops `registration_endpoint`,
+> and lists `token_endpoint_auth_methods_supported: ["none"]` plus
+> `grant_types_supported: ["authorization_code"]`. `/oauth/register` returns
+> HTTP 410 Gone with an RFC 7591 §3.2.2-shaped JSON error.
+>
+> v1 issues **no downstream refresh tokens**. CIMD clients re-authorize via
+> `/oauth/authorize` when the access token expires. The
+> `upstream_offline_access` flag only controls whether `offline_access` is
+> appended to the upstream scope (to influence the IdP's consent screen); any
+> upstream refresh token returned is discarded.
+>
+> The HA replay model (#115 § HA replay) defers upstream authorization-code
+> redemption from `/oauth/callback` to `/oauth/token` so the upstream IdP
+> becomes the cross-replica replay oracle via `invalid_grant`.
+>
+> The rest of this document still describes the gating / forward / broker
+> dichotomy and the trust model. Mentions of DCR below predate #115 and
+> apply only to the upstream IdP side (Auth0 / Hydra / Keycloak), never to
+> altinity-mcp itself.
+
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server.
 
 ## Overview
