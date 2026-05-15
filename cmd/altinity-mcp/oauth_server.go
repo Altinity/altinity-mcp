@@ -1249,23 +1249,32 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	// requires a signed JWT assertion verified against the client's JWKS.
 	assertion := r.Form.Get("client_assertion")
 	assertionType := r.Form.Get("client_assertion_type")
+	log.Debug().
+		Str("client_id", truncateForLog(clientID, 80)).
+		Str("auth_method", client.TokenEndpointAuthMethod).
+		Bool("has_assertion", assertion != "").
+		Str("assertion_type", assertionType).
+		Msg("OAuth /token: client auth dispatch")
 	switch client.TokenEndpointAuthMethod {
 	case "none":
 		if assertion != "" || assertionType != "" {
+			log.Debug().Msg("OAuth /token rejected: assertion present on public client")
 			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion not accepted for public clients")
 			return
 		}
 	case "private_key_jwt":
 		if assertionType != clientAssertionType {
+			log.Debug().Str("assertion_type", assertionType).Msg("OAuth /token rejected: missing/wrong client_assertion_type")
 			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion_type must be jwt-bearer")
 			return
 		}
 		tokenEndpointURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
 		if err := a.verifyClientAssertion(r.Context(), client, clientID, assertion, tokenEndpointURL); err != nil {
-			log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Msg("OAuth /token rejected: client_assertion invalid")
+			log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Str("token_endpoint", tokenEndpointURL).Msg("OAuth /token rejected: client_assertion invalid")
 			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion invalid")
 			return
 		}
+		log.Debug().Msg("OAuth /token: client_assertion verified")
 	default:
 		// Defence-in-depth: parseCIMDMetadata already rejects anything other
 		// than none / private_key_jwt; this branch only fires on stale cache
