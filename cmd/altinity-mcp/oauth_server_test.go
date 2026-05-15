@@ -597,13 +597,90 @@ func TestTtlSeconds(t *testing.T) {
 
 func TestWriteOAuthTokenError(t *testing.T) {
 	t.Parallel()
-	rr := httptest.NewRecorder()
-	writeOAuthTokenError(rr, http.StatusBadRequest, "invalid_request", "bad thing happened")
-	require.Equal(t, http.StatusBadRequest, rr.Code)
-	require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
-	var body map[string]string
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-	require.Equal(t, "invalid_request", body["error"])
-	require.Equal(t, "bad thing happened", body["error_description"])
+	t.Run("400 has no WWW-Authenticate", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		writeOAuthTokenError(rr, http.StatusBadRequest, "invalid_request", "bad thing happened")
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		require.Empty(t, rr.Header().Get("WWW-Authenticate"), "non-401 responses must not advertise an auth challenge")
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_request", body["error"])
+		require.Equal(t, "bad thing happened", body["error_description"])
+	})
+	t.Run("401 carries Bearer challenge per RFC 7235 §3.1", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		writeOAuthTokenError(rr, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		challenge := rr.Header().Get("WWW-Authenticate")
+		require.NotEmpty(t, challenge, "401 responses MUST carry WWW-Authenticate")
+		require.Contains(t, challenge, "Bearer ")
+		require.Contains(t, challenge, `error="invalid_client"`)
+		require.Contains(t, challenge, `error_description="unknown OAuth client"`)
+	})
+}
+
+// TestOAuthAuthorizeErrorsAreJSON pins F1 from the post-merge review: every
+// 4xx/5xx error response from /oauth/authorize and /oauth/callback returns
+// the RFC 6749 §5.2 JSON shape (application/json + error/error_description),
+// never the bare text/plain Go default that http.Error produces. Regression
+// guard for the high-severity finding.
+func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
+	t.Parallel()
+	app := &application{
+		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+			Enabled:             true,
+			Mode:                "forward",
+			Issuer:              "https://idp.example.com",
+			PublicAuthServerURL: "https://mcp.example.com",
+			SigningSecret:       "regression-f1-jsonerr-32bytes!!!!",
+		}}},
+	}
+
+	t.Run("/authorize missing params → JSON invalid_request", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorize(rr, httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize", nil))
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_request", body["error"])
+	})
+
+	t.Run("/authorize wrong method → JSON invalid_request", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		app.handleOAuthAuthorize(rr, httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/authorize", nil))
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_request", body["error"])
+	})
+
+	t.Run("/callback missing state+code → JSON invalid_request", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		app.handleOAuthCallback(rr, httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback", nil))
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_request", body["error"])
+	})
+
+	t.Run("/callback bogus state → JSON invalid_request", func(t *testing.T) {
+		t.Parallel()
+		rr := httptest.NewRecorder()
+		app.handleOAuthCallback(rr, httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/callback?state=bogus&code=x", nil))
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		var body map[string]string
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Equal(t, "invalid_request", body["error"])
+	})
 }
 

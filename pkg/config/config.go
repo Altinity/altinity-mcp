@@ -102,7 +102,7 @@ type JWEConfig struct {
 //
 // Every flag-tagged field is settable via CLI flag (`flag:` tag) or env var
 // (`env:` tag). The env-var convention here is `MCP_OAUTH_<UPPER_SNAKE>` so
-// secrets like GatingSecretKey can be injected from a Kubernetes Secret via
+// secrets like SigningSecret can be injected from a Kubernetes Secret via
 // the Helm chart's env: array using valueFrom.secretKeyRef.
 type OAuthConfig struct {
 	// Mode controls whether altinity-mcp forwards external OAuth bearers or gates them into local MCP tokens.
@@ -218,12 +218,13 @@ type OAuthConfig struct {
 	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
 	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" env:"MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS" desc:"Refresh token lifetime in seconds"`
 
-	// SigningSecret is the server-side symmetric secret used to HMAC-sign every
-	// stateless OAuth artifact this server mints: self-issued JWT access tokens
-	// (HS256), authorization codes, refresh tokens, and RFC 7591 dynamic-client-
-	// registration `client_secret`s. Required whenever OAuth is enabled, in both
-	// forward and gating modes.
-	SigningSecret string `json:"signing_secret" yaml:"signing_secret" flag:"oauth-signing-secret" env:"MCP_OAUTH_SIGNING_SECRET" desc:"Server-side HMAC secret for all stateless OAuth artifacts (JWTs, auth codes, refresh tokens, DCR client_secrets)"`
+	// SigningSecret is the server-side symmetric secret used to HKDF-derive
+	// keys for every stateless OAuth JWE this server mints: pending-auth
+	// state (the upstream `state` parameter) and the downstream auth-code
+	// returned from /oauth/callback. Required whenever OAuth broker mode is
+	// active (forward, or gating + broker_upstream). Per #115 v1 issues no
+	// downstream refresh tokens and no DCR client_secrets.
+	SigningSecret string `json:"signing_secret" yaml:"signing_secret" flag:"oauth-signing-secret" env:"MCP_OAUTH_SIGNING_SECRET" desc:"Server-side HKDF master secret for OAuth JWE artifacts (pending-auth state, downstream auth codes). Required whenever broker mode is active."`
 }
 
 func (cfg OAuthConfig) NormalizedMode() string {

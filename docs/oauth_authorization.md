@@ -64,7 +64,7 @@ config:
       # signing_secret injected via MCP_OAUTH_SIGNING_SECRET env var
 ```
 
-Fields that **must not be present** under gating (startup refuses with a clear error naming the field): `client_id`, `client_secret` / `MCP_OAUTH_CLIENT_SECRET`, `token_url`, `auth_url`, `userinfo_url`, `public_auth_server_url`, `refresh_revokes_tracking`, `callback_path`.
+Fields that **must not be present** under gating (startup refuses with a clear error naming the field): `client_id`, `client_secret` / `MCP_OAUTH_CLIENT_SECRET`, `token_url`, `auth_url`, `userinfo_url`, `public_auth_server_url`, `callback_path`.
 
 **Forward mode** (live example: `$MCP_DEPLOY_DIR/antalya/mcp-values.yaml`):
 
@@ -112,7 +112,6 @@ An operator moving from the old gating (MCP-as-AS) to new gating (pure resource 
 - `auth_url`
 - `userinfo_url`
 - `public_auth_server_url`
-- `refresh_revokes_tracking`
 - `callback_path`
 
 The canonical diff pattern is the `otel` values change committed on `feature/dcr-via-auth0` (`$MCP_DEPLOY_DIR/otel/mcp-values.yaml`).
@@ -294,7 +293,7 @@ config:
         - "https://mcp.example.com"
       # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
       # DO NOT set: client_id, client_secret, token_url, auth_url,
-      #             userinfo_url, public_auth_server_url, refresh_revokes_tracking
+      #             userinfo_url, public_auth_server_url
 ```
 
 ### Cluster-secret authentication (optional)
@@ -478,7 +477,7 @@ server:
     # - "gating": pure resource server — validate AS-issued JWTs (JWKS + RFC 8707 aud + scopes).
     #             Upstream IdP handles DCR/authorize/token. Requires issuer + audience.
     #             Forbidden fields: client_id, client_secret, token_url, auth_url,
-    #             userinfo_url, public_auth_server_url, refresh_revokes_tracking.
+    #             userinfo_url, public_auth_server_url.
     # - "forward": MCP proxies DCR + authorize + token to upstream; relays upstream tokens.
     #              Requires client_id, client_secret, auth_url, token_url.
     mode: "gating"
