@@ -47,13 +47,6 @@ const (
 type statelessRegisteredClient struct {
 	RedirectURIs            []string `json:"redirect_uris"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	GrantType               string   `json:"grant_type"`
-	ExpiresAt               int64    `json:"exp"`
-	// ClientSecret is the per-registration secret issued during DCR for
-	// confidential clients (token_endpoint_auth_method: client_secret_post |
-	// client_secret_basic). When empty, the client is public (PKCE-only) —
-	// retained for backward compat with previously-issued client_ids.
-	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 type oauthPendingAuth struct {
@@ -971,30 +964,37 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// oauthASMetadata returns the field set shared by RFC 8414 (oauth-authorization-server)
+// and OIDC Discovery (openid-configuration). Both endpoints serve the same
+// AS-side advertisement; OIDC adds two extra fields under gating mode (see
+// handleOAuthOpenIDConfiguration).
+//
+// `issuer` is published without a trailing slash to match RFC 8414 §2
+// (issuer == authorization_servers[i] in the resource document). The /token
+// response mints `iss` in the same form and validateOAuthClaims normalises
+// slashes defensively.
+func (a *application) oauthASMetadata(r *http.Request) map[string]interface{} {
+	baseURL := a.oauthAuthorizationServerBaseURL(r)
+	return map[string]interface{}{
+		"issuer":                                strings.TrimRight(baseURL, "/"),
+		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
+		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
+		"scopes_supported":                      oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
+		"code_challenge_methods_supported":      []string{"S256"},
+		"client_id_metadata_document_supported": true,
+	}
+}
+
 func (a *application) handleOAuthAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
 	if !a.oauthEnabled() {
 		http.NotFound(w, r)
 		return
 	}
-	baseURL := a.oauthAuthorizationServerBaseURL(r)
-	// `issuer` is published without a trailing slash to match the RFC 8414 §2
-	// convention (issuer == authorization_servers[i] in the resource document).
-	// mintGatingTokenResponse mints `iss` in the same form, and
-	// validateOAuthClaims still normalises slashes defensively.
-	issuer := strings.TrimRight(baseURL, "/")
-	resp := map[string]interface{}{
-		"issuer":                                 issuer,
-		"authorization_endpoint":                 joinURLPath(baseURL, a.oauthAuthorizationPath()),
-		"token_endpoint":                         joinURLPath(baseURL, a.oauthTokenPath()),
-		"scopes_supported":                       oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
-		"response_types_supported":               []string{"code"},
-		"grant_types_supported":                  []string{"authorization_code"},
-		"token_endpoint_auth_methods_supported":  []string{"none"},
-		"code_challenge_methods_supported":       []string{"S256"},
-		"client_id_metadata_document_supported":  true,
-	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(a.oauthASMetadata(r))
 }
 
 func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *http.Request) {
@@ -1002,19 +1002,7 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		http.NotFound(w, r)
 		return
 	}
-	baseURL := a.oauthAuthorizationServerBaseURL(r)
-	issuer := strings.TrimRight(baseURL, "/")
-	resp := map[string]interface{}{
-		"issuer":                                 issuer,
-		"authorization_endpoint":                 joinURLPath(baseURL, a.oauthAuthorizationPath()),
-		"token_endpoint":                         joinURLPath(baseURL, a.oauthTokenPath()),
-		"scopes_supported":                       oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
-		"response_types_supported":               []string{"code"},
-		"grant_types_supported":                  []string{"authorization_code"},
-		"token_endpoint_auth_methods_supported":  []string{"none"},
-		"code_challenge_methods_supported":       []string{"S256"},
-		"client_id_metadata_document_supported":  true,
-	}
+	resp := a.oauthASMetadata(r)
 	if !a.oauthForwardMode() {
 		resp["subject_types_supported"] = []string{"public"}
 		resp["id_token_signing_alg_values_supported"] = []string{"HS256"}
@@ -1040,17 +1028,13 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// CIMD inbound (#115): client_id is the HTTPS URL of the MCP client's
-	// metadata document. resolveCIMDClient validates the URL, fetches the
-	// document under SSRF-safe constraints, and synthesises the registered
-	// client. DCR was removed in the same change; non-https client_ids are
-	// rejected as unknown.
-	if !isCIMDClientID(clientID) {
-		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
-		return
-	}
-	client, err := resolveCIMDClient(r.Context(), clientID)
+	// metadata document. The resolver validates the URL, fetches the document
+	// under SSRF-safe constraints, and synthesises the registered client. DCR
+	// was removed in the same change; non-https client_ids are rejected as
+	// invalid URLs by validateCIMDClientIDURL inside the resolver.
+	client, err := a.resolveCIMDClient(r.Context(), clientID)
 	if err != nil {
-		log.Debug().Err(err).Str("client_id", clientID).Msg("OAuth /authorize rejected: CIMD resolution failed")
+		log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Msg("OAuth /authorize rejected: CIMD resolution failed")
 		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
 		return
 	}
@@ -1174,7 +1158,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	}
 
 	log.Info().
-		Str("client_id", pending.ClientID).
+		Str("client_id", truncateForLog(pending.ClientID, 80)).
 		Bool("forward_mode", a.oauthForwardMode()).
 		Msg("OAuth /callback wrapped upstream auth code in downstream JWE; awaiting /token redemption")
 
@@ -1225,19 +1209,15 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 
 func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
-	if !isCIMDClientID(clientID) {
-		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
-		return
-	}
 	// Public CIMD clients reject any client_secret / client_assertion on /token
 	// per RFC 7591 token_endpoint_auth_method=none + CIMD spec.
 	if r.Form.Get("client_secret") != "" || r.Form.Get("client_assertion") != "" {
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication not supported for public CIMD clients")
 		return
 	}
-	client, err := resolveCIMDClient(r.Context(), clientID)
+	client, err := a.resolveCIMDClient(r.Context(), clientID)
 	if err != nil {
-		log.Debug().Err(err).Str("client_id", clientID).Msg("OAuth /token rejected: CIMD resolution failed")
+		log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Msg("OAuth /token rejected: CIMD resolution failed")
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
 		return
 	}
@@ -1272,16 +1252,16 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	// RFC 8707 §2.2: when `resource` was pinned at /authorize, /token must
 	// match. When /authorize omitted it but /token includes one, accept and
 	// use the latter for downstream advisory only.
-	resource := issued.Resource
-	if formResource := r.Form.Get("resource"); formResource != "" {
-		if resource == "" {
-			resource = formResource
-		} else if strings.TrimRight(formResource, "/") != strings.TrimRight(resource, "/") {
+	// RFC 8707 §2.2 cross-check between the resource pinned at /authorize and
+	// the one (optionally) re-sent at /token. Mismatch → invalid_target. v1
+	// doesn't otherwise act on the resource value (audience binding is a
+	// separate issue).
+	if formResource := r.Form.Get("resource"); formResource != "" && issued.Resource != "" {
+		if strings.TrimRight(formResource, "/") != strings.TrimRight(issued.Resource, "/") {
 			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not match the one used at /authorize")
 			return
 		}
 	}
-	_ = resource
 
 	// HA replay model: redeem the upstream auth code with the upstream IdP
 	// *now*, not at /callback. The upstream IdP's `invalid_grant` on a second
@@ -1330,7 +1310,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			Int("status", upstreamResp.StatusCode).
 			Str("upstream_error", errCode).
 			Int("body_len", bodyLen).
-			Str("client_id", clientID).
+			Str("client_id", truncateForLog(clientID, 80)).
 			Msg("OAuth /token: upstream code exchange rejected — likely replay")
 		// Map upstream invalid_grant (replay-detected, expired, already used)
 		// to a downstream invalid_grant per RFC 6749 §5.2.
@@ -1360,7 +1340,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		Bool("forward_mode", a.oauthForwardMode()).
 		Str("scope", tokenResp.Scope).
 		Int64("expires_in", tokenResp.ExpiresIn).
-		Str("client_id", clientID).
+		Str("client_id", truncateForLog(clientID, 80)).
 		Msg("OAuth /token: upstream code exchange succeeded")
 
 	var identityClaims *altinitymcp.OAuthClaims

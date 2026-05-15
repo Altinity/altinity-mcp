@@ -979,6 +979,9 @@ type application struct {
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
+	// cimdResolver fetches and caches inbound CIMD client metadata documents.
+	// Constructed in newApplication; tests inject an alternative resolver.
+	cimdResolver *cimdResolver
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -1055,6 +1058,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		mcpServer:        mcpServer,
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
+		cimdResolver:     newCIMDResolver(nil),
 	}
 
 	// Start config reload goroutine if enabled

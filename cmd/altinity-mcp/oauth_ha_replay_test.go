@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,20 +69,19 @@ func TestHAReplay_UpstreamInvalidGrantOnReplay(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// Stub CIMD resolver: skip real network and return a client allowing the
-	// downstream redirect URI.
-	origResolver := resolveCIMDClient
-	t.Cleanup(func() { resolveCIMDClient = origResolver })
-	resolveCIMDClient = func(_ context.Context, raw string) (*statelessRegisteredClient, error) {
-		if raw != downstreamClient {
-			return nil, errCIMDInvalidURL
-		}
-		return &statelessRegisteredClient{
-			RedirectURIs:            []string{downstreamRedir},
-			TokenEndpointAuthMethod: "none",
-			GrantType:               "authorization_code",
-		}, nil
-	}
+	// Spin up a TLS httptest server serving the CIMD metadata document for the
+	// downstream client_id URL. We point the resolver's transport at it via
+	// testResolver (which keeps the rest of the parse/cache/SSRF logic alive).
+	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{
+		  "client_id": %q,
+		  "client_name": "Demo",
+		  "redirect_uris": [%q],
+		  "token_endpoint_auth_method": "none"
+		}`, downstreamClient, downstreamRedir)
+	}))
+	defer cimdServer.Close()
 
 	cfg := config.Config{
 		Server: config.ServerConfig{
@@ -104,8 +103,9 @@ func TestHAReplay_UpstreamInvalidGrantOnReplay(t *testing.T) {
 		},
 	}
 	app := &application{
-		config:    cfg,
-		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+		config:       cfg,
+		mcpServer:    altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+		cimdResolver: testResolver(t, cimdServer),
 	}
 
 	// Build a valid downstream auth code JWE by exercising encodeAuthCode.

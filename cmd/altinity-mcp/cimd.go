@@ -10,11 +10,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/net/idna"
 )
 
@@ -46,12 +48,6 @@ var (
 	errCIMDFetch           = errors.New("cimd: metadata fetch failed")
 	errCIMDInvalidMetadata = errors.New("cimd: invalid metadata document")
 )
-
-// isCIMDClientID reports whether s should be resolved as a CIMD client_id URL.
-// Anything else is rejected as an unknown client.
-func isCIMDClientID(s string) bool {
-	return strings.HasPrefix(s, "https://")
-}
 
 // validateCIMDClientIDURL parses and validates a CIMD client_id URL against the
 // strict rules from issue #115 § "CIMD client identifier URL validation".
@@ -100,56 +96,71 @@ func validateCIMDClientIDURL(raw string) (*url.URL, error) {
 }
 
 // validateCIMDPath rejects dot-segments (raw or percent-encoded), encoded
-// slashes, and encoded backslashes. Operates on the raw escaped path so we
-// inspect what was actually requested rather than a normalized form.
+// slashes, and encoded backslashes. The dot-segment test uses the issue #115
+// formulation: "Reject paths where applying standard dot-segment removal
+// would change the path." `path.Clean` does exactly that. Encoded slashes and
+// backslashes are checked separately because path.Clean can't see them — they
+// would change segment boundaries after decoding, which is the attack we're
+// blocking.
 func validateCIMDPath(rawPath string) error {
 	if !strings.HasPrefix(rawPath, "/") {
 		return fmt.Errorf("%w: path must start with /", errCIMDInvalidURL)
 	}
-	for _, raw := range strings.Split(rawPath[1:], "/") {
-		decoded, err := url.PathUnescape(raw)
-		if err != nil {
-			return fmt.Errorf("%w: invalid percent-encoding in path segment", errCIMDInvalidURL)
-		}
-		if raw == "." || raw == ".." || decoded == "." || decoded == ".." {
-			return fmt.Errorf("%w: dot-segment in path", errCIMDInvalidURL)
-		}
-		upper := strings.ToUpper(raw)
-		if strings.Contains(upper, "%2F") || strings.Contains(upper, "%5C") {
-			return fmt.Errorf("%w: encoded slash or backslash in path", errCIMDInvalidURL)
-		}
-		// Catch %2E variants explicitly so url.PathUnescape's decoded form is
-		// not the only signal.
-		if strings.Contains(upper, "%2E") {
-			noEnc := strings.ReplaceAll(strings.ReplaceAll(upper, "%2E", "."), "%2e", ".")
-			if noEnc == "." || noEnc == ".." {
-				return fmt.Errorf("%w: encoded dot-segment in path", errCIMDInvalidURL)
-			}
-		}
+	upper := strings.ToUpper(rawPath)
+	if strings.Contains(upper, "%2F") || strings.Contains(upper, "%5C") {
+		return fmt.Errorf("%w: encoded slash or backslash in path", errCIMDInvalidURL)
+	}
+	decoded, err := url.PathUnescape(rawPath)
+	if err != nil {
+		return fmt.Errorf("%w: invalid percent-encoding in path", errCIMDInvalidURL)
+	}
+	if path.Clean(decoded) != decoded {
+		return fmt.Errorf("%w: dot-segment in path", errCIMDInvalidURL)
 	}
 	return nil
 }
 
+// ssrfBlockedCIDRs is the single audit-friendly list of address ranges we
+// refuse to dial during CIMD metadata fetch. Covers IANA special-use IPv4
+// (RFC 6890) + IPv6 (RFC 6890 / RFC 4291): loopback, RFC 1918 private,
+// link-local, CGNAT, "this network", reserved 192.0.0.0/24, multicast, IPv6
+// loopback / link-local / unique-local / multicast.
+var ssrfBlockedCIDRs = mustParseCIDRs(
+	"127.0.0.0/8",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16",
+	"100.64.0.0/10",
+	"0.0.0.0/8",
+	"192.0.0.0/24",
+	"224.0.0.0/4",
+	"::1/128",
+	"fe80::/10",
+	"fc00::/7",
+	"ff00::/8",
+)
+
+func mustParseCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(fmt.Sprintf("cimd: bad SSRF CIDR %q: %v", c, err))
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // isBlockedIP reports whether ip falls in a special-use range we must refuse
-// to dial during CIMD metadata fetch. The blocklist covers RFC1918, loopback,
-// link-local, multicast, unspecified, IPv6 ULA/loopback/link-local, CGNAT, and
-// 0.0.0.0/8.
+// to dial during CIMD metadata fetch.
 func isBlockedIP(ip net.IP) bool {
-	if ip == nil {
+	if ip == nil || ip.IsUnspecified() {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() {
-		return true
-	}
-	if ip4 := ip.To4(); ip4 != nil {
-		if ip4[0] == 0 { // 0.0.0.0/8
-			return true
-		}
-		if ip4[0] == 100 && ip4[1]&0xc0 == 64 { // CGNAT 100.64/10
-			return true
-		}
-		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 { // 192.0.0.0/24
+	for _, n := range ssrfBlockedCIDRs {
+		if n.Contains(ip) {
 			return true
 		}
 	}
@@ -165,20 +176,6 @@ type cimdResolver struct {
 	resolveIP  func(ctx context.Context, host string) ([]net.IP, error)
 	cache      *cimdCache
 	now        func() time.Time
-}
-
-var (
-	defaultCIMDResolverOnce sync.Once
-	defaultCIMDResolver     *cimdResolver
-)
-
-// cimdDefaultResolver returns the package-level singleton resolver used by
-// production handlers. Initialised lazily on first use.
-func cimdDefaultResolver() *cimdResolver {
-	defaultCIMDResolverOnce.Do(func() {
-		defaultCIMDResolver = newCIMDResolver(nil)
-	})
-	return defaultCIMDResolver
 }
 
 // newCIMDResolver constructs a resolver with an SSRF-safe http.Client. If
@@ -249,11 +246,11 @@ func (r *cimdResolver) ssrfSafeDial(ctx context.Context, network, addr string) (
 	return conn, nil
 }
 
-// resolveCIMDClient is the package-level entry point used by oauth_server.go.
-// Defined as a var so tests can swap in an in-process resolver pointed at an
-// httptest.Server without doing real DNS.
-var resolveCIMDClient = func(ctx context.Context, clientIDURL string) (*statelessRegisteredClient, error) {
-	return cimdDefaultResolver().resolve(ctx, clientIDURL)
+// resolveCIMDClient is the entry point used by handlers. It delegates to the
+// resolver owned by the application; tests construct the application with a
+// resolver pointed at an in-process httptest.Server (see cimd_test.go).
+func (a *application) resolveCIMDClient(ctx context.Context, clientIDURL string) (*statelessRegisteredClient, error) {
+	return a.cimdResolver.resolve(ctx, clientIDURL)
 }
 
 func (r *cimdResolver) resolve(ctx context.Context, clientIDURL string) (*statelessRegisteredClient, error) {
@@ -269,11 +266,11 @@ func (r *cimdResolver) resolve(ctx context.Context, clientIDURL string) (*statel
 	client, ttl, err := r.fetchAndValidate(ctx, clientIDURL)
 	now := r.now()
 	if err != nil {
-		r.cache.put(clientIDURL, &cimdCacheEntry{err: err, expiresAt: now.Add(cimdNegativeCacheTTL)})
+		r.cache.put(clientIDURL, &cimdCacheEntry{err: err, expiresAt: now.Add(cimdNegativeCacheTTL)}, now)
 		return nil, err
 	}
 	if ttl > 0 {
-		r.cache.put(clientIDURL, &cimdCacheEntry{client: client, expiresAt: now.Add(ttl)})
+		r.cache.put(clientIDURL, &cimdCacheEntry{client: client, expiresAt: now.Add(ttl)}, now)
 	}
 	return client, nil
 }
@@ -350,17 +347,14 @@ func extractMaxAge(cc string) time.Duration {
 
 // parseCIMDMetadata decodes the document and applies the schema rules from
 // issue #115 §"Metadata schema validation". Treats the body as untrusted.
+//
+// The wire shape of a CIMD document matches RFC 7591 §3.2.1 client registration
+// response — same field names, types, and JSON tags — so we reuse the SDK's
+// `oauthex.ClientRegistrationResponse` rather than maintaining a parallel
+// struct. Extra fields the SDK knows about (logo_uri, tos_uri, jwks, etc.) are
+// safely ignored because we don't read them.
 func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredClient, error) {
-	var doc struct {
-		ClientID                string   `json:"client_id"`
-		ClientName              string   `json:"client_name"`
-		RedirectURIs            []string `json:"redirect_uris"`
-		TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-		GrantTypes              []string `json:"grant_types"`
-		ResponseTypes           []string `json:"response_types"`
-		ClientSecret            string   `json:"client_secret"`
-		ClientSecretExpiresAt   *int64   `json:"client_secret_expires_at,omitempty"`
-	}
+	var doc oauthex.ClientRegistrationResponse
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.UseNumber()
 	if err := dec.Decode(&doc); err != nil {
@@ -375,7 +369,7 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 	if doc.ClientName == "" || len(doc.ClientName) > cimdMaxClientNameLength {
 		return nil, fmt.Errorf("%w: client_name length out of range", errCIMDInvalidMetadata)
 	}
-	if doc.ClientSecret != "" || doc.ClientSecretExpiresAt != nil {
+	if doc.ClientSecret != "" || !doc.ClientSecretExpiresAt.IsZero() {
 		return nil, fmt.Errorf("%w: client_secret not allowed for CIMD public client", errCIMDInvalidMetadata)
 	}
 	if doc.TokenEndpointAuthMethod != "none" {
@@ -429,7 +423,6 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 	return &statelessRegisteredClient{
 		RedirectURIs:            doc.RedirectURIs,
 		TokenEndpointAuthMethod: "none",
-		GrantType:               "authorization_code",
 	}, nil
 }
 
@@ -488,12 +481,15 @@ func (c *cimdCache) get(key string, now time.Time) (*cimdCacheEntry, bool) {
 }
 
 // put inserts/updates a cache entry. Negative entries do NOT override an
-// existing unexpired positive entry (per issue #115 cache requirements).
-func (c *cimdCache) put(key string, e *cimdCacheEntry) {
+// existing unexpired positive entry (per issue #115 cache requirements). The
+// now argument is the cache's logical clock — the caller passes the same
+// value it uses for cache.get expiry, so put/get stay coherent under tests
+// that fix time.
+func (c *cimdCache) put(key string, e *cimdCacheEntry, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e.err != nil {
-		if existing, ok := c.entries[key]; ok && existing.err == nil && existing.expiresAt.After(time.Now()) {
+		if existing, ok := c.entries[key]; ok && existing.err == nil && existing.expiresAt.After(now) {
 			return
 		}
 	}
