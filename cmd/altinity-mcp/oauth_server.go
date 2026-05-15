@@ -113,7 +113,20 @@ type oauthIssuedCode struct {
 // whoever holds the verifier — i.e. the legitimate client. Trading strict
 // RFC 6749 §4.1.2 single-use for zero shared state across replicas.
 
+// writeOAuthTokenError writes an RFC 6749 §5.2 JSON error response. When
+// status is 401 it also sets a Bearer-scheme WWW-Authenticate per RFC 7235
+// §3.1 (which mandates the header on 401) and RFC 6750 §3 (Bearer challenge
+// shape). The header value carries the OAuth error code so a client can
+// parse it from either the header or the body.
+//
+// Used uniformly across /oauth/{authorize,callback,token} so every broker-
+// mode error response shares one shape — JSON body, optional WWW-Authenticate.
+// Resource-server 401s use writeOAuthError instead because they need the
+// RFC 9728 `resource_metadata=` hint.
 func writeOAuthTokenError(w http.ResponseWriter, status int, code, description string) {
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer error=%q, error_description=%q`, code, description))
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -1023,14 +1036,14 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeOAuthTokenError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
 	q := r.URL.Query()
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
 	if clientID == "" || redirectURI == "" || q.Get("response_type") != "code" {
-		http.Error(w, "Invalid authorization request", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "missing client_id, redirect_uri, or response_type=code")
 		return
 	}
 	// CIMD inbound (#115): client_id is the HTTPS URL of the MCP client's
@@ -1041,15 +1054,15 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	client, err := a.resolveCIMDClient(r.Context(), clientID)
 	if err != nil {
 		log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Msg("OAuth /authorize rejected: CIMD resolution failed")
-		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_client", "unknown OAuth client")
 		return
 	}
 	if !slices.Contains(client.RedirectURIs, redirectURI) {
-		http.Error(w, "Unknown OAuth client", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "redirect_uri not registered for this client")
 		return
 	}
 	if q.Get("code_challenge") == "" || q.Get("code_challenge_method") != "S256" {
-		http.Error(w, "PKCE S256 is required", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "PKCE S256 is required")
 		return
 	}
 	// RFC 8707 §2 / MCP authorization spec: clients SHOULD include `resource`.
@@ -1063,7 +1076,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		got := strings.TrimRight(resource, "/")
 		if got != want {
 			log.Debug().Str("got", resource).Str("want", a.resourceBaseURL(r)).Msg("OAuth /authorize rejected: resource indicator mismatch")
-			http.Error(w, "Invalid resource indicator", http.StatusBadRequest)
+			writeOAuthTokenError(w, http.StatusBadRequest, "invalid_target", "resource indicator does not identify this MCP server")
 			return
 		}
 	}
@@ -1075,7 +1088,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	// the /token exchange in handleOAuthCallback.
 	upstreamVerifier, err := newPKCEVerifier()
 	if err != nil {
-		http.Error(w, "Failed to generate PKCE verifier", http.StatusInternalServerError)
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "failed to generate PKCE verifier")
 		return
 	}
 
@@ -1092,14 +1105,14 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	})
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to encode pending-auth JWE")
-		http.Error(w, "Failed to initialize OAuth state", http.StatusInternalServerError)
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "failed to initialize OAuth state")
 		return
 	}
 
 	cfg := a.GetCurrentConfig()
 	authURL, err := a.resolveUpstreamAuthURL()
 	if err != nil {
-		http.Error(w, "Failed to resolve upstream authorization endpoint", http.StatusBadGateway)
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to resolve upstream authorization endpoint")
 		return
 	}
 	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
@@ -1129,13 +1142,13 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	requestID := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	if requestID == "" || code == "" {
-		http.Error(w, "Missing callback parameters", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "missing state or code on callback")
 		return
 	}
 
 	pending, ok := a.decodePendingAuth(requestID)
 	if !ok {
-		http.Error(w, "Unknown OAuth request", http.StatusBadRequest)
+		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_request", "unknown or expired authorization request")
 		return
 	}
 
@@ -1159,7 +1172,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	authCode, err := a.encodeAuthCode(issuedCode)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to encode auth-code JWE")
-		http.Error(w, "Failed to issue authorization code", http.StatusInternalServerError)
+		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "failed to issue authorization code")
 		return
 	}
 
@@ -1170,7 +1183,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 
 	redirect, err := url.Parse(pending.RedirectURI)
 	if err != nil {
-		http.Error(w, "Invalid redirect URI", http.StatusBadGateway)
+		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "pending-auth carried an unparseable redirect_uri")
 		return
 	}
 	params := redirect.Query()
