@@ -121,24 +121,34 @@ func validateCIMDPath(rawPath string) error {
 }
 
 // ssrfBlockedCIDRs is the single audit-friendly list of address ranges we
-// refuse to dial during CIMD metadata fetch. Covers IANA special-use IPv4
-// (RFC 6890) + IPv6 (RFC 6890 / RFC 4291): loopback, RFC 1918 private,
-// link-local, CGNAT, "this network", reserved 192.0.0.0/24, multicast, IPv6
-// loopback / link-local / unique-local / multicast.
+// refuse to dial during CIMD metadata fetch. Tracks the IANA special-purpose
+// address registry (RFC 6890 + IPv6 registry RFC 8190). Comments give the
+// RFC and human name for each entry so future audits can read it
+// linearly.
 var ssrfBlockedCIDRs = mustParseCIDRs(
-	"127.0.0.0/8",
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"169.254.0.0/16",
-	"100.64.0.0/10",
-	"0.0.0.0/8",
-	"192.0.0.0/24",
-	"224.0.0.0/4",
-	"::1/128",
-	"fe80::/10",
-	"fc00::/7",
-	"ff00::/8",
+	// IPv4 — IANA IPv4 Special-Purpose Address Registry
+	"0.0.0.0/8",       // RFC 1122 — "this network"
+	"10.0.0.0/8",      // RFC 1918 — private
+	"100.64.0.0/10",   // RFC 6598 — Carrier-Grade NAT
+	"127.0.0.0/8",     // RFC 1122 — loopback
+	"169.254.0.0/16",  // RFC 3927 — link-local
+	"172.16.0.0/12",   // RFC 1918 — private
+	"192.0.0.0/24",    // RFC 6890 — IETF protocol assignments
+	"192.0.2.0/24",    // RFC 5737 — TEST-NET-1 (documentation)
+	"192.168.0.0/16",  // RFC 1918 — private
+	"198.18.0.0/15",   // RFC 2544 — benchmarking
+	"198.51.100.0/24", // RFC 5737 — TEST-NET-2 (documentation)
+	"203.0.113.0/24",  // RFC 5737 — TEST-NET-3 (documentation)
+	"224.0.0.0/4",     // RFC 5771 — multicast
+	"240.0.0.0/4",     // RFC 1112 — reserved (includes 255.255.255.255 broadcast)
+	// IPv6 — IANA IPv6 Special-Purpose Address Registry
+	"::1/128",       // RFC 4291 — loopback
+	"64:ff9b::/96",  // RFC 6052 — IPv4/IPv6 translation
+	"100::/64",      // RFC 6666 — discard prefix
+	"2001:db8::/32", // RFC 3849 — documentation
+	"fc00::/7",      // RFC 4193 — unique local
+	"fe80::/10",     // RFC 4291 — link-local
+	"ff00::/8",      // RFC 4291 — multicast
 )
 
 func mustParseCIDRs(cidrs ...string) []*net.IPNet {
@@ -212,6 +222,12 @@ func newCIMDResolver(resolveIP func(ctx context.Context, host string) ([]net.IP,
 
 // ssrfSafeDial resolves the host explicitly, pins the dial to a validated IP,
 // and re-checks the connected remote address before returning.
+//
+// Why the post-dial check is essentially belt-and-suspenders here: we dial
+// JoinHostPort(pinned.String(), port) — an explicit IP literal — so the
+// resolver cannot rebind to a different address. The re-check survives only
+// as defense against future refactors that swap the dial target back to the
+// hostname (e.g. for SNI symmetry). Cheap; keep it.
 func (r *cimdResolver) ssrfSafeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -309,40 +325,53 @@ func (r *cimdResolver) fetchAndValidate(ctx context.Context, clientIDURL string)
 	if err != nil {
 		return nil, 0, err
 	}
-	ttl := cimdDefaultCacheTTL
-	if cc := resp.Header.Get("Cache-Control"); cc != "" {
-		lc := strings.ToLower(cc)
-		switch {
-		case strings.Contains(lc, "no-store"):
-			ttl = 0
-		case strings.Contains(lc, "no-cache"):
-			ttl = 0
-		default:
-			if ma := extractMaxAge(lc); ma > 0 {
-				if ma > cimdMaxCacheTTL {
-					ma = cimdMaxCacheTTL
-				}
-				ttl = ma
-			}
-		}
-	}
-	return client, ttl, nil
+	return client, cacheTTLFromHeader(resp.Header.Get("Cache-Control")), nil
 }
 
-func extractMaxAge(cc string) time.Duration {
-	for _, p := range strings.Split(cc, ",") {
-		p = strings.TrimSpace(p)
-		if !strings.HasPrefix(p, "max-age=") {
+// cacheTTLFromHeader maps the response's Cache-Control header to a positive
+// cache TTL or zero (do-not-cache). Returns cimdDefaultCacheTTL when the
+// header is absent or carries no relevant directives, capped at
+// cimdMaxCacheTTL.
+//
+// Semantics per RFC 7234 §5.2:
+//   - no-store / no-cache  → ttl = 0 (do not reuse from cache)
+//   - max-age=0 or negative → ttl = 0 (RFC 7234 treats negative as 0)
+//   - max-age=N            → ttl = min(N, cap)
+//   - none of the above    → ttl = default
+//
+// Directive matching is exact: a stray substring like "x-no-storage" does
+// NOT trigger no-store.
+func cacheTTLFromHeader(cc string) time.Duration {
+	if cc == "" {
+		return cimdDefaultCacheTTL
+	}
+	maxAge := time.Duration(-1) // sentinel: directive absent
+	for _, raw := range strings.Split(cc, ",") {
+		directive := strings.TrimSpace(strings.ToLower(raw))
+		if directive == "" {
 			continue
 		}
-		v := strings.TrimPrefix(p, "max-age=")
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
+		switch {
+		case directive == "no-store" || directive == "no-cache":
 			return 0
+		case strings.HasPrefix(directive, "max-age="):
+			n, err := strconv.Atoi(strings.TrimPrefix(directive, "max-age="))
+			if err != nil {
+				continue // malformed value; ignore directive
+			}
+			if n <= 0 {
+				return 0 // RFC 7234: max-age=0 (or negative) means uncached.
+			}
+			maxAge = time.Duration(n) * time.Second
 		}
-		return time.Duration(n) * time.Second
 	}
-	return 0
+	if maxAge < 0 {
+		return cimdDefaultCacheTTL
+	}
+	if maxAge > cimdMaxCacheTTL {
+		return cimdMaxCacheTTL
+	}
+	return maxAge
 }
 
 // parseCIMDMetadata decodes the document and applies the schema rules from
@@ -398,7 +427,14 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 			case "authorization_code":
 				hasAuthCode = true
 			case "refresh_token":
-				// Tolerated in metadata; not honored — v1 issues no refresh tokens.
+				// Tolerated in metadata, deliberately NOT honored in v1: a client
+				// publishing ["authorization_code","refresh_token"] (which
+				// claude.ai does today) silently gets no refresh capability —
+				// .well-known/oauth-authorization-server only advertises
+				// authorization_code and /token returns unsupported_grant_type
+				// for refresh. If/when refresh ships, do NOT treat the CIMD
+				// grant_types array as authoritative for what we issue — the AS
+				// metadata is the source of truth.
 			default:
 				return nil, fmt.Errorf("%w: unsupported grant_type %q", errCIMDInvalidMetadata, gt)
 			}
@@ -452,18 +488,22 @@ type cimdCacheEntry struct {
 	expiresAt time.Time
 }
 
+// cimdCache is a bounded FIFO with TTL. Eviction order is insertion order:
+// on overflow we drop the oldest-inserted entry. `get` does NOT promote, so
+// this is FIFO, not LRU. The distinction doesn't matter at our scale (cap
+// ≫ unique CIMD URLs in practice) and FIFO has a simpler invariant.
 type cimdCache struct {
-	mu      sync.Mutex
-	entries map[string]*cimdCacheEntry
-	order   []string
-	cap     int
+	mu       sync.Mutex
+	entries  map[string]*cimdCacheEntry
+	order    []string
+	capacity int
 }
 
-func newCIMDCache(cap int) *cimdCache {
-	if cap <= 0 {
-		cap = 1
+func newCIMDCache(capacity int) *cimdCache {
+	if capacity <= 0 {
+		capacity = 1
 	}
-	return &cimdCache{entries: make(map[string]*cimdCacheEntry, cap), cap: cap}
+	return &cimdCache{entries: make(map[string]*cimdCacheEntry, capacity), capacity: capacity}
 }
 
 func (c *cimdCache) get(key string, now time.Time) (*cimdCacheEntry, bool) {
@@ -494,7 +534,7 @@ func (c *cimdCache) put(key string, e *cimdCacheEntry, now time.Time) {
 		}
 	}
 	if _, exists := c.entries[key]; !exists {
-		if len(c.entries) >= c.cap {
+		if len(c.entries) >= c.capacity {
 			oldest := c.order[0]
 			c.order = c.order[1:]
 			delete(c.entries, oldest)

@@ -1343,6 +1343,13 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		Str("client_id", truncateForLog(clientID, 80)).
 		Msg("OAuth /token: upstream code exchange succeeded")
 
+	// Validate the upstream identity before handing the bearer to the MCP
+	// client. We do NOT bind these claims into the downstream token in v1
+	// (audience binding is deferred — see #115 § Non-goals); validation here
+	// exists purely to fail-fast on a malformed upstream response with a
+	// proper 502. Do not delete the underscored assignment without first
+	// re-introducing claim binding, or this side-effecting validation will
+	// look like dead code and get pruned.
 	var identityClaims *altinitymcp.OAuthClaims
 	if tokenResp.IDToken != "" {
 		identityClaims, err = a.mcpServer.ValidateUpstreamIdentityToken(tokenResp.IDToken, cfg.Server.OAuth.ClientID)
@@ -1359,7 +1366,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	_ = identityClaims
+	_ = identityClaims // validation-only; intentionally unused in v1.
 
 	if tokenResp.Scope == "" {
 		tokenResp.Scope = issued.Scope

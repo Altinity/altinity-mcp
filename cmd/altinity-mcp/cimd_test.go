@@ -74,9 +74,20 @@ func TestValidateCIMDClientIDURL_OversizeRejected(t *testing.T) {
 
 func TestIsBlockedIP(t *testing.T) {
 	blocked := []string{
+		// Pre-existing coverage
 		"127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1",
 		"169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1",
 		"::1", "fe80::1", "fc00::1", "192.0.0.1",
+		// Extended IANA special-purpose ranges added 2026-05-15.
+		"192.0.2.1",     // TEST-NET-1
+		"198.18.0.1",    // benchmarking
+		"198.51.100.1",  // TEST-NET-2
+		"203.0.113.1",   // TEST-NET-3
+		"240.0.0.1",     // reserved
+		"255.255.255.255", // broadcast (inside 240/4)
+		"2001:db8::1",   // IPv6 documentation
+		"64:ff9b::1",    // IPv4/IPv6 translation
+		"100::1",        // IPv6 discard prefix
 	}
 	ok := []string{
 		"8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111",
@@ -90,6 +101,36 @@ func TestIsBlockedIP(t *testing.T) {
 		if isBlockedIP(net.ParseIP(s)) {
 			t.Errorf("expected %s to be allowed", s)
 		}
+	}
+}
+
+func TestCacheTTLFromHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"empty header → default", "", cimdDefaultCacheTTL},
+		{"no-store → 0", "no-store", 0},
+		{"no-cache → 0", "no-cache", 0},
+		{"public, no-store mixed → 0", "public, no-store", 0},
+		{"max-age=0 → 0 (RFC 7234)", "max-age=0", 0},
+		{"max-age=-5 → 0 (RFC 7234: negatives treated as 0)", "max-age=-5", 0},
+		{"max-age=300 → 5m", "max-age=300", 5 * time.Minute},
+		{"max-age=999999999 → cap", "max-age=999999999", cimdMaxCacheTTL},
+		{"max-age with public", "public, max-age=120", 2 * time.Minute},
+		{"unknown directive → default", "private", cimdDefaultCacheTTL},
+		{"x-custom-no-storage must NOT match no-store", "x-custom-no-storage", cimdDefaultCacheTTL},
+		{"no-storage (substring of no-store) must NOT match", "no-storage", cimdDefaultCacheTTL},
+		{"malformed max-age value ignored, falls to default", "max-age=banana", cimdDefaultCacheTTL},
+		{"no-store wins over max-age", "max-age=300, no-store", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cacheTTLFromHeader(tc.header); got != tc.want {
+				t.Errorf("cacheTTLFromHeader(%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -164,11 +205,10 @@ func testResolver(t *testing.T, server *httptest.Server) *cimdResolver {
 	if err != nil {
 		t.Fatalf("server URL parse: %v", err)
 	}
-	host, port, err := net.SplitHostPort(su.Host)
+	_, port, err := net.SplitHostPort(su.Host)
 	if err != nil {
 		t.Fatalf("split host port: %v", err)
 	}
-	_ = host
 	r := newCIMDResolver(nil)
 	// Replace the Transport with one that always dials the httptest server
 	// instead of doing real DNS. This keeps the rest of the fetch / parse /
@@ -228,6 +268,60 @@ func TestCIMDResolve_HappyPath_Cached(t *testing.T) {
 	}
 	if atomic.LoadInt32(&hits) != 1 {
 		t.Errorf("expected 1 upstream fetch, got %d", hits)
+	}
+}
+
+func TestCIMDResolve_MaxAgeZeroSkipsCache(t *testing.T) {
+	hits := int32(0)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=0")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":["https://d.example.com/cb"],"token_endpoint_auth_method":"none"}`, cimdTestURL("d.example.com", "/zero.json"))
+	}))
+	defer server.Close()
+	r := testResolver(t, server)
+	u := cimdTestURL("d.example.com", "/zero.json")
+	for i := 0; i < 3; i++ {
+		if _, err := r.resolve(context.Background(), u); err != nil {
+			t.Fatalf("resolve %d: %v", i, err)
+		}
+	}
+	if atomic.LoadInt32(&hits) != 3 {
+		t.Errorf("expected 3 fetches (max-age=0), got %d", hits)
+	}
+}
+
+func TestCIMDResolve_DefaultTTLWhenNoDirectives(t *testing.T) {
+	hits := int32(0)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		// Cache-Control present but with no directives we care about.
+		w.Header().Set("Cache-Control", "private")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":["https://d.example.com/cb"],"token_endpoint_auth_method":"none"}`, cimdTestURL("d.example.com", "/private.json"))
+	}))
+	defer server.Close()
+	r := testResolver(t, server)
+	now := time.Now()
+	r.now = func() time.Time { return now }
+	u := cimdTestURL("d.example.com", "/private.json")
+	if _, err := r.resolve(context.Background(), u); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if _, err := r.resolve(context.Background(), u); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Errorf("expected 1 fetch (default TTL serves the second from cache), got %d", hits)
+	}
+	e, ok := r.cache.get(u, now)
+	if !ok {
+		t.Fatalf("expected cache entry")
+	}
+	wantExp := now.Add(cimdDefaultCacheTTL)
+	if e.expiresAt.Before(wantExp.Add(-time.Second)) || e.expiresAt.After(wantExp.Add(time.Second)) {
+		t.Errorf("expected default TTL ~%v, got expiresAt=%v (now=%v)", cimdDefaultCacheTTL, e.expiresAt, now)
 	}
 }
 
