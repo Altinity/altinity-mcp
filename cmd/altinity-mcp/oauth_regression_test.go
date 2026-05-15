@@ -578,7 +578,8 @@ func TestOAuthASMetadataShape(t *testing.T) {
 
 	require.Equal(t, true, doc["client_id_metadata_document_supported"])
 	require.NotContains(t, doc, "registration_endpoint")
-	require.Equal(t, []interface{}{"none"}, doc["token_endpoint_auth_methods_supported"])
+	require.Equal(t, []interface{}{"none", "private_key_jwt"}, doc["token_endpoint_auth_methods_supported"])
+	require.Contains(t, doc, "token_endpoint_auth_signing_alg_values_supported")
 	require.Equal(t, []interface{}{"authorization_code"}, doc["grant_types_supported"])
 	require.Equal(t, []interface{}{"code"}, doc["response_types_supported"])
 	require.Equal(t, []interface{}{"S256"}, doc["code_challenge_methods_supported"])

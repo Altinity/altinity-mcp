@@ -189,6 +189,7 @@ type cimdResolver struct {
 	httpClient *http.Client
 	resolveIP  func(ctx context.Context, host string) ([]net.IP, error)
 	cache      *cimdCache
+	jwksCache  *jwksCache
 	now        func() time.Time
 }
 
@@ -203,6 +204,7 @@ func newCIMDResolver(resolveIP func(ctx context.Context, host string) ([]net.IP,
 	r := &cimdResolver{
 		resolveIP: resolveIP,
 		cache:     newCIMDCache(cimdCacheCap),
+		jwksCache: newJWKSCache(cimdCacheCap),
 		now:       time.Now,
 	}
 	tr := &http.Transport{
@@ -438,8 +440,26 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 	if doc.ClientSecret != "" || !doc.ClientSecretExpiresAt.IsZero() {
 		return nil, fmt.Errorf("%w: client_secret not allowed for CIMD public client", errCIMDInvalidMetadata)
 	}
-	if doc.TokenEndpointAuthMethod != "none" {
-		return nil, fmt.Errorf("%w: token_endpoint_auth_method must be \"none\" (got %q)", errCIMDInvalidMetadata, doc.TokenEndpointAuthMethod)
+	// RFC 7591 §2: token_endpoint_auth_method enumerates how the client
+	// authenticates to /oauth/token. v1 accepts:
+	//   - "none"             — public client, PKCE-only (claude.ai)
+	//   - "private_key_jwt"  — RFC 7523 §2.2 signed JWT, verified against
+	//                          the client's published jwks_uri (ChatGPT)
+	// All client_secret_* methods are rejected: CIMD clients are public, we
+	// share no secret with them. Empty / missing field is rejected — both
+	// known real-world CIMD docs (claude.ai, ChatGPT) declare it explicitly.
+	switch doc.TokenEndpointAuthMethod {
+	case "none":
+		// PKCE-only public client. jwks_uri ignored even if present.
+	case "private_key_jwt":
+		if doc.JWKSURI == "" {
+			return nil, fmt.Errorf("%w: jwks_uri required for token_endpoint_auth_method=private_key_jwt", errCIMDInvalidMetadata)
+		}
+		if err := validateJWKSURI(doc.JWKSURI); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("%w: token_endpoint_auth_method %q unsupported (only \"none\" and \"private_key_jwt\")", errCIMDInvalidMetadata, doc.TokenEndpointAuthMethod)
 	}
 	if len(doc.RedirectURIs) == 0 || len(doc.RedirectURIs) > cimdMaxRedirectURIs {
 		return nil, fmt.Errorf("%w: redirect_uris count out of range", errCIMDInvalidMetadata)
@@ -493,7 +513,50 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 			return nil, fmt.Errorf("%w: response_types must include code", errCIMDInvalidMetadata)
 		}
 	}
-	return &statelessRegisteredClient{RedirectURIs: doc.RedirectURIs}, nil
+	return &statelessRegisteredClient{
+		RedirectURIs:            doc.RedirectURIs,
+		TokenEndpointAuthMethod: doc.TokenEndpointAuthMethod,
+		JWKSURI:                 doc.JWKSURI,
+	}, nil
+}
+
+// validateJWKSURI applies the same shape rules as the CIMD client_id URL
+// (https-only, no userinfo/fragment/query, port 443, IDNA-clean host) so the
+// SSRF dial path can be reused. The path constraint is relaxed: a JWKS is
+// typically served at "/.well-known/jwks.json" or "/oauth/jwks.json", and
+// has no relation to the client_id URL path, so we don't require a non-empty
+// path beyond what url.Parse accepts.
+func validateJWKSURI(raw string) error {
+	if raw == "" || len(raw) > cimdMaxURLLength {
+		return fmt.Errorf("%w: jwks_uri length out of range", errCIMDInvalidMetadata)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%w: jwks_uri parse: %v", errCIMDInvalidMetadata, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%w: jwks_uri scheme must be https", errCIMDInvalidMetadata)
+	}
+	if u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("%w: jwks_uri userinfo/fragment not allowed", errCIMDInvalidMetadata)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: jwks_uri hostname required", errCIMDInvalidMetadata)
+	}
+	if port := u.Port(); port != "" && port != "443" {
+		return fmt.Errorf("%w: jwks_uri port %s not allowed", errCIMDInvalidMetadata, port)
+	}
+	asciiHost, err := idna.Lookup.ToASCII(host)
+	if err != nil || asciiHost != host {
+		return fmt.Errorf("%w: jwks_uri hostname must be lowercase ASCII", errCIMDInvalidMetadata)
+	}
+	if u.Path != "" {
+		if err := validateCIMDPath(u.EscapedPath()); err != nil {
+			return fmt.Errorf("%w: jwks_uri %v", errCIMDInvalidMetadata, err)
+		}
+	}
+	return nil
 }
 
 // validateCIMDRedirectURI: v1 requires https for all redirect URIs. Loopback

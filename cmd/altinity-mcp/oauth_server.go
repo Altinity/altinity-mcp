@@ -53,12 +53,14 @@ const (
 	defaultAccessTokenTTLSeconds = 60 * 60
 )
 
-// statelessRegisteredClient is the in-memory shape parseCIMDMetadata
-// returns. After DCR removal the only field anything reads is RedirectURIs
-// — parseCIMDMetadata's `token_endpoint_auth_method` check happens at
-// parse-time and never reaches the struct.
+// statelessRegisteredClient is the in-memory shape parseCIMDMetadata returns.
+// TokenEndpointAuthMethod is "none" (claude.ai) or "private_key_jwt"
+// (ChatGPT). When private_key_jwt, JWKSURI points at the client's published
+// JWKS used to verify client_assertion JWTs at /oauth/token per RFC 7523.
 type statelessRegisteredClient struct {
-	RedirectURIs []string `json:"redirect_uris"`
+	RedirectURIs            []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
+	JWKSURI                 string   `json:"jwks_uri,omitempty"`
 }
 
 type oauthPendingAuth struct {
@@ -1001,7 +1003,8 @@ func (a *application) oauthASMetadata(r *http.Request) map[string]interface{} {
 		"scopes_supported":                      oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
+		"token_endpoint_auth_methods_supported":          []string{"none", "private_key_jwt"},
+		"token_endpoint_auth_signing_alg_values_supported": []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"client_id_metadata_document_supported": true,
 	}
@@ -1228,16 +1231,66 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 
 func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Request) {
 	clientID := r.Form.Get("client_id")
-	// Public CIMD clients reject any client_secret / client_assertion on /token
-	// per RFC 7591 token_endpoint_auth_method=none + CIMD spec.
-	if r.Form.Get("client_secret") != "" || r.Form.Get("client_assertion") != "" {
-		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication not supported for public CIMD clients")
+	// client_secret is never accepted: CIMD public clients have no shared
+	// secret. We never publish client_secret_basic / _post / _jwt as
+	// supported auth methods.
+	if r.Form.Get("client_secret") != "" {
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_secret authentication not supported")
 		return
 	}
 	client, err := a.resolveCIMDClient(r.Context(), clientID)
 	if err != nil {
 		log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Msg("OAuth /token rejected: CIMD resolution failed")
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown OAuth client")
+		return
+	}
+	// RFC 7521 §4.2 / RFC 7523 §2.2: dispatch on the auth method the client
+	// declared in its CIMD metadata. "none" requires PKCE only; "private_key_jwt"
+	// requires a signed JWT assertion verified against the client's JWKS.
+	assertion := r.Form.Get("client_assertion")
+	assertionType := r.Form.Get("client_assertion_type")
+	log.Debug().
+		Str("client_id", truncateForLog(clientID, 80)).
+		Str("auth_method", client.TokenEndpointAuthMethod).
+		Bool("has_assertion", assertion != "").
+		Str("assertion_type", assertionType).
+		Msg("OAuth /token: client auth dispatch")
+	switch client.TokenEndpointAuthMethod {
+	case "none":
+		if assertion != "" || assertionType != "" {
+			log.Debug().Msg("OAuth /token rejected: assertion present on public client")
+			writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion not accepted for public clients")
+			return
+		}
+	case "private_key_jwt":
+		// Lenient: if the client supplied an assertion we verify it (strict
+		// RFC 7523 semantics). If it didn't, we accept anyway — CIMD URL
+		// ownership over HTTPS already proves client identity, and PKCE
+		// binds the auth code. This matches Auth0's observed behaviour for
+		// CIMD clients that declare private_key_jwt but whose
+		// implementations don't ship the assertion yet (ChatGPT dev-mode
+		// apps as of 2026-05-15). Strict enforcement blanket-blocks them.
+		if assertion != "" || assertionType != "" {
+			if assertionType != clientAssertionType {
+				log.Debug().Str("assertion_type", assertionType).Msg("OAuth /token rejected: missing/wrong client_assertion_type")
+				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion_type must be jwt-bearer")
+				return
+			}
+			tokenEndpointURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
+			if err := a.verifyClientAssertion(r.Context(), client, clientID, assertion, tokenEndpointURL); err != nil {
+				log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Str("token_endpoint", tokenEndpointURL).Msg("OAuth /token rejected: client_assertion invalid")
+				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion invalid")
+				return
+			}
+			log.Debug().Msg("OAuth /token: client_assertion verified")
+		} else {
+			log.Debug().Msg("OAuth /token: private_key_jwt CIMD client provided no assertion — accepting on PKCE + CIMD URL ownership")
+		}
+	default:
+		// Defence-in-depth: parseCIMDMetadata already rejects anything other
+		// than none / private_key_jwt; this branch only fires on stale cache
+		// entries from a prior buggy build.
+		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "unsupported client auth method")
 		return
 	}
 	requestRedirect := r.Form.Get("redirect_uri")
