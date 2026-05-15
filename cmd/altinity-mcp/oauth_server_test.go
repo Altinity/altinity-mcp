@@ -1099,86 +1099,158 @@ func TestCanonicalResourceURL(t *testing.T) {
 	}
 }
 
-func TestOAuthStateStoreSizeCap(t *testing.T) {
+// newJWEStateTestApp builds a minimal application wired with a SigningSecret
+// for exercising the stateless JWE encode/decode helpers in isolation.
+func newJWEStateTestApp(secret string) *application {
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			OAuth: config.OAuthConfig{
+				Enabled:       true,
+				SigningSecret: secret,
+			},
+		},
+	}
+	return &application{config: cfg}
+}
+
+func TestOAuthStateJWERoundTrip(t *testing.T) {
 	t.Parallel()
-	t.Run("pending_auth_evicts_oldest_at_cap", func(t *testing.T) {
+	const secret = "test-jwe-state-secret-32-byte-key"
+
+	t.Run("pending_auth_round_trip", func(t *testing.T) {
 		t.Parallel()
-		store := newOAuthStateStore()
-		// Fill to capacity with entries that expire far in the future
-		for i := 0; i < maxOAuthStateEntries; i++ {
-			store.putPendingAuth(fmt.Sprintf("p_%d", i), oauthPendingAuth{
-				ClientID:  "client",
-				ExpiresAt: time.Now().Add(time.Hour),
-			})
+		app := newJWEStateTestApp(secret)
+		want := oauthPendingAuth{
+			ClientID:             "cid",
+			RedirectURI:          "https://client.example/cb",
+			Scope:                "openid email",
+			ClientState:          "abc",
+			CodeChallenge:        "ch",
+			CodeChallengeMethod:  "S256",
+			Resource:             "https://mcp.example/",
+			UpstreamPKCEVerifier: "verifier",
+			ExpiresAt:            time.Now().Add(10 * time.Minute).Truncate(time.Second),
 		}
-		require.Equal(t, maxOAuthStateEntries, len(store.pendingAuth))
+		tok, err := app.encodePendingAuth(want)
+		require.NoError(t, err)
+		require.NotEmpty(t, tok)
 
-		// Insert one with the earliest expiry to make it the eviction target
-		store.pendingAuth["earliest"] = oauthPendingAuth{
-			ClientID:  "early",
-			ExpiresAt: time.Now().Add(-time.Minute),
-		}
-
-		// Next put should evict "earliest" and stay at cap
-		store.putPendingAuth("overflow", oauthPendingAuth{
-			ClientID:  "new",
-			ExpiresAt: time.Now().Add(time.Hour),
-		})
-		// expired entries cleaned + oldest evicted, should not exceed cap
-		require.LessOrEqual(t, len(store.pendingAuth), maxOAuthStateEntries)
-		_, ok := store.pendingAuth["earliest"]
-		require.False(t, ok, "earliest entry should have been evicted")
-		_, ok = store.pendingAuth["overflow"]
-		require.True(t, ok, "new entry should be present")
-	})
-
-	t.Run("auth_codes_evicts_oldest_at_cap", func(t *testing.T) {
-		t.Parallel()
-		store := newOAuthStateStore()
-		for i := 0; i < maxOAuthStateEntries; i++ {
-			store.putAuthCode(fmt.Sprintf("c_%d", i), oauthIssuedCode{
-				ClientID:  "client",
-				ExpiresAt: time.Now().Add(time.Hour),
-			})
-		}
-		require.Equal(t, maxOAuthStateEntries, len(store.authCodes))
-
-		store.authCodes["earliest"] = oauthIssuedCode{
-			ClientID:  "early",
-			ExpiresAt: time.Now().Add(-time.Minute),
-		}
-
-		store.putAuthCode("overflow", oauthIssuedCode{
-			ClientID:  "new",
-			ExpiresAt: time.Now().Add(time.Hour),
-		})
-		require.LessOrEqual(t, len(store.authCodes), maxOAuthStateEntries)
-		_, ok := store.authCodes["earliest"]
-		require.False(t, ok, "earliest entry should have been evicted")
-		_, ok = store.authCodes["overflow"]
-		require.True(t, ok, "new entry should be present")
-	})
-
-	t.Run("expired_entries_cleaned_before_cap_check", func(t *testing.T) {
-		t.Parallel()
-		store := newOAuthStateStore()
-		// Fill with already-expired entries
-		for i := 0; i < maxOAuthStateEntries; i++ {
-			store.pendingAuth[fmt.Sprintf("exp_%d", i)] = oauthPendingAuth{
-				ClientID:  "client",
-				ExpiresAt: time.Now().Add(-time.Second),
-			}
-		}
-		require.Equal(t, maxOAuthStateEntries, len(store.pendingAuth))
-
-		// putPendingAuth cleans expired first, so this should succeed without eviction
-		store.putPendingAuth("fresh", oauthPendingAuth{
-			ClientID:  "new",
-			ExpiresAt: time.Now().Add(time.Hour),
-		})
-		require.Equal(t, 1, len(store.pendingAuth))
-		_, ok := store.pendingAuth["fresh"]
+		got, ok := app.decodePendingAuth(tok)
 		require.True(t, ok)
+		require.Equal(t, want.ClientID, got.ClientID)
+		require.Equal(t, want.RedirectURI, got.RedirectURI)
+		require.Equal(t, want.Scope, got.Scope)
+		require.Equal(t, want.ClientState, got.ClientState)
+		require.Equal(t, want.CodeChallenge, got.CodeChallenge)
+		require.Equal(t, want.CodeChallengeMethod, got.CodeChallengeMethod)
+		require.Equal(t, want.Resource, got.Resource)
+		require.Equal(t, want.UpstreamPKCEVerifier, got.UpstreamPKCEVerifier)
+		require.Equal(t, want.ExpiresAt.Unix(), got.ExpiresAt.Unix())
+	})
+
+	t.Run("auth_code_round_trip", func(t *testing.T) {
+		t.Parallel()
+		app := newJWEStateTestApp(secret)
+		want := oauthIssuedCode{
+			ClientID:             "cid",
+			RedirectURI:          "https://client.example/cb",
+			Scope:                "openid email",
+			CodeChallenge:        "ch",
+			CodeChallengeMethod:  "S256",
+			Resource:             "https://mcp.example/",
+			UpstreamBearerToken:  "upstream-bearer",
+			UpstreamRefreshToken: "upstream-refresh",
+			UpstreamTokenType:    "Bearer",
+			Subject:              "user-1",
+			Email:                "u@example.com",
+			Name:                 "User",
+			HostedDomain:         "example.com",
+			EmailVerified:        true,
+			ExpiresAt:            time.Now().Add(60 * time.Second).Truncate(time.Second),
+			AccessTokenExpiry:    time.Now().Add(time.Hour).Truncate(time.Second),
+		}
+		tok, err := app.encodeAuthCode(want)
+		require.NoError(t, err)
+
+		got, ok := app.decodeAuthCode(tok)
+		require.True(t, ok)
+		require.Equal(t, want, got)
+	})
+
+	t.Run("cross_pod_portable_with_shared_secret", func(t *testing.T) {
+		t.Parallel()
+		// Simulate two replicas: separate application instances, identical secret.
+		podA := newJWEStateTestApp(secret)
+		podB := newJWEStateTestApp(secret)
+		mintedOnA, err := podA.encodePendingAuth(oauthPendingAuth{
+			ClientID:  "cid",
+			ExpiresAt: time.Now().Add(10 * time.Minute),
+		})
+		require.NoError(t, err)
+		got, ok := podB.decodePendingAuth(mintedOnA)
+		require.True(t, ok)
+		require.Equal(t, "cid", got.ClientID)
+	})
+
+	t.Run("cross_pod_rejected_with_different_secret", func(t *testing.T) {
+		t.Parallel()
+		podA := newJWEStateTestApp(secret)
+		podB := newJWEStateTestApp("a-different-secret-32-bytes-long!")
+		mintedOnA, err := podA.encodeAuthCode(oauthIssuedCode{
+			ClientID:  "cid",
+			ExpiresAt: time.Now().Add(60 * time.Second),
+		})
+		require.NoError(t, err)
+		_, ok := podB.decodeAuthCode(mintedOnA)
+		require.False(t, ok, "JWE minted with a different secret must not decode")
+	})
+
+	t.Run("expired_auth_code_rejected", func(t *testing.T) {
+		t.Parallel()
+		app := newJWEStateTestApp(secret)
+		tok, err := app.encodeAuthCode(oauthIssuedCode{
+			ClientID:  "cid",
+			ExpiresAt: time.Now().Add(-1 * time.Second),
+		})
+		require.NoError(t, err)
+		_, ok := app.decodeAuthCode(tok)
+		require.False(t, ok, "expired auth code must be rejected by JWE exp validation")
+	})
+
+	t.Run("expired_pending_auth_rejected", func(t *testing.T) {
+		t.Parallel()
+		app := newJWEStateTestApp(secret)
+		tok, err := app.encodePendingAuth(oauthPendingAuth{
+			ClientID:  "cid",
+			ExpiresAt: time.Now().Add(-1 * time.Second),
+		})
+		require.NoError(t, err)
+		_, ok := app.decodePendingAuth(tok)
+		require.False(t, ok)
+	})
+
+	t.Run("tampered_token_rejected", func(t *testing.T) {
+		t.Parallel()
+		app := newJWEStateTestApp(secret)
+		tok, err := app.encodeAuthCode(oauthIssuedCode{
+			ClientID:  "cid",
+			ExpiresAt: time.Now().Add(60 * time.Second),
+		})
+		require.NoError(t, err)
+		// Flip a byte in the JWE ciphertext.
+		bs := []byte(tok)
+		bs[len(bs)/2] ^= 0x01
+		_, ok := app.decodeAuthCode(string(bs))
+		require.False(t, ok)
+	})
+
+	t.Run("decode_missing_secret_fails_cleanly", func(t *testing.T) {
+		t.Parallel()
+		app := newJWEStateTestApp("")
+		_, ok := app.decodePendingAuth("anything")
+		require.False(t, ok)
+		_, ok = app.decodeAuthCode("anything")
+		require.False(t, ok)
 	})
 }
 
@@ -2213,54 +2285,6 @@ func TestNormalizeURL(t *testing.T) {
 			require.Equal(t, tt.want, normalizeURL(tt.raw))
 		})
 	}
-}
-
-func TestOAuthStateStore(t *testing.T) {
-	t.Parallel()
-
-	t.Run("put_and_consume_pending_auth", func(t *testing.T) {
-		t.Parallel()
-		store := newOAuthStateStore()
-		pending := oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)}
-		store.putPendingAuth("key1", pending)
-
-		got, ok := store.consumePendingAuth("key1")
-		require.True(t, ok)
-		require.Equal(t, pending.ExpiresAt.Unix(), got.ExpiresAt.Unix())
-
-		_, ok = store.consumePendingAuth("key1")
-		require.False(t, ok)
-	})
-
-	t.Run("put_and_consume_auth_code", func(t *testing.T) {
-		t.Parallel()
-		store := newOAuthStateStore()
-		issued := oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)}
-		store.putAuthCode("code1", issued)
-
-		got, ok := store.consumeAuthCode("code1")
-		require.True(t, ok)
-		require.Equal(t, issued.ExpiresAt.Unix(), got.ExpiresAt.Unix())
-
-		_, ok = store.consumeAuthCode("code1")
-		require.False(t, ok)
-	})
-
-	t.Run("expired_entries_cleaned_up", func(t *testing.T) {
-		t.Parallel()
-		store := newOAuthStateStore()
-		store.putPendingAuth("expired", oauthPendingAuth{ExpiresAt: time.Now().Add(-time.Hour)})
-		store.putAuthCode("expired", oauthIssuedCode{ExpiresAt: time.Now().Add(-time.Hour)})
-
-		// Next put triggers cleanup
-		store.putPendingAuth("fresh", oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)})
-		store.putAuthCode("fresh", oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)})
-
-		_, ok := store.consumePendingAuth("expired")
-		require.False(t, ok)
-		_, ok = store.consumeAuthCode("expired")
-		require.False(t, ok)
-	})
 }
 
 func TestSanitizeScope(t *testing.T) {

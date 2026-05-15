@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -100,107 +99,15 @@ type oauthIssuedCode struct {
 	AccessTokenExpiry    time.Time
 }
 
-// maxOAuthStateEntries caps each map in the state store to prevent memory
-// exhaustion from floods of unauthenticated /oauth/authorize requests.
-const maxOAuthStateEntries = 10000
-
-type oauthStateStore struct {
-	mu          sync.Mutex
-	pendingAuth map[string]oauthPendingAuth
-	authCodes   map[string]oauthIssuedCode
-}
-
-func newOAuthStateStore() *oauthStateStore {
-	return &oauthStateStore{
-		pendingAuth: make(map[string]oauthPendingAuth),
-		authCodes:   make(map[string]oauthIssuedCode),
-	}
-}
-
-func (s *oauthStateStore) cleanupExpiredLocked(now time.Time) {
-	for key, pending := range s.pendingAuth {
-		if !pending.ExpiresAt.IsZero() && now.After(pending.ExpiresAt) {
-			delete(s.pendingAuth, key)
-		}
-	}
-	for key, issued := range s.authCodes {
-		if !issued.ExpiresAt.IsZero() && now.After(issued.ExpiresAt) {
-			delete(s.authCodes, key)
-		}
-	}
-}
-
-// evictOldestPendingLocked removes the entry with the earliest expiry.
-func (s *oauthStateStore) evictOldestPendingLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	for key, pending := range s.pendingAuth {
-		if oldestKey == "" || pending.ExpiresAt.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = pending.ExpiresAt
-		}
-	}
-	if oldestKey != "" {
-		delete(s.pendingAuth, oldestKey)
-	}
-}
-
-// evictOldestCodeLocked removes the entry with the earliest expiry.
-func (s *oauthStateStore) evictOldestCodeLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	for key, issued := range s.authCodes {
-		if oldestKey == "" || issued.ExpiresAt.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = issued.ExpiresAt
-		}
-	}
-	if oldestKey != "" {
-		delete(s.authCodes, oldestKey)
-	}
-}
-
-func (s *oauthStateStore) putPendingAuth(id string, pending oauthPendingAuth) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupExpiredLocked(time.Now())
-	if len(s.pendingAuth) >= maxOAuthStateEntries {
-		s.evictOldestPendingLocked()
-	}
-	s.pendingAuth[id] = pending
-}
-
-func (s *oauthStateStore) consumePendingAuth(id string) (oauthPendingAuth, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupExpiredLocked(time.Now())
-	pending, ok := s.pendingAuth[id]
-	if ok {
-		delete(s.pendingAuth, id)
-	}
-	return pending, ok
-}
-
-func (s *oauthStateStore) putAuthCode(id string, issued oauthIssuedCode) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupExpiredLocked(time.Now())
-	if len(s.authCodes) >= maxOAuthStateEntries {
-		s.evictOldestCodeLocked()
-	}
-	s.authCodes[id] = issued
-}
-
-func (s *oauthStateStore) consumeAuthCode(id string) (oauthIssuedCode, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupExpiredLocked(time.Now())
-	issued, ok := s.authCodes[id]
-	if ok {
-		delete(s.authCodes, id)
-	}
-	return issued, ok
-}
+// OAuth pending-auth and issued-code state are encoded as stateless JWE tokens
+// (see encodePendingAuth / encodeAuthCode below) so any replica can decode
+// state minted by any other replica. There is no in-memory store, no eviction,
+// and no per-pod size cap — expiry is enforced by the `exp` claim inside each
+// JWE. Single-use on auth codes is intentionally NOT enforced server-side:
+// codes are bound to the client's PKCE verifier (RFC 7636) and live for at
+// most defaultAuthCodeTTLSeconds, so replay within the TTL is limited to
+// whoever holds the verifier — i.e. the legitimate client. Trading strict
+// RFC 6749 §4.1.2 single-use for zero shared state across replicas.
 
 func writeOAuthTokenError(w http.ResponseWriter, status int, code, description string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -264,8 +171,10 @@ const oauthKidV1 = "v1"
 // Bumping the /vN suffix in any single label rotates that one key without
 // disturbing the others.
 const (
-	hkdfInfoOAuthClientID = "altinity-mcp/oauth/client-id/v1"
-	hkdfInfoOAuthRefresh  = "altinity-mcp/oauth/refresh-token/v1"
+	hkdfInfoOAuthClientID    = "altinity-mcp/oauth/client-id/v1"
+	hkdfInfoOAuthRefresh     = "altinity-mcp/oauth/refresh-token/v1"
+	hkdfInfoOAuthPendingAuth = "altinity-mcp/oauth/pending-auth/v1"
+	hkdfInfoOAuthAuthCode    = "altinity-mcp/oauth/auth-code/v1"
 )
 
 // encodeOAuthJWE emits a JWE-wrapped JSON document of `claims`, encrypted
@@ -334,6 +243,139 @@ func decodeOAuthJWE(secret []byte, info string, token string) (map[string]interf
 	// derivation AND the legacy JWT-signed-inside-JWE content type. Routing
 	// through it keeps a single source of truth for every legacy variant.
 	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
+}
+
+// encodePendingAuth wraps an oauthPendingAuth into a stateless JWE used as the
+// `state` parameter sent to the upstream IdP at /authorize. Any replica with
+// the shared signing_secret can decode it at /callback.
+func (a *application) encodePendingAuth(p oauthPendingAuth) (string, error) {
+	secret, err := a.mustJWESecret()
+	if err != nil {
+		return "", err
+	}
+	claims := map[string]interface{}{
+		"client_id":              p.ClientID,
+		"redirect_uri":           p.RedirectURI,
+		"scope":                  p.Scope,
+		"client_state":           p.ClientState,
+		"code_challenge":         p.CodeChallenge,
+		"code_challenge_method":  p.CodeChallengeMethod,
+		"resource":               p.Resource,
+		"upstream_pkce_verifier": p.UpstreamPKCEVerifier,
+		"exp":                    p.ExpiresAt.Unix(),
+	}
+	return encodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, claims)
+}
+
+// decodePendingAuth is the inverse of encodePendingAuth. Returns (pending,
+// false) when the token is unparseable, tampered, expired, or carries claims
+// outside the JWE whitelist.
+func (a *application) decodePendingAuth(token string) (oauthPendingAuth, bool) {
+	secret := a.oauthJWESecret()
+	if len(secret) == 0 {
+		return oauthPendingAuth{}, false
+	}
+	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, token)
+	if err != nil {
+		return oauthPendingAuth{}, false
+	}
+	p := oauthPendingAuth{
+		ClientID:             stringFromClaims(claims, "client_id"),
+		RedirectURI:          stringFromClaims(claims, "redirect_uri"),
+		Scope:                stringFromClaims(claims, "scope"),
+		ClientState:          stringFromClaims(claims, "client_state"),
+		CodeChallenge:        stringFromClaims(claims, "code_challenge"),
+		CodeChallengeMethod:  stringFromClaims(claims, "code_challenge_method"),
+		Resource:             stringFromClaims(claims, "resource"),
+		UpstreamPKCEVerifier: stringFromClaims(claims, "upstream_pkce_verifier"),
+		ExpiresAt:            unixFromClaims(claims, "exp"),
+	}
+	return p, true
+}
+
+// encodeAuthCode wraps an oauthIssuedCode into a stateless JWE used as the
+// `code` parameter returned to the MCP client at /callback. Redeemed at
+// /token by decodeAuthCode on any replica.
+func (a *application) encodeAuthCode(c oauthIssuedCode) (string, error) {
+	secret, err := a.mustJWESecret()
+	if err != nil {
+		return "", err
+	}
+	claims := map[string]interface{}{
+		"client_id":              c.ClientID,
+		"redirect_uri":           c.RedirectURI,
+		"scope":                  c.Scope,
+		"code_challenge":         c.CodeChallenge,
+		"code_challenge_method":  c.CodeChallengeMethod,
+		"resource":               c.Resource,
+		"upstream_bearer_token":  c.UpstreamBearerToken,
+		"upstream_refresh_token": c.UpstreamRefreshToken,
+		"upstream_token_type":    c.UpstreamTokenType,
+		"sub":                    c.Subject,
+		"email":                  c.Email,
+		"name":                   c.Name,
+		"hd":                     c.HostedDomain,
+		"email_verified":         c.EmailVerified,
+		"exp":                    c.ExpiresAt.Unix(),
+		"access_token_exp":       c.AccessTokenExpiry.Unix(),
+	}
+	return encodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, claims)
+}
+
+// decodeAuthCode is the inverse of encodeAuthCode.
+func (a *application) decodeAuthCode(token string) (oauthIssuedCode, bool) {
+	secret := a.oauthJWESecret()
+	if len(secret) == 0 {
+		return oauthIssuedCode{}, false
+	}
+	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
+	if err != nil {
+		return oauthIssuedCode{}, false
+	}
+	c := oauthIssuedCode{
+		ClientID:             stringFromClaims(claims, "client_id"),
+		RedirectURI:          stringFromClaims(claims, "redirect_uri"),
+		Scope:                stringFromClaims(claims, "scope"),
+		CodeChallenge:        stringFromClaims(claims, "code_challenge"),
+		CodeChallengeMethod:  stringFromClaims(claims, "code_challenge_method"),
+		Resource:             stringFromClaims(claims, "resource"),
+		UpstreamBearerToken:  stringFromClaims(claims, "upstream_bearer_token"),
+		UpstreamRefreshToken: stringFromClaims(claims, "upstream_refresh_token"),
+		UpstreamTokenType:    stringFromClaims(claims, "upstream_token_type"),
+		Subject:              stringFromClaims(claims, "sub"),
+		Email:                stringFromClaims(claims, "email"),
+		Name:                 stringFromClaims(claims, "name"),
+		HostedDomain:         stringFromClaims(claims, "hd"),
+		ExpiresAt:            unixFromClaims(claims, "exp"),
+		AccessTokenExpiry:    unixFromClaims(claims, "access_token_exp"),
+	}
+	if v, ok := claims["email_verified"].(bool); ok {
+		c.EmailVerified = v
+	}
+	return c, true
+}
+
+func stringFromClaims(claims map[string]interface{}, key string) string {
+	if v, ok := claims[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func unixFromClaims(claims map[string]interface{}, key string) time.Time {
+	v, ok := claims[key]
+	if !ok {
+		return time.Time{}
+	}
+	switch t := v.(type) {
+	case float64:
+		return time.Unix(int64(t), 0)
+	case int64:
+		return time.Unix(t, 0)
+	case int:
+		return time.Unix(int64(t), 0)
+	}
+	return time.Time{}
 }
 
 func normalizeURL(raw string) string {
@@ -664,14 +706,6 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func randomToken(prefix string) string {
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		panic(err)
-	}
-	return prefix + base64.RawURLEncoding.EncodeToString(buf)
 }
 
 func pkceChallenge(verifier string) string {
@@ -1252,8 +1286,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	callbackState := randomToken("oas_")
-	a.getOAuthStateStore().putPendingAuth(callbackState, oauthPendingAuth{
+	callbackState, err := a.encodePendingAuth(oauthPendingAuth{
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
 		Scope:                sanitizeScope(q.Get("scope")),
@@ -1264,6 +1297,11 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		UpstreamPKCEVerifier: upstreamVerifier,
 		ExpiresAt:            time.Now().Add(time.Duration(defaultPendingAuthTTLSeconds) * time.Second),
 	})
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encode pending-auth JWE")
+		http.Error(w, "Failed to initialize OAuth state", http.StatusInternalServerError)
+		return
+	}
 
 	cfg := a.GetCurrentConfig()
 	authURL, err := a.resolveUpstreamAuthURL()
@@ -1302,7 +1340,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	pending, ok := a.getOAuthStateStore().consumePendingAuth(requestID)
+	pending, ok := a.decodePendingAuth(requestID)
 	if !ok {
 		http.Error(w, "Unknown OAuth request", http.StatusBadRequest)
 		return
@@ -1429,7 +1467,6 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 	// is not registered and clients redirect directly to the upstream IdP.
 	// Wrap the upstream tokens in our short-lived issued code; /token unwraps
 	// them in handleOAuthTokenAuthCode.
-	authCode := randomToken("oac_")
 	issuedCode := oauthIssuedCode{
 		ClientID:            pending.ClientID,
 		RedirectURI:         pending.RedirectURI,
@@ -1450,7 +1487,12 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 				Msg("upstream_offline_access=true but upstream did not return a refresh_token; check IdP application config (offline_access scope, refresh_token grant, audience)")
 		}
 	}
-	a.getOAuthStateStore().putAuthCode(authCode, issuedCode)
+	authCode, err := a.encodeAuthCode(issuedCode)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to encode auth-code JWE")
+		http.Error(w, "Failed to issue authorization code", http.StatusInternalServerError)
+		return
+	}
 
 	redirect, err := url.Parse(pending.RedirectURI)
 	if err != nil {
@@ -1602,7 +1644,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
-	issued, ok := a.getOAuthStateStore().consumeAuthCode(r.Form.Get("code"))
+	issued, ok := a.decodeAuthCode(r.Form.Get("code"))
 	if !ok {
 		log.Debug().Msg("OAuth token request rejected: unknown or expired authorization code")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")

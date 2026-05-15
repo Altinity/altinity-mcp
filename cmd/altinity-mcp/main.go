@@ -454,9 +454,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 
 		tokenInjector := a.createTokenInjector()
 		dtInjector := a.dynamicToolsInjector
+		// Stateless: true makes the streamable HTTP transport carry no per-pod
+		// session state — each request stands alone. Required for replicas>=2
+		// behind a non-sticky LB, where consecutive tool calls from one client
+		// may land on different pods. Trade-off: server-initiated requests
+		// (sampling, roots/list, etc.) are not supported; altinity-mcp only
+		// uses client-initiated tool calls so this is safe.
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return mcpServer
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{Stateless: true})
 
 		mux := http.NewServeMux()
 		transportHandler := serverInjector(tokenInjector(dtInjector(httpServer)))
@@ -484,9 +490,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		httpHandler = stripTrailingSlash(corsHandler(mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
+		// Stateless: true makes the streamable HTTP transport carry no per-pod
+		// session state — each request stands alone. Required for replicas>=2
+		// behind a non-sticky LB, where consecutive tool calls from one client
+		// may land on different pods. Trade-off: server-initiated requests
+		// (sampling, roots/list, etc.) are not supported; altinity-mcp only
+		// uses client-initiated tool calls so this is safe.
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return mcpServer
-		}, nil)
+		}, &mcp.StreamableHTTPOptions{Stateless: true})
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
 		transportHandler := serverInjector(dtInjector(httpServer))
@@ -964,8 +976,6 @@ type application struct {
 	mcpServer        *altinitymcp.ClickHouseJWEServer
 	httpSrv          *http.Server
 	httpSrvMutex     sync.RWMutex
-	oauthState       *oauthStateStore
-	oauthStateMu     sync.Mutex
 	configFile       string
 	configMutex      sync.RWMutex
 	stopConfigReload chan struct{}
@@ -983,15 +993,6 @@ func (a *application) getHTTPServer() *http.Server {
 	a.httpSrvMutex.RLock()
 	defer a.httpSrvMutex.RUnlock()
 	return a.httpSrv
-}
-
-func (a *application) getOAuthStateStore() *oauthStateStore {
-	a.oauthStateMu.Lock()
-	defer a.oauthStateMu.Unlock()
-	if a.oauthState == nil {
-		a.oauthState = newOAuthStateStore()
-	}
-	return a.oauthState
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
@@ -1052,7 +1053,6 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	app := &application{
 		config:           cfg,
 		mcpServer:        mcpServer,
-		oauthState:       newOAuthStateStore(),
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
 	}

@@ -3908,39 +3908,6 @@ func TestHealthHandler_CHUnavailable(t *testing.T) {
 	require.Equal(t, "unhealthy", body["status"])
 }
 
-func TestOAuthStateStoreEviction(t *testing.T) {
-	t.Parallel()
-	store := newOAuthStateStore()
-
-	// Fill pending auth to capacity
-	for i := 0; i < maxOAuthStateEntries; i++ {
-		store.putPendingAuth(fmt.Sprintf("pending-%d", i), oauthPendingAuth{
-			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
-		})
-	}
-
-	// Adding one more should evict the oldest
-	store.putPendingAuth("new-pending", oauthPendingAuth{ExpiresAt: time.Now().Add(time.Hour)})
-	_, ok := store.consumePendingAuth("pending-0") // oldest should be evicted
-	require.False(t, ok)
-	_, ok = store.consumePendingAuth("new-pending")
-	require.True(t, ok)
-
-	// Fill auth codes to capacity
-	for i := 0; i < maxOAuthStateEntries; i++ {
-		store.putAuthCode(fmt.Sprintf("code-%d", i), oauthIssuedCode{
-			ExpiresAt: time.Now().Add(time.Duration(i) * time.Second),
-		})
-	}
-
-	// Adding one more should evict the oldest
-	store.putAuthCode("new-code", oauthIssuedCode{ExpiresAt: time.Now().Add(time.Hour)})
-	_, ok = store.consumeAuthCode("code-0")
-	require.False(t, ok)
-	_, ok = store.consumeAuthCode("new-code")
-	require.True(t, ok)
-}
-
 func TestToolInputSettingsCLIFlag(t *testing.T) {
 	cases := []struct {
 		name     string
