@@ -160,6 +160,16 @@ type OAuthConfig struct {
 	// any downstream refresh-token issuance.
 	UpstreamOfflineAccess bool `json:"upstream_offline_access" yaml:"upstream_offline_access" flag:"oauth-upstream-offline-access" env:"MCP_OAUTH_UPSTREAM_OFFLINE_ACCESS" desc:"Append offline_access to the upstream scope so the IdP's consent screen offers long-lived sessions. v1 does NOT issue downstream refresh tokens regardless of this flag — clients re-authorize via /oauth/authorize."`
 
+	// UpstreamForceConsent forces `prompt=consent` on every upstream
+	// /authorize call (Google-family providers only). The first authorize
+	// for a user with `upstream_offline_access: true` always triggers the
+	// consent screen anyway — Google mints the refresh_token there and
+	// remembers it. Subsequent silent-SSO redemptions reuse the existing
+	// grant without re-prompting. Set this to true only when the operator
+	// needs to force re-enrollment (e.g. after rotating the upstream OAuth
+	// client). Default false avoids the surprise re-consent on every login.
+	UpstreamForceConsent bool `json:"upstream_force_consent" yaml:"upstream_force_consent" flag:"oauth-upstream-force-consent" env:"MCP_OAUTH_UPSTREAM_FORCE_CONSENT" desc:"Force prompt=consent on every upstream /authorize (Google providers only). Default false reuses Google's stored offline-access grant after the first consent."`
+
 	// BrokerUpstream opts gating mode into the DCR-via-MCP broker pattern that
 	// forward mode uses by default. When true under gating mode, altinity-mcp:
 	//   - Acts as the OAuth AS to claude.ai/ChatGPT (hosts /oauth/{register,

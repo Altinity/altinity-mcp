@@ -613,6 +613,48 @@ func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
 	return parsed.Error, len(body)
 }
 
+// refreshErrorFields is a narrow variant for the refresh-token grant: it
+// surfaces error_description in addition to error. Used because Google's
+// refresh-token failures are diagnostically richer in `error_description`
+// ("Token has been expired or revoked") than the bare `error` enum
+// ("invalid_grant"). Description is sanitised before return.
+func refreshErrorFields(body []byte) (errCode, errDesc string) {
+	var parsed struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription)
+}
+
+// sanitizeErrorDesc bounds an OAuth error_description for inclusion in our
+// own error messages and logs: strips newlines + control chars, caps at
+// 120 bytes, returns a leading ": " separator if non-empty. IdP descriptions
+// are short human strings in practice ("Token has been expired or revoked",
+// "Bad Request", "User must reconsent") — bounded.
+func sanitizeErrorDesc(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	// Collapse any control chars to a single space.
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' {
+			out = append(out, ' ')
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		out = append(out, r)
+	}
+	return ": " + string(out)
+}
+
 // challengeScope returns the scope string for the WWW-Authenticate header.
 // Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
 // Scopes catalog so the client at least has something to request from. Both
@@ -983,18 +1025,19 @@ func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *alti
 		return "", nil, fmt.Errorf("body: %w", err)
 	}
 	if resp.StatusCode >= 300 {
-		errCode, _ := safeUpstreamErrorFields(body)
-		return "", nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, errCode)
+		errCode, errDesc := refreshErrorFields(body)
+		return "", nil, fmt.Errorf("upstream %d: %s%s", resp.StatusCode, errCode, errDesc)
 	}
 	var parsed struct {
-		IDToken string `json:"id_token"`
-		Error   string `json:"error"`
+		IDToken          string `json:"id_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", nil, fmt.Errorf("decode: %w", err)
 	}
 	if parsed.Error != "" {
-		return "", nil, fmt.Errorf("upstream %s", parsed.Error)
+		return "", nil, fmt.Errorf("upstream %s%s", parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription))
 	}
 	if parsed.IDToken == "" {
 		// Some IdPs only return a new access_token on refresh, no id_token.
@@ -1213,11 +1256,21 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		// provider — sending the wrong one is a HARD error for Google
 		// (`invalid_scope` if `offline_access` is requested) and a no-op
 		// for Auth0 (`access_type` is ignored). Provider-detect by issuer:
-		// - Google                       → access_type=offline + prompt=consent
+		// - Google                       → access_type=offline
 		// - Everything else (Auth0/etc.) → offline_access scope
+		//
+		// `prompt=consent` is intentionally NOT sent by default. Google
+		// mints the refresh_token on the first interactive consent and
+		// honors it on subsequent silent SSO. Forcing consent on every
+		// authorize shows the "access your account when not using" screen
+		// to returning users, which is UX-hostile. Operators who need to
+		// re-enroll (rotated upstream client, revoked grant) set
+		// oauth.upstream_force_consent=true. See #121.
 		if isGoogleIssuer(cfg.Server.OAuth.Issuer) {
 			upstream.Set("access_type", "offline")
-			upstream.Set("prompt", "consent")
+			if cfg.Server.OAuth.UpstreamForceConsent {
+				upstream.Set("prompt", "consent")
+			}
 		} else if !slices.Contains(strings.Fields(scope), "offline_access") {
 			scope = strings.TrimSpace(scope + " offline_access")
 		}

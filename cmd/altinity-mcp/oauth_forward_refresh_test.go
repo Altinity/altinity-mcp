@@ -94,7 +94,11 @@ func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 			q := loc.Query()
 			if tc.wantAccessType {
 				require.Equal(t, "offline", q.Get("access_type"))
-				require.Equal(t, "consent", q.Get("prompt"))
+				// prompt=consent is now opt-in via UpstreamForceConsent;
+				// the default Google path does NOT include it. Returning
+				// users with an existing offline-access grant get silent
+				// SSO. Covered in detail by TestOAuthAuthorize_ForceConsentFlag.
+				require.Empty(t, q.Get("prompt"), "prompt=consent must not be set by default (#121 review)")
 			} else {
 				require.Empty(t, q.Get("access_type"))
 				require.Empty(t, q.Get("prompt"))
@@ -453,5 +457,151 @@ func TestOAuthToken_NoRefreshWhenUpstreamReturnsNoRefreshToken(t *testing.T) {
 	require.Equal(t, int32(0), atomic.LoadInt32(&refreshCalls), "refresh attempted despite no upstream refresh_token")
 }
 
-// keep "io" used for some test paths that may grow later
-var _ = io.Discard
+// --- soft-fail: upstream refresh returns no id_token ----------------------
+
+func TestOAuthToken_RefreshFallsBackWhenUpstreamReturnsNoIDToken(t *testing.T) {
+	t.Parallel()
+	// Initial code exchange returns near-expired id_token + refresh_token.
+	// Refresh-token grant returns 200 OK with only an access_token (no id_token).
+	// Must soft-fail: forward original near-expired id_token, /token returns 200.
+	nearExp := time.Now().Add(3 * time.Minute)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	keyID := "no-id-token-on-refresh-key"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &priv.PublicKey, KeyID: keyID, Use: "sig", Algorithm: string(jose.RS256),
+		}}})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		w.Header().Set("Content-Type", "application/json")
+		if r.Form.Get("grant_type") == "refresh_token" {
+			// No id_token field. Common for IdPs that only renew access_token.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token": "renewed-ax", "token_type": "Bearer", "expires_in": 3600,
+			})
+			return
+		}
+		signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: priv, KeyID: keyID, Use: "sig", Algorithm: string(jose.RS256)}}, (&jose.SignerOptions{}).WithType("JWT"))
+		payload, _ := json.Marshal(map[string]interface{}{
+			"sub": "eve@example.com", "aud": "broker", "iat": time.Now().Unix(),
+			"exp": nearExp.Unix(), "iss": srv.URL, "email": "eve@example.com", "email_verified": true,
+		})
+		obj, _ := signer.Sign(payload)
+		idTok, _ := obj.CompactSerialize()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id_token": idTok, "access_token": "a", "refresh_token": "r",
+			"token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	cimdURL, redirectURI := "https://demo.example.com/cimd.json", "https://demo.example.com/cb"
+	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":[%q],"token_endpoint_auth_method":"none"}`, cimdURL, redirectURI)
+	}))
+	t.Cleanup(cimdServer.Close)
+	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+		Enabled: true, Mode: "forward", Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
+		AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token",
+		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
+		SigningSecret: "regression-no-idtok-32bytes!!!!!", UpstreamOfflineAccess: true,
+	}}}
+	app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"), cimdResolver: testResolver(t, cimdServer)}
+
+	rr := runTokenExchange(t, app, cimdURL, redirectURI)
+	require.Equal(t, http.StatusOK, rr.Code, "missing id_token on refresh must soft-fail; body=%s", rr.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.NotEmpty(t, body["access_token"], "must still forward original id_token")
+}
+
+// --- soft-fail: upstream returns RFC 6749 error_description ---------------
+
+func TestOAuthToken_RefreshErrorDescriptionSurfacedInLog(t *testing.T) {
+	t.Parallel()
+	// Initial code exchange OK; refresh-token grant returns 400 invalid_grant
+	// with an error_description. The /token call must still return 200 (soft
+	// fail), but the helper's error chain must include the description so
+	// pod-log triage isn't blind. We exercise refreshUpstreamIDToken directly
+	// to assert the error string contains both code and description.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+		Enabled: true, Mode: "forward", Issuer: upstream.URL, JWKSURL: upstream.URL + "/jwks",
+		AuthURL: upstream.URL + "/authorize", TokenURL: upstream.URL + "/token",
+		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
+		SigningSecret: "regression-errdesc-32bytes!!!!!!", UpstreamOfflineAccess: true,
+	}}}
+	app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test")}
+
+	_, _, refreshErr := app.refreshUpstreamIDToken("revoked-token")
+	require.Error(t, refreshErr)
+	require.Contains(t, refreshErr.Error(), "invalid_grant", "RFC 6749 error code missing from wrapped error")
+	require.Contains(t, refreshErr.Error(), "Token has been expired or revoked", "error_description not surfaced in wrapped error")
+}
+
+// --- /authorize: force-consent flag honored -------------------------------
+
+func TestOAuthAuthorize_ForceConsentFlag(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		forceConsent bool
+		wantPrompt   string // "" = absent
+	}{
+		{"default_no_prompt", false, ""},
+		{"force_consent_on", true, "consent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+				Enabled:               true,
+				Mode:                  "forward",
+				Issuer:                "https://accounts.google.com",
+				AuthURL:               "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL:              "https://oauth2.googleapis.com/token",
+				ClientID:              "broker",
+				ClientSecret:          "s",
+				PublicAuthServerURL:   "https://mcp.example.com",
+				SigningSecret:         "regression-fc-32bytes!!!!!!!!!!!",
+				UpstreamOfflineAccess: true,
+				UpstreamForceConsent:  tc.forceConsent,
+				Scopes:                []string{"openid", "email"},
+			}}}
+			cimdURL := "https://demo.example.com/cimd.json"
+			cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":["https://demo.example.com/cb"],"token_endpoint_auth_method":"none"}`, cimdURL)
+			}))
+			defer cimdServer.Close()
+			app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"), cimdResolver: testResolver(t, cimdServer)}
+			verifier, _ := newPKCEVerifier()
+			form := url.Values{}
+			form.Set("client_id", cimdURL)
+			form.Set("redirect_uri", "https://demo.example.com/cb")
+			form.Set("response_type", "code")
+			form.Set("code_challenge", pkceChallenge(verifier))
+			form.Set("code_challenge_method", "S256")
+			req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?"+form.Encode(), nil)
+			rr := httptest.NewRecorder()
+			app.handleOAuthAuthorize(rr, req)
+			require.Equal(t, http.StatusFound, rr.Code)
+			loc, err := url.Parse(rr.Header().Get("Location"))
+			require.NoError(t, err)
+			require.Equal(t, "offline", loc.Query().Get("access_type"), "access_type=offline always set when offline_access enabled on Google")
+			require.Equal(t, tc.wantPrompt, loc.Query().Get("prompt"))
+		})
+	}
+}
