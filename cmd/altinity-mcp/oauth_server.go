@@ -51,6 +51,14 @@ const (
 	// codes "should be redeemed within seconds, never minutes."
 	defaultAuthCodeTTLSeconds    = 60
 	defaultAccessTokenTTLSeconds = 60 * 60
+	// forwardModeIDTokenRefreshThresholdSeconds is the remaining-life floor
+	// below which we'll use the upstream refresh_token at /token to mint a
+	// fresh id_token before forwarding (#121). Set at 55 minutes so a
+	// freshly-minted Google id_token (exp = iat + 1h) is never re-fetched
+	// but anything Google reused from a warm session is. Only fires when
+	// upstream_offline_access is enabled AND the upstream actually returned
+	// a refresh_token.
+	forwardModeIDTokenRefreshThresholdSeconds = 55 * 60
 )
 
 // statelessRegisteredClient is the in-memory shape parseCIMDMetadata returns.
@@ -928,6 +936,65 @@ func (a *application) resolveUpstreamTokenURL() (string, error) {
 	return strings.TrimSpace(discovery.TokenEndpoint), nil
 }
 
+// refreshUpstreamIDToken exchanges the upstream refresh_token for a fresh
+// id_token via the upstream's RFC 6749 §6 refresh-token grant. Used in
+// forward mode at /token when the just-redeemed id_token has a short
+// remaining life (Google's silent-SSO can return a cached id_token whose
+// `exp` is near). The returned refresh_token (if any) is discarded — #115
+// keeps downstream refresh out of scope.
+//
+// Returns the fresh id_token plus its parsed identity claims. On any
+// failure the caller should fall back to the original (near-expired)
+// id_token rather than fail the whole /token call.
+func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *altinitymcp.OAuthClaims, error) {
+	cfg := a.GetCurrentConfig()
+	tokenURL, err := a.resolveUpstreamTokenURL()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve token url: %w", err)
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", cfg.Server.OAuth.ClientID)
+	if cfg.Server.OAuth.ClientSecret != "" {
+		form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
+	}
+	resp, err := (&http.Client{Timeout: oauthUpstreamHTTPTimeout}).PostForm(tokenURL, form)
+	if err != nil {
+		return "", nil, fmt.Errorf("post: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("body: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		errCode, _ := safeUpstreamErrorFields(body)
+		return "", nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, errCode)
+	}
+	var parsed struct {
+		IDToken string `json:"id_token"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", nil, fmt.Errorf("decode: %w", err)
+	}
+	if parsed.Error != "" {
+		return "", nil, fmt.Errorf("upstream %s", parsed.Error)
+	}
+	if parsed.IDToken == "" {
+		// Some IdPs only return a new access_token on refresh, no id_token.
+		// We need id_token specifically (it's what we forward as the bearer
+		// in forward mode), so treat absence as failure and fall back.
+		return "", nil, fmt.Errorf("upstream returned no id_token")
+	}
+	claims, err := a.mcpServer.ValidateUpstreamIdentityToken(parsed.IDToken, cfg.Server.OAuth.ClientID)
+	if err != nil {
+		return "", nil, fmt.Errorf("validate: %w", err)
+	}
+	return parsed.IDToken, claims, nil
+}
+
 func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
 	if !a.oauthEnabled() {
 		http.NotFound(w, r)
@@ -1127,8 +1194,19 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	if scope == "" {
 		scope = "openid email"
 	}
-	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess && !slices.Contains(strings.Fields(scope), "offline_access") {
-		scope = strings.TrimSpace(scope + " offline_access")
+	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess {
+		// Two refresh-token unlock mechanisms, one per provider family:
+		// - Auth0 + RFC-6749-strict providers: `offline_access` scope.
+		// - Google: NOT scope-gated; uses `access_type=offline` as a separate
+		//   auth param (with `prompt=consent` on first authorization so the
+		//   user grants offline access — Google silently refuses to mint a
+		//   refresh_token if neither was set). We send both forms; the one
+		//   the upstream doesn't recognise is silently ignored.
+		if !slices.Contains(strings.Fields(scope), "offline_access") {
+			scope = strings.TrimSpace(scope + " offline_access")
+		}
+		upstream.Set("access_type", "offline")
+		upstream.Set("prompt", "consent")
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
@@ -1456,6 +1534,32 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			log.Error().Err(err).Msg("OAuth /token: upstream userinfo validation failed")
 			writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to validate upstream identity")
 			return
+		}
+	}
+	// #121: in forward mode the bearer we return is the upstream id_token
+	// itself. Google's silent-SSO can return a cached id_token whose `exp`
+	// is set from the original mint time, not now — sometimes leaving only
+	// minutes of remaining life. If we have a refresh_token and the id_token
+	// is below the freshness threshold, exchange it for a fresh id_token.
+	// Soft-fail: if refresh fails, keep the original id_token rather than
+	// fail the whole /token call. The refresh_token itself is discarded —
+	// downstream refresh stays out of scope per #115.
+	if a.oauthForwardMode() && tokenResp.RefreshToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		remaining := identityClaims.ExpiresAt - time.Now().Unix()
+		if remaining < int64(forwardModeIDTokenRefreshThresholdSeconds) {
+			freshIDToken, freshClaims, refreshErr := a.refreshUpstreamIDToken(tokenResp.RefreshToken)
+			if refreshErr != nil {
+				log.Warn().Err(refreshErr).
+					Int64("remaining_seconds", remaining).
+					Msg("OAuth /token: id_token refresh failed; forwarding original near-expired token")
+			} else {
+				tokenResp.IDToken = freshIDToken
+				identityClaims = freshClaims
+				log.Info().
+					Int64("old_remaining_seconds", remaining).
+					Int64("new_remaining_seconds", freshClaims.ExpiresAt-time.Now().Unix()).
+					Msg("OAuth /token: refreshed near-expired id_token via upstream refresh_token grant")
+			}
 		}
 	}
 	if tokenResp.Scope == "" {
