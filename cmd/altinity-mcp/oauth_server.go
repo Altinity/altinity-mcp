@@ -51,6 +51,16 @@ const (
 	// codes "should be redeemed within seconds, never minutes."
 	defaultAuthCodeTTLSeconds    = 60
 	defaultAccessTokenTTLSeconds = 60 * 60
+	// brokerModeIDTokenRefreshThresholdSeconds is the remaining-life floor
+	// below which we'll use the upstream refresh_token at /token to mint a
+	// fresh id_token before forwarding (#121). Set at 55 minutes so a
+	// freshly-minted Google id_token (exp = iat + 1h) is never re-fetched
+	// but anything Google reused from a warm session is. Only fires when
+	// upstream_offline_access is enabled AND the upstream actually returned
+	// a refresh_token. Applies to all broker-mode deployments (forward and
+	// gating+broker_upstream alike) since the bearer is the id_token in
+	// both.
+	brokerModeIDTokenRefreshThresholdSeconds = 55 * 60
 )
 
 // statelessRegisteredClient is the in-memory shape parseCIMDMetadata returns.
@@ -603,6 +613,48 @@ func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
 	return parsed.Error, len(body)
 }
 
+// refreshErrorFields is a narrow variant for the refresh-token grant: it
+// surfaces error_description in addition to error. Used because Google's
+// refresh-token failures are diagnostically richer in `error_description`
+// ("Token has been expired or revoked") than the bare `error` enum
+// ("invalid_grant"). Description is sanitised before return.
+func refreshErrorFields(body []byte) (errCode, errDesc string) {
+	var parsed struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	_ = json.Unmarshal(body, &parsed)
+	return parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription)
+}
+
+// sanitizeErrorDesc bounds an OAuth error_description for inclusion in our
+// own error messages and logs: strips newlines + control chars, caps at
+// 120 bytes, returns a leading ": " separator if non-empty. IdP descriptions
+// are short human strings in practice ("Token has been expired or revoked",
+// "Bad Request", "User must reconsent") — bounded.
+func sanitizeErrorDesc(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	// Collapse any control chars to a single space.
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' {
+			out = append(out, ' ')
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		out = append(out, r)
+	}
+	return ": " + string(out)
+}
+
 // challengeScope returns the scope string for the WWW-Authenticate header.
 // Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
 // Scopes catalog so the client at least has something to request from. Both
@@ -913,6 +965,18 @@ func (a *application) resolveUpstreamAuthURL() (string, error) {
 	return strings.TrimSpace(discovery.AuthorizationEndpoint), nil
 }
 
+// isGoogleIssuer reports whether the configured issuer is Google's OIDC
+// provider. Used to pick between `access_type=offline` (Google) and the
+// `offline_access` scope (Auth0 and other RFC 6749 §6 strict providers).
+// Both Google issuer URLs the OIDC spec lists are accepted.
+func isGoogleIssuer(issuer string) bool {
+	host := strings.ToLower(strings.TrimSpace(issuer))
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host, _, _ = strings.Cut(host, "/")
+	return host == "accounts.google.com" || host == "www.google.com"
+}
+
 func (a *application) resolveUpstreamTokenURL() (string, error) {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	if tokenURL := strings.TrimSpace(cfg.TokenURL); tokenURL != "" {
@@ -926,6 +990,66 @@ func (a *application) resolveUpstreamTokenURL() (string, error) {
 		return "", fmt.Errorf("token endpoint is not configured or discoverable")
 	}
 	return strings.TrimSpace(discovery.TokenEndpoint), nil
+}
+
+// refreshUpstreamIDToken exchanges the upstream refresh_token for a fresh
+// id_token via the upstream's RFC 6749 §6 refresh-token grant. Used in
+// forward mode at /token when the just-redeemed id_token has a short
+// remaining life (Google's silent-SSO can return a cached id_token whose
+// `exp` is near). The returned refresh_token (if any) is discarded — #115
+// keeps downstream refresh out of scope.
+//
+// Returns the fresh id_token plus its parsed identity claims. On any
+// failure the caller should fall back to the original (near-expired)
+// id_token rather than fail the whole /token call.
+func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *altinitymcp.OAuthClaims, error) {
+	cfg := a.GetCurrentConfig()
+	tokenURL, err := a.resolveUpstreamTokenURL()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve token url: %w", err)
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", cfg.Server.OAuth.ClientID)
+	if cfg.Server.OAuth.ClientSecret != "" {
+		form.Set("client_secret", cfg.Server.OAuth.ClientSecret)
+	}
+	resp, err := (&http.Client{Timeout: oauthUpstreamHTTPTimeout}).PostForm(tokenURL, form)
+	if err != nil {
+		return "", nil, fmt.Errorf("post: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("body: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		errCode, errDesc := refreshErrorFields(body)
+		return "", nil, fmt.Errorf("upstream %d: %s%s", resp.StatusCode, errCode, errDesc)
+	}
+	var parsed struct {
+		IDToken          string `json:"id_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", nil, fmt.Errorf("decode: %w", err)
+	}
+	if parsed.Error != "" {
+		return "", nil, fmt.Errorf("upstream %s%s", parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription))
+	}
+	if parsed.IDToken == "" {
+		// Some IdPs only return a new access_token on refresh, no id_token.
+		// We need id_token specifically (it's what we forward as the bearer
+		// in forward mode), so treat absence as failure and fall back.
+		return "", nil, fmt.Errorf("upstream returned no id_token")
+	}
+	claims, err := a.mcpServer.ValidateUpstreamIdentityToken(parsed.IDToken, cfg.Server.OAuth.ClientID)
+	if err != nil {
+		return "", nil, fmt.Errorf("validate: %w", err)
+	}
+	return parsed.IDToken, claims, nil
 }
 
 func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
@@ -1127,8 +1251,29 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	if scope == "" {
 		scope = "openid email"
 	}
-	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess && !slices.Contains(strings.Fields(scope), "offline_access") {
-		scope = strings.TrimSpace(scope + " offline_access")
+	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess {
+		// Two refresh-token unlock mechanisms; mutually exclusive per
+		// provider — sending the wrong one is a HARD error for Google
+		// (`invalid_scope` if `offline_access` is requested) and a no-op
+		// for Auth0 (`access_type` is ignored). Provider-detect by issuer:
+		// - Google                       → access_type=offline
+		// - Everything else (Auth0/etc.) → offline_access scope
+		//
+		// `prompt=consent` is intentionally NOT sent by default. Google
+		// mints the refresh_token on the first interactive consent and
+		// honors it on subsequent silent SSO. Forcing consent on every
+		// authorize shows the "access your account when not using" screen
+		// to returning users, which is UX-hostile. Operators who need to
+		// re-enroll (rotated upstream client, revoked grant) set
+		// oauth.upstream_force_consent=true. See #121.
+		if isGoogleIssuer(cfg.Server.OAuth.Issuer) {
+			upstream.Set("access_type", "offline")
+			if cfg.Server.OAuth.UpstreamForceConsent {
+				upstream.Set("prompt", "consent")
+			}
+		} else if !slices.Contains(strings.Fields(scope), "offline_access") {
+			scope = strings.TrimSpace(scope + " offline_access")
+		}
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
@@ -1456,6 +1601,37 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			log.Error().Err(err).Msg("OAuth /token: upstream userinfo validation failed")
 			writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to validate upstream identity")
 			return
+		}
+	}
+	// #121: whenever we're in broker mode the bearer we return is the
+	// upstream id_token itself (`bearerToken := tokenResp.IDToken` above).
+	// Google's silent-SSO can return a cached id_token whose `exp` is set
+	// from the original mint time, not now — sometimes leaving only minutes
+	// of remaining life. Forward mode forwards that bearer to ClickHouse;
+	// gating-with-broker_upstream returns it as the session bearer the MCP
+	// client uses for /mcp. Both modes are affected — gate on broker mode,
+	// not forward mode.
+	//
+	// If we have a refresh_token and the id_token is below the freshness
+	// threshold, exchange it for a fresh id_token. Soft-fail: keep the
+	// original on error. The refresh_token itself is discarded — downstream
+	// refresh stays out of scope per #115.
+	if a.oauthBrokerMode() && tokenResp.RefreshToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+		remaining := identityClaims.ExpiresAt - time.Now().Unix()
+		if remaining < int64(brokerModeIDTokenRefreshThresholdSeconds) {
+			freshIDToken, freshClaims, refreshErr := a.refreshUpstreamIDToken(tokenResp.RefreshToken)
+			if refreshErr != nil {
+				log.Warn().Err(refreshErr).
+					Int64("remaining_seconds", remaining).
+					Msg("OAuth /token: id_token refresh failed; forwarding original near-expired token")
+			} else {
+				tokenResp.IDToken = freshIDToken
+				identityClaims = freshClaims
+				log.Info().
+					Int64("old_remaining_seconds", remaining).
+					Int64("new_remaining_seconds", freshClaims.ExpiresAt-time.Now().Unix()).
+					Msg("OAuth /token: refreshed near-expired id_token via upstream refresh_token grant")
+			}
 		}
 	}
 	if tokenResp.Scope == "" {
