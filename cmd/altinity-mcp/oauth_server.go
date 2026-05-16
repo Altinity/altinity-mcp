@@ -921,6 +921,18 @@ func (a *application) resolveUpstreamAuthURL() (string, error) {
 	return strings.TrimSpace(discovery.AuthorizationEndpoint), nil
 }
 
+// isGoogleIssuer reports whether the configured issuer is Google's OIDC
+// provider. Used to pick between `access_type=offline` (Google) and the
+// `offline_access` scope (Auth0 and other RFC 6749 §6 strict providers).
+// Both Google issuer URLs the OIDC spec lists are accepted.
+func isGoogleIssuer(issuer string) bool {
+	host := strings.ToLower(strings.TrimSpace(issuer))
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host, _, _ = strings.Cut(host, "/")
+	return host == "accounts.google.com" || host == "www.google.com"
+}
+
 func (a *application) resolveUpstreamTokenURL() (string, error) {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	if tokenURL := strings.TrimSpace(cfg.TokenURL); tokenURL != "" {
@@ -1195,18 +1207,18 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		scope = "openid email"
 	}
 	if a.oauthBrokerMode() && cfg.Server.OAuth.UpstreamOfflineAccess {
-		// Two refresh-token unlock mechanisms, one per provider family:
-		// - Auth0 + RFC-6749-strict providers: `offline_access` scope.
-		// - Google: NOT scope-gated; uses `access_type=offline` as a separate
-		//   auth param (with `prompt=consent` on first authorization so the
-		//   user grants offline access — Google silently refuses to mint a
-		//   refresh_token if neither was set). We send both forms; the one
-		//   the upstream doesn't recognise is silently ignored.
-		if !slices.Contains(strings.Fields(scope), "offline_access") {
+		// Two refresh-token unlock mechanisms; mutually exclusive per
+		// provider — sending the wrong one is a HARD error for Google
+		// (`invalid_scope` if `offline_access` is requested) and a no-op
+		// for Auth0 (`access_type` is ignored). Provider-detect by issuer:
+		// - Google                       → access_type=offline + prompt=consent
+		// - Everything else (Auth0/etc.) → offline_access scope
+		if isGoogleIssuer(cfg.Server.OAuth.Issuer) {
+			upstream.Set("access_type", "offline")
+			upstream.Set("prompt", "consent")
+		} else if !slices.Contains(strings.Fields(scope), "offline_access") {
 			scope = strings.TrimSpace(scope + " offline_access")
 		}
-		upstream.Set("access_type", "offline")
-		upstream.Set("prompt", "consent")
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)

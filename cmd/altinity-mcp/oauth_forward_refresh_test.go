@@ -34,13 +34,21 @@ import (
 
 func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 	t.Parallel()
+	// Provider-detect: Google MUST get access_type=offline+prompt=consent and
+	// MUST NOT receive offline_access scope (rejected as invalid_scope by
+	// Google's /authorize). Non-Google providers (Auth0 etc.) get the
+	// reverse — offline_access scope, no access_type.
 	cases := []struct {
-		name              string
-		offlineAccess     bool
-		wantAccessTypeOff bool
+		name             string
+		issuer           string
+		offlineAccess    bool
+		wantAccessType   bool
+		wantOfflineScope bool
 	}{
-		{"offline_enabled", true, true},
-		{"offline_disabled", false, false},
+		{"google_enabled", "https://accounts.google.com", true, true, false},
+		{"google_disabled", "https://accounts.google.com", false, false, false},
+		{"auth0_enabled", "https://acme.auth0.com/", true, false, true},
+		{"auth0_disabled", "https://acme.auth0.com/", false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -48,7 +56,7 @@ func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 			cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:               true,
 				Mode:                  "forward",
-				Issuer:                "https://idp.example.com",
+				Issuer:                tc.issuer,
 				AuthURL:               "https://idp.example.com/authorize",
 				TokenURL:              "https://idp.example.com/token",
 				ClientID:              "broker",
@@ -84,14 +92,18 @@ func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 			loc, err := url.Parse(rr.Header().Get("Location"))
 			require.NoError(t, err)
 			q := loc.Query()
-			if tc.wantAccessTypeOff {
-				require.Equal(t, "offline", q.Get("access_type"), "missing access_type=offline on upstream /authorize")
-				require.Equal(t, "consent", q.Get("prompt"), "missing prompt=consent on first-time offline auth")
-				require.Contains(t, q.Get("scope"), "offline_access", "Auth0-form offline_access scope also expected for cross-provider safety")
+			if tc.wantAccessType {
+				require.Equal(t, "offline", q.Get("access_type"))
+				require.Equal(t, "consent", q.Get("prompt"))
 			} else {
-				require.Empty(t, q.Get("access_type"), "access_type leaked when offline_access disabled")
-				require.Empty(t, q.Get("prompt"), "prompt=consent leaked when offline_access disabled")
-				require.NotContains(t, q.Get("scope"), "offline_access")
+				require.Empty(t, q.Get("access_type"))
+				require.Empty(t, q.Get("prompt"))
+			}
+			if tc.wantOfflineScope {
+				require.Contains(t, q.Get("scope"), "offline_access")
+			} else {
+				require.NotContains(t, q.Get("scope"), "offline_access",
+					"offline_access scope MUST NOT be sent to Google (rejected as invalid_scope)")
 			}
 		})
 	}
