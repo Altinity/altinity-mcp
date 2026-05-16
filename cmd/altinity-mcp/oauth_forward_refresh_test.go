@@ -353,6 +353,48 @@ func TestOAuthToken_RefreshFailureSoftFallsBack(t *testing.T) {
 	require.NotEmpty(t, body["access_token"], "must still hand back the original id_token as bearer")
 }
 
+// Gating-with-broker_upstream deployments (github-mcp, otel-google-gating-mcp)
+// also return the upstream id_token as the bearer, so the same refresh logic
+// must apply. Guards against regression to the original forward-mode-only
+// gate which left gating+broker silently broken.
+func TestOAuthToken_RefreshesNearExpiredIDToken_GatingBrokerUpstream(t *testing.T) {
+	t.Parallel()
+	nearExp := time.Now().Add(2 * time.Minute)
+	freshExp := time.Now().Add(60 * time.Minute)
+	upstream := newRefreshProbeUpstream(t, nearExp, freshExp, "alice@example.com")
+	cimdURL, redirectURI := "https://demo.example.com/cimd.json", "https://demo.example.com/cb"
+	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":[%q],"token_endpoint_auth_method":"none"}`, cimdURL, redirectURI)
+	}))
+	t.Cleanup(cimdServer.Close)
+	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+		Enabled:               true,
+		Mode:                  "gating",
+		BrokerUpstream:        true,
+		Issuer:                upstream.server.URL,
+		JWKSURL:               upstream.server.URL + "/jwks",
+		AuthURL:               upstream.server.URL + "/authorize",
+		TokenURL:              upstream.server.URL + "/token",
+		ClientID:              "broker",
+		ClientSecret:          "s",
+		Audience:              "broker", // matches client_id under broker_upstream
+		PublicAuthServerURL:   "https://mcp.example.com",
+		SigningSecret:         "regression-refresh-gating-32b!!!!",
+		UpstreamOfflineAccess: true,
+	}}}
+	app := &application{
+		config:       cfg,
+		mcpServer:    altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+		cimdResolver: testResolver(t, cimdServer),
+	}
+	rr := runTokenExchange(t, app, cimdURL, redirectURI)
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+	require.Equal(t, int32(1), atomic.LoadInt32(&upstream.codeExchangeCt))
+	require.Equal(t, int32(1), atomic.LoadInt32(&upstream.refreshCt),
+		"gating+broker_upstream MUST trigger refresh on near-expired id_token (#121)")
+}
+
 func TestOAuthToken_NoRefreshWhenUpstreamReturnsNoRefreshToken(t *testing.T) {
 	t.Parallel()
 	// upstream returns near-expired id_token but no refresh_token. We must

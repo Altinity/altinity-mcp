@@ -51,14 +51,16 @@ const (
 	// codes "should be redeemed within seconds, never minutes."
 	defaultAuthCodeTTLSeconds    = 60
 	defaultAccessTokenTTLSeconds = 60 * 60
-	// forwardModeIDTokenRefreshThresholdSeconds is the remaining-life floor
+	// brokerModeIDTokenRefreshThresholdSeconds is the remaining-life floor
 	// below which we'll use the upstream refresh_token at /token to mint a
 	// fresh id_token before forwarding (#121). Set at 55 minutes so a
 	// freshly-minted Google id_token (exp = iat + 1h) is never re-fetched
 	// but anything Google reused from a warm session is. Only fires when
 	// upstream_offline_access is enabled AND the upstream actually returned
-	// a refresh_token.
-	forwardModeIDTokenRefreshThresholdSeconds = 55 * 60
+	// a refresh_token. Applies to all broker-mode deployments (forward and
+	// gating+broker_upstream alike) since the bearer is the id_token in
+	// both.
+	brokerModeIDTokenRefreshThresholdSeconds = 55 * 60
 )
 
 // statelessRegisteredClient is the in-memory shape parseCIMDMetadata returns.
@@ -1548,17 +1550,22 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	// #121: in forward mode the bearer we return is the upstream id_token
-	// itself. Google's silent-SSO can return a cached id_token whose `exp`
-	// is set from the original mint time, not now — sometimes leaving only
-	// minutes of remaining life. If we have a refresh_token and the id_token
-	// is below the freshness threshold, exchange it for a fresh id_token.
-	// Soft-fail: if refresh fails, keep the original id_token rather than
-	// fail the whole /token call. The refresh_token itself is discarded —
-	// downstream refresh stays out of scope per #115.
-	if a.oauthForwardMode() && tokenResp.RefreshToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+	// #121: whenever we're in broker mode the bearer we return is the
+	// upstream id_token itself (`bearerToken := tokenResp.IDToken` above).
+	// Google's silent-SSO can return a cached id_token whose `exp` is set
+	// from the original mint time, not now — sometimes leaving only minutes
+	// of remaining life. Forward mode forwards that bearer to ClickHouse;
+	// gating-with-broker_upstream returns it as the session bearer the MCP
+	// client uses for /mcp. Both modes are affected — gate on broker mode,
+	// not forward mode.
+	//
+	// If we have a refresh_token and the id_token is below the freshness
+	// threshold, exchange it for a fresh id_token. Soft-fail: keep the
+	// original on error. The refresh_token itself is discarded — downstream
+	// refresh stays out of scope per #115.
+	if a.oauthBrokerMode() && tokenResp.RefreshToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
 		remaining := identityClaims.ExpiresAt - time.Now().Unix()
-		if remaining < int64(forwardModeIDTokenRefreshThresholdSeconds) {
+		if remaining < int64(brokerModeIDTokenRefreshThresholdSeconds) {
 			freshIDToken, freshClaims, refreshErr := a.refreshUpstreamIDToken(tokenResp.RefreshToken)
 			if refreshErr != nil {
 				log.Warn().Err(refreshErr).
