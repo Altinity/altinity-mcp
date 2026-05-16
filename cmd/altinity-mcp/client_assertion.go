@@ -25,11 +25,19 @@ import (
 // claims: iss == sub == client_id, aud = our /oauth/token URL, exp/nbf/iat
 // inside their windows.
 //
-// jti replay protection is intentionally not implemented as a pod-local cache:
-// the downstream JWE authorization code already enforces single-use via the
-// HA-replay model (upstream IdP `invalid_grant` on the 2nd redemption), so a
-// stolen client_assertion can at most be replayed against a still-redeemable
-// downstream code — a strictly narrower window than the assertion's own exp.
+// SECURITY: jti replay protection is intentionally not implemented as a
+// pod-local cache. The replay bound today is the downstream JWE auth code's
+// single-use guarantee (HA-replay model: upstream IdP `invalid_grant` on
+// the 2nd redemption). A stolen client_assertion can only be replayed
+// against a still-redeemable downstream code — a strictly narrower window
+// than the assertion's own exp.
+//
+// **If a future change drops the JWE single-use invariant** (e.g. moves to
+// long-lived bearer tokens, removes upstream code redemption, or allows
+// auth-code reuse across PKCE generations), the replay surface widens to
+// the assertion's full exp window. At that point add a pod-local LRU
+// keyed by jti+kid+iss, TTL = max(exp - now, 0) + clientAssertionClockSkew,
+// and reject duplicates. See [feedback_cimd_lenient_auth_method.md].
 
 const (
 	clientAssertionType        = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
@@ -241,10 +249,12 @@ func (a *application) verifyClientAssertion(ctx context.Context, client *statele
 	if claims.Subject != clientID {
 		return fmt.Errorf("%w: sub %q != client_id", errClientAssertionInvalid, claims.Subject)
 	}
-	// aud MUST contain the token endpoint URL we advertised. claude.ai's
-	// behaviour is to put the issuer there; ChatGPT puts the exact token URL.
-	// We accept either: an aud entry equal to the token endpoint, OR an aud
-	// entry equal to the AS base URL (token endpoint's scheme+host).
+	// aud MUST contain the exact token endpoint URL we advertised in AS
+	// metadata. We don't accept the AS base URL or the issuer as a fallback;
+	// callers signing the assertion can read `token_endpoint` from our
+	// `.well-known/oauth-authorization-server` document, so byte-equal is
+	// reasonable. If a real-world client publishes the AS base URL as `aud`
+	// we'll see "aud does not match token endpoint" in logs and can relax.
 	now := a.cimdResolver.now()
 	if err := claims.ValidateWithLeeway(jwt.Expected{Time: now}, clientAssertionClockSkew); err != nil {
 		return fmt.Errorf("%w: time claims: %v", errClientAssertionInvalid, err)
@@ -266,20 +276,26 @@ func (a *application) verifyClientAssertion(ctx context.Context, client *statele
 }
 
 // selectJWK picks a key from the set by kid; if kid is empty, falls back to
-// the first key whose alg matches the JWS header alg. Returns nil if no match.
+// the first signing key whose alg matches the JWS header alg. Returns nil
+// if no match. Keys marked `use: enc` are filtered out — they may be
+// present in mixed-purpose JWKS docs and must never be used to verify a
+// client_assertion signature (RFC 7517 §4.2).
 func selectJWK(set *jose.JSONWebKeySet, kid, alg string) *jose.JSONWebKey {
 	if set == nil {
 		return nil
 	}
 	if kid != "" {
 		for i := range set.Keys {
-			if set.Keys[i].KeyID == kid {
+			if set.Keys[i].KeyID == kid && isSigKey(&set.Keys[i]) {
 				return &set.Keys[i]
 			}
 		}
 		return nil
 	}
 	for i := range set.Keys {
+		if !isSigKey(&set.Keys[i]) {
+			continue
+		}
 		if set.Keys[i].Algorithm == alg || set.Keys[i].Algorithm == "" {
 			return &set.Keys[i]
 		}
@@ -287,9 +303,15 @@ func selectJWK(set *jose.JSONWebKeySet, kid, alg string) *jose.JSONWebKey {
 	return nil
 }
 
-// audienceMatches accepts the assertion's aud array if it includes the
-// expected token endpoint URL exactly, or its origin (scheme://host[:port]).
-// The latter accommodates ASes whose CIMD clients use the AS base URL as aud.
+// isSigKey reports whether a JWK is usable for signature verification. An
+// unset `use` is permitted (the SDK leaves it empty when omitted from the
+// JSON), but an explicit `use: enc` is disqualifying.
+func isSigKey(k *jose.JSONWebKey) bool {
+	return k.Use == "" || k.Use == "sig"
+}
+
+// audienceMatches returns true iff aud contains an entry that exactly
+// equals expected. Byte-equality per RFC 7523 §3 + OAuth2 best-current-practice.
 func audienceMatches(aud jwt.Audience, expected string) bool {
 	for _, a := range aud {
 		if a == expected {
