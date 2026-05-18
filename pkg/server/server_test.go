@@ -92,14 +92,14 @@ func TestOpenAPIHandlers(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
-	t.Run("execute_query_with_limit", func(t *testing.T) {
+	t.Run("execute_query_with_sql_limit", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 		}, "test")
 
-		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20*%20FROM%20default.test&limit=1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT+*+FROM+default.test+LIMIT+1", nil)
 		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 		rr := httptest.NewRecorder()
@@ -109,6 +109,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		var qr clickhouse.QueryResult
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
 		require.Equal(t, 1, qr.Count)
+		require.Empty(t, rr.Header().Get("X-MCP-Truncated"))
 	})
 
 	t.Run("execute_query_missing_param", func(t *testing.T) {
@@ -729,75 +730,34 @@ func TestHandleExecuteQueryOpenAPI_MethodNotAllowed(t *testing.T) {
 	require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
 
-// TestHandleExecuteQueryOpenAPI_InvalidLimit tests invalid limit parameter
-func TestHandleExecuteQueryOpenAPI_InvalidLimit(t *testing.T) {
+// TestHandleExecuteQueryOpenAPI_RowCapTruncates verifies the operator-configured
+// row cap fires on an unbounded SELECT served via OpenAPI, returns 200, sets
+// X-MCP-Truncated, and embeds the truncation info in the JSON body.
+func TestHandleExecuteQueryOpenAPI_RowCapTruncates(t *testing.T) {
 	t.Parallel()
 	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = 1
 
 	srv := NewClickHouseMCPServer(config.Config{
-		ClickHouse: *chConfig,
+		ClickHouse: cfg,
 		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	t.Run("non_numeric_limit", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=abc", nil)
-		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
-
-		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req)
-
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-	})
-
-	t.Run("zero_limit", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=0", nil)
-		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
-
-		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req)
-
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-	})
-
-	t.Run("negative_limit", func(t *testing.T) {
-		t.Parallel()
-		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=-1", nil)
-		req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
-
-		rr := httptest.NewRecorder()
-		srv.handleExecuteQueryOpenAPI(rr, req)
-
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-	})
-}
-
-// TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit tests limit exceeding max
-func TestHandleExecuteQueryOpenAPI_ExceedsMaxLimit(t *testing.T) {
-	t.Parallel()
-	chConfig := setupEmbeddedClickHouse(t)
-
-	srv := NewClickHouseMCPServer(config.Config{
-		ClickHouse: config.ClickHouseConfig{
-			Host:     chConfig.Host,
-			Port:     chConfig.Port,
-			Database: chConfig.Database,
-			Username: chConfig.Username,
-			Protocol: chConfig.Protocol,
-			Limit:    10,
-		},
-		Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
-	}, "test")
-
-	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201&limit=100", nil)
+	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT+*+FROM+default.test", nil)
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()
 	srv.handleExecuteQueryOpenAPI(rr, req)
 
-	require.Equal(t, http.StatusBadRequest, rr.Code)
-	require.Contains(t, rr.Body.String(), "Limit cannot exceed 10")
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultRows, rr.Header().Get("X-MCP-Truncated"))
+
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+	require.Equal(t, 1, qr.Count)
+	require.NotNil(t, qr.Truncated)
+	require.Equal(t, 1, qr.Truncated.Limit)
 }
 
 // TestHandleDynamicToolOpenAPI_MethodNotAllowed tests method validation

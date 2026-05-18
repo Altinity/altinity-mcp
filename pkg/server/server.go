@@ -85,10 +85,16 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 	RegisterResources(chJweServer)
 	RegisterPrompts(chJweServer)
 
+	if cfg.ClickHouse.Limit > 0 && cfg.ClickHouse.MaxResultRows == 0 {
+		log.Warn().
+			Int("clickhouse.limit", cfg.ClickHouse.Limit).
+			Msg("clickhouse.limit is DEPRECATED; rename to clickhouse.max_result_rows. The legacy value is being used as a silent alias.")
+	}
 	log.Info().
 		Bool("jwe_enabled", cfg.Server.JWE.Enabled).
 		Bool("read_only", cfg.ClickHouse.ReadOnly).
-		Int("default_limit", cfg.ClickHouse.Limit).
+		Int("max_result_rows", cfg.ClickHouse.EffectiveMaxResultRows()).
+		Int("max_result_bytes", cfg.ClickHouse.EffectiveMaxResultBytes()).
 		Str("version", version).
 		Msg("ClickHouse MCP server initialized with tools, resources, and prompts")
 
@@ -287,11 +293,7 @@ func buildExecuteQueryTool(srvCfg *config.ServerConfig) *mcp.Tool {
 	properties := map[string]any{
 		"query": map[string]any{
 			"type":        "string",
-			"description": "Read-only SQL query (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN).",
-		},
-		"limit": map[string]any{
-			"type":        "number",
-			"description": "Maximum number of rows to return (default: 100000)",
+			"description": "Read-only SQL query (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN). Add LIMIT in the SQL itself to cap your own result size; the server also enforces operator-configured caps and signals truncation when they fire.",
 		},
 	}
 	if settingsSchema := buildToolInputSettingsSchema(srvCfg.ToolInputSettings); settingsSchema != nil {
@@ -416,6 +418,41 @@ func NewToolResultError(errMsg string) *mcp.CallToolResult {
 	}
 }
 
+// newQueryResultToolResult builds a CallToolResult for a query response,
+// appending a second text-content block when the result was truncated so the
+// model is told to narrow its query rather than acting on a partial answer.
+func newQueryResultToolResult(jsonData string, truncated *clickhouse.TruncationInfo) *mcp.CallToolResult {
+	content := []mcp.Content{&mcp.TextContent{Text: jsonData}}
+	if truncated != nil {
+		content = append(content, &mcp.TextContent{Text: truncationNotice(truncated)})
+	}
+	return &mcp.CallToolResult{Content: content}
+}
+
+// truncationNotice renders the human-readable warning that accompanies a
+// truncated result. Wording differs by cap so the model gets actionable advice.
+func truncationNotice(t *clickhouse.TruncationInfo) string {
+	switch t.Reason {
+	case clickhouse.TruncationReasonMaxResultRows:
+		return fmt.Sprintf(
+			"⚠️ Result truncated at the server-configured cap of %d rows (the underlying query returns more). "+
+				"This is a hard cap set by the operator, not a SQL LIMIT. "+
+				"To get a complete answer: narrow your WHERE clause, aggregate server-side, or paginate by a key range. "+
+				"Adding LIMIT N (N ≤ %d) to your SQL acknowledges the truncation but does not raise the cap.",
+			t.Limit, t.Limit,
+		)
+	case clickhouse.TruncationReasonMaxResultBytes:
+		return fmt.Sprintf(
+			"⚠️ Result truncated at the server-configured cap of ~%d bytes (returned ~%d bytes in %d rows). "+
+				"This is a hard cap set by the operator, not a SQL LIMIT. "+
+				"Wide rows hit this cap before the row cap — narrow your SELECT list (avoid SELECT *), aggregate server-side, or filter to a smaller subset.",
+			t.Limit, t.ReturnedBytesApprox, t.ReturnedRows,
+		)
+	default:
+		return fmt.Sprintf("⚠️ Result truncated (reason=%s, limit=%d). Narrow your query and retry.", t.Reason, t.Limit)
+	}
+}
+
 // HandleExecuteQuery implements the execute_query tool handler
 func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Get arguments from request
@@ -450,30 +487,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return NewToolResultError(fmt.Sprintf("Query rejected: %s clause is not allowed", clause)), nil
 	}
 
-	// Get optional limit parameter
-	var limit float64
-	hasLimit := false
-	if limitVal, exists := arguments["limit"]; exists {
-		if l, ok := limitVal.(float64); ok && l > 0 {
-			limit = l
-			hasLimit = true
-			// Check against configured max limit if one is set
-			if chJweServer.Config.ClickHouse.Limit > 0 && int(l) > chJweServer.Config.ClickHouse.Limit {
-				return NewToolResultError(fmt.Sprintf("Limit cannot exceed %d rows", chJweServer.Config.ClickHouse.Limit)), nil
-			}
-		}
-	}
-
-	log.Debug().
-		Str("query", query).
-		Float64("limit", limit).
-		Bool("has_limit", hasLimit).
-		Msg("Executing query")
-
-	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
-		query = fmt.Sprintf("%s LIMIT %.0f", strings.TrimSpace(query), limit)
-	}
+	log.Debug().Str("query", query).Msg("Executing query")
 
 	if len(chJweServer.Config.Server.ToolInputSettings) > 0 {
 		var errResult *mcp.CallToolResult
@@ -497,12 +511,13 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		}
 	}()
 
-	result, err := chClient.ExecuteQuery(ctx, query)
+	maxRows := chJweServer.Config.ClickHouse.EffectiveMaxResultRows()
+	maxBytes := chJweServer.Config.ClickHouse.EffectiveMaxResultBytes()
+	result, err := chClient.ExecuteCappedQuery(ctx, query, maxRows, maxBytes)
 	if err != nil {
 		log.Error().
 			Err(err).
 			Str("query", query).
-			Float64("limit", limit).
 			Str("tool", "execute_query").
 			Msg("ClickHouse operation failed: query execution")
 		return NewToolResultError(fmt.Sprintf("Query execution failed: %s", truncateErrForClient(err))), nil
@@ -513,7 +528,7 @@ func HandleExecuteQuery(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
 	}
 
-	return NewToolResultText(string(jsonData)), nil
+	return newQueryResultToolResult(string(jsonData), result.Truncated), nil
 }
 
 // GetClickHouseJWEServerFromContext extracts the ClickHouseJWEServer from context

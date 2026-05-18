@@ -477,6 +477,29 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "custom-value", cfg.HttpHeaders["X-Custom-Header"])
 	})
 
+	t.Run("effective_max_result_rows", func(t *testing.T) {
+		t.Parallel()
+		// Unset => default 500
+		require.Equal(t, 500, ClickHouseConfig{}.EffectiveMaxResultRows())
+		// Explicit positive value wins
+		require.Equal(t, 250, ClickHouseConfig{MaxResultRows: 250}.EffectiveMaxResultRows())
+		// Negative => disabled
+		require.Equal(t, 0, ClickHouseConfig{MaxResultRows: -1}.EffectiveMaxResultRows())
+		// Deprecated Limit is consulted only when MaxResultRows is 0
+		require.Equal(t, 1000, ClickHouseConfig{Limit: 1000}.EffectiveMaxResultRows())
+		// MaxResultRows beats Limit when both are set
+		require.Equal(t, 250, ClickHouseConfig{MaxResultRows: 250, Limit: 1000}.EffectiveMaxResultRows())
+		// Explicit-disable (negative) beats Limit too
+		require.Equal(t, 0, ClickHouseConfig{MaxResultRows: -1, Limit: 1000}.EffectiveMaxResultRows())
+	})
+
+	t.Run("effective_max_result_bytes", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, 50000, ClickHouseConfig{}.EffectiveMaxResultBytes())
+		require.Equal(t, 1000, ClickHouseConfig{MaxResultBytes: 1000}.EffectiveMaxResultBytes())
+		require.Equal(t, 0, ClickHouseConfig{MaxResultBytes: -1}.EffectiveMaxResultBytes())
+	})
+
 	t.Run("tls_config", func(t *testing.T) {
 		t.Parallel()
 		cfg := TLSConfig{

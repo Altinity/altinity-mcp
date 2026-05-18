@@ -3,16 +3,10 @@ package server
 import (
 	"fmt"
 	"reflect"
-	"regexp"
 	"strings"
 
 	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 )
-
-func hasLimitClause(query string) bool {
-	hasLimit, _ := regexp.MatchString(`(?im)limit\s+\d+`, query)
-	return hasLimit
-}
 
 // NormalizeBlockedClauses converts a list of clause names into a normalized
 // set (upper-cased). Returns nil for empty input.

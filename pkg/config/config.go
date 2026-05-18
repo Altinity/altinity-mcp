@@ -40,7 +40,11 @@ type ClickHouseConfig struct {
 	TLS              TLSConfig          `json:"tls" yaml:"tls"`
 	ReadOnly         bool               `json:"read_only" yaml:"read_only" flag:"read-only" env:"CLICKHOUSE_READ_ONLY" desc:"Connect to ClickHouse in read-only mode"`
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" env:"CLICKHOUSE_MAX_EXECUTION_TIME" default:"600" desc:"ClickHouse max execution time in seconds"`
-	Limit            int                `json:"limit" yaml:"limit" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"Maximum limit for query results (0 means no limit)"`
+	// Limit is DEPRECATED; use MaxResultRows. Retained as a silent alias: when
+	// MaxResultRows is unset (0) and Limit > 0, EffectiveMaxResultRows() returns Limit.
+	Limit          int `json:"limit,omitempty" yaml:"limit,omitempty" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"DEPRECATED: alias for max_result_rows"`
+	MaxResultRows  int `json:"max_result_rows,omitempty" yaml:"max_result_rows,omitempty" flag:"clickhouse-max-result-rows" env:"CLICKHOUSE_MAX_RESULT_ROWS" desc:"Per-request row cap on SELECT-like queries (0=default 500, <0=disable and defer to ClickHouse user profile)"`
+	MaxResultBytes int `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
 	HttpHeaders      map[string]string  `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" env:"CLICKHOUSE_HTTP_HEADERS" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings    map[string]string  `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
 	// ClusterName + ClusterSecret enable interserver-secret authentication.
@@ -56,8 +60,42 @@ type ClickHouseConfig struct {
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" env:"CLICKHOUSE_MAX_QUERY_LENGTH" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
 }
 
-// defaultMaxQueryLength is the default cap applied when MaxQueryLength is 0.
-const defaultMaxQueryLength = 10 * 1024 * 1024 // 10 MiB
+// Defaults applied by the Effective* getters when the corresponding field is 0.
+// A negative value disables the cap entirely.
+const (
+	defaultMaxQueryLength = 10 * 1024 * 1024 // 10 MiB
+	defaultMaxResultRows  = 500
+	defaultMaxResultBytes = 50000
+)
+
+// EffectiveMaxResultRows returns the per-request row cap for SELECT-like queries.
+// Negative => disabled (defer to ClickHouse user profile); 0 => default 500;
+// >0 => exact cap. The deprecated Limit field is consulted as a silent alias
+// only when MaxResultRows is 0.
+func (c ClickHouseConfig) EffectiveMaxResultRows() int {
+	if c.MaxResultRows < 0 {
+		return 0
+	}
+	if c.MaxResultRows > 0 {
+		return c.MaxResultRows
+	}
+	if c.Limit > 0 {
+		return c.Limit
+	}
+	return defaultMaxResultRows
+}
+
+// EffectiveMaxResultBytes returns the approximate per-request response-body cap.
+// Negative => disabled; 0 => default 50000; >0 => exact cap.
+func (c ClickHouseConfig) EffectiveMaxResultBytes() int {
+	if c.MaxResultBytes < 0 {
+		return 0
+	}
+	if c.MaxResultBytes > 0 {
+		return c.MaxResultBytes
+	}
+	return defaultMaxResultBytes
+}
 
 // EffectiveMaxQueryLength returns the effective cap after applying defaults/disable semantics.
 // Returns 0 if the check is disabled.

@@ -20,13 +20,31 @@ Two static tools are built into the server:
 
 `execute_query` accepts:
 
-- `query` (string, required) — the SQL to run.
-- `limit` (integer, optional) — caps returned rows.
+- `query` (string, required) — the SQL to run. Include `LIMIT N` in the SQL itself if you want a specific row cap; the server does not rewrite your query.
 - `settings` (object, optional) — ClickHouse query settings forwarded with the request.
 
 `write_query` accepts the same `query` and `settings` parameters and executes the statement as-is.
 
 **Handler mapping:** `name: execute_query` registers the `HandleReadOnlyQuery` function in `pkg/server/server.go`, which enforces the SELECT-only guard and then delegates to `HandleExecuteQuery`. `name: write_query` registers `HandleExecuteQuery` directly. These two names are the only valid values for static tool entries.
+
+### Server-enforced result caps
+
+Operators configure two DoS / context-window guardrails on `execute_query` and on read-mode dynamic tools (SELECT-like queries only — `write_query` and write-mode dynamic tools are unaffected):
+
+| Config key | Default | `0` means | Negative means |
+|------------|---------|-----------|----------------|
+| `clickhouse.max_result_rows` | 500 | use default | disable (defer to ClickHouse user profile) |
+| `clickhouse.max_result_bytes` | 50000 | use default | disable |
+
+The deprecated `clickhouse.limit` is kept as a silent alias for `clickhouse.max_result_rows` — when both are set, `max_result_rows` wins; the legacy key triggers a one-time deprecation warning at startup.
+
+Caps are enforced in two layers: ClickHouse session settings (`max_result_rows`, `max_result_bytes`, `result_overflow_mode='break'`) are pushed per-query so the engine stops early, and the MCP server itself stops appending rows once the configured cap is hit. The row cap is exact; the byte cap is approximate (cheap per-row sizing, not exact JSON byte counts).
+
+When a cap fires, the response carries:
+
+- A `truncated` object inside the JSON `QueryResult` with `reason` (`max_result_rows` or `max_result_bytes`), `limit`, `returned_rows`, and `returned_bytes_approx`.
+- For MCP tool responses: a second `text` content block explaining the truncation and recommending narrowing the query (tighter `WHERE`, server-side aggregation, key-range pagination, narrower `SELECT` list). The model should treat the data block as partial until the underlying query is narrowed.
+- For OpenAPI REST responses: an `X-MCP-Truncated: max_result_rows` (or `max_result_bytes`) HTTP header alongside the same body field.
 
 ---
 

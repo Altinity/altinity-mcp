@@ -75,12 +75,12 @@ func TestHandleExecuteQuery(t *testing.T) {
 		require.GreaterOrEqual(t, qr.Count, 2)
 	})
 
-	t.Run("with_limit_parameter", func(t *testing.T) {
+	t.Run("with_sql_limit", func(t *testing.T) {
 		t.Parallel()
 		req := &mcp.CallToolRequest{
 			Params: &mcp.CallToolParamsRaw{
 				Name:      "execute_query",
-				Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test", "limit": 1}`),
+				Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test LIMIT 1"}`),
 			},
 		}
 
@@ -95,6 +95,7 @@ func TestHandleExecuteQuery(t *testing.T) {
 		var qr clickhouse.QueryResult
 		require.NoError(t, json.Unmarshal([]byte(textContent.Text), &qr))
 		require.Equal(t, 1, qr.Count)
+		require.Nil(t, qr.Truncated)
 	})
 
 	t.Run("missing_query_parameter", func(t *testing.T) {
@@ -138,14 +139,6 @@ func TestHelperFunctions(t *testing.T) {
 		require.True(t, clickhouse.IsSelectQuery("WITH cte AS (SELECT 1) SELECT * FROM cte"))
 		require.False(t, clickhouse.IsSelectQuery("INSERT INTO table VALUES (1)"))
 		require.False(t, clickhouse.IsSelectQuery("CREATE TABLE test (id Int)"))
-	})
-
-	t.Run("hasLimitClause", func(t *testing.T) {
-		t.Parallel()
-		require.True(t, hasLimitClause("SELECT * FROM table LIMIT 100"))
-		require.True(t, hasLimitClause("select * from table limit 50"))
-		require.False(t, hasLimitClause("SELECT * FROM table"))
-		require.False(t, hasLimitClause("SELECT * FROM table ORDER BY id"))
 	})
 
 	t.Run("snakeCase", func(t *testing.T) {
@@ -224,21 +217,19 @@ func TestHandleExecuteQuery_EmptyQuery(t *testing.T) {
 	require.True(t, result.IsError)
 }
 
-// TestHandleExecuteQuery_ExceedsMaxLimit tests limit exceeding config max
-func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
+// TestHandleExecuteQuery_RowCapTruncates verifies the operator-configured row
+// cap fires for an unbounded SELECT, returns exactly maxRows rows, and
+// surfaces a second text-content block alerting the model.
+func TestHandleExecuteQuery_RowCapTruncates(t *testing.T) {
 	t.Parallel()
 	chConfig := setupEmbeddedClickHouse(t)
 
+	cfg := *chConfig
+	cfg.MaxResultRows = 1
+
 	srv := NewClickHouseMCPServer(config.Config{
-		ClickHouse: config.ClickHouseConfig{
-			Host:     chConfig.Host,
-			Port:     chConfig.Port,
-			Database: chConfig.Database,
-			Username: chConfig.Username,
-			Protocol: chConfig.Protocol,
-			Limit:    10,
-		},
-		Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		ClickHouse: cfg,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
 	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
@@ -246,19 +237,33 @@ func TestHandleExecuteQuery_ExceedsMaxLimit(t *testing.T) {
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
 			Name:      "execute_query",
-			Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test", "limit": 100}`),
+			Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test"}`),
 		},
 	}
 
 	result, err := HandleExecuteQuery(ctx, req)
 	require.NoError(t, err)
-	require.True(t, result.IsError)
-	textContent, ok := result.Content[0].(*mcp.TextContent)
+	require.False(t, result.IsError)
+	require.Len(t, result.Content, 2, "expected data block + truncation notice")
+
+	dataBlock, ok := result.Content[0].(*mcp.TextContent)
 	require.True(t, ok)
-	require.Contains(t, textContent.Text, "Limit cannot exceed 10")
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(dataBlock.Text), &qr))
+	require.Equal(t, 1, qr.Count)
+	require.NotNil(t, qr.Truncated)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultRows, qr.Truncated.Reason)
+	require.Equal(t, 1, qr.Truncated.Limit)
+
+	notice, ok := result.Content[1].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Contains(t, notice.Text, "truncated")
+	require.Contains(t, notice.Text, "1 rows")
 }
 
-// TestHandleExecuteQuery_WithQueryWithExistingLimit tests query already having limit
+// TestHandleExecuteQuery_WithQueryWithExistingLimit verifies that a SELECT with
+// its own LIMIT round-trips cleanly. With the limit argument removed from the
+// tool schema, this just exercises the standard SELECT path.
 func TestHandleExecuteQuery_WithQueryWithExistingLimit(t *testing.T) {
 	t.Parallel()
 	chConfig := setupEmbeddedClickHouse(t)
@@ -273,7 +278,7 @@ func TestHandleExecuteQuery_WithQueryWithExistingLimit(t *testing.T) {
 	req := &mcp.CallToolRequest{
 		Params: &mcp.CallToolParamsRaw{
 			Name:      "execute_query",
-			Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test LIMIT 5", "limit": 10}`),
+			Arguments: json.RawMessage(`{"query": "SELECT * FROM default.test LIMIT 5"}`),
 		},
 	}
 
@@ -585,30 +590,32 @@ func TestHandleExecuteQueryE2E(t *testing.T) {
 		require.True(t, result.IsError)
 	})
 
-	t.Run("with_limit", func(t *testing.T) {
-		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test","limit":1}`)}}
+	t.Run("with_sql_limit", func(t *testing.T) {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test LIMIT 1"}`)}}
 		result, err := HandleExecuteQuery(ctx, req)
 		require.NoError(t, err)
 		require.False(t, result.IsError)
 	})
 
-	t.Run("limit_exceeds_max", func(t *testing.T) {
+	t.Run("server_row_cap_truncates", func(t *testing.T) {
+		cfg := *chConfig
+		cfg.MaxResultRows = 1
 		srvLimited := NewClickHouseMCPServer(config.Config{
-			ClickHouse: config.ClickHouseConfig{
-				Host:     chConfig.Host,
-				Port:     chConfig.Port,
-				Database: chConfig.Database,
-				Username: chConfig.Username,
-				Protocol: chConfig.Protocol,
-				Limit:    10,
-			},
-			Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+			ClickHouse: cfg,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 		}, "test")
 		ctxLimited := context.WithValue(context.Background(), CHJWEServerKey, srvLimited)
-		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test","limit":100}`)}}
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: json.RawMessage(`{"query":"SELECT * FROM default.test"}`)}}
 		result, err := HandleExecuteQuery(ctxLimited, req)
 		require.NoError(t, err)
-		require.True(t, result.IsError)
+		require.False(t, result.IsError)
+		require.Len(t, result.Content, 2, "expected truncation notice as second content block")
+		data, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal([]byte(data.Text), &qr))
+		require.NotNil(t, qr.Truncated)
+		require.Equal(t, clickhouse.TruncationReasonMaxResultRows, qr.Truncated.Reason)
 	})
 
 	t.Run("no_server_in_context", func(t *testing.T) {
@@ -617,4 +624,116 @@ func TestHandleExecuteQueryE2E(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "can't get JWEServer from context")
 	})
+}
+
+// TestHandleExecuteQuery_IntrospectionWithCaps regression-tests issue #124: with
+// row/byte caps configured, DESCRIBE / SHOW CREATE / EXISTS must round-trip
+// without syntax errors (the old code appended LIMIT to non-SELECT row-returning
+// statements and ClickHouse rejected them).
+func TestHandleExecuteQuery_IntrospectionWithCaps(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = 5
+	cfg.MaxResultBytes = 1000
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: cfg,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"describe", "DESCRIBE default.test"},
+		{"desc_alias", "DESC default.test"},
+		{"show_create", "SHOW CREATE TABLE default.test"},
+		{"exists", "EXISTS TABLE default.test"},
+		{"explain_select", "EXPLAIN SELECT * FROM default.test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+				Name:      "execute_query",
+				Arguments: json.RawMessage(`{"query":"` + tc.query + `"}`),
+			}}
+			result, err := HandleExecuteQuery(ctx, req)
+			require.NoError(t, err)
+			require.False(t, result.IsError, "query %q rejected: %v", tc.query, result.Content)
+		})
+	}
+}
+
+// TestHandleExecuteQuery_ByteCapFires verifies the byte cap trips on a wide-row
+// SELECT even before the row cap would have, and the model gets a notice that
+// explicitly mentions wide rows / SELECT list narrowing.
+func TestHandleExecuteQuery_ByteCapFires(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = 500
+	cfg.MaxResultBytes = 64
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: cfg,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Name:      "execute_query",
+		Arguments: json.RawMessage(`{"query":"SELECT number, repeat('x', 100) AS pad FROM system.numbers LIMIT 100"}`),
+	}}
+	result, err := HandleExecuteQuery(ctx, req)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Len(t, result.Content, 2)
+
+	data, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(data.Text), &qr))
+	require.NotNil(t, qr.Truncated)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultBytes, qr.Truncated.Reason)
+	require.Equal(t, 64, qr.Truncated.Limit)
+
+	notice, ok := result.Content[1].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Contains(t, notice.Text, "bytes")
+	require.Contains(t, notice.Text, "SELECT *")
+}
+
+// TestHandleExecuteQuery_CapsDisabled verifies that MaxResultRows<0 and
+// MaxResultBytes<0 disable both layers — unbounded SELECTs return all rows,
+// no truncation flag, no notice block.
+func TestHandleExecuteQuery_CapsDisabled(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = -1
+	cfg.MaxResultBytes = -1
+
+	srv := NewClickHouseMCPServer(config.Config{
+		ClickHouse: cfg,
+		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+	}, "test")
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Name:      "execute_query",
+		Arguments: json.RawMessage(`{"query":"SELECT number FROM system.numbers LIMIT 1000"}`),
+	}}
+	result, err := HandleExecuteQuery(ctx, req)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Len(t, result.Content, 1, "no truncation notice expected")
+
+	data, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(data.Text), &qr))
+	require.Equal(t, 1000, qr.Count)
+	require.Nil(t, qr.Truncated)
 }

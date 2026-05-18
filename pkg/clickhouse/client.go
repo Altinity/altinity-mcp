@@ -18,11 +18,29 @@ import (
 
 // QueryResult represents the result of a query execution
 type QueryResult struct {
-	Columns []string        `json:"columns"`
-	Types   []string        `json:"types"`
-	Rows    [][]interface{} `json:"rows"`
-	Count   int             `json:"count"`
-	Error   string          `json:"error,omitempty"`
+	Columns   []string        `json:"columns"`
+	Types     []string        `json:"types"`
+	Rows      [][]interface{} `json:"rows"`
+	Count     int             `json:"count"`
+	Error     string          `json:"error,omitempty"`
+	Truncated *TruncationInfo `json:"truncated,omitempty"`
+}
+
+// TruncationReason identifies which server-side cap fired.
+const (
+	TruncationReasonMaxResultRows  = "max_result_rows"
+	TruncationReasonMaxResultBytes = "max_result_bytes"
+)
+
+// TruncationInfo describes a result that was capped by MCP before being
+// returned to the caller. Surfaces in the JSON payload as `truncated` and is
+// also rendered as an extra MCP text-content block / X-MCP-Truncated header
+// at the handler layer so the model is told to narrow its query.
+type TruncationInfo struct {
+	Reason              string `json:"reason"`
+	Limit               int    `json:"limit"`
+	ReturnedRows        int    `json:"returned_rows"`
+	ReturnedBytesApprox int    `json:"returned_bytes_approx"`
 }
 
 // TableInfo represents information about a table
@@ -377,17 +395,58 @@ func scanRow(rows driver.Rows) ([]interface{}, error) {
 // ExecuteQuery executes a SQL query and returns results
 // For non-SELECT queries (DDL, DML) will return single row with `OK`
 func (c *Client) ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
+	return c.executeWithCaps(ctx, query, 0, 0, args...)
+}
+
+// ExecuteCappedQuery executes a SELECT-like query subject to a server-controlled
+// row and/or byte cap. The caps are enforced in two layers:
+//  1. ClickHouse session settings (max_result_rows, max_result_bytes,
+//     result_overflow_mode='break') pushed via the per-query context — saves
+//     ClickHouse from computing rows that will be discarded; safe to no-op when
+//     the CH user profile forbids settings changes.
+//  2. A hard cap inside executeSelect's row-iteration loop — guarantees exact
+//     row counts (no block-granularity overshoot), bounds MCP-side memory, and
+//     works regardless of CH-side cooperation.
+//
+// On non-SELECT queries the caps are ignored and the call falls through to the
+// unsuppressed ExecuteQuery path. maxRows<=0 disables the row cap; maxBytes<=0
+// disables the byte cap.
+func (c *Client) ExecuteCappedQuery(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
+	if maxRows <= 0 && maxBytes <= 0 {
+		return c.ExecuteQuery(ctx, query, args...)
+	}
+	if !IsSelectQuery(query) {
+		return c.ExecuteQuery(ctx, query, args...)
+	}
+	settings := clickhouse.Settings{
+		"result_overflow_mode": "break",
+	}
+	if maxRows > 0 {
+		// +1 so the engine returns at least one row past the cap when the
+		// underlying result is larger — Layer 2 uses that overshoot as the
+		// truncation signal.
+		settings["max_result_rows"] = uint64(maxRows + 1)
+	}
+	if maxBytes > 0 {
+		settings["max_result_bytes"] = uint64(maxBytes)
+	}
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
+	return c.executeWithCaps(ctx, query, maxRows, maxBytes, args...)
+}
+
+func (c *Client) executeWithCaps(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
 	if c.config.ReadOnly && !IsSelectQuery(query) {
 		return nil, fmt.Errorf("query rejected: read-only mode allows only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN statements")
 	}
 	if IsSelectQuery(query) {
-		return c.executeSelect(ctx, query, args...)
+		return c.executeSelect(ctx, query, maxRows, maxBytes, args...)
 	}
 	return c.executeNonSelect(ctx, query, args...)
 }
 
-// executeSelect executes a SELECT query
-func (c *Client) executeSelect(ctx context.Context, query string, args ...interface{}) (*QueryResult, error) {
+// executeSelect executes a SELECT query with optional row/byte caps.
+// maxRows<=0 disables the row cap; maxBytes<=0 disables the byte cap.
+func (c *Client) executeSelect(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
 	result := &QueryResult{}
 
 	rows, err := c.conn.Query(ctx, query, args...)
@@ -415,13 +474,39 @@ func (c *Client) executeSelect(ctx context.Context, query string, args ...interf
 		result.Types[i] = ct.DatabaseTypeName()
 	}
 
-	// Fetch rows
+	// Fetch rows with optional caps.
+	bytesApprox := 0
 	for rows.Next() {
 		rowValues, err := scanRow(rows)
 		if err != nil {
 			return nil, err
 		}
+		// Row cap (Layer 2). The session-settings push asked CH for maxRows+1,
+		// so seeing a (maxRows+1)th row here means the underlying result was
+		// larger and we should truncate + flag.
+		if maxRows > 0 && len(result.Rows) >= maxRows {
+			result.Truncated = &TruncationInfo{
+				Reason:              TruncationReasonMaxResultRows,
+				Limit:               maxRows,
+				ReturnedRows:        len(result.Rows),
+				ReturnedBytesApprox: bytesApprox,
+			}
+			break
+		}
 		result.Rows = append(result.Rows, rowValues)
+		bytesApprox += approxRowBytes(rowValues)
+		// Byte cap (Layer 2). Stop after appending the row that first crosses
+		// the budget — one row of overshoot is the natural signal and keeps
+		// the code branch-free.
+		if maxBytes > 0 && bytesApprox > maxBytes {
+			result.Truncated = &TruncationInfo{
+				Reason:              TruncationReasonMaxResultBytes,
+				Limit:               maxBytes,
+				ReturnedRows:        len(result.Rows),
+				ReturnedBytesApprox: bytesApprox,
+			}
+			break
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -529,6 +614,30 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// approxRowBytes returns a cheap, allocation-light estimate of the JSON-encoded
+// size of one result row. The exact serialized size doesn't matter for a DoS
+// guardrail — only the order of magnitude does, so we use len(fmt.Sprint(v))
+// per field plus a constant per-row overhead for column separators.
+func approxRowBytes(row []interface{}) int {
+	total := 2 // outer brackets per row in JSON
+	for _, v := range row {
+		if v == nil {
+			total += 4 // "null"
+			continue
+		}
+		switch s := v.(type) {
+		case string:
+			total += len(s) + 2 // quotes
+		case []byte:
+			total += len(s) + 2
+		default:
+			total += len(fmt.Sprint(v))
+		}
+		total++ // comma
+	}
+	return total
 }
 
 // convertToSerializable converts ClickHouse-specific types to JSON-serializable types
