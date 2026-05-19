@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
-	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	"github.com/rs/zerolog/log"
 )
@@ -284,29 +282,6 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	var limit int
-	hasLimit := false
-	if limitStr != "" {
-		var err error
-		limit, err = strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
-			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
-			return
-		}
-		hasLimit = true
-		// Check against configured max limit if one is set
-		if s.Config.ClickHouse.Limit > 0 && limit > s.Config.ClickHouse.Limit {
-			http.Error(w, fmt.Sprintf("Limit cannot exceed %d", s.Config.ClickHouse.Limit), http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Add LIMIT clause for SELECT queries if limit is specified and not already present
-	if hasLimit && clickhouse.IsSelectQuery(query) && !hasLimitClause(query) {
-		query = fmt.Sprintf("%s LIMIT %d", strings.TrimSpace(query), limit)
-	}
-
 	ctx := r.Context()
 
 	// Extract tool input settings from query parameters
@@ -334,12 +309,17 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		}
 	}()
 
-	result, err := chClient.ExecuteQuery(ctx, query)
+	maxRows := s.Config.ClickHouse.EffectiveMaxResultRows()
+	maxBytes := s.Config.ClickHouse.EffectiveMaxResultBytes()
+	result, err := chClient.ExecuteCappedQuery(ctx, query, maxRows, maxBytes)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Query execution failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
+	if result.Truncated != nil {
+		w.Header().Set("X-MCP-Truncated", result.Truncated.Reason)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if encodeErr := json.NewEncoder(w).Encode(result); encodeErr != nil {
 		log.Err(encodeErr).Msg("can't encode /openapi/execute_query result")
@@ -403,12 +383,17 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 	}
 	query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
 
-	result, err := chClient.ExecuteQuery(ctx, query)
+	maxRows := s.Config.ClickHouse.EffectiveMaxResultRows()
+	maxBytes := s.Config.ClickHouse.EffectiveMaxResultBytes()
+	result, err := chClient.ExecuteCappedQuery(ctx, query, maxRows, maxBytes)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Query execution failed: %v", truncateErrForClient(err)), http.StatusInternalServerError)
 		return
 	}
 
+	if result.Truncated != nil {
+		w.Header().Set("X-MCP-Truncated", result.Truncated.Reason)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if encodeErr := json.NewEncoder(w).Encode(result); encodeErr != nil {
 		log.Err(encodeErr).Msg("can't encode dynamic tool result")

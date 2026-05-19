@@ -546,7 +546,9 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		}
 		query := fmt.Sprintf("SELECT * FROM %s.%s", meta.Database, fn)
 
-		result, err := chClient.ExecuteQuery(ctx, query)
+		maxRows := chJweServer.Config.ClickHouse.EffectiveMaxResultRows()
+		maxBytes := chJweServer.Config.ClickHouse.EffectiveMaxResultBytes()
+		result, err := chClient.ExecuteCappedQuery(ctx, query, maxRows, maxBytes)
 		if err != nil {
 			log.Error().Err(err).Str("tool", meta.ToolName).Str("query", query).Msg("dynamic_tools: query failed")
 			return NewToolResultError(fmt.Sprintf("Query execution failed: %v", truncateErrForClient(err))), nil
@@ -555,7 +557,7 @@ func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
 		if err != nil {
 			return NewToolResultError(err.Error()), nil
 		}
-		return NewToolResultText(string(jsonData)), nil
+		return newQueryResultToolResult(string(jsonData), result.Truncated), nil
 	}
 }
 
