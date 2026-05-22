@@ -295,6 +295,21 @@ func TestVerifierAppliesScopeSettings(t *testing.T) {
 	require.Equal(t, "1", resp.Settings["readonly"])
 }
 
+func TestVerifierRejectsNonPOST(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/verify", nil)
+		req.Header.Set("Authorization", basicHeader("alice@example.com", "irrelevant"))
+		rr := httptest.NewRecorder()
+		v.Handler().ServeHTTP(rr, req)
+		require.Equal(t, http.StatusMethodNotAllowed, rr.Code, "method %s should be rejected", method)
+		require.Equal(t, http.MethodPost, rr.Header().Get("Allow"))
+	}
+}
+
 func TestVerifierRejectsMissingAuthHeader(t *testing.T) {
 	t.Parallel()
 	p := newTestIdP(t)
@@ -324,6 +339,76 @@ func TestVerifierNegativeCacheSuppressesRepeatedFailures(t *testing.T) {
 		v.Handler().ServeHTTP(rr, req)
 		require.Equal(t, http.StatusForbidden, rr.Code)
 	}
+}
+
+func TestCacheCapEvicts(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+	v.cacheCap = 3 // override default for the test
+
+	// Insert four entries via the public storeCache path — synthesize
+	// minimal verifyResponse / error values; we're testing eviction
+	// mechanics, not validation.
+	for i := 0; i < 4; i++ {
+		v.storeCache("k"+string(rune('a'+i)), &verifyResponse{Email: "u@x"}, nil)
+	}
+
+	v.mu.Lock()
+	got := len(v.cache)
+	v.mu.Unlock()
+	require.LessOrEqual(t, got, 3, "cache must not exceed cap")
+}
+
+func TestPruneExpired(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+
+	v.mu.Lock()
+	v.cache["live"] = cacheEntry{ok: true, expiresAt: time.Now().Add(time.Hour)}
+	v.cache["dead"] = cacheEntry{ok: true, expiresAt: time.Now().Add(-time.Hour)}
+	v.mu.Unlock()
+
+	v.pruneExpired()
+
+	v.mu.Lock()
+	_, liveOK := v.cache["live"]
+	_, deadOK := v.cache["dead"]
+	v.mu.Unlock()
+	require.True(t, liveOK, "live entry must survive prune")
+	require.False(t, deadOK, "expired entry must be evicted")
+}
+
+func TestCacheHitPreservesEmail(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+	tok := p.mintJWT(t, map[string]interface{}{
+		"sub":            "u-1",
+		"email":          "alice@example.com",
+		"email_verified": true,
+	})
+
+	// First request populates the cache.
+	req := httptest.NewRequest(http.MethodPost, "/verify", nil)
+	req.Header.Set("Authorization", basicHeader("alice@example.com", tok))
+	rr := httptest.NewRecorder()
+	v.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	var first verifyResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &first))
+	require.Equal(t, "alice@example.com", first.Email)
+
+	// Second request is a cache hit. Email must still surface.
+	req2 := httptest.NewRequest(http.MethodPost, "/verify", nil)
+	req2.Header.Set("Authorization", basicHeader("alice@example.com", tok))
+	rr2 := httptest.NewRecorder()
+	v.Handler().ServeHTTP(rr2, req2)
+	require.Equal(t, http.StatusOK, rr2.Code)
+	var second verifyResponse
+	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &second))
+	require.Equal(t, "alice@example.com", second.Email)
 }
 
 func TestParseBasicAuth(t *testing.T) {

@@ -67,6 +67,15 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	verifier := NewVerifier(cfg)
+
+	signalCtx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	// Background reaper prunes expired cache entries on a fixed cadence.
+	// Insertion-time eviction in storeCache is the primary memory bound;
+	// the reaper is housekeeping for the common case where token churn is
+	// low enough that entries naturally TTL out before any cap eviction.
+	verifier.StartReaper(signalCtx, 5*time.Minute)
+
 	mux := http.NewServeMux()
 	mux.Handle("/verify", verifier.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -87,9 +96,6 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	log.Info().Str("network", network).Str("address", address).Str("version", version).Msg("ch-jwt-verify listening")
-
-	signalCtx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	errCh := make(chan error, 1)
 	go func() {
