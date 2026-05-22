@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/altinity/altinity-mcp/pkg/oauth"
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
@@ -409,6 +410,29 @@ func TestCacheHitPreservesEmail(t *testing.T) {
 	var second verifyResponse
 	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &second))
 	require.Equal(t, "alice@example.com", second.Email)
+}
+
+func TestNegativeCachePreservesErrorIdentity(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+	// require_email_verified=true by default; unverified email -> ErrEmailNotVerified
+	tok := p.mintJWT(t, map[string]interface{}{
+		"sub":            "u-1",
+		"email":          "alice@example.com",
+		"email_verified": false,
+	})
+
+	// First call populates the negative cache via the real path.
+	_, err1 := v.verify(context.Background(), "alice@example.com", tok)
+	require.Error(t, err1)
+	require.ErrorIs(t, err1, oauth.ErrEmailNotVerified, "first call must return the sentinel")
+
+	// Second call hits the cache and must return the SAME sentinel
+	// (i.e. errors.Is still resolves through the cache layer).
+	_, err2 := v.verify(context.Background(), "alice@example.com", tok)
+	require.Error(t, err2)
+	require.ErrorIs(t, err2, oauth.ErrEmailNotVerified, "cached error must keep sentinel identity")
 }
 
 func TestParseBasicAuth(t *testing.T) {

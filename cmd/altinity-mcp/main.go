@@ -742,6 +742,11 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 			return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
 		}
 		log.Info().Str("config_file", configFile).Msg("Configuration loaded from file")
+		// Emit any "this key is no longer honored" warnings through the
+		// structured logger so JSON-logging deployments pick them up.
+		for _, w := range cfg.RemovedKeyWarnings {
+			log.Warn().Str("config_file", configFile).Msg(w)
+		}
 	}
 
 	// Override with CLI flags (CLI flags take precedence over config file)
@@ -1252,6 +1257,9 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	newCfg, err := config.LoadConfigFromFile(a.configFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config file: %w", err)
+	}
+	for _, w := range newCfg.RemovedKeyWarnings {
+		log.Warn().Str("config_file", a.configFile).Msg(w)
 	}
 
 	// Override with CLI flags

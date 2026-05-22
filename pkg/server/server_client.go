@@ -219,7 +219,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 			// Forward mode: rewrite the Authorization header so ClickHouse
 			// receives `Bearer <token>` directly. Antalya's token_processors
 			// validates the bearer cryptographically.
-			oauthHeaders := oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, oauthToken, oauthClaims)
+			oauthHeaders := oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, oauthToken)
 			if len(oauthHeaders) > 0 {
 				if chConfig.HttpHeaders == nil {
 					chConfig.HttpHeaders = make(map[string]string)

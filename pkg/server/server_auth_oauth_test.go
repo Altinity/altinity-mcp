@@ -662,13 +662,13 @@ func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 	t.Run("gating_returns_no_headers", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.OAuthConfig{Mode: "gating"}
-		require.Nil(t, oauth.BuildClickHouseHeaders(cfg, "token", nil))
+		require.Nil(t, oauth.BuildClickHouseHeaders(cfg, "token"))
 	})
 
 	t.Run("forward_wraps_token_as_bearer", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.OAuthConfig{Mode: "forward"}
-		headers := oauth.BuildClickHouseHeaders(cfg, "my-access-token", nil)
+		headers := oauth.BuildClickHouseHeaders(cfg, "my-access-token")
 		require.NotNil(t, headers)
 		require.Equal(t, "Bearer my-access-token", headers["Authorization"])
 	})
@@ -1152,7 +1152,7 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 			Enabled: true,
 			Mode:    "forward",
 		}
-		headers := oauth.BuildClickHouseHeaders(cfg, "oauth-token", &OAuthClaims{Subject: "user123"})
+		headers := oauth.BuildClickHouseHeaders(cfg, "oauth-token")
 		require.NotNil(t, headers)
 		require.Equal(t, "Bearer oauth-token", headers["Authorization"])
 	})
@@ -1471,7 +1471,7 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 			Mode:    "forward",
 		}
 		oauthToken := "opaque-access-token"
-		headers := oauth.BuildClickHouseHeaders(cfg, oauthToken, nil)
+		headers := oauth.BuildClickHouseHeaders(cfg, oauthToken)
 		require.Equal(t, "Bearer "+oauthToken, headers["Authorization"])
 	})
 

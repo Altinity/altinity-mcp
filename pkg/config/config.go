@@ -213,6 +213,14 @@ type Config struct {
 	Server     ServerConfig     `json:"server" yaml:"server"`
 	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
 	ReloadTime int              `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
+
+	// RemovedKeyWarnings holds human-readable warnings about config keys
+	// that LoadConfigFromFile observed in the input file but the current
+	// codebase no longer honors (silently dropped on unmarshal). The
+	// caller is responsible for emitting these via its own structured
+	// logger after init. Not serialized — round-trips through YAML/JSON
+	// as zero. See removedKeyWarnings + RemovedConfigKeys.
+	RemovedKeyWarnings []string `json:"-" yaml:"-"`
 }
 
 // LoadConfigFromFile loads configuration from a YAML or JSON file
@@ -243,18 +251,18 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 			}
 		}
 	}
-	warnRemovedConfigKeys(data, filename)
+	config.RemovedKeyWarnings = removedKeyWarnings(data)
 	return config, nil
 }
 
-// removedConfigKeys names YAML/JSON keys this codebase used to honor but no
+// RemovedConfigKeys names YAML/JSON keys this codebase used to honor but no
 // longer does. When an operator upgrades MCP they may carry these over in
 // their values file; YAML unmarshal silently drops unknown fields and the
-// operator sees no warning. We re-parse the raw bytes into a generic map and
-// flag any of these so the operator knows their override is now a no-op.
-//
-// Each entry is a dotted path under the config root.
-var removedConfigKeys = []removedKey{
+// operator sees no warning. removedKeyWarnings re-parses the raw bytes
+// into a generic map and reports any of these so the operator knows their
+// override is now a no-op. Exported so external tooling (linters, CI
+// gates, deploy automation) can share the same source of truth.
+var RemovedConfigKeys = []RemovedKey{
 	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (docs/ch-jwt-verify.md). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
 	{Path: "clickhouse.cluster_name", Replacement: "Same as cluster_secret — drop both together."},
 	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — the gating-mode wire format no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
@@ -264,27 +272,31 @@ var removedConfigKeys = []removedKey{
 	{Path: "server.oauth.allow_unverified_email", Replacement: "Moved (inverted) to the ch-jwt-verify sidecar's identity.require_email_verified."},
 }
 
-type removedKey struct {
+// RemovedKey is a single removed-config-key entry: the dotted path under
+// the config root and a human-readable migration hint.
+type RemovedKey struct {
 	Path        string
 	Replacement string
 }
 
-func warnRemovedConfigKeys(data []byte, filename string) {
+// removedKeyWarnings returns a human-readable warning per removed key
+// observed in data. Empty slice if data is unparseable or carries no
+// removed keys. The caller is responsible for emitting these via its
+// structured logger (we can't import the logger here without an import
+// cycle; the config package is a leaf).
+func removedKeyWarnings(data []byte) []string {
 	var raw map[string]interface{}
-	// Best-effort: re-parse as YAML (handles JSON too because JSON is a
-	// strict YAML subset). Failure here just means we can't warn — the
-	// real unmarshal already succeeded, so silently no-op.
 	if err := yaml.Unmarshal(data, &raw); err != nil || raw == nil {
-		return
+		return nil
 	}
-	for _, rk := range removedConfigKeys {
+	var out []string
+	for _, rk := range RemovedConfigKeys {
 		if hasNestedKey(raw, strings.Split(rk.Path, ".")) {
-			// stdlib log to avoid an import cycle through pkg/oauth; the
-			// startup-level logger has not been configured here yet.
-			fmt.Fprintf(os.Stderr, "WARN config %s: %q is no longer honored (silently dropped). %s\n",
-				filename, rk.Path, rk.Replacement)
+			out = append(out, fmt.Sprintf("config key %q is no longer honored (silently dropped on unmarshal). %s",
+				rk.Path, rk.Replacement))
 		}
 	}
+	return out
 }
 
 func hasNestedKey(m map[string]interface{}, parts []string) bool {

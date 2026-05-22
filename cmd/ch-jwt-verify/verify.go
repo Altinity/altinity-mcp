@@ -45,7 +45,7 @@ type cacheEntry struct {
 	ok        bool
 	settings  map[string]string
 	email     string // preserved so a cache hit still surfaces email in the response (log-friendly)
-	failure   string
+	failure   error  // preserved as-is so errors.Is/As still works after a cache hit (sentinels keep identity)
 	expiresAt time.Time
 }
 
@@ -149,6 +149,9 @@ func (v *Verifier) Handler() http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		// verifyResponse is two map[string]string + string fields — Encode
+		// can't realistically fail here (no marshal hooks, no Writer
+		// errors are surfaced past the header write). Drop deliberately.
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 }
@@ -156,7 +159,7 @@ func (v *Verifier) Handler() http.Handler {
 // verify performs the actual JWT validation + identity policy + scope→settings
 // derivation. It also handles the small verification cache.
 func (v *Verifier) verify(ctx context.Context, user, token string) (*verifyResponse, error) {
-	cacheKey := sha256HexShort(token)
+	cacheKey := sha256Hex(token)
 
 	v.mu.Lock()
 	if entry, found := v.cache[cacheKey]; found && time.Now().Before(entry.expiresAt) {
@@ -166,7 +169,10 @@ func (v *Verifier) verify(ctx context.Context, user, token string) (*verifyRespo
 			// bodies stay consistent with cache-miss responses.
 			return &verifyResponse{Settings: entry.settings, Email: entry.email}, nil
 		}
-		return nil, errors.New(entry.failure)
+		// Return the original error so errors.Is(err, oauth.ErrEmailNotVerified)
+		// (etc.) still works after a cache hit. Sentinels are package-level
+		// vars and safe to share across goroutines.
+		return nil, entry.failure
 	}
 	v.mu.Unlock()
 
@@ -298,7 +304,7 @@ func (v *Verifier) storeCache(key string, resp *verifyResponse, err error) {
 	if err != nil {
 		v.cache[key] = cacheEntry{
 			ok:        false,
-			failure:   err.Error(),
+			failure:   err,
 			expiresAt: time.Now().Add(v.cfg.Cache.NegativeTTL),
 		}
 		return
@@ -330,10 +336,13 @@ func parseBasicAuth(header string) (user, token string, ok bool) {
 	return string(decoded[:idx]), string(decoded[idx+1:]), true
 }
 
-// sha256HexShort returns the first 16 hex chars of SHA256(token). 64 bits of
-// the digest is enough for cache-key uniqueness across a single sidecar
-// process's lifetime; the shorter key also keeps debug logs compact.
-func sha256HexShort(token string) string {
+// sha256Hex returns the full hex-encoded SHA256(token). The cache key is
+// the digest, not a prefix — a prefix would let a hash-collision between
+// a bad token and a legit one DoS the legit user via the negative cache
+// for negative_ttl (no access-grant risk because signatures are still
+// re-verified on cache miss, but a real availability bug). 64-char keys
+// at the 10k-entry cap cost ~640 KiB extra — immaterial.
+func sha256Hex(token string) string {
 	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:])
 }

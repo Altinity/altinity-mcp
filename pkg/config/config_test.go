@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -767,11 +768,12 @@ func TestHasNestedKey(t *testing.T) {
 	require.False(t, hasNestedKey(m, []string{"clickhouse", "cluster_secret", "child"}))
 }
 
-func TestWarnRemovedConfigKeysParsesYAML(t *testing.T) {
+func TestRemovedKeyWarnings(t *testing.T) {
 	t.Parallel()
-	// Confirm the helper doesn't blow up on the documented removed-key
-	// shapes — actual log output is via stderr, not captured here.
-	yamlData := []byte(`
+
+	t.Run("detects_all_removed_keys", func(t *testing.T) {
+		t.Parallel()
+		yamlData := []byte(`
 clickhouse:
   cluster_secret: "secret"
   cluster_name: "demo"
@@ -779,11 +781,62 @@ server:
   oauth:
     claims_to_headers:
       sub: X-User
+    clickhouse_header_name: X-Token
     allowed_email_domains: [example.com]
+    allowed_hosted_domains: [example.com]
     allow_unverified_email: true
 `)
-	// Should not panic, regardless of whether keys are present.
-	warnRemovedConfigKeys(yamlData, "test.yaml")
-	warnRemovedConfigKeys(nil, "empty.yaml")
-	warnRemovedConfigKeys([]byte("not yaml at :::all"), "bad.yaml")
+		warnings := removedKeyWarnings(yamlData)
+		require.Len(t, warnings, len(RemovedConfigKeys))
+		// Each warning quotes the path; check a couple by path substring
+		joined := strings.Join(warnings, "\n")
+		require.Contains(t, joined, "clickhouse.cluster_secret")
+		require.Contains(t, joined, "server.oauth.allow_unverified_email")
+	})
+
+	t.Run("returns_nil_for_empty", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, removedKeyWarnings(nil))
+	})
+
+	t.Run("returns_nil_for_unparseable", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, removedKeyWarnings([]byte("not yaml at :::all")))
+	})
+
+	t.Run("returns_nil_for_clean_config", func(t *testing.T) {
+		t.Parallel()
+		yamlData := []byte(`
+clickhouse:
+  host: localhost
+  port: 8123
+server:
+  oauth:
+    enabled: true
+    mode: gating
+`)
+		require.Nil(t, removedKeyWarnings(yamlData))
+	})
+}
+
+func TestLoadConfigFromFile_PopulatesRemovedKeyWarnings(t *testing.T) {
+	t.Parallel()
+	yamlContent := `
+clickhouse:
+  host: localhost
+  cluster_secret: secret
+server:
+  oauth:
+    enabled: true
+    allow_unverified_email: true
+`
+	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(yamlContent), 0644))
+
+	cfg, err := LoadConfigFromFile(tmpFile)
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.RemovedKeyWarnings)
+	joined := strings.Join(cfg.RemovedKeyWarnings, "\n")
+	require.Contains(t, joined, "clickhouse.cluster_secret")
+	require.Contains(t, joined, "server.oauth.allow_unverified_email")
 }

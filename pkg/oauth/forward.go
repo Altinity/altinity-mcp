@@ -7,7 +7,7 @@ import "strings"
 // Gating mode does not flow through this helper — its CH credentials are
 // conveyed via the Basic header assembled by clickhouse-go from
 // Auth.Username/Auth.Password.
-func BuildClickHouseHeaders(cfg OAuthConfig, token string, _ *Claims) map[string]string {
+func BuildClickHouseHeaders(cfg OAuthConfig, token string) map[string]string {
 	if !cfg.IsForwardMode() {
 		return nil
 	}

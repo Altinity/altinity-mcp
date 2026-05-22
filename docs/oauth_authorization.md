@@ -65,7 +65,7 @@ Use **forward** when:
 | | Gating | Forward |
 |---|---|---|
 | OAuth Authorization Server | Upstream IdP | MCP (brokering the upstream IdP) |
-| Bearer the MCP client receives | Upstream IdP's JWT (typical TTL: 10 min – 1 h) | Upstream IdP id_token (raw passthrough) |
+| Bearer the MCP client receives | Upstream IdP's JWT (TTL set per the IdP's access-token policy) | Upstream IdP id_token (raw passthrough) |
 | MCP → ClickHouse credential | `Authorization: Basic base64(email:JWT)` over HTTP | `Authorization: Bearer <id_token>` over HTTP |
 | Who validates the bearer on every query | The `ch-jwt-verify` sidecar | ClickHouse via `token_processors` |
 | CH user provisioning | Pre-create with `IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'` | Dynamic — `token_processors` materializes ephemeral users from JWT claims |
@@ -105,9 +105,11 @@ churning user base it's a maintenance burden.
 
 ### Token lifecycle
 
-Gating mode tokens are managed by the upstream IdP. The IdP's TTL
-bounds revocation latency (10 min – 1 h typical). Refresh-token
-rotation and reuse detection are the IdP's responsibility.
+Gating mode tokens are managed by the upstream IdP. The IdP's
+access-token TTL is what bounds revocation latency — pick it on the
+IdP side to match your security/availability trade-off (shorter TTL =
+faster revocation, more refresh load). Refresh-token rotation and reuse
+detection are also the IdP's responsibility.
 
 Forward mode tokens are also the upstream IdP's. With
 `upstream_offline_access: true`, MCP wraps the upstream refresh token in

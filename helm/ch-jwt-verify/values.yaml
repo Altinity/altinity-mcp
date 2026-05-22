@@ -76,7 +76,11 @@ resources: {}
 ch:
   # Name of the http_authentication server entry CH picks up. Per-user
   # bindings look like:
-  #   CREATE USER "alice@example.com" IDENTIFIED WITH http_authenticator SERVER 'ch_jwt_verify';
+  #   CREATE USER `alice@example.com`
+  #     IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'
+  #     DEFAULT ROLE mcp_reader;
+  # (CH grammar token is `http`, not `http_authenticator` — the latter
+  # is rejected with SYNTAX_ERROR.)
   serverName: ch_jwt_verify
   # The URL CH uses to reach the sidecar over loopback. Must match `listen`.
   url: "http://127.0.0.1:9999/verify"
