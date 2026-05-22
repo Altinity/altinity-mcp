@@ -422,10 +422,12 @@ func (c *Client) ExecuteCappedQuery(ctx context.Context, query string, maxRows, 
 		"result_overflow_mode": "break",
 	}
 	if maxRows > 0 {
-		// +1 so the engine returns at least one row past the cap when the
-		// underlying result is larger — Layer 2 uses that overshoot as the
-		// truncation signal.
-		settings["max_result_rows"] = uint64(maxRows + 1)
+		// Push the cap as-is. With overflow_mode='break' ClickHouse stops
+		// between blocks, so realistic block sizes (~64k rows) deliver well
+		// past the cap and Layer 2 sees the overshoot it needs to flag
+		// truncation. The previous +1 trick was unnecessary and obscured the
+		// intent.
+		settings["max_result_rows"] = uint64(maxRows)
 	}
 	if maxBytes > 0 {
 		settings["max_result_bytes"] = uint64(maxBytes)
@@ -481,9 +483,9 @@ func (c *Client) executeSelect(ctx context.Context, query string, maxRows, maxBy
 		if err != nil {
 			return nil, err
 		}
-		// Row cap (Layer 2). The session-settings push asked CH for maxRows+1,
-		// so seeing a (maxRows+1)th row here means the underlying result was
-		// larger and we should truncate + flag.
+		// Row cap (Layer 2). Layer 1 asked CH to stop at maxRows; with
+		// overflow_mode='break' the last block typically pushes us past the
+		// cap, and seeing that overshoot here is the truncation signal.
 		if maxRows > 0 && len(result.Rows) >= maxRows {
 			result.Truncated = &TruncationInfo{
 				Reason:              TruncationReasonMaxResultRows,

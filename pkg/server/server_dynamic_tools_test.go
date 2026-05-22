@@ -563,6 +563,54 @@ func TestMakeDynamicToolHandler_WithParams(t *testing.T) {
 	require.False(t, result.IsError)
 }
 
+// TestMakeDynamicToolHandler_RowCapTruncates verifies the operator-configured
+// row cap fires for a dynamic read-mode tool, embeds TruncationInfo in the
+// JSON body, and surfaces the second text-content notice — the same contract
+// as execute_query.
+func TestMakeDynamicToolHandler_RowCapTruncates(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = 1
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: cfg,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		},
+	}
+
+	meta := dynamicToolMeta{
+		ToolName: "test_table",
+		Database: "default",
+		Table:    "test",
+	}
+
+	handler := makeDynamicToolHandler(meta)
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{Name: meta.ToolName, Arguments: json.RawMessage(`{}`)},
+	}
+
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+	result, err := handler(ctx, req)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Len(t, result.Content, 2, "expected data block + truncation notice")
+
+	data, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok)
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal([]byte(data.Text), &qr))
+	require.Equal(t, 1, qr.Count)
+	require.NotNil(t, qr.Truncated)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultRows, qr.Truncated.Reason)
+	require.Equal(t, 1, qr.Truncated.Limit)
+
+	notice, ok := result.Content[1].(*mcp.TextContent)
+	require.True(t, ok)
+	require.Contains(t, notice.Text, "truncated")
+}
+
 func TestCapitalize(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

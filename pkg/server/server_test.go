@@ -760,6 +760,45 @@ func TestHandleExecuteQueryOpenAPI_RowCapTruncates(t *testing.T) {
 	require.Equal(t, 1, qr.Truncated.Limit)
 }
 
+// TestHandleDynamicToolOpenAPI_RowCapTruncates verifies the row cap fires on
+// the OpenAPI dynamic-tool path, sets X-MCP-Truncated, and embeds the
+// truncation info in the JSON body.
+func TestHandleDynamicToolOpenAPI_RowCapTruncates(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouse(t)
+	cfg := *chConfig
+	cfg.MaxResultRows = 1
+
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			ClickHouse: cfg,
+			Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
+		},
+		Version:      "test",
+		dynamicTools: map[string]dynamicToolMeta{},
+	}
+
+	meta := dynamicToolMeta{ToolName: "tool", Database: "default", Table: "test"}
+
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/openapi/tool", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+
+	rr := httptest.NewRecorder()
+	srv.handleDynamicToolOpenAPI(rr, req, meta)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultRows, rr.Header().Get("X-MCP-Truncated"))
+
+	var qr clickhouse.QueryResult
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &qr))
+	require.Equal(t, 1, qr.Count)
+	require.NotNil(t, qr.Truncated)
+	require.Equal(t, 1, qr.Truncated.Limit)
+	require.Equal(t, clickhouse.TruncationReasonMaxResultRows, qr.Truncated.Reason)
+}
+
 // TestHandleDynamicToolOpenAPI_MethodNotAllowed tests method validation
 func TestHandleDynamicToolOpenAPI_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
