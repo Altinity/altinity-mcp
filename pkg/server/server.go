@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/go-jose/go-jose/v4"
+	"github.com/altinity/altinity-mcp/pkg/oauth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 )
@@ -24,16 +23,12 @@ type ClickHouseJWEServer struct {
 	dynamicTools     map[string]dynamicToolMeta
 	dynamicToolsMu   sync.RWMutex
 	dynamicToolsInit bool
-	// JWKS cache for OAuth token validation
-	jwksCache          jose.JSONWebKeySet
-	jwksCacheURL       string
-	jwksCacheMu        sync.RWMutex
-	jwksCacheTime      time.Time
-	oidcConfigCache    OpenIDConfiguration
-	oidcConfigCacheURL string
-	oidcConfigMu       sync.RWMutex
-	oidcConfigTime     time.Time
-	blockedClauses     map[string]bool
+	// oauthVerifier owns the JWKS + OIDC discovery cache it needs to validate
+	// inbound OAuth bearers. Constructed in NewClickHouseMCPServer; tests that
+	// build ClickHouseJWEServer via struct literal get a lazily-built verifier
+	// from the verifier() getter.
+	oauthVerifier  *oauth.Verifier
+	blockedClauses map[string]bool
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -73,6 +68,7 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		Config:         cfg,
 		Version:        version,
 		dynamicTools:   make(map[string]dynamicToolMeta),
+		oauthVerifier:  oauth.NewVerifier(cfg.Server.OAuth),
 		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
 
@@ -545,11 +541,10 @@ func GetClickHouseJWEServerFromContext(ctx context.Context) *ClickHouseJWEServer
 // contextKey avoids collisions with other packages using context.WithValue.
 type contextKey string
 
-// Auth context keys
+// Auth context keys for JWE + the embedded MCP server. OAuth token / claims
+// keys live in pkg/oauth (re-exported as vars in server_auth_oauth.go).
 const (
 	JWETokenKey    contextKey = "jwe_token"
 	JWEClaimsKey   contextKey = "jwe_claims"
-	OAuthTokenKey  contextKey = "oauth_token"
-	OAuthClaimsKey contextKey = "oauth_claims"
 	CHJWEServerKey contextKey = "clickhouse_jwe_server"
 )

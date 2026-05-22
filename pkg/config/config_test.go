@@ -568,13 +568,12 @@ func TestConfigStructs(t *testing.T) {
 			Scopes:                          []string{"read", "write"},
 			RequiredScopes:                  []string{"read"},
 			ClickHouseHeaderName:            "X-Custom-Token",
-			ClaimsToHeaders:         map[string]string{"sub": "X-User", "email": "X-Email"},
-			AuthorizationPath:       "/authorize",
-			CallbackPath:            "/callback",
-			TokenPath:               "/token",
-			UpstreamIssuerAllowlist: []string{"https://accounts.google.com"},
-			AccessTokenTTLSeconds:   600,
-			RefreshTokenTTLSeconds:  86400,
+			ClaimsToHeaders:        map[string]string{"sub": "X-User", "email": "X-Email"},
+			AuthorizationPath:      "/authorize",
+			CallbackPath:           "/callback",
+			TokenPath:              "/token",
+			AccessTokenTTLSeconds:  600,
+			RefreshTokenTTLSeconds: 86400,
 		}
 
 		require.True(t, cfg.Enabled)
@@ -595,7 +594,6 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "/authorize", cfg.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.CallbackPath)
 		require.Equal(t, "/token", cfg.TokenPath)
-		require.Equal(t, []string{"https://accounts.google.com"}, cfg.UpstreamIssuerAllowlist)
 		require.Equal(t, 600, cfg.AccessTokenTTLSeconds)
 		require.Equal(t, 86400, cfg.RefreshTokenTTLSeconds)
 	})
@@ -635,8 +633,6 @@ server:
     authorization_path: "/authorize"
     callback_path: "/callback"
     token_path: "/token"
-    upstream_issuer_allowlist:
-      - "https://accounts.google.com"
     access_token_ttl_seconds: 600
     refresh_token_ttl_seconds: 86400
     scopes:
@@ -683,7 +679,6 @@ logging:
 		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
 		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)
-		require.Equal(t, []string{"https://accounts.google.com"}, cfg.Server.OAuth.UpstreamIssuerAllowlist)
 		require.Equal(t, 600, cfg.Server.OAuth.AccessTokenTTLSeconds)
 		require.Equal(t, 86400, cfg.Server.OAuth.RefreshTokenTTLSeconds)
 	})
