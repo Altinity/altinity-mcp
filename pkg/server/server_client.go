@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -121,12 +123,6 @@ func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthC
 	return oauth.ClaimsFromContext(ctx)
 }
 
-// BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config.
-// Thin wrapper around oauth.BuildClickHouseHeaders.
-func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, claims *OAuthClaims) map[string]string {
-	return oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, token, claims)
-}
-
 // ValidateAuth validates authentication using priority/fallback semantics.
 // JWE takes priority: if present and valid with credentials, OAuth is skipped.
 // If JWE is absent or has no credentials, falls through to OAuth.
@@ -162,19 +158,15 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jw
 		}
 	}
 
-	// Fall through to OAuth
+	// Fall through to OAuth. MCP is a pure forwarder for queries: the
+	// ch-jwt-verify sidecar cryptographically validates the JWT at each
+	// ClickHouse query, so MCP does not re-validate here.
 	if oauthEnabled {
 		oauthToken = s.ExtractOAuthTokenFromRequest(r)
 		if oauthToken == "" {
 			return jweToken, jweClaims, "", nil, ErrMissingOAuthToken
 		}
-		if s.oauthRequiresLocalValidation() {
-			oauthClaims, err = s.ValidateOAuthToken(oauthToken)
-			if err != nil {
-				return jweToken, jweClaims, "", nil, err
-			}
-		}
-		return jweToken, jweClaims, oauthToken, oauthClaims, nil
+		return jweToken, jweClaims, oauthToken, nil, nil
 	}
 
 	// JWE enabled but no token and no OAuth
@@ -219,49 +211,42 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		chConfig = s.Config.ClickHouse
 	}
 
-	// Add OAuth headers if forwarding is enabled
-	if s.Config.Server.OAuth.IsForwardMode() && oauthToken != "" {
-		oauthHeaders := s.BuildClickHouseHeadersFromOAuth(oauthToken, oauthClaims)
-		if len(oauthHeaders) > 0 {
-			if chConfig.HttpHeaders == nil {
-				chConfig.HttpHeaders = make(map[string]string)
+	// Switch on OAuth mode to pick the CH wire format. Forward and gating
+	// both apply only when an OAuth bearer is on the inbound request.
+	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
+		switch {
+		case s.Config.Server.OAuth.IsForwardMode():
+			// Forward mode: rewrite the Authorization header so ClickHouse
+			// receives `Bearer <token>` directly. Antalya's token_processors
+			// validates the bearer cryptographically.
+			oauthHeaders := oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, oauthToken, oauthClaims)
+			if len(oauthHeaders) > 0 {
+				if chConfig.HttpHeaders == nil {
+					chConfig.HttpHeaders = make(map[string]string)
+				}
+				for k, v := range oauthHeaders {
+					chConfig.HttpHeaders[k] = v
+				}
 			}
-			for k, v := range oauthHeaders {
-				chConfig.HttpHeaders[k] = v
+			chConfig.Username = ""
+			chConfig.Password = ""
+		case s.Config.Server.OAuth.IsGatingMode():
+			// Gating mode: ClickHouse's <http_authentication> calls the
+			// colocated ch-jwt-verify sidecar over loopback to validate the
+			// JWT. The CH driver assembles `Authorization: Basic
+			// base64(email:JWT)` from Username/Password. The email is
+			// unverified-decoded from the JWT here; the sidecar enforces
+			// signature/iss/aud/exp/scope and the user-vs-email match.
+			email, ok := emailFromUnverifiedJWT(oauthToken)
+			if !ok {
+				return nil, fmt.Errorf("oauth gating: bearer is not a JWT with an email claim")
 			}
+			chConfig.Username = email
+			chConfig.Password = oauthToken
+			// http_authentication is HTTP-only on the CH side. Force the
+			// driver to use HTTP regardless of static config.
+			chConfig.Protocol = config.HTTPProtocol
 		}
-		// In forward mode, always clear static credentials — ClickHouse authenticates via the token
-		chConfig.Username = ""
-		chConfig.Password = ""
-	}
-
-	// In cluster-secret mode, the shared secret is the only credential sent
-	// to ClickHouse; Username is just the identity we ask ClickHouse to
-	// impersonate. When OAuth is enabled, prefer the authenticated user's
-	// email so `system.query_log` attributes the query to a human-readable
-	// identity that matches how operators typically provision ClickHouse
-	// users.
-	//
-	// Auth0 enhanced-security third-party (DCR) tokens strip the OIDC `email`
-	// claim from access tokens. Operators work around this with a post-login
-	// Action that re-adds email under a namespaced URL claim (Auth0 only
-	// allows non-standard claims when they're URL-prefixed for third-party
-	// clients). We accept either the standard `email` claim or any namespaced
-	// `*/email` claim from the Extra map. Fall back to `sub` for IdPs that
-	// don't emit any email claim.
-	if chConfig.ClusterSecret != "" && oauthClaims != nil {
-		var impersonateAs string
-		if e := strings.TrimSpace(oauthClaims.Email); e != "" {
-			impersonateAs = e
-		} else if e := oauth.EmailFromNamespacedExtra(oauthClaims.Extra); e != "" {
-			impersonateAs = e
-		} else if s := strings.TrimSpace(oauthClaims.Subject); s != "" {
-			impersonateAs = s
-		}
-		if impersonateAs != "" {
-			chConfig.Username = impersonateAs
-		}
-		chConfig.Password = ""
 	}
 
 	// Merge tool-input settings from context (tool_input_settings)
@@ -278,3 +263,36 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	return client, nil
 }
 
+// emailFromUnverifiedJWT decodes the JWT payload without verifying the
+// signature and returns the `email` claim (or first namespaced `*/email`
+// fallback). Used only to populate the CH `Basic` username so the sidecar can
+// receive it; the sidecar still verifies the JWT signature and rejects any
+// mismatch between the JWT's signed email and the Basic user.
+func emailFromUnverifiedJWT(token string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return "", false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Some IdPs emit padded segments; try the std encoding as a fallback.
+		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
+			log.Debug().Err(err).Msg("oauth gating: failed to base64-decode JWT payload")
+			return "", false
+		}
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		log.Debug().Err(err).Msg("oauth gating: failed to JSON-parse JWT payload")
+		return "", false
+	}
+	if e, ok := raw["email"].(string); ok {
+		if t := strings.TrimSpace(e); t != "" {
+			return t, true
+		}
+	}
+	if e := oauth.EmailFromNamespacedExtra(raw); e != "" {
+		return e, true
+	}
+	return "", false
+}

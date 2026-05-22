@@ -122,21 +122,15 @@ func (v *Verifier) validateClaims(claims *Claims) (*Claims, error) {
 		}
 	}
 
-	if err := v.validateIdentityPolicy(claims); err != nil {
-		return nil, err
-	}
-
 	return claims, nil
 }
 
 // ValidateUpstreamIdentityToken parses an upstream identity token using the
-// JWKS path (no soft-pass) and applies the identity policy. Used by the
-// broker's /oauth/callback after exchanging the upstream authorization code
-// for an id_token.
+// JWKS path (no soft-pass). Used by the broker's /oauth/callback after
+// exchanging the upstream authorization code for an id_token: it verifies the
+// redemption was legitimate (signature/iss/aud/exp) without imposing
+// identity policy — domain allow-listing and verified-email enforcement now
+// live in the CH-side ch-jwt-verify sidecar.
 func (v *Verifier) ValidateUpstreamIdentityToken(ctx context.Context, token, expectedAudience string) (*Claims, error) {
-	claims, err := v.parseAndVerifyExternalJWT(ctx, token, expectedAudience)
-	if err != nil {
-		return nil, err
-	}
-	return claims, v.validateIdentityPolicy(claims)
+	return v.parseAndVerifyExternalJWT(ctx, token, expectedAudience)
 }

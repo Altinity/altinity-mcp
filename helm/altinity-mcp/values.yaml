@@ -209,13 +209,6 @@ config:
       scopes: []
       # -- Required scopes for access (token must have all of these)
       required_scopes: []
-      # -- Header name for forwarding OAuth token to ClickHouse
-      # Default: "Authorization" (sends as "Bearer {token}")
-      # Set to a custom header name to send raw token without "Bearer " prefix
-      clickhouse_header_name: ""
-      # -- Map OAuth token claims to ClickHouse HTTP headers
-      # Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
-      claims_to_headers: {}
     # Dynamic tools generated from ClickHouse views
     dynamic_tools: []
     #  - regexp: "db\\..*"

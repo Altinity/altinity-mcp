@@ -565,10 +565,8 @@ func TestConfigStructs(t *testing.T) {
 			ClientSecret:                    "secret-456",
 			TokenURL:                        "https://auth.example.com/oauth/token",
 			AuthURL:                         "https://auth.example.com/oauth/authorize",
-			Scopes:                          []string{"read", "write"},
-			RequiredScopes:                  []string{"read"},
-			ClickHouseHeaderName:            "X-Custom-Token",
-			ClaimsToHeaders:        map[string]string{"sub": "X-User", "email": "X-Email"},
+			Scopes:                 []string{"read", "write"},
+			RequiredScopes:         []string{"read"},
 			AuthorizationPath:      "/authorize",
 			CallbackPath:           "/callback",
 			TokenPath:              "/token",
@@ -588,9 +586,6 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.Equal(t, []string{"read"}, cfg.RequiredScopes)
-		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
-		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
 		require.Equal(t, "/authorize", cfg.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.CallbackPath)
 		require.Equal(t, "/token", cfg.TokenPath)
@@ -640,10 +635,6 @@ server:
       - write
     required_scopes:
       - read
-    clickhouse_header_name: "X-Custom-Token"
-    claims_to_headers:
-      sub: "X-ClickHouse-User"
-      email: "X-ClickHouse-Email"
 logging:
   level: info
 `
@@ -673,9 +664,6 @@ logging:
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.Server.OAuth.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.Scopes)
 		require.Equal(t, []string{"read"}, cfg.Server.OAuth.RequiredScopes)
-		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
-		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
 		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
 		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)
@@ -706,11 +694,7 @@ logging:
       "enabled": true,
       "issuer": "https://auth.example.com",
       "audience": "my-api",
-      "required_scopes": ["read", "write"],
-      "claims_to_headers": {
-        "sub": "X-User-ID",
-        "name": "X-User-Name"
-      }
+      "required_scopes": ["read", "write"]
     }
   },
   "logging": {
@@ -731,8 +715,6 @@ logging:
 		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
 		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.RequiredScopes)
-		require.Equal(t, "X-User-ID", cfg.Server.OAuth.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-User-Name", cfg.Server.OAuth.ClaimsToHeaders["name"])
 	})
 
 	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {

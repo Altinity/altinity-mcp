@@ -34,8 +34,6 @@ var (
 	ErrInvalidOAuthToken       = oauth.ErrInvalidToken
 	ErrOAuthTokenExpired       = oauth.ErrTokenExpired
 	ErrOAuthInsufficientScopes = oauth.ErrInsufficientScopes
-	ErrOAuthEmailNotVerified   = oauth.ErrEmailNotVerified
-	ErrOAuthUnauthorizedDomain = oauth.ErrUnauthorizedDomain
 )
 
 // OAuthTokenKey / OAuthClaimsKey re-export the pkg/oauth context keys so
@@ -71,16 +69,12 @@ func (s *ClickHouseJWEServer) ValidateOAuthToken(token string) (*OAuthClaims, er
 }
 
 // ValidateUpstreamIdentityToken parses an upstream identity token (no
-// soft-pass) and applies the identity policy. Used by the broker on /callback.
+// soft-pass) and applies signature/iss/aud/exp checks. Used by the broker on
+// /callback to verify the redemption was legitimate. Identity-policy
+// enforcement (verified-email, domain allow-listing) is now handled by the
+// CH-side ch-jwt-verify sidecar.
 func (s *ClickHouseJWEServer) ValidateUpstreamIdentityToken(token, expectedAudience string) (*OAuthClaims, error) {
 	return s.verifier().ValidateUpstreamIdentityToken(context.Background(), token, expectedAudience)
-}
-
-// ValidateOAuthIdentityPolicyClaims re-runs the identity policy checks on an
-// already-parsed claim set. Used after the broker exchanges an opaque
-// access_token for a userinfo response.
-func (s *ClickHouseJWEServer) ValidateOAuthIdentityPolicyClaims(claims *OAuthClaims) error {
-	return s.verifier().ValidateIdentityPolicyClaims(claims)
 }
 
 // FetchOpenIDConfiguration returns the discovered OIDC metadata subset the

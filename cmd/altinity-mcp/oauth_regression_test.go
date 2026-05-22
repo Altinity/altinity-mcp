@@ -164,9 +164,13 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 	})
 }
 
-// --- forward-mode JWT validation in the MCP auth injector ----------------
+// --- MCP auth injector is a pure forwarder ------------------------------
 
-func TestOAuthMCPAuthInjectorForwardModeValidatesJWT(t *testing.T) {
+// The refactor moved per-request JWT validation to the CH-side ch-jwt-verify
+// sidecar (gating mode) / Antalya's token_processors (forward mode). MCP's
+// injector now just confirms a bearer is present and threads it into the
+// context — anything else is the CH-side authenticator's responsibility.
+func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
 	t.Parallel()
 	provider := newRegressionOIDCProvider(t, nil, nil)
 	cfg := config.Config{
@@ -187,12 +191,17 @@ func TestOAuthMCPAuthInjectorForwardModeValidatesJWT(t *testing.T) {
 
 	mkReq := func(token string) (*httptest.ResponseRecorder, *http.Request) {
 		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		return httptest.NewRecorder(), req
 	}
 
-	t.Run("valid JWT reaches handler with claims", func(t *testing.T) {
+	t.Run("any bearer reaches handler verbatim", func(t *testing.T) {
 		t.Parallel()
+		// MCP no longer validates the JWT here — even a wrong-audience or
+		// expired token reaches the inner handler. The sidecar / token
+		// processor is the cryptographic gate.
 		tok := provider.issueIDToken(t, map[string]interface{}{
 			"sub": "u-good",
 			"iss": provider.server.URL,
@@ -205,50 +214,21 @@ func TestOAuthMCPAuthInjectorForwardModeValidatesJWT(t *testing.T) {
 		app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
 			require.Equal(t, tok, r.Context().Value(altinitymcp.OAuthTokenKey))
-			claims, ok := r.Context().Value(altinitymcp.OAuthClaimsKey).(*altinitymcp.OAuthClaims)
-			require.True(t, ok)
-			require.Equal(t, "u-good", claims.Subject)
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(rr, req)
 		require.True(t, called)
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
 
-	t.Run("wrong-audience JWT rejected with 401", func(t *testing.T) {
+	t.Run("missing bearer rejected with 401", func(t *testing.T) {
 		t.Parallel()
-		tok := provider.issueIDToken(t, map[string]interface{}{
-			"sub": "u-bad-aud",
-			"iss": provider.server.URL,
-			"aud": "some-other-api",
-			"exp": time.Now().Add(time.Hour).Unix(),
-		})
-		rr, req := mkReq(tok)
+		rr, req := mkReq("")
 		called := false
 		app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			called = true
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(rr, req)
-		require.False(t, called, "wrong-aud token must not reach inner handler")
-		require.Equal(t, http.StatusUnauthorized, rr.Code)
-		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
-	})
-
-	t.Run("expired JWT rejected with 401", func(t *testing.T) {
-		t.Parallel()
-		tok := provider.issueIDToken(t, map[string]interface{}{
-			"sub": "u-expired",
-			"iss": provider.server.URL,
-			"aud": "clickhouse-api",
-			"exp": time.Now().Add(-2 * time.Hour).Unix(),
-			"iat": time.Now().Add(-3 * time.Hour).Unix(),
-		})
-		rr, req := mkReq(tok)
-		called := false
-		app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			called = true
-			w.WriteHeader(http.StatusOK)
-		})).ServeHTTP(rr, req)
-		require.False(t, called, "expired token must not reach inner handler")
+		require.False(t, called, "missing token must not reach inner handler")
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
 }

@@ -160,12 +160,12 @@ func (a *application) oauthForwardMode() bool {
 }
 
 // oauthBrokerMode reports whether altinity-mcp is acting as the OAuth AS to
-// MCP clients (DCR + /authorize + /token + /callback). True for forward mode
+// MCP clients (/authorize + /token + /callback). True for forward mode
 // always; true for gating mode iff the operator opts in via
 // oauth.broker_upstream. When true, /oauth/* routes are registered and the
 // broker-flow handlers fire. The /mcp request path still differs per mode —
-// forward forwards the upstream bearer to CH; gating impersonates via
-// cluster_secret + Auth.Username.
+// forward forwards the upstream bearer to CH as Bearer; gating sends Basic
+// base64(email:JWT) for the ch-jwt-verify sidecar to validate.
 func (a *application) oauthBrokerMode() bool {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	if cfg.IsForwardMode() {
@@ -737,17 +737,13 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
-				// C-1: validate locally in both gating and forward modes per MCP
-				// authorization spec §Token Handling. Forward-mode opaque tokens
-				// and JWTs without a configured JWKS source soft-pass with nil
-				// claims; ValidateOAuthToken decides which is which.
-				claims, err := a.mcpServer.ValidateOAuthToken(oauthToken)
-				if err != nil {
-					a.writeOAuthError(w, r, err)
-					return
-				}
+				// MCP is a pure forwarder: the CH-side ch-jwt-verify sidecar
+				// performs signature/iss/aud/exp/scope validation against the
+				// upstream JWKS for every query. Per-request validation here
+				// would duplicate work for opaque tokens and add a JWKS hop
+				// on the hot path; skip it and let the sidecar gate.
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
-				ctx = context.WithValue(ctx, altinitymcp.OAuthClaimsKey, claims)
+				ctx = context.WithValue(ctx, altinitymcp.OAuthClaimsKey, (*altinitymcp.OAuthClaims)(nil))
 			}
 
 			// At least one auth method must have succeeded
@@ -947,7 +943,7 @@ func (a *application) fetchUserInfo(accessToken string) (*altinitymcp.OAuthClaim
 	if claims.Issuer == "" {
 		claims.Issuer = cfg.Issuer
 	}
-	return claims, a.mcpServer.ValidateOAuthIdentityPolicyClaims(claims)
+	return claims, nil
 }
 
 func (a *application) resolveUpstreamAuthURL() (string, error) {

@@ -32,8 +32,6 @@ A Helm chart for Altinity MCP Server
 | config.server.dynamic_tools | list | `[]` | Dynamic tools generated from ClickHouse views |
 | config.server.oauth.audience | string | `""` | Expected audience claim in the token |
 | config.server.oauth.auth_url | string | `""` | OAuth authorization endpoint URL |
-| config.server.oauth.claims_to_headers | object | `{}` | Map OAuth token claims to ClickHouse HTTP headers |
-| config.server.oauth.clickhouse_header_name | string | `""` | Header name for forwarding OAuth token to ClickHouse |
 | config.server.oauth.client_id | string | `""` | OAuth client ID |
 | config.server.oauth.client_secret | string | `""` | OAuth client secret |
 | config.server.oauth.enabled | bool | `false` | Enable OAuth 2.0 authentication |

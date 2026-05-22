@@ -1,68 +1,19 @@
 package oauth
 
-import (
-	"encoding/json"
-	"strings"
-)
+import "strings"
 
-// BuildClickHouseHeaders builds the HTTP headers that forward-mode requires
-// when proxying a request to ClickHouse: the bearer itself (under
-// `Authorization` or a custom name) plus any claims-to-headers mapping. The
-// caller is responsible for not invoking this in gating mode — that case
-// returns nil per the legacy contract.
-func BuildClickHouseHeaders(cfg OAuthConfig, token string, claims *Claims) map[string]string {
+// BuildClickHouseHeaders returns the headers MCP forwards to ClickHouse under
+// forward mode: just the bearer wrapped as `Authorization: Bearer <token>`.
+// Gating mode does not flow through this helper — its CH credentials are
+// conveyed via the Basic header assembled by clickhouse-go from
+// Auth.Username/Auth.Password.
+func BuildClickHouseHeaders(cfg OAuthConfig, token string, _ *Claims) map[string]string {
 	if !cfg.IsForwardMode() {
 		return nil
 	}
-
-	headers := make(map[string]string)
-
-	headerName := cfg.ClickHouseHeaderName
-	if headerName == "" {
-		headerName = "Authorization"
+	return map[string]string{
+		"Authorization": "Bearer " + token,
 	}
-	if headerName == "Authorization" {
-		headers[headerName] = "Bearer " + token
-	} else {
-		headers[headerName] = token
-	}
-
-	if len(cfg.ClaimsToHeaders) > 0 && claims != nil {
-		for claimName, hdr := range cfg.ClaimsToHeaders {
-			var value string
-			switch claimName {
-			case "sub":
-				value = claims.Subject
-			case "iss":
-				value = claims.Issuer
-			case "email":
-				value = claims.Email
-			case "name":
-				value = claims.Name
-			case "email_verified":
-				if claims.EmailVerified {
-					value = "true"
-				} else {
-					value = "false"
-				}
-			case "hd":
-				value = claims.HostedDomain
-			default:
-				if v, ok := claims.Extra[claimName]; ok {
-					if strVal, ok := v.(string); ok {
-						value = strVal
-					} else if jsonBytes, err := json.Marshal(v); err == nil {
-						value = string(jsonBytes)
-					}
-				}
-			}
-			if value != "" {
-				headers[hdr] = value
-			}
-		}
-	}
-
-	return headers
 }
 
 // EmailFromNamespacedExtra returns the first string-valued claim whose key

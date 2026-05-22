@@ -20,10 +20,16 @@
 > redemption from `/oauth/callback` to `/oauth/token` so the upstream IdP
 > becomes the cross-replica replay oracle via `invalid_grant`.
 >
-> The rest of this document still describes the gating / forward / broker
-> dichotomy and the trust model. Mentions of DCR below predate #115 and
-> apply only to the upstream IdP side (Auth0 / Hydra / Keycloak), never to
-> altinity-mcp itself.
+> **Updated for sidecar refactor (feature/sidecar):** Gating-mode semantics
+> evolved — MCP no longer impersonates users via `cluster_secret`. Instead, MCP
+> rewrites the per-request bearer to `Authorization: Basic base64(email:JWT)`
+> and ClickHouse's [`<http_authentication>`](https://clickhouse.com/docs/operations/external-authenticators/http)
+> calls the colocated `ch-jwt-verify` sidecar to cryptographically validate
+> the JWT and authorize the query. MCP itself does **no** per-request JWT
+> validation: it's a pure forwarder. The `cluster_secret`, `ClaimsToHeaders`,
+> `allowed_email_domains`, `allowed_hosted_domains`, and `allow_unverified_email`
+> options are removed; the sidecar enforces the equivalent policies. See
+> `helm/ch-jwt-verify/` for the chart that ships the sidecar.
 
 This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authentication with the Altinity MCP Server.
 
@@ -31,17 +37,17 @@ This document explains how to configure OAuth 2.0 / OpenID Connect (OIDC) authen
 
 OAuth 2.0 authorization supports two modes:
 
-- **`mode: gating`** *(default for v1+, redefined in #109)* — MCP is a pure OAuth resource server. The upstream IdP (Auth0 Enterprise, Authentik, Keycloak, Okta) handles DCR, `/authorize`, `/token`, and refresh-token rotation natively. MCP validates AS-issued JWTs and authorizes per-tool scopes. Use when the IdP supports DCR + RFC 8707 resource indicators.
-- **`mode: forward`** *(unchanged)* — MCP proxies DCR + `/authorize` + `/token` to upstream and relays upstream tokens to clients. Use when the IdP does NOT support DCR (Google direct, basic-tier Auth0).
+- **`mode: gating`** *(default for v1+)* — MCP is a pure forwarder. Each query carries `Authorization: Basic base64(email:JWT)` to ClickHouse; CH's `<http_authentication>` calls the `ch-jwt-verify` sidecar (see `cmd/ch-jwt-verify/`, `helm/ch-jwt-verify/`) which validates the JWT against the upstream JWKS, enforces identity policy, and returns the session settings to apply.
+- **`mode: forward`** *(unchanged)* — MCP proxies DCR + `/authorize` + `/token` to upstream and relays upstream tokens to clients via `Authorization: Bearer <id_token>`. Use when the IdP does NOT support DCR (Google direct, basic-tier Auth0) and ClickHouse can validate the bearer natively (Antalya 25.8+ `token_processors`).
 
 Detailed flows are in [Forward mode](#forward-mode) and [Gating mode](#gating-mode). The decision-rationale and trust-model differences are in [Choosing a mode](#choosing-a-mode) below.
 
 ## Mode taxonomy
 
-| Mode | What MCP does | When to use |
-|---|---|---|
-| **`gating`** *(redefined in #109)* | Validates AS-issued JWTs via JWKS (RS256/ES256/EdDSA); enforces `aud` byte-equality (RFC 8707); enforces per-tool scopes (`mcp:read` / `mcp:write`); impersonates the user to ClickHouse via `cluster_secret` + `Auth.Username`. Does **not** run `/register`, `/authorize`, `/token`, `/callback`, `/consent`. | Default for v1+. Use when the upstream IdP supports DCR (Auth0 Enterprise, Authentik, Keycloak ≥ 18, Okta). |
-| **`forward`** *(unchanged)* | Proxies DCR + `/authorize` + `/token` to upstream; relays upstream tokens to clients. MCP appears to be the AS to clients but isn't really. JWE-wraps the upstream refresh token for stateless rotation. | Use when the upstream IdP does NOT support DCR (Google direct, basic-tier Auth0). IdP-agnostic. |
+| Mode | What MCP does | What CH does | When to use |
+|---|---|---|---|
+| **`gating`** | Decodes the JWT's `email` claim (no signature verification — sidecar is the gate). Rewrites `Auth: Bearer <jwt>` to `Auth: Basic base64(email:JWT)`. Forces HTTP protocol. | `<http_authentication>` calls the `ch-jwt-verify` sidecar over loopback. Sidecar validates signature/iss/aud/exp/scope and matches user vs. JWT email. | Default for v1+. Works on any ClickHouse build (OSS or Antalya). Requires deploying the sidecar next to CH. |
+| **`forward`** | Proxies DCR + `/authorize` + `/token` to upstream; relays upstream tokens to clients via `Bearer`. | Antalya's `token_processors` cryptographically validates the bearer and materialises an ephemeral CH user from JWT claims. | Use when the upstream IdP doesn't expose CIMD/DCR (Google direct, basic-tier Auth0) and ClickHouse is Antalya 25.8+. |
 
 ### Required helm values per mode
 
@@ -127,25 +133,32 @@ Use **gating** when the IdP supports DCR + RFC 8707 (Auth0 Enterprise, Authentik
 
 ### What's actually different
 
-| | Gating (#109+) | Forward |
+| | Gating (sidecar) | Forward |
 |---|---|---|
-| Who runs DCR / authorize / token | Upstream IdP | MCP (proxied to upstream) |
-| Bearer the MCP client receives | AS-issued JWT (RS256, 10-min TTL) | Upstream IdP id_token (raw passthrough) |
-| MCP→ClickHouse credential | `cluster_secret` + `Auth.Username` = email | `Authorization: Bearer <id_token>` over HTTP |
-| Who validates the bearer on every query | MCP (JWKS + RFC 8707 aud + scopes) | **ClickHouse** via `token_processors` (MCP also validates locally — see [C-1](#c-1-defense-in-depth-validation-in-forward-mode)) |
-| User provisioning in ClickHouse | Pre-create users (`CREATE USER alice@example.com …`) | Dynamic — `token_processors` materialises ephemeral users from JWT claims |
-| ClickHouse build requirement | Any | Altinity Antalya 25.8+ (or any CH with native JWT auth) |
-| ClickHouse protocol | TCP (cluster_secret) or HTTP (static creds) | HTTP only |
-| Identity in `system.query_log` | The cluster-secret-impersonated user | The JWT subject directly |
+| Who runs DCR / authorize / token | Upstream IdP (CIMD) | MCP (proxied to upstream) |
+| Bearer the MCP client receives | Upstream AS-issued JWT (RS256, 10-min TTL) | Upstream IdP id_token (raw passthrough) |
+| MCP→ClickHouse credential | `Authorization: Basic base64(email:JWT)` over HTTP | `Authorization: Bearer <id_token>` over HTTP |
+| Who validates the bearer on every query | The `ch-jwt-verify` sidecar (signature + iss + aud + exp + scope + user-vs-email match) | **ClickHouse** via `token_processors` |
+| User provisioning in ClickHouse | Pre-create users `IDENTIFIED WITH http_authenticator SERVER 'ch_jwt_verify'` | Dynamic — `token_processors` materialises ephemeral users from JWT claims |
+| ClickHouse build requirement | Any (OSS too); needs the sidecar deployed alongside CH | Altinity Antalya 25.8+ |
+| ClickHouse protocol | HTTP only | HTTP only |
+| Identity in `system.query_log` | The matched CH user (= JWT email) | The JWT subject directly |
 | Refresh-token rotation + reuse detection | Auth0 native (when DCR-template defaults are set — see security gap above) | Upstream IdP (when `upstream_offline_access: true`) |
 
-### The trust-boundary argument for forward mode
+### The trust-boundary argument
 
-In **gating + cluster_secret**, the MCP pod holds the cluster-shared secret and tells ClickHouse "this query is by user `alice@example.com`". ClickHouse trusts that claim because MCP knows the secret. Compromise the MCP pod, impersonate any provisioned user.
+Under the sidecar refactor, MCP holds no shared secret with ClickHouse and has
+no authority to impersonate users. Every query is gated by a cryptographic
+check performed by the sidecar against the upstream IdP's JWKS — compromise of
+the MCP pod buys an attacker nothing that the inbound bearer itself doesn't
+already grant. The sidecar runs in the same pod as ClickHouse over loopback,
+so the CH↔sidecar channel is not network-reachable from anywhere outside the
+pod. This shrinks the trust radius MCP used to occupy under the old
+`cluster_secret` path.
 
-In **forward mode**, ClickHouse re-validates the upstream JWT signature on every query. A compromised MCP server cannot forge identity to ClickHouse — it can only forward whatever bearer it received from the user. The MCP-side bearer validation (per [C-1 below](#c-1-defense-in-depth-validation-in-forward-mode)) is defense-in-depth on top of CH's authoritative check.
-
-The honest summary: **forward mode is a stronger trust-isolation story when ClickHouse can independently validate the JWT.** Without that capability on the CH side, forward mode's bearer is just an opaque blob to CH (it 403s), and you fall back to gating.
+Forward mode (Antalya) keeps its existing trust story: ClickHouse re-validates
+the upstream JWT on every query via `token_processors`. Both modes now place
+the cryptographic gate next to the data plane.
 
 ### Dynamic user provisioning
 
@@ -162,28 +175,12 @@ In forward mode every query carries the upstream id_token, so revocation lands a
 ### When forward mode is the wrong choice
 
 - ClickHouse build is anything other than Altinity Antalya 25.8+ or another build with native JWT auth. Forward sends the bearer; CH 403s every query.
-- You need TCP protocol to ClickHouse (forward only supports HTTP).
-- The IdP supports DCR and RFC 8707 — gating is simpler in that case.
-- You don't want CH fetching the upstream JWKS on every cold cache.
+- The IdP supports CIMD/DCR + RFC 8707 and you don't need ClickHouse to inspect JWT claims for ephemeral user provisioning — gating + the sidecar is simpler.
 
 ### When gating mode is the wrong choice
 
-- You specifically want CH to do per-request identity validation (the trust-isolation argument above).
-- You want ephemeral user provisioning from JWT claims.
-- You want CH `system.query_log` to show the JWT subject without a `cluster_secret` setup.
-- You want IdP-immediate revocation semantics on every query.
-
-### C-1: defense-in-depth validation in forward mode
-
-The MCP server validates JWT bearers locally before forwarding to CH (signature + iss + aud + exp) when `issuer` or `jwks_url` is configured — full defense-in-depth. With neither configured, it soft-passes with a startup warning, preserving "trust ClickHouse entirely" semantics for deployments that explicitly want that.
-
-So in current code:
-
-- **Forward + `issuer` set** → defense-in-depth: MCP validates, CH validates again.
-- **Forward + nothing set** → pure passthrough: only CH validates. Startup logs a warning.
-- **Forward + opaque (non-JWT) bearer** → soft-pass to CH. RFC 7662 introspection isn't implemented.
-
-For new deployments, set `issuer` to the upstream IdP. The cost is one local JWKS fetch (cached) per token; the benefit is malformed/expired/wrong-aud tokens get rejected at the MCP edge instead of consuming a CH connection.
+- You want ephemeral user provisioning from JWT claims (Antalya `token_processors` strength).
+- You can't deploy a sidecar into the CH pod (managed CH offerings that don't expose pod-template editing).
 
 ## Forward mode
 
@@ -243,153 +240,135 @@ In forward mode, the bearer token is automatically forwarded to ClickHouse and s
 
 ## Gating mode
 
-Use this when ClickHouse has no native OAuth support and the upstream IdP supports DCR + RFC 8707 resource indicators (Auth0 Enterprise, Authentik, Keycloak ≥ 18, Okta).
+Use this when ClickHouse has no native OAuth support (OSS builds) and the
+upstream IdP supports CIMD/DCR + RFC 8707 resource indicators (Auth0
+Enterprise, Authentik, Keycloak ≥ 18, Okta).
 
-Under #109, MCP is a **pure OAuth resource server** in gating mode. The upstream IdP owns the entire OAuth AS surface (DCR, `/authorize`, `/token`, refresh-token rotation, reuse detection). MCP only validates and authorizes:
+Gating mode now wires the JWT cryptographic check **next to** ClickHouse via
+the `ch-jwt-verify` sidecar, instead of in MCP:
 
-1. An MCP client (claude.ai, ChatGPT, Codex) discovers the IdP via `/.well-known/oauth-protected-resource` and completes the auth-code-with-PKCE flow directly against the IdP. MCP plays no role in that dance.
-2. The client presents the AS-issued access token (RS256 JWT) on every MCP request.
-3. MCP validates: JWKS signature, `iss` match, `aud` byte-equality (RFC 8707), `exp`, and per-tool required scopes (`mcp:read` / `mcp:write`). Rejects invalid tokens at 401.
-4. MCP connects to ClickHouse via `cluster_secret` + `Auth.Username = email` (per-user attribution) or static credentials. ClickHouse never sees the JWT.
+1. An MCP client (claude.ai, ChatGPT, Codex) discovers the IdP via
+   `/.well-known/oauth-protected-resource` and completes the auth-code-with-
+   PKCE flow directly against the IdP. MCP plays no role in that dance.
+2. The client presents the AS-issued access token (RS256 JWT) on every MCP
+   request.
+3. MCP unverified-decodes the JWT's `email` claim (or namespaced `*/email`
+   fallback), builds `Authorization: Basic base64(email:JWT)`, and forwards
+   the query to ClickHouse over HTTP.
+4. ClickHouse's `<http_authentication>` resolves the matching CH user
+   (`CREATE USER "alice@example.com" IDENTIFIED WITH http_authenticator
+   SERVER 'ch_jwt_verify';`) and POSTs the Basic header to the
+   `ch-jwt-verify` sidecar over loopback (or shared Unix socket).
+5. The sidecar validates the JWT: signature against the upstream JWKS, `iss`
+   exact match, `aud` byte-equal (RFC 8707), `exp`/`nbf`/`iat` with clock
+   skew, required scopes, identity policy (verified email, domain allow-
+   lists), and the user-vs-JWT-email match. On success it returns 200 with
+   any per-scope session settings; on failure any non-200 rejects the query.
 
 ```
-┌────────┐      ┌────────────┐      ┌──────────┐      ┌────────────┐
-│  MCP   │─────>│  Auth0 /   │      │   MCP    │      │ ClickHouse │
-│ Client │<─────│  Keycloak  │      │  Server  │      │            │
-│        │      │  (IdP/AS)  │      │          │      │            │
-│        │      └────────────┘      │          │      │            │
-│        │                          │          │      │            │
-│        │──AS-issued JWT──────────>│          │      │            │
-│        │                          │ validate │      │            │
-│        │                          │ JWKS+aud │      │            │
-│        │                          │ +scopes  │      │            │
-│        │                          │─cluster─>│      │  verifies  │
-│        │                          │ secret + │─────>│  HMAC, runs│
-│        │                          │ initial  │      │  as email  │
-│        │                          │ _user    │      │            │
-│        │<─────────────────────────│<─────────│<─────│            │
-│        │         query results    │          │      │            │
-└────────┘                          └──────────┘      └────────────┘
+┌────────┐      ┌────────────┐      ┌──────────┐      ┌────────────────┐
+│  MCP   │─────>│   IdP /    │      │   MCP    │      │ ClickHouse pod │
+│ Client │<─────│   Auth0    │      │ (forward)│      │ ┌────────────┐ │
+│        │      └────────────┘      │          │      │ │ ClickHouse │ │
+│        │──Bearer JWT─────────────>│          │      │ │  + http_   │ │
+│        │                          │ rewrite  │      │ │  auth      │ │
+│        │                          │ to Basic │─────>│ │            │ │
+│        │                          │ email:JWT│      │ │  loopback  │ │
+│        │                          │          │      │ │  ↓         │ │
+│        │                          │          │      │ │ ch-jwt-    │ │
+│        │                          │          │      │ │ verify     │ │
+│        │                          │          │      │ │ (signature │ │
+│        │                          │          │      │ │  + policy) │ │
+│        │<─────────────────────────│<─────────│<─────│ └────────────┘ │
+│        │         query results    │          │      └────────────────┘
+└────────┘                          └──────────┘
 ```
+
+**altinity-mcp helm values:**
 
 ```yaml
 config:
   clickhouse:
     host: "clickhouse.example.com"
-    port: 9000
-    protocol: tcp
-    cluster_name: "mcp_cluster"
-    cluster_secret: "CHANGE_ME_SHARED_SECRET"
-    username: default   # fallback; real queries run as OAuth email
+    port: 8123
+    protocol: http
+    database: default
+    # Username/Password are unused for gating-mode OAuth requests; the
+    # per-request Basic creds come from the JWT. Static creds remain
+    # useful for the health-check / no-OAuth code path.
+    username: default
   server:
     oauth:
       enabled: true
       mode: gating
       issuer: "https://altinity.auth0.com/"
       jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
-      audience: "https://mcp.example.com"   # RFC 8707 byte-equal with Auth0 API identifier
+      audience: "https://mcp.example.com"   # RFC 8707 byte-equal
       required_scopes: [mcp:read, mcp:write]
-      public_urls:
-        - "https://mcp.example.com"
       # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
       # DO NOT set: client_id, client_secret, token_url, auth_url,
       #             userinfo_url, public_auth_server_url
 ```
 
-### Cluster-secret authentication (optional)
-
-Gating mode's default connects to ClickHouse with a **single static username/password** shared across all MCP users. Queries land in `system.query_log` under that service account, so you lose per-user attribution.
-
-The **cluster-secret path** removes both limitations. altinity-mcp handshakes with ClickHouse as a trusted cluster peer using a shared `<secret>` instead of a password, and executes each query as the OAuth-authenticated user. ClickHouse records the real identity in `system.query_log`, applies that user's grants, and the MCP process never touches a shared password.
-
-```
-┌────────┐      ┌──────────┐      ┌──────────┐      ┌────────────┐
-│  MCP   │      │  IdP/AS  │      │   MCP    │      │ ClickHouse │
-│ Client │      │  (Auth0) │      │  Server  │      │            │
-│        │──DCR+login──────>│      │          │      │            │
-│        │<─AS JWT──────────│      │          │      │            │
-│        │                        │          │      │            │
-│        │──query + AS JWT────────>│          │      │            │
-│        │                        │─cluster─>│      │  verifies  │
-│        │                        │ secret + │      │  HMAC, runs│
-│        │                        │ initial  │─────>│  as email  │
-│        │                        │ _user =  │      │  claim     │
-│        │                        │ email    │      │            │
-│        │<───────────────────────│<─────────│<─────│            │
-└────────┘                        └──────────┘      └────────────┘
-```
-
-**altinity-mcp config** (abbreviated — see [Required helm values per mode](#required-helm-values-per-mode) for the full gating snippet):
-
-```yaml
-clickhouse:
-  host: "clickhouse.example.com"
-  port: 9000               # TCP only — interserver auth has no HTTP equivalent
-  protocol: tcp
-  database: default
-  cluster_name: mcp_cluster        # must match <remote_servers> on ClickHouse
-  cluster_secret: "CHANGE_ME_SHARED_SECRET"
-  username: default                # fallback when no OAuth identity is present
-  # password: intentionally omitted — the shared secret is the only credential
-
-server:
-  oauth:
-    enabled: true
-    mode: gating
-    issuer: "https://altinity.auth0.com/"
-    jwks_url: "https://altinity.auth0.com/.well-known/jwks.json"
-    audience: "https://mcp.example.com"
-    required_scopes: [mcp:read, mcp:write]
-    # signing_secret via MCP_OAUTH_SIGNING_SECRET env var
-```
-
-Or via env: `CLICKHOUSE_CLUSTER_NAME`, `CLICKHOUSE_CLUSTER_SECRET`, `CLICKHOUSE_PROTOCOL=tcp`.
-
-**ClickHouse config** (`/etc/clickhouse-server/config.d/mcp_cluster.xml`):
+**Sidecar + ClickHouse-side config:** see `helm/ch-jwt-verify/`. The sidecar
+deploys as a colocated container in the CH StatefulSet pod (loopback
+`127.0.0.1:9999` by default). ClickHouse registers it via a `config.d/` XML
+drop-in:
 
 ```xml
 <clickhouse>
-  <remote_servers>
-    <mcp_cluster>
-      <secret>CHANGE_ME_SHARED_SECRET</secret>
-      <shard>
-        <replica>
-          <host>clickhouse.example.com</host>
-          <port>9000</port>
-        </replica>
-      </shard>
-    </mcp_cluster>
-  </remote_servers>
+  <http_authentication_servers>
+    <ch_jwt_verify>
+      <uri>http://127.0.0.1:9999/verify</uri>
+      <forward_headers>
+        <header>Authorization</header>
+      </forward_headers>
+    </ch_jwt_verify>
+  </http_authentication_servers>
 </clickhouse>
 ```
 
-**User and role provisioning (required).** The impersonated user must already exist on ClickHouse. ClickHouse skips the password check for cluster peers, but **not** the user lookup or grant resolution — an unknown `initial_user` fails with `Unknown user`. altinity-mcp does **not** auto-provision users; you precreate them with the grants they need.
-
-Map OAuth claims to ClickHouse users however suits your IdP. Typical setup using the user's email as the ClickHouse username:
+**User and role provisioning (required):**
 
 ```sql
 -- One role per entitlement level
 CREATE ROLE IF NOT EXISTS mcp_reader;
 GRANT SELECT ON analytics.* TO mcp_reader;
 
-CREATE ROLE IF NOT EXISTS mcp_admin;
-GRANT ALL ON analytics.* TO mcp_admin;
-
--- One user per identity; password-less because the cluster secret is the credential
-CREATE USER IF NOT EXISTS "alice@example.com" IDENTIFIED WITH no_password;
+-- One user per identity, delegating auth to the sidecar
+CREATE USER "alice@example.com"
+  IDENTIFIED WITH http_authenticator SERVER 'ch_jwt_verify';
 GRANT mcp_reader TO "alice@example.com";
-
-CREATE USER IF NOT EXISTS "bob@example.com" IDENTIFIED WITH no_password;
-GRANT mcp_admin TO "bob@example.com";
 ```
 
-The literal value used for the ClickHouse username is the OAuth `email` claim when present, falling back to `sub` otherwise. Most IdPs (Google, Azure AD, Keycloak with the email scope) emit `email`, so `system.query_log` attributes queries to addresses like `alice@example.com`. `sub` is reserved for IdPs that deliberately omit email (e.g., machine-to-machine tokens). This matches the convention used by forward mode's `username_claim: email` setups, so operators can share a single pool of pre-provisioned CH users across both modes.
+ClickHouse uses the Basic user half (`alice@example.com`) for user lookup;
+the sidecar enforces that the JWT's signed `email` claim matches the same
+value (case-insensitive by default; configurable via the sidecar's
+`identity.match_mode`).
+
+**Identity policy** moved entirely into the sidecar — see
+`helm/ch-jwt-verify/values.yaml`:
+
+```yaml
+identity:
+  username_claim: email
+  match_mode: lowercase_equal
+  require_email_verified: true
+  allowed_email_domains: ["altinity.com"]
+  allowed_hosted_domains: []
+```
 
 **Limitations:**
 
-- **TCP only**: Startup fails with `clickhouse-cluster-secret requires clickhouse-protocol=tcp` if `protocol: http` is set.
-- **No role forwarding from the IdP**: altinity-mcp does not send ClickHouse `external_roles` on the wire; permissions come entirely from what's `GRANT`ed to the user on the ClickHouse side. This is a deliberate limit of the current driver protocol revision (54460); revisit if the IdP becomes the source of truth for ClickHouse entitlements.
-- **Secret hygiene**: Treat `cluster_secret` like a root credential. Anyone holding it can authenticate to ClickHouse as any existing user — including `default` and any admin account. Put it in a secret manager, rotate it by updating both sides simultaneously (ClickHouse accepts live reloads of `remote_servers` config).
+- **HTTP only** on the CH side: `<http_authentication>` has no TCP equivalent.
+  Startup fails if you set `clickhouse.protocol: tcp` with OAuth enabled.
+- **Sidecar must be colocated** with ClickHouse. The trust model rests on the
+  CH↔sidecar channel being loopback-only — running the sidecar in a separate
+  pod re-introduces a network gate that the operator must lock down.
+- **No role forwarding from the IdP**: permissions come from what's `GRANT`ed
+  to the matched CH user. The sidecar can return per-scope session settings
+  via `settings_from_scope`, but those are CH session settings only, not
+  ClickHouse roles.
 
 
 ## Requirements
@@ -446,24 +425,25 @@ Limitations:
 
 ## Identity Policy
 
-MCP can restrict access based on identity claims extracted from the validated JWT on every request. These checks apply to both modes; in gating mode they are MCP's primary admission gate (the IdP is still the authority for authentication, but MCP enforces the domain/email policy at authorization time).
+Identity policy (verified-email enforcement, email-domain / hosted-domain
+allow-listing, user-vs-claim matching) is enforced by the `ch-jwt-verify`
+sidecar in gating mode, and by ClickHouse `token_processors` claim mappings
+in forward mode. MCP itself no longer applies any identity policy.
 
-| Option | Description |
-|--------|-------------|
-| `allowed_email_domains` | Only allow principals with an `email` claim in these domains (e.g., `["example.com"]`) |
-| `allowed_hosted_domains` | Only allow principals with an `hd` (hosted/workspace domain) claim in this set — Google Workspace / Auth0 organization |
-| `allow_unverified_email` | Opt out of the default `email_verified=true` requirement. Default `false` (verified required) — set `true` only when the IdP omits the claim or the operator trusts upstream verification. **Forbidden** combined with `cluster_secret` (H-1: would let any token impersonate any CH user) or with `allowed_email_domains` / `allowed_hosted_domains` (M3: a forged unverified email would defeat the domain policy). Startup refuses in either combination. |
-
-Claims come from the AS-issued JWT (gating) or the upstream id_token (forward) and cannot be forged by the client.
+For gating mode, configure the policies in the sidecar's helm values
+(`helm/ch-jwt-verify/values.yaml`):
 
 ```yaml
-server:
-  oauth:
-    allowed_email_domains: ["altinity.com", "example.com"]
-    allowed_hosted_domains: ["altinity.com"]
-    # allow_unverified_email defaults to false (verified required). Setting
-    # true here would be a startup error because of the domain allow-list.
+identity:
+  username_claim: email
+  match_mode: lowercase_equal
+  require_email_verified: true
+  allowed_email_domains: ["altinity.com", "example.com"]
+  allowed_hosted_domains: ["altinity.com"]
 ```
+
+For forward mode, the upstream IdP's claim policy + Antalya's
+`token_processors` claim-mapping rules govern admission.
 
 ## Full Configuration Reference
 
@@ -512,29 +492,14 @@ server:
     # Tokens / Forward mode (opt-in)" for trust model and operator setup.
     upstream_offline_access: false
 
-    # Gating mode: scopes required in every incoming AS-issued JWT
+    # Scopes required in every incoming bearer JWT. Enforced by the
+    # ch-jwt-verify sidecar (gating) or token_processors (forward); MCP
+    # itself does not validate per-request.
     required_scopes: []
-
-    # Identity policy — applies to both modes (claims from JWT)
-    allowed_email_domains: []
-    allowed_hosted_domains: []
-
-    # Accept tokens with email_verified=false. Default false (verified required).
-    # Forbidden together with cluster_secret or allowed_*_domains — startup errors.
-    allow_unverified_email: false
 
     # Token lifetimes
     access_token_ttl_seconds: 3600    # 1 hour (gating: reduce to 600 for revocation latency)
     refresh_token_ttl_seconds: 2592000 # 30 days (forward mode only — gating refresh tokens are IdP-managed)
-
-    # Header name for forwarding (forward mode). Default "Authorization" sends "Bearer {token}".
-    # Set to a custom name to send the raw token without "Bearer " prefix.
-    clickhouse_header_name: ""
-
-    # Map token claims to ClickHouse HTTP headers (forward mode with claims)
-    claims_to_headers:
-      sub: "X-ClickHouse-User"
-      email: "X-ClickHouse-Email"
 
     # Externally visible MCP endpoint URL. Required behind a reverse proxy (both modes).
     public_resource_url: ""

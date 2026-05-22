@@ -74,45 +74,23 @@ type OAuthConfig struct {
 	// client). Default false avoids the surprise re-consent on every login.
 	UpstreamForceConsent bool `json:"upstream_force_consent" yaml:"upstream_force_consent" flag:"oauth-upstream-force-consent" env:"MCP_OAUTH_UPSTREAM_FORCE_CONSENT" desc:"Force prompt=consent on every upstream /authorize (Google providers only). Default false reuses Google's stored offline-access grant after the first consent."`
 
-	// BrokerUpstream opts gating mode into the DCR-via-MCP broker pattern that
-	// forward mode uses by default. When true under gating mode, altinity-mcp:
-	//   - Acts as the OAuth AS to claude.ai/ChatGPT (hosts /oauth/{register,
-	//     authorize,callback,token}, mints stateless DCR client_ids).
+	// BrokerUpstream opts gating mode into the broker pattern that forward
+	// mode uses by default. When true under gating mode, altinity-mcp:
+	//   - Acts as the OAuth AS to claude.ai/ChatGPT (hosts /oauth/{authorize,
+	//     callback,token}, accepts CIMD client_ids).
 	//   - Brokers an upstream IdP using a static OAuth application
 	//     (ClientID/ClientSecret/AuthURL/TokenURL config).
-	//   - Returns the upstream id_token unchanged as the access_token to the
-	//     MCP-client; on /mcp the gating-mode JWKS-validation path validates
-	//     it against the upstream issuer's JWKS and impersonates the user to
-	//     ClickHouse via cluster_secret + Auth.Username.
-	// This is the same shape as forward mode minus the JWT-passthrough-to-CH:
-	// CH is reached via interserver auth + email impersonation as in standard
-	// gating mode. Use when the upstream IdP does not support CIMD natively
-	// (e.g. Google directly) but you don't want to expose CH to per-query JWT
-	// validation. Default false: gating remains pure resource server (#109).
-	BrokerUpstream bool `json:"broker_upstream" yaml:"broker_upstream" flag:"oauth-broker-upstream" env:"MCP_OAUTH_BROKER_UPSTREAM" desc:"Gating mode: enable DCR-via-MCP broker pattern (act as AS to clients, broker upstream IdP). Requires client_id/client_secret/auth_url/token_url/issuer to be set."`
+	//   - Returns the upstream id_token unchanged as the access_token to
+	//     the MCP client. At query time MCP rewrites the bearer to
+	//     `Authorization: Basic base64(email:JWT)` and the CH-side
+	//     ch-jwt-verify sidecar validates it cryptographically.
+	// Use when the upstream IdP does not support CIMD natively (e.g. Google
+	// directly). Default false: gating accepts CIMD-published clients directly
+	// from MCP clients (claude.ai, ChatGPT).
+	BrokerUpstream bool `json:"broker_upstream" yaml:"broker_upstream" flag:"oauth-broker-upstream" env:"MCP_OAUTH_BROKER_UPSTREAM" desc:"Gating mode: enable broker pattern (act as AS to clients, broker upstream IdP). Requires client_id/client_secret/auth_url/token_url/issuer to be set."`
 
 	// RequiredScopes is the list of scopes required for access (token must have all of these)
 	RequiredScopes []string `json:"required_scopes" yaml:"required_scopes" flag:"oauth-required-scopes" env:"MCP_OAUTH_REQUIRED_SCOPES" desc:"Required OAuth scopes for access"`
-
-	// ClickHouseHeaderName is the header name to use when forwarding OAuth token to ClickHouse
-	// Default: "Authorization" (sends as "Bearer {token}")
-	// When set to a custom header, the raw token is sent without "Bearer " prefix
-	ClickHouseHeaderName string `json:"clickhouse_header_name" yaml:"clickhouse_header_name" flag:"oauth-clickhouse-header-name" env:"MCP_OAUTH_CLICKHOUSE_HEADER_NAME" desc:"Header name for forwarding OAuth token to ClickHouse"`
-
-	// ClaimsToHeaders maps OAuth token claims to ClickHouse HTTP headers
-	// Example: {"sub": "X-ClickHouse-User", "email": "X-ClickHouse-Email"}
-	ClaimsToHeaders map[string]string `json:"claims_to_headers" yaml:"claims_to_headers" flag:"oauth-claims-to-headers" env:"MCP_OAUTH_CLAIMS_TO_HEADERS" desc:"Map OAuth claims to ClickHouse HTTP headers"`
-
-	// AllowedEmailDomains constrains accepted principals by email domain.
-	AllowedEmailDomains []string `json:"allowed_email_domains" yaml:"allowed_email_domains" flag:"oauth-allowed-email-domains" env:"MCP_OAUTH_ALLOWED_EMAIL_DOMAINS" desc:"Allowed email domains for verified OAuth identities"`
-
-	// AllowedHostedDomains constrains accepted principals by hosted/workspace domain claim such as Google hd.
-	AllowedHostedDomains []string `json:"allowed_hosted_domains" yaml:"allowed_hosted_domains" flag:"oauth-allowed-hosted-domains" env:"MCP_OAUTH_ALLOWED_HOSTED_DOMAINS" desc:"Allowed hosted/workspace domains for verified OAuth identities"`
-
-	// AllowUnverifiedEmail opts out of the email_verified=true requirement.
-	// Default zero value (false) rejects tokens carrying email with email_verified=false.
-	// Set true only when the IdP omits email_verified or the operator trusts upstream verification.
-	AllowUnverifiedEmail bool `json:"allow_unverified_email" yaml:"allow_unverified_email" flag:"oauth-allow-unverified-email" env:"MCP_OAUTH_ALLOW_UNVERIFIED_EMAIL" desc:"Accept OAuth identities with email_verified=false (default: reject)"`
 
 	// AuthorizationPath configures the relative path for the authorization endpoint.
 	AuthorizationPath string `json:"authorization_path" yaml:"authorization_path" flag:"oauth-authorization-path" env:"MCP_OAUTH_AUTHORIZATION_PATH" desc:"Relative path for OAuth authorization endpoint"`

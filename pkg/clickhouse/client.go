@@ -129,20 +129,10 @@ func (c *Client) connect() error {
 		Username: c.config.Username,
 		Password: c.config.Password,
 	}
-	// In interserver-secret mode the driver authenticates with the shared
-	// cluster secret and ignores the password. We drop the password here to
-	// prevent accidental fallback if the Cluster fields are later cleared.
-	if c.config.ClusterSecret != "" {
-		auth.Password = ""
-	}
 
 	conn, openErr := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
-		Auth: auth,
-		Cluster: clickhouse.ClusterCredentials{
-			Name:   c.config.ClusterName,
-			Secret: c.config.ClusterSecret,
-		},
+		Addr:            []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
+		Auth:            auth,
 		TLS:             tlsConfig,
 		Protocol:        protocol,
 		Settings:        settings,
