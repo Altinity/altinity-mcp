@@ -1,0 +1,15 @@
+# synthetic-idp test harness image. Built by scripts/build-synthetic-idp-image.sh
+# the same way as ch-jwt-verify: cross-compile a statically-linked binary into
+# the context, then docker build with legacy DOCKER_BUILDKIT=0.
+#
+# NOT FOR PRODUCTION. Mints arbitrary RS256 JWTs on demand for stress tests.
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /bin/
+COPY synthetic-idp .
+
+EXPOSE 80
+
+ENTRYPOINT ["/bin/synthetic-idp"]
