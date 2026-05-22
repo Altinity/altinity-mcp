@@ -877,12 +877,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"to the request Host header. For production deployments behind a single canonical " +
 			"hostname, set MCP_OAUTH_PUBLIC_RESOURCE_URL to lock the resource identity.")
 	}
-	if len(oauth.UpstreamIssuerAllowlist) == 0 && strings.TrimSpace(oauth.Issuer) == "" && oauth.IsForwardMode() {
-		log.Warn().Msg("OAuth forward mode: neither oauth_issuer nor upstream_issuer_allowlist is set — " +
-			"upstream identity tokens will be accepted from any signed-by-discovered-JWKS issuer. " +
-			"Set MCP_OAUTH_ISSUER (single-tenant) or MCP_OAUTH_UPSTREAM_ISSUER_ALLOWLIST (multi-tenant) " +
-			"to constrain accepted issuers.")
-	}
 	// C-1 nudge: forward mode without any JWKS source means we cannot validate
 	// JWT bearers locally. The auth layer soft-passes such tokens to ClickHouse,
 	// which is then the sole validator. MCP authorization spec §Token Handling

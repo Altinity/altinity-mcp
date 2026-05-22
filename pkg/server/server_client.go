@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/altinity-mcp/pkg/oauth"
 	"github.com/rs/zerolog/log"
 )
 
@@ -114,76 +114,17 @@ func (s *ClickHouseJWEServer) GetJWEClaimsFromCtx(ctx context.Context) map[strin
 	return nil
 }
 
-// GetOAuthClaimsFromCtx extracts OAuth claims from context
+// GetOAuthClaimsFromCtx extracts OAuth claims from context. Delegates to
+// the pkg/oauth context helper; preserved for callers/tests that hold a
+// *ClickHouseJWEServer rather than reaching for pkg/oauth directly.
 func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthClaims {
-	if claims := ctx.Value(OAuthClaimsKey); claims != nil {
-		if oauthClaims, ok := claims.(*OAuthClaims); ok {
-			return oauthClaims
-		}
-	}
-	return nil
+	return oauth.ClaimsFromContext(ctx)
 }
 
-// BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config
+// BuildClickHouseHeadersFromOAuth builds HTTP headers to forward to ClickHouse based on OAuth config.
+// Thin wrapper around oauth.BuildClickHouseHeaders.
 func (s *ClickHouseJWEServer) BuildClickHouseHeadersFromOAuth(token string, claims *OAuthClaims) map[string]string {
-	if !s.Config.Server.OAuth.IsForwardMode() {
-		return nil
-	}
-
-	headers := make(map[string]string)
-
-	// Forward the access token (always in forward mode)
-	headerName := s.Config.Server.OAuth.ClickHouseHeaderName
-	if headerName == "" {
-		headerName = "Authorization"
-	}
-	if headerName == "Authorization" {
-		headers[headerName] = "Bearer " + token
-	} else {
-		headers[headerName] = token
-	}
-
-	// Map claims to headers if configured
-	if len(s.Config.Server.OAuth.ClaimsToHeaders) > 0 && claims != nil {
-		for claimName, headerName := range s.Config.Server.OAuth.ClaimsToHeaders {
-			var value string
-			switch claimName {
-			case "sub":
-				value = claims.Subject
-			case "iss":
-				value = claims.Issuer
-			case "email":
-				value = claims.Email
-			case "name":
-				value = claims.Name
-			case "email_verified":
-				if claims.EmailVerified {
-					value = "true"
-				} else {
-					value = "false"
-				}
-			case "hd":
-				value = claims.HostedDomain
-			default:
-				// Check extra claims
-				if v, ok := claims.Extra[claimName]; ok {
-					if strVal, ok := v.(string); ok {
-						value = strVal
-					} else {
-						// Try to JSON encode non-string values
-						if jsonBytes, err := json.Marshal(v); err == nil {
-							value = string(jsonBytes)
-						}
-					}
-				}
-			}
-			if value != "" {
-				headers[headerName] = value
-			}
-		}
-	}
-
-	return headers
+	return oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, token, claims)
 }
 
 // ValidateAuth validates authentication using priority/fallback semantics.
@@ -312,7 +253,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 		var impersonateAs string
 		if e := strings.TrimSpace(oauthClaims.Email); e != "" {
 			impersonateAs = e
-		} else if e := emailFromNamespacedExtra(oauthClaims.Extra); e != "" {
+		} else if e := oauth.EmailFromNamespacedExtra(oauthClaims.Extra); e != "" {
 			impersonateAs = e
 		} else if s := strings.TrimSpace(oauthClaims.Subject); s != "" {
 			impersonateAs = s
@@ -337,22 +278,3 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 	return client, nil
 }
 
-// emailFromNamespacedExtra returns the first string-valued claim whose key
-// ends with `/email` from the JWT's non-standard claim map. Auth0 third-party
-// (DCR) tokens in enhanced security mode silently drop non-namespaced custom
-// claims, forcing operators to set email under a URL-prefixed key (e.g.
-// `https://mcp.altinity.cloud/email`). Looking up by suffix lets MCP accept
-// any namespace the operator chose.
-func emailFromNamespacedExtra(extra map[string]interface{}) string {
-	for k, v := range extra {
-		if !strings.HasSuffix(k, "/email") {
-			continue
-		}
-		if s, ok := v.(string); ok {
-			if t := strings.TrimSpace(s); t != "" {
-				return t
-			}
-		}
-	}
-	return ""
-}

@@ -669,25 +669,22 @@ func TestOAuthRequiresLocalValidation(t *testing.T) {
 	})
 }
 
-// TestOAuthUpstreamIssuerAllowlist verifies that the operator-configured
-// allowlist actually constrains upstream IdP token validation. Before this
-// fix, the field was loaded into config but no handler consulted it — operators
-// who set it for hardening got zero enforcement.
-func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
+// TestOAuthIssuerEnforcement verifies the singular-Issuer single-tenant policy.
+func TestOAuthIssuerEnforcement(t *testing.T) {
 	t.Parallel()
 
-	t.Run("token_from_allowlisted_issuer_accepted", func(t *testing.T) {
+	t.Run("token_from_configured_issuer_accepted", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled:                 true,
-						Mode:                    "forward",
-						UpstreamIssuerAllowlist: []string{provider.server.URL, "https://other.example.com"},
-						JWKSURL:                 provider.server.URL + "/jwks",
-						Audience:                "clickhouse-api",
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   provider.server.URL,
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
 					},
 				},
 			},
@@ -703,18 +700,18 @@ func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
 		require.Equal(t, provider.server.URL, claims.Issuer)
 	})
 
-	t.Run("token_from_non_allowlisted_issuer_rejected", func(t *testing.T) {
+	t.Run("token_from_other_issuer_rejected", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled:                 true,
-						Mode:                    "forward",
-						UpstreamIssuerAllowlist: []string{"https://only-this-one.example.com"},
-						JWKSURL:                 provider.server.URL + "/jwks",
-						Audience:                "clickhouse-api",
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   "https://only-this-one.example.com",
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
 					},
 				},
 			},
@@ -729,24 +726,18 @@ func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidOAuthToken)
 	})
 
-	t.Run("allowlist_takes_precedence_over_singular_issuer", func(t *testing.T) {
-		// When both Issuer (singular) and UpstreamIssuerAllowlist are set, the
-		// allowlist wins. The singular Issuer is still used for OIDC/JWKS
-		// discovery if no JWKSURL is configured, but for *token validation*
-		// the allowlist is authoritative — otherwise the allowlist would be
-		// useless in single-issuer-but-multi-tenant deployments.
+	t.Run("issuer_match_is_trailing_slash_tolerant", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled:                 true,
-						Mode:                    "forward",
-						Issuer:                  "https://something-else.example.com",
-						UpstreamIssuerAllowlist: []string{provider.server.URL},
-						JWKSURL:                 provider.server.URL + "/jwks",
-						Audience:                "clickhouse-api",
+						Enabled:  true,
+						Mode:     "forward",
+						Issuer:   provider.server.URL + "/",
+						JWKSURL:  provider.server.URL + "/jwks",
+						Audience: "clickhouse-api",
 					},
 				},
 			},
@@ -761,35 +752,6 @@ func TestOAuthUpstreamIssuerAllowlist(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, provider.server.URL, claims.Issuer)
 	})
-}
-
-func TestIssuerAllowed(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name         string
-		got          string
-		allowlist    []string
-		singleIssuer string
-		want         bool
-	}{
-		{"exact match in allowlist", "https://idp.example.com/", []string{"https://idp.example.com/"}, "", true},
-		{"got has slash, allowlist entry doesn't", "https://idp.example.com/", []string{"https://idp.example.com"}, "", true},
-		{"got missing slash, allowlist entry has it", "https://idp.example.com", []string{"https://idp.example.com/"}, "", true},
-		{"allowlist with surrounding whitespace", "https://idp.example.com", []string{"  https://idp.example.com/  "}, "", true},
-		{"allowlist non-empty and got not in it", "https://attacker.example.com", []string{"https://idp.example.com/"}, "", false},
-		{"allowlist takes precedence over singular issuer", "https://idp.example.com/", []string{"https://other.example.com/"}, "https://idp.example.com/", false},
-		{"singular issuer match with mixed slash", "https://idp.example.com", nil, "https://idp.example.com/", true},
-		{"singular issuer mismatch", "https://attacker.example.com", nil, "https://idp.example.com/", false},
-		{"no allowlist, no single issuer accepts everything", "https://anything.example.com", nil, "", true},
-		{"no allowlist, blank single issuer accepts everything", "https://anything.example.com", nil, "   ", true},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, c.want, issuerAllowed(c.got, c.allowlist, c.singleIssuer))
-		})
-	}
 }
 
 // TestOAuthBuildClickHouseHeaders tests building ClickHouse headers from OAuth
@@ -1874,319 +1836,6 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 	})
 }
 
-func TestResolveOAuthJWKSURL(t *testing.T) {
-	t.Parallel()
-	t.Run("direct_jwks_url_configured", func(t *testing.T) {
-		t.Parallel()
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						JWKSURL: "https://auth.example.com/jwks",
-					},
-				},
-			},
-		}
-		url, err := srv.resolveOAuthJWKSURL()
-		require.NoError(t, err)
-		require.Equal(t, "https://auth.example.com/jwks", url)
-	})
-
-	t.Run("openid_configuration_discovery", func(t *testing.T) {
-		t.Parallel()
-		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/.well-known/openid-configuration" {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"issuer":   "https://auth.example.com",
-					"jwks_uri": "https://auth.example.com/keys",
-				})
-				return
-			}
-			http.NotFound(w, r)
-		}))
-		defer mockServer.Close()
-
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Issuer: mockServer.URL,
-					},
-				},
-			},
-		}
-		url, err := srv.resolveOAuthJWKSURL()
-		require.NoError(t, err)
-		require.Equal(t, "https://auth.example.com/keys", url)
-	})
-
-	t.Run("fallback_to_oauth_authorization_server", func(t *testing.T) {
-		t.Parallel()
-		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/.well-known/openid-configuration" {
-				http.NotFound(w, r)
-				return
-			}
-			if r.URL.Path == "/.well-known/oauth-authorization-server" {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"issuer":   "https://auth.example.com",
-					"jwks_uri": "https://auth.example.com/fallback-keys",
-				})
-				return
-			}
-			http.NotFound(w, r)
-		}))
-		defer mockServer.Close()
-
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Issuer: mockServer.URL,
-					},
-				},
-			},
-		}
-		url, err := srv.resolveOAuthJWKSURL()
-		require.NoError(t, err)
-		require.Equal(t, "https://auth.example.com/fallback-keys", url)
-	})
-
-	t.Run("both_discovery_endpoints_fail", func(t *testing.T) {
-		t.Parallel()
-		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
-		}))
-		defer mockServer.Close()
-
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Issuer: mockServer.URL,
-					},
-				},
-			},
-		}
-		_, err := srv.resolveOAuthJWKSURL()
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "failed to discover")
-	})
-
-	t.Run("discovery_missing_jwks_uri", func(t *testing.T) {
-		t.Parallel()
-		mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"issuer": "https://auth.example.com",
-			})
-		}))
-		defer mockServer.Close()
-
-		srv := &ClickHouseJWEServer{
-			Config: config.Config{
-				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{
-						Issuer: mockServer.URL,
-					},
-				},
-			},
-		}
-		_, err := srv.resolveOAuthJWKSURL()
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "jwks_uri")
-	})
-}
-
-func TestOIDCConfigCaching(t *testing.T) {
-	t.Parallel()
-	var requestCount int
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"issuer":   "https://auth.example.com",
-			"jwks_uri": "https://auth.example.com/keys",
-		})
-	}))
-	defer mockServer.Close()
-
-	srv := &ClickHouseJWEServer{
-		Config: config.Config{
-			Server: config.ServerConfig{
-				OAuth: config.OAuthConfig{
-					Issuer: mockServer.URL,
-				},
-			},
-		},
-	}
-
-	// NOTE: subtests are NOT parallel — they share requestCount and srv cache state
-	t.Run("cache_hit_within_ttl", func(t *testing.T) {
-		requestCount = 0
-		_, err := srv.FetchOpenIDConfiguration(mockServer.URL)
-		require.NoError(t, err)
-		_, err = srv.FetchOpenIDConfiguration(mockServer.URL)
-		require.NoError(t, err)
-		require.Equal(t, 1, requestCount, "second call should hit cache")
-	})
-
-	t.Run("cache_miss_after_ttl_expires", func(t *testing.T) {
-		// Ensure cache is populated
-		_, err := srv.FetchOpenIDConfiguration(mockServer.URL)
-		require.NoError(t, err)
-
-		// Manipulate cache time to simulate TTL expiry
-		srv.oidcConfigMu.Lock()
-		srv.oidcConfigTime = time.Now().Add(-oauthJWKSCacheTTL - time.Second)
-		srv.oidcConfigMu.Unlock()
-
-		countBefore := requestCount
-		_, err = srv.FetchOpenIDConfiguration(mockServer.URL)
-		require.NoError(t, err)
-		require.Equal(t, countBefore+1, requestCount, "should re-fetch after TTL expiry")
-	})
-}
-
-func TestParseAndVerifyExternalJWTUnknownKid(t *testing.T) {
-	t.Parallel()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	// Create JWKS with kid "known"
-	knownJWK := jose.JSONWebKey{Key: &privateKey.PublicKey, KeyID: "known", Algorithm: "RS256", Use: "sig"}
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"issuer":   r.Host,
-				"jwks_uri": "http://" + r.Host + "/jwks",
-			})
-		case "/jwks":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{knownJWK}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer mockServer.Close()
-
-	srv := &ClickHouseJWEServer{
-		Config: config.Config{
-			Server: config.ServerConfig{
-				OAuth: config.OAuthConfig{
-					Issuer:  mockServer.URL,
-					JWKSURL: mockServer.URL + "/jwks",
-				},
-			},
-		},
-	}
-
-	// Sign token with kid "unknown"
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: privateKey},
-		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "unknown"),
-	)
-	require.NoError(t, err)
-
-	payload, err := json.Marshal(map[string]interface{}{
-		"sub": "user-1",
-		"iss": mockServer.URL,
-		"aud": "test-audience",
-		"exp": time.Now().Add(time.Hour).Unix(),
-		"iat": time.Now().Unix(),
-	})
-	require.NoError(t, err)
-
-	object, err := signer.Sign(payload)
-	require.NoError(t, err)
-	token, err := object.CompactSerialize()
-	require.NoError(t, err)
-
-	_, err = srv.parseAndVerifyExternalJWT(token, "test-audience")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no JWK found for kid")
-}
-
-// TestJWKSRefetchOnKidMiss verifies that a kid absent from the cached JWKS
-// triggers a one-shot cache-bypass re-fetch, allowing tokens issued after
-// a key rotation to be accepted without waiting for the TTL to expire.
-func TestJWKSRefetchOnKidMiss(t *testing.T) {
-	t.Parallel()
-
-	oldKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	newKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-
-	const oldKid = "old-signing-key"
-	const newKid = "new-signing-key"
-
-	// The mock JWKS endpoint always serves the new key. The test seeds
-	// the server's in-memory cache with the old key to simulate a stale
-	// cache from before the rotation.
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/jwks":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
-				{Key: &newKey.PublicKey, KeyID: newKid, Algorithm: "RS256", Use: "sig"},
-			}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer mockServer.Close()
-
-	srv := &ClickHouseJWEServer{
-		Config: config.Config{
-			Server: config.ServerConfig{
-				OAuth: config.OAuthConfig{
-					Issuer:  mockServer.URL,
-					JWKSURL: mockServer.URL + "/jwks",
-				},
-			},
-		},
-	}
-
-	// Seed the JWKS cache with the old key and a far-future TTL so that a
-	// normal fetch would not re-fetch.
-	srv.jwksCacheMu.Lock()
-	srv.jwksCache = jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
-		{Key: &oldKey.PublicKey, KeyID: oldKid, Algorithm: "RS256", Use: "sig"},
-	}}
-	srv.jwksCacheURL = mockServer.URL + "/jwks"
-	srv.jwksCacheTime = time.Now().Add(10 * time.Minute) // far future — won't expire naturally
-	srv.jwksCacheMu.Unlock()
-
-	// Issue a JWT signed with the new key (kid = newKid).
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: newKey},
-		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", newKid),
-	)
-	require.NoError(t, err)
-	payload, err := json.Marshal(map[string]interface{}{
-		"sub": "user-1",
-		"iss": mockServer.URL,
-		"aud": "test-audience",
-		"exp": time.Now().Add(time.Hour).Unix(),
-		"iat": time.Now().Unix(),
-	})
-	require.NoError(t, err)
-	obj, err := signer.Sign(payload)
-	require.NoError(t, err)
-	token, err := obj.CompactSerialize()
-	require.NoError(t, err)
-
-	// Should succeed: kid-miss triggers a cache-bypass re-fetch that finds newKid.
-	claims, err := srv.parseAndVerifyExternalJWT(token, "test-audience")
-	require.NoError(t, err)
-	require.Equal(t, "user-1", claims.Subject)
-}
-
 func TestGatingModeIdentityPolicy(t *testing.T) {
 	t.Parallel()
 	const gatingSecret = "test-gating-secret-32-byte-key!!"
@@ -2250,135 +1899,6 @@ func TestGatingModeIdentityPolicy(t *testing.T) {
 		require.ErrorIs(t, err, ErrOAuthUnauthorizedDomain)
 	})
 }
-
-// ---------- coverage gap tests ----------
-
-func TestEmailDomain(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		email string
-		want  string
-	}{
-		{"normal", "user@example.com", "example.com"},
-		{"uppercase", "User@EXAMPLE.COM", "example.com"},
-		{"whitespace", "  user@example.com  ", "example.com"},
-		{"no_at", "noatsign", ""},
-		{"empty", "", ""},
-		{"multiple_at", "a@b@c", ""},
-		{"just_at", "@", ""},
-		{"domain_only", "@domain.com", "domain.com"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tt.want, emailDomain(tt.email))
-		})
-	}
-}
-
-func TestOAuthClaimsFromRawClaims(t *testing.T) {
-	t.Parallel()
-
-	t.Run("all_standard_fields", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"sub":            "user123",
-			"iss":            "https://auth.example.com",
-			"exp":            float64(1700000000),
-			"iat":            float64(1699999000),
-			"nbf":            float64(1699998000),
-			"email":          "user@example.com",
-			"name":           "Test User",
-			"hd":             "example.com",
-			"email_verified": true,
-			"aud":            "my-api",
-			"scope":          "read write",
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.Equal(t, "user123", claims.Subject)
-		require.Equal(t, "https://auth.example.com", claims.Issuer)
-		require.Equal(t, int64(1700000000), claims.ExpiresAt)
-		require.Equal(t, int64(1699999000), claims.IssuedAt)
-		require.Equal(t, int64(1699998000), claims.NotBefore)
-		require.Equal(t, "user@example.com", claims.Email)
-		require.Equal(t, "Test User", claims.Name)
-		require.Equal(t, "example.com", claims.HostedDomain)
-		require.True(t, claims.EmailVerified)
-		require.Equal(t, []string{"my-api"}, claims.Audience)
-		require.Equal(t, []string{"read", "write"}, claims.Scopes)
-	})
-
-	t.Run("json_number_fields", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"sub": "user",
-			"exp": json.Number("1700000000"),
-			"iat": json.Number("1699999000"),
-			"nbf": json.Number("1699998000"),
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.Equal(t, int64(1700000000), claims.ExpiresAt)
-		require.Equal(t, int64(1699999000), claims.IssuedAt)
-		require.Equal(t, int64(1699998000), claims.NotBefore)
-	})
-
-	t.Run("audience_array", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"aud": []interface{}{"api1", "api2"},
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.Equal(t, []string{"api1", "api2"}, claims.Audience)
-	})
-
-	t.Run("scope_array", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"scope": []interface{}{"read", "write", "admin"},
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.Equal(t, []string{"read", "write", "admin"}, claims.Scopes)
-	})
-
-	t.Run("email_verified_string", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"email_verified": "true",
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.True(t, claims.EmailVerified)
-
-		raw2 := map[string]interface{}{
-			"email_verified": "false",
-		}
-		claims2 := oauthClaimsFromRawClaims(raw2)
-		require.False(t, claims2.EmailVerified)
-	})
-
-	t.Run("extra_claims_preserved", func(t *testing.T) {
-		t.Parallel()
-		raw := map[string]interface{}{
-			"sub":        "user",
-			"custom1":    "value1",
-			"custom_num": float64(42),
-		}
-		claims := oauthClaimsFromRawClaims(raw)
-		require.Equal(t, "value1", claims.Extra["custom1"])
-		require.Equal(t, float64(42), claims.Extra["custom_num"])
-		_, hasSub := claims.Extra["sub"]
-		require.False(t, hasSub)
-	})
-
-	t.Run("empty_claims", func(t *testing.T) {
-		t.Parallel()
-		claims := oauthClaimsFromRawClaims(map[string]interface{}{})
-		require.NotNil(t, claims)
-		require.Empty(t, claims.Subject)
-		require.NotNil(t, claims.Extra)
-	})
-}
-
 func TestBuildClickHouseHeadersFromOAuth(t *testing.T) {
 	t.Parallel()
 
@@ -2490,115 +2010,4 @@ func TestBuildClickHouseHeadersFromOAuth(t *testing.T) {
 		headers := srv.BuildClickHouseHeadersFromOAuth("tok", claims)
 		require.Equal(t, "false", headers["X-V"])
 	})
-}
-
-func TestLooksLikeJWT(t *testing.T) {
-	t.Parallel()
-	require.True(t, looksLikeJWT("a.b.c"))
-	require.False(t, looksLikeJWT("not-a-jwt"))
-	require.False(t, looksLikeJWT("a.b"))
-	require.False(t, looksLikeJWT("a.b.c.d"))
-}
-
-func TestValidateOAuthClaims(t *testing.T) {
-	t.Parallel()
-
-	t.Run("audience_missing_when_required", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Audience: "my-audience",
-		}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{})
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("audience_mismatch", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Audience: "my-audience",
-		}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{Audience: []string{"wrong-audience"}})
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("audience_trailing_slash_tolerant", func(t *testing.T) {
-		t.Parallel()
-		// Configured without trailing slash, claim has one — and vice versa.
-		// Both must validate so the canonical /.well-known/oauth-protected-resource
-		// form (slash) and prior issued tokens (no slash) both round-trip.
-		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Audience: "https://mcp.example.com",
-		}}}
-		s := &ClickHouseJWEServer{Config: cfg}
-		_, err := s.validateOAuthClaims(&OAuthClaims{
-			Audience:  []string{"https://mcp.example.com/"},
-			ExpiresAt: time.Now().Unix() + 300,
-		})
-		require.NoError(t, err)
-
-		cfg.Server.OAuth.Audience = "https://mcp.example.com/"
-		s = &ClickHouseJWEServer{Config: cfg}
-		_, err = s.validateOAuthClaims(&OAuthClaims{
-			Audience:  []string{"https://mcp.example.com"},
-			ExpiresAt: time.Now().Unix() + 300,
-		})
-		require.NoError(t, err)
-	})
-
-	t.Run("token_expired", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{ExpiresAt: time.Now().Unix() - 300})
-		require.ErrorIs(t, err, ErrOAuthTokenExpired)
-	})
-
-	t.Run("not_yet_valid", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{NotBefore: time.Now().Unix() + 300})
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("issued_in_future", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{IssuedAt: time.Now().Unix() + 300})
-		require.ErrorIs(t, err, ErrInvalidOAuthToken)
-	})
-
-	t.Run("missing_required_scopes", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			RequiredScopes: []string{"admin"},
-		}}}}
-		_, err := s.validateOAuthClaims(&OAuthClaims{Scopes: []string{"read"}})
-		require.ErrorIs(t, err, ErrOAuthInsufficientScopes)
-	})
-
-	t.Run("valid_claims", func(t *testing.T) {
-		t.Parallel()
-		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Issuer:         "https://issuer.example.com",
-			Audience:       "my-aud",
-			RequiredScopes: []string{"read"},
-		}}}}
-		claims, err := s.validateOAuthClaims(&OAuthClaims{
-			Issuer:    "https://issuer.example.com",
-			Audience:  []string{"my-aud"},
-			ExpiresAt: time.Now().Unix() + 300,
-			Scopes:    []string{"read", "write"},
-		})
-		require.NoError(t, err)
-		require.Equal(t, "https://issuer.example.com", claims.Issuer)
-	})
-
-}
-
-func TestHasRequiredScopes(t *testing.T) {
-	t.Parallel()
-	require.True(t, hasRequiredScopes([]string{"read", "write", "admin"}, []string{"read", "write"}))
-	require.False(t, hasRequiredScopes([]string{"read"}, []string{"read", "admin"}))
-	require.True(t, hasRequiredScopes([]string{"read"}, []string{}))
-	require.True(t, hasRequiredScopes([]string{}, []string{}))
-	require.False(t, hasRequiredScopes([]string{}, []string{"read"}))
 }

@@ -515,9 +515,6 @@ server:
     # Gating mode: scopes required in every incoming AS-issued JWT
     required_scopes: []
 
-    # Forward mode: allowed upstream IdP issuers for identity tokens
-    upstream_issuer_allowlist: []
-
     # Identity policy — applies to both modes (claims from JWT)
     allowed_email_domains: []
     allowed_hosted_domains: []
