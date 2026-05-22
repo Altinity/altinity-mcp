@@ -129,18 +129,22 @@ func (v *Verifier) pruneExpired() {
 	}
 }
 
-// Handler returns the http.Handler for POST /verify. Any non-200 status tells
+// Handler returns the http.Handler for /verify. Any non-200 status tells
 // ClickHouse to reject the authenticator response per CH's docs; the body is
 // for the sidecar's log only.
 //
-// Restricted to POST. ClickHouse 24.x+ POSTs to http_authentication servers;
-// allowing GET would create a divergent code path with no upstream consumer
-// and risks credentials appearing in proxy URLs / access logs upstream of
-// the sidecar.
+// Accepts GET and POST. Earlier code restricted to POST citing the CH 24.x+
+// docs, but the live Antalya 26.1 build invokes <http_authentication_servers>
+// via GET; a 405 there breaks the delegation entirely (CH silently treats the
+// server as unhealthy and reports WRONG_PASSWORD without forwarding). The
+// credential-in-URL concern that motivated POST-only does not apply: this
+// handler reads only the Authorization header (forwarded by CH per
+// <forward_headers>) and discards everything else; the listener binds 127.0.0.1
+// only and the in-pod URL never leaves loopback.
 func (v *Verifier) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}

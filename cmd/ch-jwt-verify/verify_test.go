@@ -296,19 +296,37 @@ func TestVerifierAppliesScopeSettings(t *testing.T) {
 	require.Equal(t, "1", resp.Settings["readonly"])
 }
 
-func TestVerifierRejectsNonPOST(t *testing.T) {
+func TestVerifierRejectsUnsupportedMethods(t *testing.T) {
 	t.Parallel()
 	p := newTestIdP(t)
 	v := NewVerifier(baseConfig(p))
 
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		req := httptest.NewRequest(method, "/verify", nil)
 		req.Header.Set("Authorization", basicHeader("alice@example.com", "irrelevant"))
 		rr := httptest.NewRecorder()
 		v.Handler().ServeHTTP(rr, req)
 		require.Equal(t, http.StatusMethodNotAllowed, rr.Code, "method %s should be rejected", method)
-		require.Equal(t, http.MethodPost, rr.Header().Get("Allow"))
+		require.Equal(t, "GET, POST", rr.Header().Get("Allow"))
 	}
+}
+
+// CH 26.1 Antalya invokes <http_authentication_servers> via GET; returning 405
+// would silently break delegation (CH treats the server as unhealthy and
+// reports WRONG_PASSWORD without forwarding). Verify GET is accepted and
+// reaches the auth-header check.
+func TestVerifierAcceptsGET(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+
+	req := httptest.NewRequest(http.MethodGet, "/verify", nil)
+	// No Authorization header → should be a 401 from parseBasicAuth, NOT a
+	// 405 from the method gate. The 401 proves the request reached past the
+	// method check.
+	rr := httptest.NewRecorder()
+	v.Handler().ServeHTTP(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
 func TestVerifierRejectsMissingAuthHeader(t *testing.T) {
