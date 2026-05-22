@@ -170,6 +170,15 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 // sidecar (gating mode) / Antalya's token_processors (forward mode). MCP's
 // injector now just confirms a bearer is present and threads it into the
 // context — anything else is the CH-side authenticator's responsibility.
+//
+// Note for security reviewers: the previous version of this test asserted
+// that wrong-audience / expired / unsigned JWTs were rejected at the MCP
+// edge with HTTP 401. That protection now lives at the data-plane gate:
+//   - gating mode: cmd/ch-jwt-verify/verify_test.go covers signature,
+//     aud byte-equal, exp/nbf, scope, identity policy, user-vs-claim match.
+//   - forward mode: ClickHouse's <token_processors> re-validates the same
+//     JWT against the upstream JWKS on every query.
+// The MCP layer intentionally does not duplicate those checks.
 func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
 	t.Parallel()
 	provider := newRegressionOIDCProvider(t, nil, nil)

@@ -745,3 +745,45 @@ server:
 		require.True(t, cfg.Server.OAuth.Enabled)
 	})
 }
+
+func TestHasNestedKey(t *testing.T) {
+	t.Parallel()
+	m := map[string]interface{}{
+		"server": map[string]interface{}{
+			"oauth": map[string]interface{}{
+				"claims_to_headers": map[string]interface{}{"sub": "X"},
+			},
+		},
+		"clickhouse": map[string]interface{}{
+			"cluster_secret": "redacted",
+		},
+	}
+	require.True(t, hasNestedKey(m, []string{"server", "oauth", "claims_to_headers"}))
+	require.True(t, hasNestedKey(m, []string{"clickhouse", "cluster_secret"}))
+	require.False(t, hasNestedKey(m, []string{"server", "oauth", "missing"}))
+	require.False(t, hasNestedKey(m, []string{"missing"}))
+	require.False(t, hasNestedKey(m, []string{}))
+	// Non-map intermediate node (cluster_secret is a string, not a map).
+	require.False(t, hasNestedKey(m, []string{"clickhouse", "cluster_secret", "child"}))
+}
+
+func TestWarnRemovedConfigKeysParsesYAML(t *testing.T) {
+	t.Parallel()
+	// Confirm the helper doesn't blow up on the documented removed-key
+	// shapes — actual log output is via stderr, not captured here.
+	yamlData := []byte(`
+clickhouse:
+  cluster_secret: "secret"
+  cluster_name: "demo"
+server:
+  oauth:
+    claims_to_headers:
+      sub: X-User
+    allowed_email_domains: [example.com]
+    allow_unverified_email: true
+`)
+	// Should not panic, regardless of whether keys are present.
+	warnRemovedConfigKeys(yamlData, "test.yaml")
+	warnRemovedConfigKeys(nil, "empty.yaml")
+	warnRemovedConfigKeys([]byte("not yaml at :::all"), "bad.yaml")
+}

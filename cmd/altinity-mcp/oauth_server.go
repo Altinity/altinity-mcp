@@ -741,9 +741,10 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 				// performs signature/iss/aud/exp/scope validation against the
 				// upstream JWKS for every query. Per-request validation here
 				// would duplicate work for opaque tokens and add a JWKS hop
-				// on the hot path; skip it and let the sidecar gate.
+				// on the hot path; skip it and let the sidecar gate. Claims
+				// stay unset on the context — ClaimsFromContext returns nil
+				// either way, so no downstream nil-deref risk.
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
-				ctx = context.WithValue(ctx, altinitymcp.OAuthClaimsKey, (*altinitymcp.OAuthClaims)(nil))
 			}
 
 			// At least one auth method must have succeeded
