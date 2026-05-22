@@ -152,7 +152,7 @@ func TestAuthServerMetaCaching(t *testing.T) {
 		require.NoError(t, err)
 
 		v.asMetaMu.Lock()
-		v.asMetaTime = time.Now().Add(-jwksCacheTTL - time.Second)
+		v.asMetaExpiresAt = time.Now().Add(-time.Second) // already expired
 		v.asMetaMu.Unlock()
 
 		countBefore := requestCount
@@ -160,6 +160,59 @@ func TestAuthServerMetaCaching(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, countBefore+1, requestCount, "should re-fetch after TTL expiry")
 	})
+}
+
+// TestJWKSCacheTTLConfigured asserts that a non-zero OAuthConfig.JWKSCacheTTL
+// is the cache TTL the Verifier actually applies (not the 5-minute default).
+// Before this was wired up, the field was parsed from YAML but silently
+// ignored — see docs/ch-jwt-verify.md "Multi-replica behavior". The check is
+// against the deadline the writer stamps into asMetaExpiresAt because that's
+// where the (jittered) configured TTL becomes observable.
+func TestJWKSCacheTTLConfigured(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(encodeOIDC("http://"+r.Host, "http://"+r.Host+"/jwks"))
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mockServer := httptest.NewServer(mux)
+	defer mockServer.Close()
+
+	const configuredTTL = time.Minute
+	v := NewVerifier(OAuthConfig{
+		Issuer:       mockServer.URL,
+		JWKSCacheTTL: configuredTTL,
+	})
+	require.Equal(t, configuredTTL, v.jwksCacheTTL(), "configured TTL must surface via the helper")
+
+	before := time.Now()
+	_, err := v.FetchAuthServerMeta(context.Background(), mockServer.URL)
+	require.NoError(t, err)
+
+	v.asMetaMu.RLock()
+	expiresAt := v.asMetaExpiresAt
+	v.asMetaMu.RUnlock()
+
+	// expiresAt should be `before + configuredTTL + jitter` where jitter
+	// is in [-TTL/10, +TTL/10]. Crucially, it must be well below the
+	// 5-minute default — that's the regression this test guards.
+	delta := expiresAt.Sub(before)
+	require.Greater(t, delta, configuredTTL-configuredTTL/10-time.Second,
+		"expiresAt under-shoots configured TTL minus jitter")
+	require.Less(t, delta, configuredTTL+configuredTTL/10+time.Second,
+		"expiresAt over-shoots configured TTL plus jitter — looks like the 5m default is still applied")
+}
+
+// TestJWKSCacheTTLDefault asserts that a zero OAuthConfig.JWKSCacheTTL falls
+// back to the package default (5 minutes), preserving prior behavior for
+// callers (pkg/server, broker) that haven't started passing the new field.
+func TestJWKSCacheTTLDefault(t *testing.T) {
+	t.Parallel()
+	v := NewVerifier(OAuthConfig{})
+	require.Equal(t, jwksCacheTTL, v.jwksCacheTTL(), "zero TTL must fall back to default")
 }
 
 func TestParseAndVerifyExternalJWTUnknownKid(t *testing.T) {
@@ -247,7 +300,7 @@ func TestJWKSRefetchOnKidMiss(t *testing.T) {
 		{Key: &oldKey.PublicKey, KeyID: oldKid, Algorithm: "RS256", Use: "sig"},
 	}}
 	v.jwksCacheURL = mockServer.URL + "/jwks"
-	v.jwksCacheTime = time.Now().Add(10 * time.Minute)
+	v.jwksCacheExpiresAt = time.Now().Add(10 * time.Minute)
 	v.jwksMu.Unlock()
 
 	signer, err := jose.NewSigner(

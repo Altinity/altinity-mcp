@@ -70,8 +70,17 @@ for the duration of the authenticating query only. They cannot persist
 or escape the request scope — useful for per-scope row caps, read-only
 flags, memory limits, etc.
 
-`/healthz` returns 200 + `"ok"` unconditionally for liveness/readiness
-probes. There is no `/metrics` endpoint in v1.
+`/healthz` returns 200 + `"ok"` unconditionally — it is the **liveness**
+probe target. It must NOT depend on IdP reachability: a flapping JWKS
+endpoint would otherwise trigger container restarts that just rebuild a
+cold cache in the same bad state.
+
+`/readyz` returns 200 when the most recent JWKS fetch attempt succeeded
+(or no fetch has been attempted yet — boot grace), and 503 when the
+most recent attempt errored without a subsequent success. It is the
+**readiness** probe target.
+
+There is no `/metrics` endpoint in v1.
 
 ### Why a JWT in the Basic password slot?
 
@@ -365,6 +374,9 @@ The ClickHouse `<http_authentication_servers>` block, dropped into
       <forward_headers>
         <header>Authorization</header>
       </forward_headers>
+      <connection_timeout_ms>1000</connection_timeout_ms>
+      <receive_timeout_ms>3000</receive_timeout_ms>
+      <send_timeout_ms>1000</send_timeout_ms>
     </ch_jwt_verify>
   </http_authentication_servers>
 </clickhouse>
@@ -378,6 +390,14 @@ The ClickHouse `<http_authentication_servers>` block, dropped into
 - **The server name (`<ch_jwt_verify>` here)** is referenced from
   `CREATE USER` definitions and must match `SERVER 'ch_jwt_verify'`
   exactly.
+- **`<connection_timeout_ms>` / `<receive_timeout_ms>` / `<send_timeout_ms>`** —
+  bound the CH → sidecar HTTP authentication call. ClickHouse does **not**
+  retry this call; one shot per query. The defaults above are sized to
+  cover a cold JWKS round-trip on a freshly-scheduled replica (3s
+  receive) without leaving a queued goroutine hung for minutes if the
+  sidecar truly is unreachable. Tune the values via Helm
+  `ch.timeoutsMs.{connect,receive,send}` — see
+  `helm/ch-jwt-verify/values.yaml`.
 
 Per-user provisioning:
 
@@ -436,6 +456,60 @@ JIT — the validation succeeds on the same request as long as the new
 There is no Redis / external cache and no warming on startup. The first
 request after a cold start (or after the JWKS TTL expires) pays one
 JWKS HTTP round trip.
+
+## Multi-replica behavior
+
+Each sidecar runs colocated in a CH pod with **its own in-process
+cache** — there is no shared cache layer in v1. When ClickHouse runs
+with 2+ replicas behind a load balancer this has three observable
+consequences:
+
+1. **JWKS rotation lag is bounded by `oauth.jwks_cache_ttl` + IdP
+   propagation.** Per-replica JWKS caches drift up to `jwks_cache_ttl`
+   apart. JIT refresh on `kid` miss
+   ([`pkg/oauth/jwt.go`](../pkg/oauth/jwt.go)) catches the common case
+   where a freshly-rotated key reaches one replica before another — the
+   first JWT that references the new `kid` invalidates that replica's
+   cache and re-fetches once before failing. If the IdP's CDN hasn't
+   propagated the new key set yet, the JIT refetch returns the old set
+   and that replica continues to reject tokens signed with the new key
+   until cache TTL expires; the rejection is classified `transient`
+   (see point 3) so it doesn't enter the negative cache.
+
+2. **Revocation latency is per-replica.** A token revoked at the IdP
+   stays live on a replica for the IdP's access-token TTL **plus** that
+   replica's `cache.positive_ttl` (default 30s). Total revocation
+   window is `IdP_TTL + max(positive_ttl across replicas)`, not the
+   configured 30s. Set `cache.positive_ttl: 0` to disable the positive
+   cache entirely if sub-second revocation matters more than the extra
+   JWKS-lookup load (the JWKS itself is still cached for
+   `jwks_cache_ttl`, so the marginal cost is one signature verify per
+   request — typically <1ms).
+
+3. **Transient validation errors are not cached.** JWKS-fetch network
+   blips, upstream 5xx, and the post-refresh "no JWK found for kid"
+   race during a rotation are wrapped with `oauth.ErrTransient` and
+   skipped by `storeCache` — the next request retries from scratch.
+   This is the difference between "this user is broken on replica A
+   for 5 minutes but works on replica B" (the failure mode before
+   classification) and "this user pays one extra JWKS fetch on replica
+   A's next request" (the current behavior). Permanent rejections (bad
+   audience, expired, identity-policy fail, signature mismatch) are
+   still cached for `negative_ttl` — they suppress repeated
+   cryptographic checks on a replayed bad token.
+
+For deployments that need tighter revocation guarantees:
+- Lower the IdP's access-token TTL — that's the dominant term in the
+  total window, often by an order of magnitude.
+- Set `cache.positive_ttl: 0` to remove the per-replica cache window.
+- A cross-replica shared cache (Redis / etcd) is not in v1; see the
+  follow-up list at the end of the PR description for the discussion.
+
+Validating multi-replica behavior live requires triggering an IdP key
+rotation while pointing two sidecars at the same JWKS. The signal in
+sidecar logs is `oauth: JWKS re-fetched after key rotation; new kid
+found` from [`pkg/oauth/jwt.go`](../pkg/oauth/jwt.go) — one per replica,
+each on its first request carrying the new `kid`.
 
 ## Build + run
 

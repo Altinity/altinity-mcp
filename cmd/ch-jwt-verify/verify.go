@@ -76,10 +76,20 @@ func NewVerifier(cfg *Config) *Verifier {
 			JWKSURL:        cfg.OAuth.JWKSURL,
 			Audience:       cfg.OAuth.Audience,
 			RequiredScopes: cfg.OAuth.RequiredScopes,
+			JWKSCacheTTL:   cfg.OAuth.JWKSCacheTTL,
 		}),
 		cache:    make(map[string]cacheEntry),
 		cacheCap: cacheMaxEntries,
 	}
+}
+
+// JWKSHealth surfaces the underlying oauth.Verifier's JWKS-fetch health for
+// /readyz. The triple is (last attempt, last success, last error). All-zero
+// times mean "no fetch attempted yet" — readiness handlers treat that as a
+// boot-grace OK so the kubelet doesn't keep the pod NotReady forever waiting
+// for the first /verify request.
+func (v *Verifier) JWKSHealth() (lastAttempt, lastSuccess time.Time, lastErr error) {
+	return v.oauthVer.JWKSHealth()
 }
 
 // StartReaper launches a background goroutine that prunes expired cache
@@ -302,6 +312,16 @@ func (v *Verifier) storeCache(key string, resp *verifyResponse, err error) {
 	}
 
 	if err != nil {
+		// Transient errors (JWKS-fetch network blip, upstream 5xx, post-
+		// refresh kid miss during a key rotation) are explicitly NOT
+		// negative-cached: a single replica's bad-luck network hiccup
+		// would otherwise pin a legitimate token as forbidden for
+		// negative_ttl while sibling replicas serve it fine. Let the
+		// next request retry from scratch. See docs/ch-jwt-verify.md
+		// "Multi-replica behavior".
+		if errors.Is(err, oauth.ErrTransient) {
+			return
+		}
 		v.cache[key] = cacheEntry{
 			ok:        false,
 			failure:   err,

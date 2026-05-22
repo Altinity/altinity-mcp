@@ -51,6 +51,12 @@ data:
           <forward_headers>
             <header>Authorization</header>
           </forward_headers>
+          <!-- CH does NOT retry http_authentication on failure; one shot
+               per query. These bounds matter — see values.yaml for the
+               default rationale. -->
+          <connection_timeout_ms>{{ .Values.ch.timeoutsMs.connect }}</connection_timeout_ms>
+          <receive_timeout_ms>{{ .Values.ch.timeoutsMs.receive }}</receive_timeout_ms>
+          <send_timeout_ms>{{ .Values.ch.timeoutsMs.send }}</send_timeout_ms>
         </{{ .Values.ch.serverName }}>
       </http_authentication_servers>
     </clickhouse>

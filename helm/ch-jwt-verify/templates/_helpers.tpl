@@ -61,9 +61,12 @@ the podTemplate's volumes list (see README.md § operator quirk).
     - name: verify
       containerPort: {{ regexFind "[0-9]+$" .Values.listen.tcp | int }}
       protocol: TCP
+  # Readiness checks JWKS reachability via /readyz (returns 503 when the
+  # most recent IdP fetch failed). Liveness stays on /healthz, which is
+  # unconditional — a flapping IdP must NOT restart the container.
   readinessProbe:
     httpGet:
-      path: /healthz
+      path: /readyz
       port: {{ regexFind "[0-9]+$" .Values.listen.tcp | int }}
     initialDelaySeconds: 1
     periodSeconds: 5

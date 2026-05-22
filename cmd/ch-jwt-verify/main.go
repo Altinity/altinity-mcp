@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -78,9 +79,33 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("/verify", verifier.Handler())
+	// /healthz is the LIVENESS probe target: "is this process responsive?"
+	// It must stay unconditional. Do NOT add JWKS / IdP reachability checks
+	// here — a flapping upstream would otherwise trip liveness and trigger
+	// container restarts that just rebuild a cold cache in the same bad
+	// state. IdP-dependent signals go on /readyz.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	// /readyz is the READINESS probe target. Reports failure when the most
+	// recent JWKS fetch attempt errored (and there has been no subsequent
+	// success). Pre-fetch isn't wired up, so on a cold start no attempts
+	// have happened yet — we treat that as a boot-grace OK so the kubelet
+	// doesn't keep the pod NotReady forever waiting for the first /verify.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		lastAttempt, lastSuccess, lastErr := verifier.JWKSHealth()
+		switch {
+		case lastAttempt.IsZero():
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok (no JWKS fetch attempted yet)"))
+		case !lastSuccess.Before(lastAttempt):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "jwks fetch failing: %v", lastErr)
+		}
 	})
 
 	srv := &http.Server{

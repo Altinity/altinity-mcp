@@ -1,6 +1,9 @@
 package oauth
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // OAuthConfig defines configuration for OAuth 2.0 authentication.
 //
@@ -106,6 +109,14 @@ type OAuthConfig struct {
 
 	// RefreshTokenTTLSeconds controls how long minted refresh tokens remain valid.
 	RefreshTokenTTLSeconds int `json:"refresh_token_ttl_seconds" yaml:"refresh_token_ttl_seconds" flag:"oauth-refresh-token-ttl-seconds" env:"MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS" desc:"Refresh token lifetime in seconds"`
+
+	// JWKSCacheTTL bounds how long a JWKS document (and its sibling
+	// auth-server metadata response) stays cached before the Verifier
+	// re-fetches. Zero falls back to the package default (5 minutes).
+	// Operators tune this against the IdP's key-rotation cadence: shorter
+	// TTLs narrow the per-replica drift window during rotation at the
+	// cost of more JWKS HTTP round trips.
+	JWKSCacheTTL time.Duration `json:"jwks_cache_ttl" yaml:"jwks_cache_ttl" flag:"oauth-jwks-cache-ttl" env:"MCP_OAUTH_JWKS_CACHE_TTL" desc:"JWKS / auth-server metadata cache TTL (default 5m)"`
 
 	// SigningSecret is the server-side symmetric secret used to HKDF-derive
 	// keys for every stateless OAuth JWE this server mints: pending-auth

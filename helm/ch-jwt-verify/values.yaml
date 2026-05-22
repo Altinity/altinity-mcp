@@ -84,3 +84,16 @@ ch:
   serverName: ch_jwt_verify
   # The URL CH uses to reach the sidecar over loopback. Must match `listen`.
   url: "http://127.0.0.1:9999/verify"
+  # -- Per-call timeouts on the CH → sidecar HTTP authentication call,
+  # rendered into <http_authentication_servers>. ClickHouse does NOT retry
+  # this call — one shot per query — so the bounds matter:
+  #   - connect: loopback connect should be instant; 1s is generous slack.
+  #   - receive: needs to cover a cold JWKS round-trip on a fresh replica.
+  #     A cross-region IdP can easily take >1s; 3s is the safer default.
+  #   - send: only the request line + Authorization header travels; 1s.
+  # All three are integers in milliseconds, matching the CH config grammar.
+  # See docs/ch-jwt-verify.md § Multi-replica behavior for the rationale.
+  timeoutsMs:
+    connect: 1000
+    receive: 3000
+    send: 1000

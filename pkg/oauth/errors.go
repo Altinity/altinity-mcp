@@ -19,4 +19,12 @@ var (
 	// token's principal domain is not in the configured allowed-email-domain
 	// / allowed-hosted-domain list.
 	ErrUnauthorizedDomain = errors.New("OAuth identity domain is not allowed")
+	// ErrTransient marks a validation failure that callers should NOT treat
+	// as a permanent rejection: network errors fetching JWKS / OIDC
+	// discovery, upstream 5xx, and the "no JWK found for kid" race where
+	// the IdP's CDN hasn't propagated a freshly-rotated key yet. The
+	// ch-jwt-verify sidecar uses errors.Is(err, ErrTransient) to skip the
+	// negative cache so a one-off blip on one replica doesn't strand a
+	// legitimate token for negative_ttl while peers serve it fine.
+	ErrTransient = errors.New("transient OAuth validation failure")
 )

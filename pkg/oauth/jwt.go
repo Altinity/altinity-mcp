@@ -80,7 +80,13 @@ func (v *Verifier) parseAndVerifyExternalJWT(ctx context.Context, token, expecte
 			}
 			keys = keySet.Key(keyID)
 			if len(keys) == 0 {
-				return nil, fmt.Errorf("no JWK found for kid %q", keyID)
+				// JIT-refetched JWKS still missing this kid. Could be a
+				// forged token, but it could just as easily be an IdP CDN
+				// that hasn't published the freshly-rotated key yet. The
+				// sidecar treats this as transient so a multi-replica
+				// rotation race doesn't pin a real token as bad on one
+				// replica via the negative cache.
+				return nil, fmt.Errorf("no JWK found for kid %q: %w", keyID, ErrTransient)
 			}
 			log.Info().Str("kid", keyID).Msg("oauth: JWKS re-fetched after key rotation; new kid found")
 		}

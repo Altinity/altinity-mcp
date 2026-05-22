@@ -497,5 +497,147 @@ func TestValidateConfigRequiresAudience(t *testing.T) {
 	require.ErrorContains(t, err, "audience")
 }
 
+// TestTransientErrorSkipsNegativeCache asserts that a JWKS-fetch failure
+// (network blip / upstream 5xx) does NOT populate the negative cache, so a
+// retry on the next request is allowed to succeed once the upstream recovers.
+// Otherwise multi-replica deployments would see asymmetric "one replica
+// 403s every request for 5 minutes" failure modes after a single blip.
+func TestTransientErrorSkipsNegativeCache(t *testing.T) {
+	t.Parallel()
+	// Point JWKSURL at a server that returns 503 — the verifier wraps this
+	// with oauth.ErrTransient. We don't need to mint a real JWT: the
+	// validation fails at the JWKS-fetch step, before signature checks.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer bad.Close()
+
+	cfg := &Config{
+		OAuth: OAuthConfig{
+			Issuer:   "https://issuer.example.com",
+			JWKSURL:  bad.URL,
+			Audience: "ch-jwt-verify.test",
+		},
+		Identity: IdentityConfig{UsernameClaim: "email", MatchMode: "lowercase_equal"},
+		Cache:    CacheConfig{PositiveTTL: 30 * time.Second, NegativeTTL: 5 * time.Minute},
+	}
+	v := NewVerifier(cfg)
+
+	// Mint a real-shaped JWT against a separate IdP just so the verifier
+	// reaches the JWKS-fetch step — sign+aud don't matter because the
+	// JWKS endpoint 503s first.
+	p := newTestIdP(t)
+	tok := p.mintJWT(t, map[string]interface{}{
+		"sub":            "u-1",
+		"email":          "alice@example.com",
+		"email_verified": true,
+	})
+
+	_, err := v.verify(context.Background(), "alice@example.com", tok)
+	require.Error(t, err)
+	require.ErrorIs(t, err, oauth.ErrTransient, "503 from JWKS must surface as transient")
+
+	v.mu.Lock()
+	cacheLen := len(v.cache)
+	v.mu.Unlock()
+	require.Equal(t, 0, cacheLen, "transient errors must not be negative-cached")
+}
+
+// TestPermanentErrorIsNegativeCached is the counterpart of the test above:
+// permanent rejections (unverified email here) MUST still be cached, since
+// the negative cache is what spares the sidecar from re-checking a replayed
+// bad token's signature on every request.
+func TestPermanentErrorIsNegativeCached(t *testing.T) {
+	t.Parallel()
+	p := newTestIdP(t)
+	v := NewVerifier(baseConfig(p))
+	tok := p.mintJWT(t, map[string]interface{}{
+		"sub":            "u-1",
+		"email":          "alice@example.com",
+		"email_verified": false, // → permanent ErrEmailNotVerified
+	})
+
+	_, err := v.verify(context.Background(), "alice@example.com", tok)
+	require.Error(t, err)
+	require.ErrorIs(t, err, oauth.ErrEmailNotVerified)
+	require.NotErrorIs(t, err, oauth.ErrTransient)
+
+	v.mu.Lock()
+	cacheLen := len(v.cache)
+	v.mu.Unlock()
+	require.Equal(t, 1, cacheLen, "permanent rejections must populate negative cache")
+}
+
+// TestJWKSHealthTracking asserts the underlying pkg/oauth Verifier records
+// fetch attempts/successes/errors that the sidecar's /readyz handler
+// consumes. We don't HTTP-test /readyz directly because the handler lives in
+// main.go and the wiring is trivial — the meaningful contract is the health
+// triple's transitions.
+func TestJWKSHealthTracking(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero_before_any_fetch", func(t *testing.T) {
+		t.Parallel()
+		p := newTestIdP(t)
+		v := NewVerifier(baseConfig(p))
+		lastAttempt, lastSuccess, lastErr := v.JWKSHealth()
+		require.True(t, lastAttempt.IsZero())
+		require.True(t, lastSuccess.IsZero())
+		require.NoError(t, lastErr)
+	})
+
+	t.Run("success_marks_both_attempt_and_success", func(t *testing.T) {
+		t.Parallel()
+		p := newTestIdP(t)
+		v := NewVerifier(baseConfig(p))
+		tok := p.mintJWT(t, map[string]interface{}{
+			"sub":            "u-1",
+			"email":          "alice@example.com",
+			"email_verified": true,
+		})
+		_, err := v.verify(context.Background(), "alice@example.com", tok)
+		require.NoError(t, err)
+		lastAttempt, lastSuccess, lastErr := v.JWKSHealth()
+		require.False(t, lastAttempt.IsZero())
+		require.False(t, lastSuccess.IsZero())
+		require.NoError(t, lastErr)
+		require.False(t, lastSuccess.Before(lastAttempt),
+			"successful fetch must record success >= attempt")
+	})
+
+	t.Run("failure_records_error_with_attempt_after_success", func(t *testing.T) {
+		t.Parallel()
+		// Point JWKSURL at a server that 503s — the fetch attempt is
+		// recorded but lastSuccess stays in the past relative to lastAttempt.
+		bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer bad.Close()
+		cfg := &Config{
+			OAuth: OAuthConfig{
+				Issuer:   "https://issuer.example.com",
+				JWKSURL:  bad.URL,
+				Audience: "ch-jwt-verify.test",
+			},
+			Identity: IdentityConfig{UsernameClaim: "email", MatchMode: "lowercase_equal"},
+			Cache:    CacheConfig{PositiveTTL: 30 * time.Second, NegativeTTL: 5 * time.Minute},
+		}
+		v := NewVerifier(cfg)
+		p := newTestIdP(t)
+		tok := p.mintJWT(t, map[string]interface{}{
+			"sub":            "u-1",
+			"email":          "alice@example.com",
+			"email_verified": true,
+		})
+		_, err := v.verify(context.Background(), "alice@example.com", tok)
+		require.Error(t, err)
+		lastAttempt, lastSuccess, lastErr := v.JWKSHealth()
+		require.False(t, lastAttempt.IsZero())
+		require.True(t, lastSuccess.Before(lastAttempt),
+			"after a failed fetch lastSuccess must be older than lastAttempt — that's how /readyz detects unhealthy")
+		require.Error(t, lastErr)
+	})
+}
+
 // noop assertions to keep `context` referenced if the file shrinks.
 var _ = context.Background
