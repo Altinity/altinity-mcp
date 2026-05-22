@@ -18,9 +18,16 @@ image:
 # -- Sidecar listener. Pick exactly one of unix or tcp. Unix is preferred:
 # zero port surface, fs permissions gate access. Use TCP when bind-mounted
 # sockets are awkward (e.g. some managed CH operators).
+#
+# NOTE on tcp bind address: 0.0.0.0 is required even for the colocated-only
+# trust model. The kubelet's HTTP probe targets the pod IP (eth0), not
+# loopback inside the netns — a server bound to 127.0.0.1 won't answer the
+# probe and the kubelet will CrashLoop the container. Since no Service
+# exposes this port for colocated deployments, 0.0.0.0 has no external
+# effect. See docs/ch-jwt-verify.md § Sidecar binding gotcha.
 listen:
   unix: ""                      # e.g. /run/ch-jwt-verify/sock
-  tcp: "127.0.0.1:9999"
+  tcp: "0.0.0.0:9999"
 
 oauth:
   # -- Upstream OAuth issuer (Auth0/Google/etc.) — used to discover the JWKS

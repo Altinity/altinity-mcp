@@ -35,6 +35,13 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 
 {{/*
 Reusable container fragment to splice into the CH StatefulSet/Deployment.
+
+When running under clickhouse-operator, the operator auto-injects
+volumeMount{name: default, mountPath: /var/lib/clickhouse} on every
+container in the podTemplate. The actual data PVC volume is named after
+the volumeClaimTemplate (e.g. default-1-1), so the injected mount fails
+validation. Workaround: declare an emptyDir volume named "default" in
+the podTemplate's volumes list (see README.md § operator quirk).
 */}}
 {{- define "ch-jwt-verify.container" -}}
 - name: ch-jwt-verify
@@ -49,17 +56,23 @@ Reusable container fragment to splice into the CH StatefulSet/Deployment.
     - name: ch-jwt-verify-config
       mountPath: /etc/ch-jwt-verify
       readOnly: true
+  {{- if .Values.listen.tcp }}
   ports:
-    {{- if .Values.listen.tcp }}
     - name: verify
       containerPort: {{ regexFind "[0-9]+$" .Values.listen.tcp | int }}
       protocol: TCP
-    {{- end }}
   readinessProbe:
     httpGet:
       path: /healthz
       port: {{ regexFind "[0-9]+$" .Values.listen.tcp | int }}
     initialDelaySeconds: 1
     periodSeconds: 5
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: {{ regexFind "[0-9]+$" .Values.listen.tcp | int }}
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  {{- end }}
   resources: {{- toYaml .Values.resources | nindent 4 }}
 {{- end }}

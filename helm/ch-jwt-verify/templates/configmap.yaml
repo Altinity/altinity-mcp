@@ -40,7 +40,9 @@ data:
   # so ClickHouse registers `{{ .Values.ch.serverName }}` as an
   # http_authentication server backend. Then provision users with:
   #   CREATE USER "alice@example.com"
-  #     IDENTIFIED WITH http_authenticator SERVER '{{ .Values.ch.serverName }}';
+  #     IDENTIFIED WITH http SERVER '{{ .Values.ch.serverName }}' SCHEME 'BASIC';
+  # (CH grammar token is `http`, not `http_authenticator` — the latter
+  # is rejected with SYNTAX_ERROR.)
   http_authentication.xml: |
     <clickhouse>
       <http_authentication_servers>
