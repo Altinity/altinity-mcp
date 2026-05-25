@@ -7,7 +7,7 @@ require (
 	github.com/Altinity/clickhouse-go/v2 v2.45.1-0.20260424134931-fb5f38b1cac7
 	github.com/franchb/embedded-clickhouse v0.4.0
 	github.com/go-jose/go-jose/v4 v4.1.4
-	github.com/modelcontextprotocol/go-sdk v1.6.0
+	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.9.0
