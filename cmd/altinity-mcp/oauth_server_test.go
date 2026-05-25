@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"

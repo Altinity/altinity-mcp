@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"gopkg.in/yaml.v3"
 )
 

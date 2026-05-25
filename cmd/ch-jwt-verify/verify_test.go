@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"github.com/go-jose/go-jose/v4"
 	josejwt "github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"

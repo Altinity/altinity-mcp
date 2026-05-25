@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 )
 
 // Re-exports of pkg/oauth identifiers so existing pkg/server-aware callers and

@@ -10,8 +10,8 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"github.com/rs/zerolog/log"
 )
 
