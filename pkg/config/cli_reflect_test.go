@@ -9,20 +9,20 @@ import (
 
 // fakeCmd implements Command for tests.
 type fakeCmd struct {
-	strs    map[string]string
-	bools   map[string]bool
-	ints    map[string]int
-	slices  map[string][]string
-	maps    map[string]map[string]string
-	wasSet  map[string]bool
+	strs   map[string]string
+	bools  map[string]bool
+	ints   map[string]int
+	slices map[string][]string
+	maps   map[string]map[string]string
+	wasSet map[string]bool
 }
 
-func (f *fakeCmd) String(name string) string                { return f.strs[name] }
-func (f *fakeCmd) Bool(name string) bool                    { return f.bools[name] }
-func (f *fakeCmd) Int(name string) int                      { return f.ints[name] }
-func (f *fakeCmd) StringSlice(name string) []string         { return f.slices[name] }
-func (f *fakeCmd) StringMap(name string) map[string]string  { return f.maps[name] }
-func (f *fakeCmd) IsSet(name string) bool                   { return f.wasSet[name] }
+func (f *fakeCmd) String(name string) string               { return f.strs[name] }
+func (f *fakeCmd) Bool(name string) bool                   { return f.bools[name] }
+func (f *fakeCmd) Int(name string) int                     { return f.ints[name] }
+func (f *fakeCmd) StringSlice(name string) []string        { return f.slices[name] }
+func (f *fakeCmd) StringMap(name string) map[string]string { return f.maps[name] }
+func (f *fakeCmd) IsSet(name string) bool                  { return f.wasSet[name] }
 
 func TestBuildFlags_ConfigStruct(t *testing.T) {
 	t.Parallel()
@@ -56,7 +56,6 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.Contains(t, byName, "oauth-client-id")
 	require.Contains(t, byName, "oauth-client-secret")
 	require.Contains(t, byName, "oauth-signing-secret")
-	require.Contains(t, byName, "oauth-claims-to-headers")
 	require.Contains(t, byName, "oauth-scopes")
 	require.Contains(t, byName, "oauth-required-scopes")
 
@@ -66,7 +65,6 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.IsType(t, &cli.BoolFlag{}, byName["server-tls"])
 	require.IsType(t, &cli.StringSliceFlag{}, byName["oauth-scopes"])
 	require.IsType(t, &cli.StringMapFlag{}, byName["clickhouse-http-headers"])
-	require.IsType(t, &cli.StringMapFlag{}, byName["oauth-claims-to-headers"])
 
 	// Defaults from `default:` tags are applied where present.
 	require.Equal(t, "localhost", byName["clickhouse-host"].(*cli.StringFlag).Value)
@@ -84,25 +82,23 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	cfg := &Config{}
 	cmd := &fakeCmd{
 		strs: map[string]string{
-			"clickhouse-host":         "ch.internal",
+			"clickhouse-host":      "ch.internal",
 			"oauth-signing-secret": "shh",
-			"transport":               "http",
-			"oauth-mode":              "forward",
+			"transport":            "http",
+			"oauth-mode":           "forward",
 		},
 		ints:   map[string]int{"clickhouse-port": 9000},
 		bools:  map[string]bool{"server-tls": true, "oauth-enabled": true},
 		slices: map[string][]string{"oauth-required-scopes": {"openid", "email"}},
-		maps:   map[string]map[string]string{"oauth-claims-to-headers": {"sub": "X-User"}},
 		wasSet: map[string]bool{
-			"clickhouse-host":         true,
-			"clickhouse-port":         true,
-			"server-tls":              true,
-			"oauth-enabled":           true,
-			"oauth-signing-secret": true,
-			"oauth-required-scopes":   true,
-			"oauth-claims-to-headers": true,
-			"transport":               true,
-			"oauth-mode":              true,
+			"clickhouse-host":       true,
+			"clickhouse-port":       true,
+			"server-tls":            true,
+			"oauth-enabled":         true,
+			"oauth-signing-secret":  true,
+			"oauth-required-scopes": true,
+			"transport":             true,
+			"oauth-mode":            true,
 		},
 	}
 
@@ -114,7 +110,6 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	require.True(t, cfg.Server.OAuth.Enabled)
 	require.Equal(t, "shh", cfg.Server.OAuth.SigningSecret)
 	require.Equal(t, []string{"openid", "email"}, cfg.Server.OAuth.RequiredScopes)
-	require.Equal(t, "X-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
 
 	// Type-alias conversion: cmd.String returns a plain string, but the
 	// struct field is MCPTransport — Convert() handles that.
@@ -124,7 +119,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 
 func TestApplyFlags_DefaultFallback(t *testing.T) {
 	t.Parallel()
-	cfg := &Config{}                        // all zero values
+	cfg := &Config{}                           // all zero values
 	cmd := &fakeCmd{wasSet: map[string]bool{}} // nothing set
 
 	ApplyFlags(cfg, cmd)

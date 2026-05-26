@@ -58,10 +58,10 @@ func TestValidateCIMDClientIDURL_Reject(t *testing.T) {
 		// IDN normalization: Cyrillic 'а' (U+0430) is a confusable for ASCII
 		// 'a'. idna.Lookup.ToASCII converts the IDN to its xn-- form, which
 		// won't equal the raw input, so we reject.
-		"cyrillic_a_idn":   "https://exаmple.com/x.json",
-		"data_scheme":      "data:application/json,{}",
+		"cyrillic_a_idn":    "https://exаmple.com/x.json",
+		"data_scheme":       "data:application/json,{}",
 		"javascript_scheme": "javascript:alert(1)",
-		"file_scheme":      "file:///etc/passwd",
+		"file_scheme":       "file:///etc/passwd",
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -90,15 +90,15 @@ func TestIsBlockedIP(t *testing.T) {
 		"169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1",
 		"::1", "fe80::1", "fc00::1", "192.0.0.1",
 		// Extended IANA special-purpose ranges added 2026-05-15.
-		"192.0.2.1",     // TEST-NET-1
-		"198.18.0.1",    // benchmarking
-		"198.51.100.1",  // TEST-NET-2
-		"203.0.113.1",   // TEST-NET-3
-		"240.0.0.1",     // reserved
+		"192.0.2.1",       // TEST-NET-1
+		"198.18.0.1",      // benchmarking
+		"198.51.100.1",    // TEST-NET-2
+		"203.0.113.1",     // TEST-NET-3
+		"240.0.0.1",       // reserved
 		"255.255.255.255", // broadcast (inside 240/4)
-		"2001:db8::1",   // IPv6 documentation
-		"64:ff9b::1",    // IPv4/IPv6 translation
-		"100::1",        // IPv6 discard prefix
+		"2001:db8::1",     // IPv6 documentation
+		"64:ff9b::1",      // IPv4/IPv6 translation
+		"100::1",          // IPv6 discard prefix
 	}
 	ok := []string{
 		"8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111",
@@ -403,15 +403,15 @@ func TestCIMDResolve_OversizeBodyRejected(t *testing.T) {
 
 func TestIsApplicationJSON(t *testing.T) {
 	cases := map[string]bool{
-		"application/json":               true,
+		"application/json":                true,
 		"application/json; charset=utf-8": true,
-		"APPLICATION/JSON":               true, // RFC 7231: media types are case-insensitive
-		"application/json-ld":            false,
-		"application/jsonpatch+json":     false,
-		"application/json5":              false,
-		"application/jose":               false,
-		"text/json":                      false,
-		"":                               false,
+		"APPLICATION/JSON":                true, // RFC 7231: media types are case-insensitive
+		"application/json-ld":             false,
+		"application/jsonpatch+json":      false,
+		"application/json5":               false,
+		"application/jose":                false,
+		"text/json":                       false,
+		"":                                false,
 	}
 	for ct, want := range cases {
 		if got := isApplicationJSON(ct); got != want {

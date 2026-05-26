@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 )
 
 // Generate JWE token using CLI flags

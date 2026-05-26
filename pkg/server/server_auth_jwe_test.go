@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/stretchr/testify/require"
 )
 

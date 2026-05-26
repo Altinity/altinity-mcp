@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -555,20 +556,18 @@ func TestConfigStructs(t *testing.T) {
 	t.Run("oauth_config", func(t *testing.T) {
 		t.Parallel()
 		cfg := OAuthConfig{
-			Enabled:                         true,
-			Issuer:                          "https://auth.example.com",
-			JWKSURL:                         "https://auth.example.com/.well-known/jwks.json",
-			Audience:                        "my-api",
-			PublicResourceURL:               "https://public.example.com/http",
-			PublicAuthServerURL:             "https://public.example.com/oauth",
-			ClientID:                        "client-123",
-			ClientSecret:                    "secret-456",
-			TokenURL:                        "https://auth.example.com/oauth/token",
-			AuthURL:                         "https://auth.example.com/oauth/authorize",
-			Scopes:                          []string{"read", "write"},
-			RequiredScopes:                  []string{"read"},
-			ClickHouseHeaderName:            "X-Custom-Token",
-			ClaimsToHeaders:        map[string]string{"sub": "X-User", "email": "X-Email"},
+			Enabled:                true,
+			Issuer:                 "https://auth.example.com",
+			JWKSURL:                "https://auth.example.com/.well-known/jwks.json",
+			Audience:               "my-api",
+			PublicResourceURL:      "https://public.example.com/http",
+			PublicAuthServerURL:    "https://public.example.com/oauth",
+			ClientID:               "client-123",
+			ClientSecret:           "secret-456",
+			TokenURL:               "https://auth.example.com/oauth/token",
+			AuthURL:                "https://auth.example.com/oauth/authorize",
+			Scopes:                 []string{"read", "write"},
+			RequiredScopes:         []string{"read"},
 			AuthorizationPath:      "/authorize",
 			CallbackPath:           "/callback",
 			TokenPath:              "/token",
@@ -588,9 +587,6 @@ func TestConfigStructs(t *testing.T) {
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Scopes)
 		require.Equal(t, []string{"read"}, cfg.RequiredScopes)
-		require.Equal(t, "X-Custom-Token", cfg.ClickHouseHeaderName)
-		require.Equal(t, "X-User", cfg.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-Email", cfg.ClaimsToHeaders["email"])
 		require.Equal(t, "/authorize", cfg.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.CallbackPath)
 		require.Equal(t, "/token", cfg.TokenPath)
@@ -640,10 +636,6 @@ server:
       - write
     required_scopes:
       - read
-    clickhouse_header_name: "X-Custom-Token"
-    claims_to_headers:
-      sub: "X-ClickHouse-User"
-      email: "X-ClickHouse-Email"
 logging:
   level: info
 `
@@ -673,9 +665,6 @@ logging:
 		require.Equal(t, "https://auth.example.com/oauth/authorize", cfg.Server.OAuth.AuthURL)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.Scopes)
 		require.Equal(t, []string{"read"}, cfg.Server.OAuth.RequiredScopes)
-		require.Equal(t, "X-Custom-Token", cfg.Server.OAuth.ClickHouseHeaderName)
-		require.Equal(t, "X-ClickHouse-User", cfg.Server.OAuth.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-ClickHouse-Email", cfg.Server.OAuth.ClaimsToHeaders["email"])
 		require.Equal(t, "/authorize", cfg.Server.OAuth.AuthorizationPath)
 		require.Equal(t, "/callback", cfg.Server.OAuth.CallbackPath)
 		require.Equal(t, "/token", cfg.Server.OAuth.TokenPath)
@@ -706,11 +695,7 @@ logging:
       "enabled": true,
       "issuer": "https://auth.example.com",
       "audience": "my-api",
-      "required_scopes": ["read", "write"],
-      "claims_to_headers": {
-        "sub": "X-User-ID",
-        "name": "X-User-Name"
-      }
+      "required_scopes": ["read", "write"]
     }
   },
   "logging": {
@@ -731,8 +716,6 @@ logging:
 		require.Equal(t, "https://auth.example.com", cfg.Server.OAuth.Issuer)
 		require.Equal(t, "my-api", cfg.Server.OAuth.Audience)
 		require.Equal(t, []string{"read", "write"}, cfg.Server.OAuth.RequiredScopes)
-		require.Equal(t, "X-User-ID", cfg.Server.OAuth.ClaimsToHeaders["sub"])
-		require.Equal(t, "X-User-Name", cfg.Server.OAuth.ClaimsToHeaders["name"])
 	})
 
 	t.Run("jwe_and_oauth_both_enabled", func(t *testing.T) {
@@ -762,4 +745,98 @@ server:
 		require.True(t, cfg.Server.JWE.Enabled)
 		require.True(t, cfg.Server.OAuth.Enabled)
 	})
+}
+
+func TestHasNestedKey(t *testing.T) {
+	t.Parallel()
+	m := map[string]interface{}{
+		"server": map[string]interface{}{
+			"oauth": map[string]interface{}{
+				"claims_to_headers": map[string]interface{}{"sub": "X"},
+			},
+		},
+		"clickhouse": map[string]interface{}{
+			"cluster_secret": "redacted",
+		},
+	}
+	require.True(t, hasNestedKey(m, []string{"server", "oauth", "claims_to_headers"}))
+	require.True(t, hasNestedKey(m, []string{"clickhouse", "cluster_secret"}))
+	require.False(t, hasNestedKey(m, []string{"server", "oauth", "missing"}))
+	require.False(t, hasNestedKey(m, []string{"missing"}))
+	require.False(t, hasNestedKey(m, []string{}))
+	// Non-map intermediate node (cluster_secret is a string, not a map).
+	require.False(t, hasNestedKey(m, []string{"clickhouse", "cluster_secret", "child"}))
+}
+
+func TestRemovedKeyWarnings(t *testing.T) {
+	t.Parallel()
+
+	t.Run("detects_all_removed_keys", func(t *testing.T) {
+		t.Parallel()
+		yamlData := []byte(`
+clickhouse:
+  cluster_secret: "secret"
+  cluster_name: "demo"
+server:
+  oauth:
+    claims_to_headers:
+      sub: X-User
+    clickhouse_header_name: X-Token
+    allowed_email_domains: [example.com]
+    allowed_hosted_domains: [example.com]
+    allow_unverified_email: true
+`)
+		warnings := removedKeyWarnings(yamlData)
+		require.Len(t, warnings, len(RemovedConfigKeys))
+		// Each warning quotes the path; check a couple by path substring
+		joined := strings.Join(warnings, "\n")
+		require.Contains(t, joined, "clickhouse.cluster_secret")
+		require.Contains(t, joined, "server.oauth.allow_unverified_email")
+	})
+
+	t.Run("returns_nil_for_empty", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, removedKeyWarnings(nil))
+	})
+
+	t.Run("returns_nil_for_unparseable", func(t *testing.T) {
+		t.Parallel()
+		require.Nil(t, removedKeyWarnings([]byte("not yaml at :::all")))
+	})
+
+	t.Run("returns_nil_for_clean_config", func(t *testing.T) {
+		t.Parallel()
+		yamlData := []byte(`
+clickhouse:
+  host: localhost
+  port: 8123
+server:
+  oauth:
+    enabled: true
+    mode: gating
+`)
+		require.Nil(t, removedKeyWarnings(yamlData))
+	})
+}
+
+func TestLoadConfigFromFile_PopulatesRemovedKeyWarnings(t *testing.T) {
+	t.Parallel()
+	yamlContent := `
+clickhouse:
+  host: localhost
+  cluster_secret: secret
+server:
+  oauth:
+    enabled: true
+    allow_unverified_email: true
+`
+	tmpFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(yamlContent), 0644))
+
+	cfg, err := LoadConfigFromFile(tmpFile)
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.RemovedKeyWarnings)
+	joined := strings.Join(cfg.RemovedKeyWarnings, "\n")
+	require.Contains(t, joined, "clickhouse.cluster_secret")
+	require.Contains(t, joined, "server.oauth.allow_unverified_email")
 }

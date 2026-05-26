@@ -14,6 +14,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/altinity/go-mcp-oauth-sdk/broker"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,9 +110,9 @@ func TestHAReplay_UpstreamInvalidGrantOnReplay(t *testing.T) {
 	}
 
 	// Build a valid downstream auth code JWE by exercising encodeAuthCode.
-	verifier, err := newPKCEVerifier()
+	verifier, err := broker.NewPKCEVerifier()
 	require.NoError(t, err)
-	challenge := pkceChallenge(verifier)
+	challenge := broker.PKCEChallenge(verifier)
 	issued := oauthIssuedCode{
 		ClientID:             downstreamClient,
 		RedirectURI:          downstreamRedir,
@@ -156,4 +157,3 @@ func TestHAReplay_UpstreamInvalidGrantOnReplay(t *testing.T) {
 	require.Equal(t, "invalid_grant", resp2["error"])
 	require.Equal(t, int32(2), atomic.LoadInt32(&tokenCalls), "upstream /token should be called once per /token attempt — no pod-local cache")
 }
-

@@ -9,7 +9,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog/log"
 )

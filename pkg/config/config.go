@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/altinity/altinity-mcp/pkg/oauth"
+	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,19 +48,11 @@ type ClickHouseConfig struct {
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" env:"CLICKHOUSE_MAX_EXECUTION_TIME" default:"600" desc:"ClickHouse max execution time in seconds"`
 	// Limit is DEPRECATED; use MaxResultRows. Retained as a silent alias: when
 	// MaxResultRows is unset (0) and Limit > 0, EffectiveMaxResultRows() returns Limit.
-	Limit          int `json:"limit,omitempty" yaml:"limit,omitempty" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"DEPRECATED: alias for max_result_rows"`
-	MaxResultRows  int `json:"max_result_rows,omitempty" yaml:"max_result_rows,omitempty" flag:"clickhouse-max-result-rows" env:"CLICKHOUSE_MAX_RESULT_ROWS" desc:"Per-request row cap on SELECT-like queries (0=default 500, <0=disable and defer to ClickHouse user profile)"`
-	MaxResultBytes int `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
+	Limit          int               `json:"limit,omitempty" yaml:"limit,omitempty" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"DEPRECATED: alias for max_result_rows"`
+	MaxResultRows  int               `json:"max_result_rows,omitempty" yaml:"max_result_rows,omitempty" flag:"clickhouse-max-result-rows" env:"CLICKHOUSE_MAX_RESULT_ROWS" desc:"Per-request row cap on SELECT-like queries (0=default 500, <0=disable and defer to ClickHouse user profile)"`
+	MaxResultBytes int               `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
 	HttpHeaders    map[string]string `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" env:"CLICKHOUSE_HTTP_HEADERS" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings  map[string]string `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
-	// ClusterName + ClusterSecret enable interserver-secret authentication.
-	// When ClusterSecret is set, altinity-mcp connects as a trusted cluster
-	// peer (no username/password) and executes each query as the
-	// MCP-authenticated user. The target ClickHouse must list altinity-mcp
-	// under <remote_servers><cluster><secret>...</secret></cluster>. Only
-	// the TCP protocol is supported.
-	ClusterName   string `json:"cluster_name,omitempty" yaml:"cluster_name,omitempty" flag:"clickhouse-cluster-name" env:"CLICKHOUSE_CLUSTER_NAME" desc:"ClickHouse cluster name for interserver-secret auth"`
-	ClusterSecret string `json:"cluster_secret,omitempty" yaml:"cluster_secret,omitempty" flag:"clickhouse-cluster-secret" env:"CLICKHOUSE_CLUSTER_SECRET" desc:"Shared interserver secret; when set altinity-mcp authenticates as a trusted cluster peer"`
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
 	// Default 10 MB when 0. Set to a negative number to disable the check.
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" env:"CLICKHOUSE_MAX_QUERY_LENGTH" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
@@ -221,6 +213,14 @@ type Config struct {
 	Server     ServerConfig     `json:"server" yaml:"server"`
 	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
 	ReloadTime int              `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
+
+	// RemovedKeyWarnings holds human-readable warnings about config keys
+	// that LoadConfigFromFile observed in the input file but the current
+	// codebase no longer honors (silently dropped on unmarshal). The
+	// caller is responsible for emitting these via its own structured
+	// logger after init. Not serialized — round-trips through YAML/JSON
+	// as zero. See removedKeyWarnings + RemovedConfigKeys.
+	RemovedKeyWarnings []string `json:"-" yaml:"-"`
 }
 
 // LoadConfigFromFile loads configuration from a YAML or JSON file
@@ -251,5 +251,68 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 			}
 		}
 	}
+	config.RemovedKeyWarnings = removedKeyWarnings(data)
 	return config, nil
+}
+
+// RemovedConfigKeys names YAML/JSON keys this codebase used to honor but no
+// longer does. When an operator upgrades MCP they may carry these over in
+// their values file; YAML unmarshal silently drops unknown fields and the
+// operator sees no warning. removedKeyWarnings re-parses the raw bytes
+// into a generic map and reports any of these so the operator knows their
+// override is now a no-op. Exported so external tooling (linters, CI
+// gates, deploy automation) can share the same source of truth.
+var RemovedConfigKeys = []RemovedKey{
+	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
+	{Path: "clickhouse.cluster_name", Replacement: "Same as cluster_secret — drop both together."},
+	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — the gating-mode wire format no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
+	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — forward mode always uses Authorization: Bearer."},
+	{Path: "server.oauth.allowed_email_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_email_domains."},
+	{Path: "server.oauth.allowed_hosted_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_hosted_domains."},
+	{Path: "server.oauth.allow_unverified_email", Replacement: "Moved (inverted) to the ch-jwt-verify sidecar's identity.require_email_verified."},
+}
+
+// RemovedKey is a single removed-config-key entry: the dotted path under
+// the config root and a human-readable migration hint.
+type RemovedKey struct {
+	Path        string
+	Replacement string
+}
+
+// removedKeyWarnings returns a human-readable warning per removed key
+// observed in data. Empty slice if data is unparseable or carries no
+// removed keys. The caller is responsible for emitting these via its
+// structured logger (we can't import the logger here without an import
+// cycle; the config package is a leaf).
+func removedKeyWarnings(data []byte) []string {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil || raw == nil {
+		return nil
+	}
+	var out []string
+	for _, rk := range RemovedConfigKeys {
+		if hasNestedKey(raw, strings.Split(rk.Path, ".")) {
+			out = append(out, fmt.Sprintf("config key %q is no longer honored (silently dropped on unmarshal). %s",
+				rk.Path, rk.Replacement))
+		}
+	}
+	return out
+}
+
+func hasNestedKey(m map[string]interface{}, parts []string) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	v, ok := m[parts[0]]
+	if !ok {
+		return false
+	}
+	if len(parts) == 1 {
+		return true
+	}
+	nested, ok := v.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	return hasNestedKey(nested, parts[1:])
 }

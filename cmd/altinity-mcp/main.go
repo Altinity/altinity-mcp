@@ -18,8 +18,8 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -687,7 +687,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Test ClickHouse connection for readiness, unless credentials are per-request
 	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
-		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
+		cfg.Server.OAuth.Enabled
 	if !credentialsArePerRequest {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
@@ -742,6 +742,11 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 			return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
 		}
 		log.Info().Str("config_file", configFile).Msg("Configuration loaded from file")
+		// Emit any "this key is no longer honored" warnings through the
+		// structured logger so JSON-logging deployments pick them up.
+		for _, w := range cfg.RemovedKeyWarnings {
+			log.Warn().Str("config_file", configFile).Msg(w)
+		}
 	}
 
 	// Override with CLI flags (CLI flags take precedence over config file)
@@ -996,15 +1001,14 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	if err := validateOAuthRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
-	if err := validateClusterSecretConfig(cfg); err != nil {
-		return nil, err
-	}
 
 	// Test connection to ClickHouse at startup, unless credentials are dynamic:
 	// - JWE: each request carries its own ClickHouse credentials
-	// - OAuth forward mode: static creds are cleared; bearer token arrives per-request
-	skipStartupPing := cfg.Server.JWE.Enabled ||
-		(cfg.Server.OAuth.Enabled && cfg.Server.OAuth.IsForwardMode())
+	// - OAuth (forward or gating): credentials are derived from the JWT per
+	//   request. Forward mode rewrites the Authorization header; gating mode
+	//   sends Basic base64(email:JWT) for the CH-side JWT-verifier sidecar to
+	//   validate. The static helm-configured Username/Password are unused.
+	skipStartupPing := cfg.Server.JWE.Enabled || cfg.Server.OAuth.Enabled
 	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
@@ -1129,35 +1133,12 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken HS256 and JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
 	}
 
-	if cfg.Server.OAuth.IsForwardMode() && cfg.ClickHouse.Protocol != config.HTTPProtocol {
-		return fmt.Errorf("oauth forward mode requires clickhouse protocol http")
-	}
-
-	// H-1: gating + cluster_secret uses oauthClaims.Email verbatim as the
-	// ClickHouse `initial_user`; ClickHouse trusts the impersonation because
-	// the cluster_secret authenticates the peer. With allow_unverified_email,
-	// any IdP-issued token with email_verified=false (e.g. an Auth0 Database
-	// Connection that forgot to require verification, a self-hosted OIDC, a
-	// federated partner IdP) lets the bearer impersonate any provisioned CH
-	// user just by typing their email at registration. Refuse to start when
-	// the operator has explicitly opted out of the verified-email check.
-	if cfg.Server.OAuth.IsGatingMode() &&
-		strings.TrimSpace(cfg.ClickHouse.ClusterSecret) != "" &&
-		cfg.Server.OAuth.AllowUnverifiedEmail {
-		return fmt.Errorf("oauth gating mode + clickhouse cluster_secret forbids oauth.allow_unverified_email=true (unset MCP_OAUTH_ALLOW_UNVERIFIED_EMAIL): " +
-			"any IdP-issued token with email_verified=false can impersonate the named CH user via initial_user")
-	}
-
-	// M3: AllowedEmailDomains / AllowedHostedDomains are syntactic checks on
-	// the email / hd claims. Without email_verified enforcement an attacker
-	// whose IdP issues unverified emails can claim any address in the
-	// allow-list and sail through. Refuse to start if the operator combined
-	// a domain allow-list with allow_unverified_email=true.
-	if cfg.Server.OAuth.IsGatingMode() &&
-		(len(cfg.Server.OAuth.AllowedEmailDomains) > 0 || len(cfg.Server.OAuth.AllowedHostedDomains) > 0) &&
-		cfg.Server.OAuth.AllowUnverifiedEmail {
-		return fmt.Errorf("oauth.allowed_email_domains / allowed_hosted_domains forbid oauth.allow_unverified_email=true: " +
-			"a token with email_verified=false can claim any address in the allow-list and defeat the policy")
+	// Both OAuth modes require HTTP for ClickHouse: forward mode rewrites the
+	// Authorization header (TCP native protocol has no equivalent); gating
+	// mode sends Basic base64(email:JWT) to a CH-side http_authentication
+	// sidecar, which ClickHouse only invokes via the HTTP interface.
+	if cfg.Server.OAuth.Enabled && cfg.ClickHouse.Protocol != config.HTTPProtocol {
+		return fmt.Errorf("oauth requires clickhouse protocol http (both forward and gating modes route credentials through ClickHouse's HTTP interface)")
 	}
 
 	// Gating-mode validation has two shapes depending on broker_upstream:
@@ -1168,11 +1149,11 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	//   token_url/userinfo_url/public_auth_server_url is a misconfiguration.
 	//
 	//   broker_upstream=true: MCP also acts as the AS to MCP clients
-	//   (DCR-via-MCP), brokering an upstream IdP that does not natively
+	//   (broker-via-MCP), brokering an upstream IdP that does not natively
 	//   support CIMD (e.g. Google). The fields above become REQUIRED.
-	//   The /mcp request path still uses cluster_secret + Auth.Username
-	//   impersonation, as in standard gating mode — only the OAuth dance
-	//   changes shape.
+	//   The /mcp request path is unchanged from standard gating mode —
+	//   bearer is rewritten to Basic email:JWT for the ch-jwt-verify
+	//   sidecar to validate. Only the OAuth dance changes shape.
 	if cfg.Server.OAuth.IsGatingMode() {
 		if !cfg.Server.OAuth.BrokerUpstream {
 			if cfg.Server.OAuth.ClientID != "" {
@@ -1229,22 +1210,6 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	return nil
 }
 
-// validateClusterSecretConfig rejects invalid combinations for
-// interserver-secret mode. The shared secret can only authenticate over the
-// TCP native protocol; ClickHouse has no HTTP equivalent.
-func validateClusterSecretConfig(cfg config.Config) error {
-	if cfg.ClickHouse.ClusterSecret == "" {
-		return nil
-	}
-	if cfg.ClickHouse.Protocol != config.TCPProtocol {
-		return fmt.Errorf("clickhouse-cluster-secret requires clickhouse-protocol=tcp")
-	}
-	if cfg.ClickHouse.ClusterName == "" {
-		return fmt.Errorf("clickhouse-cluster-secret is set but clickhouse-cluster-name is empty")
-	}
-	return nil
-}
-
 func (a *application) Close() {
 	// Stop config reload goroutine
 	if a.configFile != "" {
@@ -1292,6 +1257,9 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	newCfg, err := config.LoadConfigFromFile(a.configFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config file: %w", err)
+	}
+	for _, w := range newCfg.RemovedKeyWarnings {
+		log.Warn().Str("config_file", a.configFile).Msg(w)
 	}
 
 	// Override with CLI flags

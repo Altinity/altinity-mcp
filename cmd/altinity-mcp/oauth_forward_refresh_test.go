@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/go-mcp-oauth-sdk/broker"
 )
 
 // Tests for issue #121: forward-mode id_token refresh.
@@ -78,12 +79,12 @@ func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 				mcpServer:    altinitymcp.NewClickHouseMCPServer(cfg, "test"),
 				cimdResolver: testResolver(t, cimdServer),
 			}
-			verifier, _ := newPKCEVerifier()
+			verifier, _ := broker.NewPKCEVerifier()
 			form := url.Values{}
 			form.Set("client_id", cimdURL)
 			form.Set("redirect_uri", "https://demo.example.com/cb")
 			form.Set("response_type", "code")
-			form.Set("code_challenge", pkceChallenge(verifier))
+			form.Set("code_challenge", broker.PKCEChallenge(verifier))
 			form.Set("code_challenge_method", "S256")
 			req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?"+form.Encode(), nil)
 			rr := httptest.NewRecorder()
@@ -147,12 +148,12 @@ func newRefreshProbeUpstream(t *testing.T, initialIDTokenExp, refreshedIDTokenEx
 		case "authorization_code":
 			atomic.AddInt32(&u.codeExchangeCt, 1)
 			idToken := u.issueIDToken(t, map[string]interface{}{
-				"sub":   subject,
-				"aud":   "broker",
-				"iat":   now,
-				"exp":   initialIDTokenExp.Unix(),
-				"iss":   srv.URL,
-				"email": subject,
+				"sub":            subject,
+				"aud":            "broker",
+				"iat":            now,
+				"exp":            initialIDTokenExp.Unix(),
+				"iss":            srv.URL,
+				"email":          subject,
 				"email_verified": true,
 			})
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -167,12 +168,12 @@ func newRefreshProbeUpstream(t *testing.T, initialIDTokenExp, refreshedIDTokenEx
 			atomic.AddInt32(&u.refreshCt, 1)
 			require.Equal(t, "rf-1", r.Form.Get("refresh_token"))
 			idToken := u.issueIDToken(t, map[string]interface{}{
-				"sub":   subject,
-				"aud":   "broker",
-				"iat":   now,
-				"exp":   refreshedIDTokenExp.Unix(),
-				"iss":   srv.URL,
-				"email": subject,
+				"sub":            subject,
+				"aud":            "broker",
+				"iat":            now,
+				"exp":            refreshedIDTokenExp.Unix(),
+				"iss":            srv.URL,
+				"email":          subject,
 				"email_verified": true,
 			})
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -212,10 +213,10 @@ func (u *refreshProbeUpstream) issueIDToken(t *testing.T, claims map[string]inte
 
 func runTokenExchange(t *testing.T, app *application, cimdURL, redirectURI string) *httptest.ResponseRecorder {
 	t.Helper()
-	verifier, _ := newPKCEVerifier()
+	verifier, _ := broker.NewPKCEVerifier()
 	issued := oauthIssuedCode{
 		ClientID: cimdURL, RedirectURI: redirectURI, Scope: "openid email",
-		CodeChallenge: pkceChallenge(verifier), CodeChallengeMethod: "S256",
+		CodeChallenge: broker.PKCEChallenge(verifier), CodeChallengeMethod: "S256",
 		UpstreamAuthCode: "uac", UpstreamPKCEVerifier: "uv",
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}
@@ -587,12 +588,12 @@ func TestOAuthAuthorize_ForceConsentFlag(t *testing.T) {
 			}))
 			defer cimdServer.Close()
 			app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test"), cimdResolver: testResolver(t, cimdServer)}
-			verifier, _ := newPKCEVerifier()
+			verifier, _ := broker.NewPKCEVerifier()
 			form := url.Values{}
 			form.Set("client_id", cimdURL)
 			form.Set("redirect_uri", "https://demo.example.com/cb")
 			form.Set("response_type", "code")
-			form.Set("code_challenge", pkceChallenge(verifier))
+			form.Set("code_challenge", broker.PKCEChallenge(verifier))
 			form.Set("code_challenge_method", "S256")
 			req := httptest.NewRequest(http.MethodGet, "https://mcp.example.com/oauth/authorize?"+form.Encode(), nil)
 			rr := httptest.NewRecorder()

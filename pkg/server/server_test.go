@@ -11,7 +11,7 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/altinity-mcp/pkg/jwe_auth"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -152,6 +152,10 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 	t.Run("combined_auth_oauth_only_via_openapi", func(t *testing.T) {
 		t.Parallel()
+		// Gating-mode OAuth + JWE both enabled: with a bearer-only request,
+		// MCP forwards the bearer via Basic email:JWT to ClickHouse, which
+		// rejects unknown users when no sidecar is configured. MCP itself
+		// is a pure forwarder, so the request reaches the CH layer (non-401).
 		const gatingSecret = "test-gating-secret-32-byte-key!!"
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
@@ -162,16 +166,17 @@ func TestOpenAPIHandlers(t *testing.T) {
 					JWTSecretKey: "jwt-secret",
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:         true,
-					Mode:            "gating",
+					Enabled:       true,
+					Mode:          "gating",
 					SigningSecret: gatingSecret,
 				},
 			},
 		}, "test")
 
 		oauthToken := mintSelfIssuedToken(t, gatingSecret, map[string]interface{}{
-			"sub": "user123",
-			"exp": time.Now().Add(time.Hour).Unix(),
+			"sub":   "user123",
+			"email": "user123@example.com",
+			"exp":   time.Now().Add(time.Hour).Unix(),
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%201", nil)
@@ -181,7 +186,7 @@ func TestOpenAPIHandlers(t *testing.T) {
 		rr := httptest.NewRecorder()
 		srv.OpenAPIHandler(rr, req)
 
-		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+		require.NotEqual(t, http.StatusUnauthorized, rr.Code, rr.Body.String())
 	})
 
 	t.Run("dynamic_tool_execution", func(t *testing.T) {
