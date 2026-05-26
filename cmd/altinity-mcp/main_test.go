@@ -25,8 +25,8 @@ import (
 	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 )
@@ -3237,8 +3237,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	t.Run("unsupported_mode", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:         true,
-			Mode:            "custom",
+			Enabled:       true,
+			Mode:          "custom",
 			SigningSecret: "test-signing-secret-32-byte-key!!",
 		}}}
 		err := validateOAuthRuntimeConfig(cfg)
@@ -3261,8 +3261,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	t.Run("missing_gating_secret", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-			Enabled:         true,
-			Mode:            "gating",
+			Enabled:       true,
+			Mode:          "gating",
 			SigningSecret: "",
 		}}}
 		err := validateOAuthRuntimeConfig(cfg)
@@ -3274,8 +3274,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
-				Enabled:         true,
-				Mode:            "forward",
+				Enabled:       true,
+				Mode:          "forward",
 				SigningSecret: "test-signing-secret-32-byte-key!!",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.TCPProtocol},
@@ -3304,8 +3304,8 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		t.Parallel()
 		cfg := config.Config{
 			Server: config.ServerConfig{OAuth: config.OAuthConfig{
-				Enabled:         true,
-				Mode:            "forward",
+				Enabled:       true,
+				Mode:          "forward",
 				SigningSecret: "test-signing-secret-32-byte-key!!",
 			}},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
@@ -3318,17 +3318,17 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	// the AS handlers and requires the upstream-IdP fields to be present.
 	gatingBrokerBase := func() config.OAuthConfig {
 		return config.OAuthConfig{
-			Enabled:              true,
-			Mode:                 "gating",
-			SigningSecret:        "test-signing-secret-32-byte-key!!",
-			Issuer:               "https://accounts.google.com",
-			Audience:             "some-google-client-id.apps.googleusercontent.com",
-			BrokerUpstream:       true,
-			ClientID:             "some-google-client-id.apps.googleusercontent.com",
-			ClientSecret:         "GOCSPX-redacted",
-			AuthURL:              "https://accounts.google.com/o/oauth2/v2/auth",
-			TokenURL:             "https://oauth2.googleapis.com/token",
-			UserInfoURL:          "https://openidconnect.googleapis.com/v1/userinfo",
+			Enabled:        true,
+			Mode:           "gating",
+			SigningSecret:  "test-signing-secret-32-byte-key!!",
+			Issuer:         "https://accounts.google.com",
+			Audience:       "some-google-client-id.apps.googleusercontent.com",
+			BrokerUpstream: true,
+			ClientID:       "some-google-client-id.apps.googleusercontent.com",
+			ClientSecret:   "GOCSPX-redacted",
+			AuthURL:        "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:       "https://oauth2.googleapis.com/token",
+			UserInfoURL:    "https://openidconnect.googleapis.com/v1/userinfo",
 		}
 	}
 

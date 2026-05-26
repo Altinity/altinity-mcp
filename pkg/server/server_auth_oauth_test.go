@@ -872,11 +872,11 @@ func TestOAuthAndJWECombined(t *testing.T) {
 					JWTSecretKey: jwtSecretKey,
 				},
 				OAuth: config.OAuthConfig{
-					Enabled:         true,
-					Mode:            "gating",
-					Issuer:          provider.server.URL,
-					JWKSURL:         provider.server.URL + "/jwks",
-					Audience:        "https://mcp.example.com",
+					Enabled:       true,
+					Mode:          "gating",
+					Issuer:        provider.server.URL,
+					JWKSURL:       provider.server.URL + "/jwks",
+					Audience:      "https://mcp.example.com",
 					SigningSecret: "test-gating-secret-32-byte-key!!",
 				},
 			},
@@ -1630,4 +1630,3 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 // Identity-policy enforcement (verified-email, domain allow-listing) moved out
 // of pkg/server when the cluster_secret impersonation path was removed; the
 // CH-side ch-jwt-verify sidecar is the sole enforcer now.
-

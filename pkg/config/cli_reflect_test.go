@@ -9,20 +9,20 @@ import (
 
 // fakeCmd implements Command for tests.
 type fakeCmd struct {
-	strs    map[string]string
-	bools   map[string]bool
-	ints    map[string]int
-	slices  map[string][]string
-	maps    map[string]map[string]string
-	wasSet  map[string]bool
+	strs   map[string]string
+	bools  map[string]bool
+	ints   map[string]int
+	slices map[string][]string
+	maps   map[string]map[string]string
+	wasSet map[string]bool
 }
 
-func (f *fakeCmd) String(name string) string                { return f.strs[name] }
-func (f *fakeCmd) Bool(name string) bool                    { return f.bools[name] }
-func (f *fakeCmd) Int(name string) int                      { return f.ints[name] }
-func (f *fakeCmd) StringSlice(name string) []string         { return f.slices[name] }
-func (f *fakeCmd) StringMap(name string) map[string]string  { return f.maps[name] }
-func (f *fakeCmd) IsSet(name string) bool                   { return f.wasSet[name] }
+func (f *fakeCmd) String(name string) string               { return f.strs[name] }
+func (f *fakeCmd) Bool(name string) bool                   { return f.bools[name] }
+func (f *fakeCmd) Int(name string) int                     { return f.ints[name] }
+func (f *fakeCmd) StringSlice(name string) []string        { return f.slices[name] }
+func (f *fakeCmd) StringMap(name string) map[string]string { return f.maps[name] }
+func (f *fakeCmd) IsSet(name string) bool                  { return f.wasSet[name] }
 
 func TestBuildFlags_ConfigStruct(t *testing.T) {
 	t.Parallel()
@@ -119,7 +119,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 
 func TestApplyFlags_DefaultFallback(t *testing.T) {
 	t.Parallel()
-	cfg := &Config{}                        // all zero values
+	cfg := &Config{}                           // all zero values
 	cmd := &fakeCmd{wasSet: map[string]bool{}} // nothing set
 
 	ApplyFlags(cfg, cmd)

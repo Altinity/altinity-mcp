@@ -48,9 +48,9 @@ type ClickHouseConfig struct {
 	MaxExecutionTime int                `json:"max_execution_time" yaml:"max_execution_time" flag:"clickhouse-max-execution-time" env:"CLICKHOUSE_MAX_EXECUTION_TIME" default:"600" desc:"ClickHouse max execution time in seconds"`
 	// Limit is DEPRECATED; use MaxResultRows. Retained as a silent alias: when
 	// MaxResultRows is unset (0) and Limit > 0, EffectiveMaxResultRows() returns Limit.
-	Limit          int `json:"limit,omitempty" yaml:"limit,omitempty" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"DEPRECATED: alias for max_result_rows"`
-	MaxResultRows  int `json:"max_result_rows,omitempty" yaml:"max_result_rows,omitempty" flag:"clickhouse-max-result-rows" env:"CLICKHOUSE_MAX_RESULT_ROWS" desc:"Per-request row cap on SELECT-like queries (0=default 500, <0=disable and defer to ClickHouse user profile)"`
-	MaxResultBytes int `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
+	Limit          int               `json:"limit,omitempty" yaml:"limit,omitempty" flag:"clickhouse-limit" env:"CLICKHOUSE_LIMIT" desc:"DEPRECATED: alias for max_result_rows"`
+	MaxResultRows  int               `json:"max_result_rows,omitempty" yaml:"max_result_rows,omitempty" flag:"clickhouse-max-result-rows" env:"CLICKHOUSE_MAX_RESULT_ROWS" desc:"Per-request row cap on SELECT-like queries (0=default 500, <0=disable and defer to ClickHouse user profile)"`
+	MaxResultBytes int               `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
 	HttpHeaders    map[string]string `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" env:"CLICKHOUSE_HTTP_HEADERS" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings  map[string]string `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
