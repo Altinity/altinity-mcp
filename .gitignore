@@ -17,6 +17,7 @@ GEMINI.md
 .claude/*
 !.claude/skills/
 !.claude/commands/
+.claude/skills/mcp-fleet-ops/
 .omc/
 build/
 dist/
@@ -30,3 +31,4 @@ go-carpet*
 coverage.out
 results.xml
 push-action
+docs/proposal_multi_cluster_routing.md
