@@ -263,7 +263,7 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 // override is now a no-op. Exported so external tooling (linters, CI
 // gates, deploy automation) can share the same source of truth.
 var RemovedConfigKeys = []RemovedKey{
-	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (docs/ch-jwt-verify.md). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
+	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
 	{Path: "clickhouse.cluster_name", Replacement: "Same as cluster_secret — drop both together."},
 	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — the gating-mode wire format no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
 	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — forward mode always uses Authorization: Bearer."},

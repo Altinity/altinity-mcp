@@ -16,9 +16,8 @@ import (
 type OAuthClaims = oauth.Claims
 
 // OpenIDConfiguration is the minimal subset of OIDC discovery metadata the
-// broker reads. Returned by FetchOpenIDConfiguration during the transition;
-// once the broker code moves to pkg/oauth/broker it'll consume
-// oauthex.AuthServerMeta + Verifier.ResolveUserInfoEndpoint directly.
+// broker reads. Returned by FetchOpenIDConfiguration as a thin composition of
+// the SDK's oauthex.AuthServerMeta + Verifier.ResolveUserInfoEndpoint.
 type OpenIDConfiguration struct {
 	Issuer                string
 	AuthorizationEndpoint string

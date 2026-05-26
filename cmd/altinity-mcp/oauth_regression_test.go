@@ -174,8 +174,9 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 // Note for security reviewers: the previous version of this test asserted
 // that wrong-audience / expired / unsigned JWTs were rejected at the MCP
 // edge with HTTP 401. That protection now lives at the data-plane gate:
-//   - gating mode: cmd/ch-jwt-verify/verify_test.go covers signature,
-//     aud byte-equal, exp/nbf, scope, identity policy, user-vs-claim match.
+//   - gating mode: the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper)
+//     covers signature, aud byte-equal, exp/nbf, scope, identity policy,
+//     user-vs-claim match.
 //   - forward mode: ClickHouse's <token_processors> re-validates the same
 //     JWT against the upstream JWKS on every query.
 // The MCP layer intentionally does not duplicate those checks.
