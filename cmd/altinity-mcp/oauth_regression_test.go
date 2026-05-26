@@ -28,8 +28,9 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/altinity/go-mcp-oauth-sdk/broker"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -47,9 +48,9 @@ func TestOAuthJWEHKDFRoundtripAndIsolation(t *testing.T) {
 			"redirect_uri": "https://x.example/cb",
 			"exp":          time.Now().Add(time.Hour).Unix(),
 		}
-		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, in)
+		token, err := broker.EncodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, in)
 		require.NoError(t, err)
-		out, err := decodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, token)
+		out, err := broker.DecodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, token)
 		require.NoError(t, err)
 		require.Equal(t, in["client_id"], out["client_id"])
 		require.Equal(t, in["redirect_uri"], out["redirect_uri"])
@@ -62,21 +63,21 @@ func TestOAuthJWEHKDFRoundtripAndIsolation(t *testing.T) {
 			"upstream_auth_code": "abc",
 			"exp":                time.Now().Add(60 * time.Second).Unix(),
 		}
-		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, in)
+		token, err := broker.EncodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, in)
 		require.NoError(t, err)
-		out, err := decodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
+		out, err := broker.DecodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
 		require.NoError(t, err)
 		require.Equal(t, in["upstream_auth_code"], out["upstream_auth_code"])
 	})
 
 	t.Run("HKDF info-label isolation: pending JWE will not decode as auth-code", func(t *testing.T) {
 		t.Parallel()
-		token, err := encodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, map[string]interface{}{
+		token, err := broker.EncodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, map[string]interface{}{
 			"client_id": "https://x.example/y.json",
 			"exp":       time.Now().Add(time.Hour).Unix(),
 		})
 		require.NoError(t, err)
-		_, err = decodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
+		_, err = broker.DecodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
 		require.Error(t, err, "JWE minted under pending-auth/v1 must NOT decrypt under auth-code/v2 — that's the whole point of HKDF info-label separation")
 	})
 
@@ -89,11 +90,11 @@ func TestOAuthJWEHKDFRoundtripAndIsolation(t *testing.T) {
 			"exp": time.Now().Add(time.Hour).Unix(),
 		}, secret, nil)
 		require.NoError(t, err)
-		// decodeOAuthJWE inspects the kid header: kid="" routes to the
+		// broker.DecodeOAuthJWE inspects the kid header: kid="" routes to the
 		// legacy SHA256 path. Any info label works because the legacy path
 		// doesn't HKDF-derive — passing the auth-code label here mirrors
 		// what a production token-handler call would do.
-		claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, legacy)
+		claims, err := broker.DecodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, legacy)
 		require.NoError(t, err)
 		require.Equal(t, "legacy-subject", claims["sub"])
 	})
@@ -179,6 +180,7 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 //     user-vs-claim match.
 //   - forward mode: ClickHouse's <token_processors> re-validates the same
 //     JWT against the upstream JWKS on every query.
+//
 // The MCP layer intentionally does not duplicate those checks.
 func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
 	t.Parallel()
@@ -248,11 +250,11 @@ func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
 func TestOAuthForwardModeTokenResourceMismatch(t *testing.T) {
 	t.Parallel()
 	const (
-		cimdURL        = "https://demo.example.com/cimd.json"
-		redirectURI    = "https://demo.example.com/cb"
-		boundResource  = "https://mcp.example.com/"
-		clashResource  = "https://other.example.com/"
-		signingSecret  = "regression-resource-32-bytes!!!!"
+		cimdURL       = "https://demo.example.com/cimd.json"
+		redirectURI   = "https://demo.example.com/cb"
+		boundResource = "https://mcp.example.com/"
+		clashResource = "https://other.example.com/"
+		signingSecret = "regression-resource-32-bytes!!!!"
 	)
 	// CIMD doc server so the resolver can satisfy /token.
 	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,13 +280,13 @@ func TestOAuthForwardModeTokenResourceMismatch(t *testing.T) {
 		cimdResolver: testResolver(t, cimdServer),
 	}
 
-	verifier, err := newPKCEVerifier()
+	verifier, err := broker.NewPKCEVerifier()
 	require.NoError(t, err)
 	issued := oauthIssuedCode{
 		ClientID:             cimdURL,
 		RedirectURI:          redirectURI,
 		Scope:                "openid email",
-		CodeChallenge:        pkceChallenge(verifier),
+		CodeChallenge:        broker.PKCEChallenge(verifier),
 		CodeChallengeMethod:  "S256",
 		Resource:             boundResource,
 		UpstreamAuthCode:     "unused-this-test-rejects-pre-upstream",
@@ -432,9 +434,9 @@ func TestCIMDFullAuthCodeFlow(t *testing.T) {
 		cimdResolver: testResolver(t, cimdServer),
 	}
 
-	verifier, err := newPKCEVerifier()
+	verifier, err := broker.NewPKCEVerifier()
 	require.NoError(t, err)
-	challenge := pkceChallenge(verifier)
+	challenge := broker.PKCEChallenge(verifier)
 
 	// 1. /oauth/authorize — should produce a 302 to upstream /authorize with
 	//    a JWE state parameter.
@@ -621,10 +623,10 @@ func TestOAuthTokenUpstream200WithErrorBody(t *testing.T) {
 		mcpServer:    altinitymcp.NewClickHouseMCPServer(cfg, "test"),
 		cimdResolver: testResolver(t, cimdServer),
 	}
-	verifier, _ := newPKCEVerifier()
+	verifier, _ := broker.NewPKCEVerifier()
 	issued := oauthIssuedCode{
 		ClientID: cimdURL, RedirectURI: redirectURI, Scope: "openid email",
-		CodeChallenge: pkceChallenge(verifier), CodeChallengeMethod: "S256",
+		CodeChallenge: broker.PKCEChallenge(verifier), CodeChallengeMethod: "S256",
 		UpstreamAuthCode: "abc", UpstreamPKCEVerifier: "uv",
 		ExpiresAt: time.Now().Add(60 * time.Second),
 	}

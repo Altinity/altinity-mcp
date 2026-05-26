@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
+	"github.com/altinity/go-mcp-oauth-sdk/broker"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +43,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					SigningSecret:     "test-gating-secret-32-byte-key!!",
+					SigningSecret:       "test-gating-secret-32-byte-key!!",
 				},
 			},
 		},
@@ -52,7 +53,7 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			SigningSecret:     "test-gating-secret-32-byte-key!!",
+			SigningSecret:       "test-gating-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -194,7 +195,7 @@ func TestCanonicalResourceURL(t *testing.T) {
 		{"https://mcp.example.com/path/", "https://mcp.example.com/path/"},
 	}
 	for _, c := range cases {
-		require.Equal(t, c.want, canonicalResourceURL(c.in), "input=%q", c.in)
+		require.Equal(t, c.want, broker.CanonicalResourceURL(c.in), "input=%q", c.in)
 	}
 }
 
@@ -253,7 +254,7 @@ func TestNormalizedPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, normalizedPath(tt.raw, tt.fallback))
+			require.Equal(t, tt.want, broker.NormalizedPath(tt.raw, tt.fallback))
 		})
 	}
 }
@@ -275,7 +276,7 @@ func TestJoinURLPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, joinURLPath(tt.base, tt.path))
+			require.Equal(t, tt.want, broker.JoinURLPath(tt.base, tt.path))
 		})
 	}
 }
@@ -284,23 +285,23 @@ func TestUniquePaths(t *testing.T) {
 	t.Parallel()
 	t.Run("all_unique", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, []string{"/a", "/b", "/c"}, uniquePaths("/a", "/b", "/c"))
+		require.Equal(t, []string{"/a", "/b", "/c"}, broker.UniquePaths("/a", "/b", "/c"))
 	})
 	t.Run("duplicates_removed", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, []string{"/a"}, uniquePaths("/a", "/a", "/a"))
+		require.Equal(t, []string{"/a"}, broker.UniquePaths("/a", "/a", "/a"))
 	})
 	t.Run("empty_paths_skipped", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, []string{"/a"}, uniquePaths("", "/a", ""))
+		require.Equal(t, []string{"/a"}, broker.UniquePaths("", "/a", ""))
 	})
 	t.Run("all_empty", func(t *testing.T) {
 		t.Parallel()
-		require.Empty(t, uniquePaths("", "", ""))
+		require.Empty(t, broker.UniquePaths("", "", ""))
 	})
 	t.Run("normalized_duplicates", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, []string{"/path"}, uniquePaths("/path/", "/path"))
+		require.Equal(t, []string{"/path"}, broker.UniquePaths("/path/", "/path"))
 	})
 }
 
@@ -322,7 +323,7 @@ func TestSuffixPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, suffixPrefix(tt.path, tt.markers...))
+			require.Equal(t, tt.want, broker.SuffixPrefix(tt.path, tt.markers...))
 		})
 	}
 }
@@ -343,7 +344,7 @@ func TestPathFromConfiguredURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, pathFromConfiguredURL(tt.raw))
+			require.Equal(t, tt.want, broker.PathFromConfiguredURL(tt.raw))
 		})
 	}
 }
@@ -430,17 +431,17 @@ func TestNormalizeURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, normalizeURL(tt.raw))
+			require.Equal(t, tt.want, broker.NormalizeURL(tt.raw))
 		})
 	}
 }
 
 func TestSanitizeScope(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, "read write", sanitizeScope("  read   write  "))
-	require.Equal(t, "single", sanitizeScope("single"))
-	require.Equal(t, "", sanitizeScope(""))
-	require.Equal(t, "", sanitizeScope("   "))
+	require.Equal(t, "read write", broker.SanitizeScope("  read   write  "))
+	require.Equal(t, "single", broker.SanitizeScope("single"))
+	require.Equal(t, "", broker.SanitizeScope(""))
+	require.Equal(t, "", broker.SanitizeScope("   "))
 }
 
 func TestNormalizeUpstreamScopeForClient(t *testing.T) {
@@ -448,19 +449,19 @@ func TestNormalizeUpstreamScopeForClient(t *testing.T) {
 
 	t.Run("google_uri_form_collapses_to_oidc_names", func(t *testing.T) {
 		t.Parallel()
-		got := normalizeUpstreamScopeForClient("openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile")
+		got := broker.NormalizeUpstreamScopeForClient("openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile")
 		require.Equal(t, "openid email profile", got)
 	})
 
 	t.Run("already_normalised_passthrough", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, "openid email profile", normalizeUpstreamScopeForClient("openid email profile"))
+		require.Equal(t, "openid email profile", broker.NormalizeUpstreamScopeForClient("openid email profile"))
 	})
 
 	t.Run("empty_input_empty_output", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, "", normalizeUpstreamScopeForClient(""))
-		require.Equal(t, "", normalizeUpstreamScopeForClient("   "))
+		require.Equal(t, "", broker.NormalizeUpstreamScopeForClient(""))
+		require.Equal(t, "", broker.NormalizeUpstreamScopeForClient("   "))
 	})
 
 	t.Run("unknown_scopes_pass_through", func(t *testing.T) {
@@ -468,26 +469,26 @@ func TestNormalizeUpstreamScopeForClient(t *testing.T) {
 		// We only collapse the 3 known Google OIDC aliases; everything else
 		// passes through verbatim (including non-Google URI scopes that we
 		// don't have a mapping for and arbitrary custom scopes).
-		got := normalizeUpstreamScopeForClient("openid offline_access https://example.com/auth/custom mcp:read")
+		got := broker.NormalizeUpstreamScopeForClient("openid offline_access https://example.com/auth/custom mcp:read")
 		require.Equal(t, "openid offline_access https://example.com/auth/custom mcp:read", got)
 	})
 
 	t.Run("dedup_after_mapping", func(t *testing.T) {
 		t.Parallel()
 		// "email" + ".../userinfo.email" both map to "email" — dedup keeps one.
-		got := normalizeUpstreamScopeForClient("email https://www.googleapis.com/auth/userinfo.email")
+		got := broker.NormalizeUpstreamScopeForClient("email https://www.googleapis.com/auth/userinfo.email")
 		require.Equal(t, "email", got)
 	})
 
 	t.Run("openid_uri_alias_collapses", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, "openid", normalizeUpstreamScopeForClient("https://www.googleapis.com/auth/openid"))
+		require.Equal(t, "openid", broker.NormalizeUpstreamScopeForClient("https://www.googleapis.com/auth/openid"))
 	})
 
 	t.Run("preserves_order", func(t *testing.T) {
 		t.Parallel()
 		// First occurrence of each unique mapped name wins, original order kept.
-		got := normalizeUpstreamScopeForClient("profile https://www.googleapis.com/auth/userinfo.email openid")
+		got := broker.NormalizeUpstreamScopeForClient("profile https://www.googleapis.com/auth/userinfo.email openid")
 		require.Equal(t, "profile email openid", got)
 	})
 }
@@ -497,7 +498,7 @@ func TestOidcScopesForAdvertisement(t *testing.T) {
 
 	t.Run("google_three_oidc_scopes_pass_through", func(t *testing.T) {
 		t.Parallel()
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile"}})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile"}})
 		require.Equal(t, []string{"openid", "email", "profile"}, got)
 	})
 
@@ -505,13 +506,13 @@ func TestOidcScopesForAdvertisement(t *testing.T) {
 		t.Parallel()
 		// Auth0 production antalya-mcp depends on advertising offline_access
 		// to receive refresh tokens. The allowlist must include it.
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile", "offline_access"}})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "email", "profile", "offline_access"}})
 		require.Equal(t, []string{"openid", "email", "profile", "offline_access"}, got)
 	})
 
 	t.Run("google_api_uri_filtered_out", func(t *testing.T) {
 		t.Parallel()
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "https://www.googleapis.com/auth/calendar", "email"}})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "https://www.googleapis.com/auth/calendar", "email"}})
 		require.Equal(t, []string{"openid", "email"}, got)
 	})
 
@@ -520,28 +521,28 @@ func TestOidcScopesForAdvertisement(t *testing.T) {
 		// Custom resource-server scopes (mcp:read, mcp:write, calendar.list)
 		// are filtered out because scope-based tool authorization is not
 		// exercised anywhere in altinity-mcp today. If/when it lands, extend
-		// the allowlist in oidcScopesForAdvertisement.
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "mcp:read", "mcp:write", "calendar.list"}})
+		// the allowlist in broker.OIDCScopesForAdvertisement.
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "mcp:read", "mcp:write", "calendar.list"}})
 		require.Equal(t, []string{"openid"}, got)
 	})
 
 	t.Run("empty_input_empty_output", func(t *testing.T) {
 		t.Parallel()
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: nil})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: nil})
 		require.Empty(t, got)
-		got = oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{}})
+		got = broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{}})
 		require.Empty(t, got)
 	})
 
 	t.Run("duplicates_collapsed", func(t *testing.T) {
 		t.Parallel()
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "openid", "email"}})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"openid", "openid", "email"}})
 		require.Equal(t, []string{"openid", "email"}, got)
 	})
 
 	t.Run("order_preserved", func(t *testing.T) {
 		t.Parallel()
-		got := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"profile", "openid", "email"}})
+		got := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: []string{"profile", "openid", "email"}})
 		require.Equal(t, []string{"profile", "openid", "email"}, got)
 	})
 }
@@ -549,12 +550,12 @@ func TestOidcScopesForAdvertisement(t *testing.T) {
 func TestPkceChallenge(t *testing.T) {
 	t.Parallel()
 	// Deterministic test: given a known verifier, check output matches SHA256(verifier) base64url
-	challenge := pkceChallenge("test-verifier")
+	challenge := broker.PKCEChallenge("test-verifier")
 	require.NotEmpty(t, challenge)
 	// Same input produces same output
-	require.Equal(t, challenge, pkceChallenge("test-verifier"))
+	require.Equal(t, challenge, broker.PKCEChallenge("test-verifier"))
 	// Different input produces different output
-	require.NotEqual(t, challenge, pkceChallenge("other-verifier"))
+	require.NotEqual(t, challenge, broker.PKCEChallenge("other-verifier"))
 }
 
 func TestSafeUpstreamErrorFields(t *testing.T) {
@@ -562,27 +563,27 @@ func TestSafeUpstreamErrorFields(t *testing.T) {
 	t.Run("rfc6749_error_response_extracts_code", func(t *testing.T) {
 		t.Parallel()
 		body := []byte(`{"error":"invalid_grant","error_description":"refresh_token=secret123 has expired"}`)
-		errCode, length := safeUpstreamErrorFields(body)
+		errCode, length := broker.SafeUpstreamErrorFields(body)
 		require.Equal(t, "invalid_grant", errCode)
 		require.Equal(t, len(body), length)
 	})
 	t.Run("non_json_body_returns_blank_code", func(t *testing.T) {
 		t.Parallel()
 		body := []byte(`<html>502 Bad Gateway: secret123 was here</html>`)
-		errCode, length := safeUpstreamErrorFields(body)
+		errCode, length := broker.SafeUpstreamErrorFields(body)
 		require.Equal(t, "", errCode, "non-JSON body must not leak content into errCode")
 		require.Equal(t, len(body), length)
 	})
 	t.Run("empty_body", func(t *testing.T) {
 		t.Parallel()
-		errCode, length := safeUpstreamErrorFields(nil)
+		errCode, length := broker.SafeUpstreamErrorFields(nil)
 		require.Equal(t, "", errCode)
 		require.Equal(t, 0, length)
 	})
 	t.Run("json_without_error_field", func(t *testing.T) {
 		t.Parallel()
 		body := []byte(`{"other":"thing"}`)
-		errCode, length := safeUpstreamErrorFields(body)
+		errCode, length := broker.SafeUpstreamErrorFields(body)
 		require.Equal(t, "", errCode)
 		require.Equal(t, len(body), length)
 	})
@@ -590,9 +591,9 @@ func TestSafeUpstreamErrorFields(t *testing.T) {
 
 func TestTtlSeconds(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, 100, ttlSeconds(100, 60))
-	require.Equal(t, 60, ttlSeconds(0, 60))
-	require.Equal(t, 60, ttlSeconds(-1, 60))
+	require.Equal(t, 100, broker.TTLSeconds(100, 60))
+	require.Equal(t, 60, broker.TTLSeconds(0, 60))
+	require.Equal(t, 60, broker.TTLSeconds(-1, 60))
 }
 
 func TestWriteOAuthTokenError(t *testing.T) {
@@ -683,4 +684,3 @@ func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
 		require.Equal(t, "invalid_request", body["error"])
 	})
 }
-

@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +13,8 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
-	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
-	"github.com/go-jose/go-jose/v4"
+	"github.com/altinity/go-mcp-oauth-sdk/broker"
 	"github.com/rs/zerolog/log"
 )
 
@@ -187,15 +183,6 @@ func (a *application) mustJWESecret() ([]byte, error) {
 	return secret, nil
 }
 
-// oauthKidV1 is the kid header set on cmd-minted OAuth JWE artifacts
-// (pending-auth and auth-code). Its presence selects the HKDF-derived key
-// on decryption; absence (kid="") selects the legacy SHA256(secret) key
-// for backwards compat with artifacts minted before the HKDF rotation.
-// Post-#115 the longest legacy artifact in flight is the 10-minute
-// pending-auth JWE — the legacy fallback can be deleted in a follow-up
-// after a >10-minute rolling restart window has passed.
-const oauthKidV1 = "v1"
-
 // HKDF info labels for cmd-internal OAuth key derivation. Each label produces
 // an independent 32-byte key from the shared signing_secret (RFC 5869 §3.2).
 // Bumping the /vN suffix in any single label rotates that one key without
@@ -208,74 +195,6 @@ const (
 	// here; that's intended, the auth-code TTL is 60s.
 	hkdfInfoOAuthAuthCode = "altinity-mcp/oauth/auth-code/v2"
 )
-
-// encodeOAuthJWE emits a JWE-wrapped JSON document of `claims`, encrypted
-// with a key HKDF-derived from `secret` and the per-context `info` label.
-// kid="v1" is set in the protected header so decoders pick the same key.
-func encodeOAuthJWE(secret []byte, info string, claims map[string]interface{}) (string, error) {
-	key := jwe_auth.DeriveKey(secret, info)
-	plaintext, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	encrypter, err := jose.NewEncrypter(
-		jose.A256GCM,
-		jose.Recipient{Algorithm: jose.A256KW, Key: key},
-		(&jose.EncrypterOptions{}).
-			WithType("JWE").
-			WithContentType("JSON").
-			WithHeader(jose.HeaderKey("kid"), oauthKidV1),
-	)
-	if err != nil {
-		return "", err
-	}
-	jweObj, err := encrypter.Encrypt(plaintext)
-	if err != nil {
-		return "", err
-	}
-	return jweObj.CompactSerialize()
-}
-
-// decodeOAuthJWE decrypts a JWE produced by encodeOAuthJWE OR by the legacy
-// jwe_auth.GenerateJWEToken path used before this commit. The kid header
-// selects the derivation:
-//
-//   - kid == oauthKidV1 → key = HKDF(secret, info)
-//   - kid == ""         → key = SHA256(secret) (legacy)
-//
-// The same RFC 7591/JWE-claim whitelist + expiration check applies to both
-// paths via the exported jwe_auth.ValidateClaimsWhitelist / ValidateExpiration
-// helpers.
-func decodeOAuthJWE(secret []byte, info string, token string) (map[string]interface{}, error) {
-	jweObj, err := jose.ParseEncrypted(token,
-		[]jose.KeyAlgorithm{jose.A256KW},
-		[]jose.ContentEncryption{jose.A256GCM})
-	if err != nil {
-		return nil, jwe_auth.ErrInvalidToken
-	}
-	if jweObj.Header.KeyID == oauthKidV1 {
-		key := jwe_auth.DeriveKey(secret, info)
-		decrypted, err := jweObj.Decrypt(key)
-		if err != nil {
-			return nil, jwe_auth.ErrInvalidToken
-		}
-		var claims map[string]interface{}
-		if err := json.Unmarshal(decrypted, &claims); err != nil {
-			return nil, jwe_auth.ErrInvalidToken
-		}
-		if err := jwe_auth.ValidateClaimsWhitelist(claims); err != nil {
-			return nil, err
-		}
-		if err := jwe_auth.ValidateExpiration(claims); err != nil {
-			return nil, err
-		}
-		return claims, nil
-	}
-	// Legacy path: jwe_auth.ParseAndDecryptJWE knows the SHA256(secret)
-	// derivation AND the legacy JWT-signed-inside-JWE content type. Routing
-	// through it keeps a single source of truth for every legacy variant.
-	return jwe_auth.ParseAndDecryptJWE(token, secret, secret)
-}
 
 // encodePendingAuth wraps an oauthPendingAuth into a stateless JWE used as the
 // `state` parameter sent to the upstream IdP at /authorize. Any replica with
@@ -296,7 +215,7 @@ func (a *application) encodePendingAuth(p oauthPendingAuth) (string, error) {
 		"upstream_pkce_verifier": p.UpstreamPKCEVerifier,
 		"exp":                    p.ExpiresAt.Unix(),
 	}
-	return encodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, claims)
+	return broker.EncodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, claims)
 }
 
 // decodePendingAuth is the inverse of encodePendingAuth. Returns (pending,
@@ -307,20 +226,20 @@ func (a *application) decodePendingAuth(token string) (oauthPendingAuth, bool) {
 	if len(secret) == 0 {
 		return oauthPendingAuth{}, false
 	}
-	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, token)
+	claims, err := broker.DecodeOAuthJWE(secret, hkdfInfoOAuthPendingAuth, token)
 	if err != nil {
 		return oauthPendingAuth{}, false
 	}
 	p := oauthPendingAuth{
-		ClientID:             stringFromClaims(claims, "client_id"),
-		RedirectURI:          stringFromClaims(claims, "redirect_uri"),
-		Scope:                stringFromClaims(claims, "scope"),
-		ClientState:          stringFromClaims(claims, "client_state"),
-		CodeChallenge:        stringFromClaims(claims, "code_challenge"),
-		CodeChallengeMethod:  stringFromClaims(claims, "code_challenge_method"),
-		Resource:             stringFromClaims(claims, "resource"),
-		UpstreamPKCEVerifier: stringFromClaims(claims, "upstream_pkce_verifier"),
-		ExpiresAt:            unixFromClaims(claims, "exp"),
+		ClientID:             broker.StringFromClaims(claims, "client_id"),
+		RedirectURI:          broker.StringFromClaims(claims, "redirect_uri"),
+		Scope:                broker.StringFromClaims(claims, "scope"),
+		ClientState:          broker.StringFromClaims(claims, "client_state"),
+		CodeChallenge:        broker.StringFromClaims(claims, "code_challenge"),
+		CodeChallengeMethod:  broker.StringFromClaims(claims, "code_challenge_method"),
+		Resource:             broker.StringFromClaims(claims, "resource"),
+		UpstreamPKCEVerifier: broker.StringFromClaims(claims, "upstream_pkce_verifier"),
+		ExpiresAt:            broker.UnixFromClaims(claims, "exp"),
 	}
 	return p, true
 }
@@ -344,7 +263,7 @@ func (a *application) encodeAuthCode(c oauthIssuedCode) (string, error) {
 		"upstream_pkce_verifier": c.UpstreamPKCEVerifier,
 		"exp":                    c.ExpiresAt.Unix(),
 	}
-	return encodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, claims)
+	return broker.EncodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, claims)
 }
 
 // decodeAuthCode is the inverse of encodeAuthCode.
@@ -353,115 +272,22 @@ func (a *application) decodeAuthCode(token string) (oauthIssuedCode, bool) {
 	if len(secret) == 0 {
 		return oauthIssuedCode{}, false
 	}
-	claims, err := decodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
+	claims, err := broker.DecodeOAuthJWE(secret, hkdfInfoOAuthAuthCode, token)
 	if err != nil {
 		return oauthIssuedCode{}, false
 	}
 	c := oauthIssuedCode{
-		ClientID:             stringFromClaims(claims, "client_id"),
-		RedirectURI:          stringFromClaims(claims, "redirect_uri"),
-		Scope:                stringFromClaims(claims, "scope"),
-		CodeChallenge:        stringFromClaims(claims, "code_challenge"),
-		CodeChallengeMethod:  stringFromClaims(claims, "code_challenge_method"),
-		Resource:             stringFromClaims(claims, "resource"),
-		UpstreamAuthCode:     stringFromClaims(claims, "upstream_auth_code"),
-		UpstreamPKCEVerifier: stringFromClaims(claims, "upstream_pkce_verifier"),
-		ExpiresAt:            unixFromClaims(claims, "exp"),
+		ClientID:             broker.StringFromClaims(claims, "client_id"),
+		RedirectURI:          broker.StringFromClaims(claims, "redirect_uri"),
+		Scope:                broker.StringFromClaims(claims, "scope"),
+		CodeChallenge:        broker.StringFromClaims(claims, "code_challenge"),
+		CodeChallengeMethod:  broker.StringFromClaims(claims, "code_challenge_method"),
+		Resource:             broker.StringFromClaims(claims, "resource"),
+		UpstreamAuthCode:     broker.StringFromClaims(claims, "upstream_auth_code"),
+		UpstreamPKCEVerifier: broker.StringFromClaims(claims, "upstream_pkce_verifier"),
+		ExpiresAt:            broker.UnixFromClaims(claims, "exp"),
 	}
 	return c, true
-}
-
-func stringFromClaims(claims map[string]interface{}, key string) string {
-	if v, ok := claims[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func unixFromClaims(claims map[string]interface{}, key string) time.Time {
-	v, ok := claims[key]
-	if !ok {
-		return time.Time{}
-	}
-	switch t := v.(type) {
-	case float64:
-		return time.Unix(int64(t), 0)
-	case int64:
-		return time.Unix(t, 0)
-	case int:
-		return time.Unix(int64(t), 0)
-	}
-	return time.Time{}
-}
-
-func normalizeURL(raw string) string {
-	return strings.TrimRight(strings.TrimSpace(raw), "/")
-}
-
-// canonicalResourceURL returns the protected-resource identifier in its
-// canonical form: trimmed and with exactly one trailing slash. RFC 9728 §3.3
-// (the Bearer Token resource_metadata) and RFC 8707 (resource indicators)
-// treat the resource URL as an opaque identifier compared by string match,
-// so a stable canonical form is what matters; the trailing-slash form is
-// what most upstream IdPs (Auth0, Google) emit in `aud` claims and what
-// Claude.ai expects to round-trip in metadata. Audience validation uses
-// audienceMatchesResource to accept either form on the inbound side.
-func canonicalResourceURL(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
-	}
-	return strings.TrimRight(trimmed, "/") + "/"
-}
-
-func normalizedPath(raw string, fallback string) string {
-	path := strings.TrimSpace(raw)
-	if path == "" {
-		path = fallback
-	}
-	if path == "" {
-		return ""
-	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	if path == "/" {
-		return path
-	}
-	return strings.TrimRight(path, "/")
-}
-
-func joinURLPath(base string, path string) string {
-	base = normalizeURL(base)
-	path = normalizedPath(path, "")
-	if path == "" || path == "/" {
-		return base
-	}
-	return base + path
-}
-
-func ttlSeconds(value int, fallback int) int {
-	if value > 0 {
-		return value
-	}
-	return fallback
-}
-
-func uniquePaths(paths ...string) []string {
-	result := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		path = normalizedPath(path, "")
-		if path == "" {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		result = append(result, path)
-	}
-	return result
 }
 
 func (a *application) schemeAndHost(r *http.Request) string {
@@ -481,37 +307,9 @@ func (a *application) schemeAndHost(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", strings.ToLower(scheme), host)
 }
 
-func suffixPrefix(path string, markers ...string) string {
-	for _, marker := range markers {
-		if !strings.HasPrefix(path, marker) {
-			continue
-		}
-		suffix := strings.TrimSpace(strings.TrimPrefix(path, marker))
-		if suffix == "" {
-			continue
-		}
-		if !strings.HasPrefix(suffix, "/") {
-			suffix = "/" + suffix
-		}
-		return strings.TrimRight(suffix, "/")
-	}
-	return ""
-}
-
-func pathFromConfiguredURL(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimRight(parsed.Path, "/")
-}
-
 func (a *application) resourcePrefix(r *http.Request) string {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if prefix := suffixPrefix(
+	if prefix := broker.SuffixPrefix(
 		r.URL.Path,
 		"/.well-known/oauth-protected-resource",
 		"/.well-known/oauth-authorization-server",
@@ -519,51 +317,51 @@ func (a *application) resourcePrefix(r *http.Request) string {
 	); prefix != "" {
 		return prefix
 	}
-	if prefix := pathFromConfiguredURL(cfg.PublicResourceURL); prefix != "" {
+	if prefix := broker.PathFromConfiguredURL(cfg.PublicResourceURL); prefix != "" {
 		return prefix
 	}
-	return pathFromConfiguredURL(cfg.Audience)
+	return broker.PathFromConfiguredURL(cfg.Audience)
 }
 
 func (a *application) oauthPrefix(r *http.Request) string {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if prefix := suffixPrefix(
+	if prefix := broker.SuffixPrefix(
 		r.URL.Path,
 		"/.well-known/oauth-authorization-server",
 		"/.well-known/openid-configuration",
 	); prefix != "" {
 		return prefix
 	}
-	if prefix := pathFromConfiguredURL(cfg.PublicAuthServerURL); prefix != "" {
+	if prefix := broker.PathFromConfiguredURL(cfg.PublicAuthServerURL); prefix != "" {
 		return prefix
 	}
-	return pathFromConfiguredURL(cfg.Issuer)
+	return broker.PathFromConfiguredURL(cfg.Issuer)
 }
 
 func (a *application) resourceBaseURL(r *http.Request) string {
-	if configured := normalizeURL(a.GetCurrentConfig().Server.OAuth.PublicResourceURL); configured != "" {
+	if configured := broker.NormalizeURL(a.GetCurrentConfig().Server.OAuth.PublicResourceURL); configured != "" {
 		return configured
 	}
 	return a.schemeAndHost(r) + a.resourcePrefix(r)
 }
 
 func (a *application) oauthAuthorizationServerBaseURL(r *http.Request) string {
-	if configured := normalizeURL(a.GetCurrentConfig().Server.OAuth.PublicAuthServerURL); configured != "" {
+	if configured := broker.NormalizeURL(a.GetCurrentConfig().Server.OAuth.PublicAuthServerURL); configured != "" {
 		return configured
 	}
 	return a.schemeAndHost(r) + a.oauthPrefix(r)
 }
 
 func (a *application) oauthAuthorizationPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationPath, defaultAuthorizationPath)
+	return broker.NormalizedPath(a.GetCurrentConfig().Server.OAuth.AuthorizationPath, defaultAuthorizationPath)
 }
 
 func (a *application) oauthCallbackPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.CallbackPath, defaultCallbackPath)
+	return broker.NormalizedPath(a.GetCurrentConfig().Server.OAuth.CallbackPath, defaultCallbackPath)
 }
 
 func (a *application) oauthTokenPath() string {
-	return normalizedPath(a.GetCurrentConfig().Server.OAuth.TokenPath, defaultTokenPath)
+	return broker.NormalizedPath(a.GetCurrentConfig().Server.OAuth.TokenPath, defaultTokenPath)
 }
 
 // oauthChallengeHeader builds the WWW-Authenticate Bearer challenge.
@@ -581,7 +379,7 @@ func (a *application) oauthTokenPath() string {
 //     challengeScope() on both paths.
 func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
-	resourceMetadata := joinURLPath(baseURL, defaultProtectedResourceMetadataPath)
+	resourceMetadata := broker.JoinURLPath(baseURL, defaultProtectedResourceMetadataPath)
 	if errCode == "" {
 		errCode = "invalid_token"
 	}
@@ -599,66 +397,10 @@ func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, sc
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
-// safeUpstreamErrorFields extracts the RFC 6749 §5.2 `error` code from an
-// upstream OAuth error response body, if the body parses as JSON, and always
-// returns the body byte length. Used in lieu of logging the body verbatim:
-// IdPs sometimes echo the failed token, request parameters, or other
-// diagnostic data inside `error_description`, which would otherwise land in
-// centralized logs. The `error` field is an RFC-defined enum and safe to log.
-func safeUpstreamErrorFields(body []byte) (errCode string, length int) {
-	var parsed struct {
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(body, &parsed)
-	return parsed.Error, len(body)
-}
-
-// refreshErrorFields is a narrow variant for the refresh-token grant: it
-// surfaces error_description in addition to error. Used because Google's
-// refresh-token failures are diagnostically richer in `error_description`
-// ("Token has been expired or revoked") than the bare `error` enum
-// ("invalid_grant"). Description is sanitised before return.
-func refreshErrorFields(body []byte) (errCode, errDesc string) {
-	var parsed struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	_ = json.Unmarshal(body, &parsed)
-	return parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription)
-}
-
-// sanitizeErrorDesc bounds an OAuth error_description for inclusion in our
-// own error messages and logs: strips newlines + control chars, caps at
-// 120 bytes, returns a leading ": " separator if non-empty. IdP descriptions
-// are short human strings in practice ("Token has been expired or revoked",
-// "Bad Request", "User must reconsent") — bounded.
-func sanitizeErrorDesc(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	if len(s) > 120 {
-		s = s[:120]
-	}
-	// Collapse any control chars to a single space.
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r == '\r' || r == '\n' || r == '\t' {
-			out = append(out, ' ')
-			continue
-		}
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
-		out = append(out, r)
-	}
-	return ": " + string(out)
-}
-
 // challengeScope returns the scope string for the WWW-Authenticate header.
 // Prefers RequiredScopes (the operator-pinned minimum); falls back to the full
 // Scopes catalog so the client at least has something to request from. Both
-// candidate lists are passed through oidcScopesForAdvertisement to strip
+// candidate lists are passed through broker.OIDCScopesForAdvertisement to strip
 // upstream URI-form scopes and any non-allowlisted values that would otherwise
 // confuse MCP clients (ChatGPT renders a "permissions not granted" warning
 // when it compares the scope hint here against what the upstream IdP grants).
@@ -667,13 +409,13 @@ func (a *application) challengeScope() string {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	switch {
 	case len(cfg.RequiredScopes) > 0:
-		filtered := oidcScopesForAdvertisement(config.OAuthConfig{Scopes: cfg.RequiredScopes})
+		filtered := broker.OIDCScopesForAdvertisement(config.OAuthConfig{Scopes: cfg.RequiredScopes})
 		if len(filtered) > 0 {
 			return strings.Join(filtered, " ")
 		}
 		fallthrough
 	case len(cfg.Scopes) > 0:
-		filtered := oidcScopesForAdvertisement(cfg)
+		filtered := broker.OIDCScopesForAdvertisement(cfg)
 		if len(filtered) > 0 {
 			return strings.Join(filtered, " ")
 		}
@@ -757,115 +499,6 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-func pkceChallenge(verifier string) string {
-	sum := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-// newPKCEVerifier generates a 32-byte random PKCE verifier per RFC 7636 §4.1
-// (43–128 char URL-safe string). Used for the upstream-IdP leg only —
-// downstream MCP-client verifiers come from the client itself.
-func newPKCEVerifier() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func sanitizeScope(scope string) string {
-	return strings.Join(strings.Fields(scope), " ")
-}
-
-// normalizeUpstreamScopeForClient maps upstream-IdP-specific scope URIs back to
-// the OIDC standard names the MCP client originally requested. Google's
-// /oauth/token response emits id-token-equivalent scopes in URI form (e.g.
-// "https://www.googleapis.com/auth/userinfo.email" instead of "email"); when
-// altinity-mcp echoes that string verbatim, ChatGPT compares its requested
-// scope ("email") against the response ("…/userinfo.email") and surfaces a
-// "permissions not granted" warning even though the identity claims are
-// present. Mapping the three OIDC-equivalent Google aliases back to standard
-// names makes request and response shapes agree.
-//
-// Unknown values pass through unchanged. Standard names (openid/email/profile/
-// offline_access) pass through unchanged. The helper is used only for the
-// client-facing `scope` field in /oauth/token responses; upstream-stored scope
-// (oauthIssuedCode.Scope, refresh-JWE claims) keeps Google's original form so
-// subsequent upstream refresh calls hit Google with the same scope value Google
-// itself returned.
-func normalizeUpstreamScopeForClient(scope string) string {
-	if scope == "" {
-		return ""
-	}
-	parts := strings.Fields(scope)
-	out := make([]string, 0, len(parts))
-	seen := make(map[string]struct{}, len(parts))
-	for _, p := range parts {
-		var mapped string
-		switch p {
-		case "https://www.googleapis.com/auth/userinfo.email":
-			mapped = "email"
-		case "https://www.googleapis.com/auth/userinfo.profile":
-			mapped = "profile"
-		case "https://www.googleapis.com/auth/openid":
-			mapped = "openid"
-		default:
-			mapped = p
-		}
-		if _, dup := seen[mapped]; dup {
-			continue
-		}
-		seen[mapped] = struct{}{}
-		out = append(out, mapped)
-	}
-	return strings.Join(out, " ")
-}
-
-// oidcScopesForAdvertisement returns the subset of cfg.Scopes that altinity-mcp
-// will surface to MCP clients via discovery metadata (protected-resource doc,
-// authorization-server metadata, openid-configuration) and the
-// WWW-Authenticate challenge. Only an explicit OIDC-identity allowlist plus
-// Auth0's offline_access refresh-token gate is passed through; anything else
-// (URI-form upstream scopes like Google's https://www.googleapis.com/auth/…,
-// resource-server scopes like mcp:read, custom API scopes like calendar) is
-// filtered out.
-//
-// Why explicit allowlist instead of "filter URI / filter offline_access":
-// scope-based tool authorization is not exercised anywhere in altinity-mcp
-// today (RequiredScopes is empty in every helm values file). Anything beyond
-// identity-shaped names is junk from the MCP-client's perspective and tends
-// to provoke "permissions not granted" warnings from ChatGPT. When scope-based
-// authorization is added in the future, extend this allowlist explicitly.
-//
-// Why offline_access is on the list (Auth0 vs Google): Auth0 uses the
-// offline_access scope as the gate for issuing refresh tokens (RFC 6749 §6 +
-// Auth0 docs); production antalya-mcp depends on advertising it. Google does
-// NOT use this scope — it uses access_type=offline as a separate auth param —
-// so for Google deployments cfg.Scopes simply omits offline_access and the
-// helper naturally doesn't advertise it. Behaviour is therefore config-driven
-// per deployment without per-mode branching here.
-func oidcScopesForAdvertisement(cfg config.OAuthConfig) []string {
-	allowed := map[string]struct{}{
-		"openid":         {},
-		"email":          {},
-		"profile":        {},
-		"offline_access": {},
-	}
-	out := make([]string, 0, len(cfg.Scopes))
-	seen := make(map[string]struct{})
-	for _, s := range cfg.Scopes {
-		if _, ok := allowed[s]; !ok {
-			continue
-		}
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
 }
 
 func oauthClaimsFromUserInfo(raw map[string]interface{}) *altinitymcp.OAuthClaims {
@@ -962,18 +595,6 @@ func (a *application) resolveUpstreamAuthURL() (string, error) {
 	return strings.TrimSpace(discovery.AuthorizationEndpoint), nil
 }
 
-// isGoogleIssuer reports whether the configured issuer is Google's OIDC
-// provider. Used to pick between `access_type=offline` (Google) and the
-// `offline_access` scope (Auth0 and other RFC 6749 §6 strict providers).
-// Both Google issuer URLs the OIDC spec lists are accepted.
-func isGoogleIssuer(issuer string) bool {
-	host := strings.ToLower(strings.TrimSpace(issuer))
-	host = strings.TrimPrefix(host, "https://")
-	host = strings.TrimPrefix(host, "http://")
-	host, _, _ = strings.Cut(host, "/")
-	return host == "accounts.google.com" || host == "www.google.com"
-}
-
 func (a *application) resolveUpstreamTokenURL() (string, error) {
 	cfg := a.GetCurrentConfig().Server.OAuth
 	if tokenURL := strings.TrimSpace(cfg.TokenURL); tokenURL != "" {
@@ -1022,7 +643,7 @@ func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *alti
 		return "", nil, fmt.Errorf("body: %w", err)
 	}
 	if resp.StatusCode >= 300 {
-		errCode, errDesc := refreshErrorFields(body)
+		errCode, errDesc := broker.RefreshErrorFields(body)
 		return "", nil, fmt.Errorf("upstream %d: %s%s", resp.StatusCode, errCode, errDesc)
 	}
 	var parsed struct {
@@ -1034,7 +655,7 @@ func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *alti
 		return "", nil, fmt.Errorf("decode: %w", err)
 	}
 	if parsed.Error != "" {
-		return "", nil, fmt.Errorf("upstream %s%s", parsed.Error, sanitizeErrorDesc(parsed.ErrorDescription))
+		return "", nil, fmt.Errorf("upstream %s%s", parsed.Error, broker.SanitizeErrorDesc(parsed.ErrorDescription))
 	}
 	if parsed.IDToken == "" {
 		// Some IdPs only return a new access_token on refresh, no id_token.
@@ -1079,13 +700,13 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	}
 	resp := map[string]interface{}{
 		// `resource` is the canonical RFC 9728 protected-resource identifier
-		// (with trailing slash, per canonicalResourceURL); claude.ai's artifact
+		// (with trailing slash, per broker.CanonicalResourceURL); claude.ai's artifact
 		// proxy compares the metadata field literally and round-trips it to the
 		// `aud` claim. Inbound `aud` validation tolerates either form via
 		// audienceMatchesResource.
-		"resource":                 canonicalResourceURL(baseURL),
+		"resource":                 broker.CanonicalResourceURL(baseURL),
 		"authorization_servers":    authorizationServers,
-		"scopes_supported":         oidcScopesForAdvertisement(cfg),
+		"scopes_supported":         broker.OIDCScopesForAdvertisement(cfg),
 		"bearer_methods_supported": []string{"header"},
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1118,16 +739,16 @@ func handleOAuthRegisterRemoved(w http.ResponseWriter, _ *http.Request) {
 func (a *application) oauthASMetadata(r *http.Request) map[string]interface{} {
 	baseURL := a.oauthAuthorizationServerBaseURL(r)
 	return map[string]interface{}{
-		"issuer":                                strings.TrimRight(baseURL, "/"),
-		"authorization_endpoint":                joinURLPath(baseURL, a.oauthAuthorizationPath()),
-		"token_endpoint":                        joinURLPath(baseURL, a.oauthTokenPath()),
-		"scopes_supported":                      oidcScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
-		"token_endpoint_auth_methods_supported":          []string{"none", "private_key_jwt"},
+		"issuer":                                           strings.TrimRight(baseURL, "/"),
+		"authorization_endpoint":                           broker.JoinURLPath(baseURL, a.oauthAuthorizationPath()),
+		"token_endpoint":                                   broker.JoinURLPath(baseURL, a.oauthTokenPath()),
+		"scopes_supported":                                 broker.OIDCScopesForAdvertisement(a.GetCurrentConfig().Server.OAuth),
+		"response_types_supported":                         []string{"code"},
+		"grant_types_supported":                            []string{"authorization_code"},
+		"token_endpoint_auth_methods_supported":            []string{"none", "private_key_jwt"},
 		"token_endpoint_auth_signing_alg_values_supported": []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"client_id_metadata_document_supported": true,
+		"code_challenge_methods_supported":                 []string{"S256"},
+		"client_id_metadata_document_supported":            true,
 	}
 }
 
@@ -1210,7 +831,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	// between IdP and our /oauth/callback even if we hold the upstream
 	// client_secret. Verifier stays in pendingAuth and is replayed during
 	// the /token exchange in handleOAuthCallback.
-	upstreamVerifier, err := newPKCEVerifier()
+	upstreamVerifier, err := broker.NewPKCEVerifier()
 	if err != nil {
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "failed to generate PKCE verifier")
 		return
@@ -1219,7 +840,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	callbackState, err := a.encodePendingAuth(oauthPendingAuth{
 		ClientID:             clientID,
 		RedirectURI:          redirectURI,
-		Scope:                sanitizeScope(q.Get("scope")),
+		Scope:                broker.SanitizeScope(q.Get("scope")),
 		ClientState:          q.Get("state"),
 		CodeChallenge:        q.Get("code_challenge"),
 		CodeChallengeMethod:  q.Get("code_challenge_method"),
@@ -1239,7 +860,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		writeOAuthTokenError(w, http.StatusBadGateway, "server_error", "failed to resolve upstream authorization endpoint")
 		return
 	}
-	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
+	callbackURL := broker.JoinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
 	upstream := url.Values{}
 	upstream.Set("client_id", cfg.Server.OAuth.ClientID)
 	upstream.Set("redirect_uri", callbackURL)
@@ -1263,7 +884,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 		// to returning users, which is UX-hostile. Operators who need to
 		// re-enroll (rotated upstream client, revoked grant) set
 		// oauth.upstream_force_consent=true. See #121.
-		if isGoogleIssuer(cfg.Server.OAuth.Issuer) {
+		if broker.IsGoogleIssuer(cfg.Server.OAuth.Issuer) {
 			upstream.Set("access_type", "offline")
 			if cfg.Server.OAuth.UpstreamForceConsent {
 				upstream.Set("prompt", "consent")
@@ -1274,7 +895,7 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	}
 	upstream.Set("scope", scope)
 	upstream.Set("state", callbackState)
-	upstream.Set("code_challenge", pkceChallenge(upstreamVerifier))
+	upstream.Set("code_challenge", broker.PKCEChallenge(upstreamVerifier))
 	upstream.Set("code_challenge_method", "S256")
 	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
@@ -1418,7 +1039,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion_type must be jwt-bearer")
 				return
 			}
-			tokenEndpointURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
+			tokenEndpointURL := broker.JoinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthTokenPath())
 			if err := a.verifyClientAssertion(r.Context(), client, clientID, assertion, tokenEndpointURL); err != nil {
 				log.Debug().Err(err).Str("client_id", truncateForLog(clientID, 80)).Str("token_endpoint", tokenEndpointURL).Msg("OAuth /token rejected: client_assertion invalid")
 				writeOAuthTokenError(w, http.StatusUnauthorized, "invalid_client", "client_assertion invalid")
@@ -1457,7 +1078,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")
 		return
 	}
-	if issued.CodeChallenge == "" || pkceChallenge(r.Form.Get("code_verifier")) != issued.CodeChallenge {
+	if issued.CodeChallenge == "" || broker.PKCEChallenge(r.Form.Get("code_verifier")) != issued.CodeChallenge {
 		log.Debug().Msg("OAuth /token rejected: invalid PKCE verifier")
 		writeOAuthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid PKCE verifier")
 		return
@@ -1485,7 +1106,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	cfg := a.GetCurrentConfig()
-	callbackURL := joinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
+	callbackURL := broker.JoinURLPath(a.oauthAuthorizationServerBaseURL(r), a.oauthCallbackPath())
 	tokenURL, err := a.resolveUpstreamTokenURL()
 	if err != nil {
 		log.Error().Err(err).Msg("OAuth /token: failed to resolve upstream token endpoint")
@@ -1519,7 +1140,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if upstreamResp.StatusCode >= 300 {
-		errCode, bodyLen := safeUpstreamErrorFields(body)
+		errCode, bodyLen := broker.SafeUpstreamErrorFields(body)
 		log.Warn().
 			Int("status", upstreamResp.StatusCode).
 			Str("upstream_error", errCode).
@@ -1661,7 +1282,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		"token_type":   tokenType,
 		"expires_in":   expiresIn,
 	}
-	if s := normalizeUpstreamScopeForClient(tokenResp.Scope); s != "" {
+	if s := broker.NormalizeUpstreamScopeForClient(tokenResp.Scope); s != "" {
 		response["scope"] = s
 	}
 	// v1 deliberately drops refresh_token from the response. CIMD clients
@@ -1692,7 +1313,7 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 		return
 	}
 
-	for _, path := range uniquePaths(
+	for _, path := range broker.UniquePaths(
 		defaultAuthorizationServerMetadataPath,
 		"/.well-known/oauth-authorization-server/oauth",
 		"/oauth/.well-known/oauth-authorization-server",
@@ -1700,7 +1321,7 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 		mux.HandleFunc(path, a.handleOAuthAuthorizationServerMetadata)
 	}
 
-	for _, path := range uniquePaths(
+	for _, path := range broker.UniquePaths(
 		defaultOpenIDConfigurationPath,
 		"/.well-known/openid-configuration/oauth",
 		"/oauth/.well-known/openid-configuration",
@@ -1714,13 +1335,13 @@ func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	// rather than the bare mux 404.
 	mux.HandleFunc(defaultRegistrationPath, handleOAuthRegisterRemoved)
 
-	for _, path := range uniquePaths(a.oauthAuthorizationPath(), defaultAuthorizationPath) {
+	for _, path := range broker.UniquePaths(a.oauthAuthorizationPath(), defaultAuthorizationPath) {
 		mux.HandleFunc(path, a.handleOAuthAuthorize)
 	}
-	for _, path := range uniquePaths(a.oauthCallbackPath(), defaultCallbackPath) {
+	for _, path := range broker.UniquePaths(a.oauthCallbackPath(), defaultCallbackPath) {
 		mux.HandleFunc(path, a.handleOAuthCallback)
 	}
-	for _, path := range uniquePaths(a.oauthTokenPath(), defaultTokenPath) {
+	for _, path := range broker.UniquePaths(a.oauthTokenPath(), defaultTokenPath) {
 		mux.HandleFunc(path, a.handleOAuthToken)
 	}
 }
