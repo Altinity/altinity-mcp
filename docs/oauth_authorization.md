@@ -4,8 +4,9 @@ How OAuth 2.0 / OpenID Connect (OIDC) authentication works in
 `altinity-mcp`, when to pick each mode, and how to wire it up against
 common identity providers.
 
-Companion: [`ch-jwt-verify.md`](ch-jwt-verify.md) is the spec for the
-ClickHouse-side JWT verifier sidecar used by gating mode.
+Companion: the ClickHouse-side JWT verifier sidecar used by gating mode
+lives in [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper) —
+that repo carries the spec, source, helm chart, and Dockerfile.
 
 ## Overview
 
@@ -321,10 +322,9 @@ config:
 ### Sidecar + ClickHouse-side config
 
 The sidecar deploys as a colocated container in the CH pod (loopback
-trust model). See [`ch-jwt-verify.md`](ch-jwt-verify.md) for the full
-spec, the [`helm/ch-jwt-verify/`](../helm/ch-jwt-verify/) chart for
-ConfigMap rendering, and [`helm/ch-jwt-verify/README.md`](../helm/ch-jwt-verify/README.md)
-for the wiring example.
+trust model). See
+[`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
+for the full spec, helm chart, and wiring example.
 
 ClickHouse registers the sidecar via a `config.d/` XML drop-in:
 
@@ -374,7 +374,7 @@ identity:
   allowed_hosted_domains: []
 ```
 
-Full schema in [`ch-jwt-verify.md` § Config schema](ch-jwt-verify.md#config-schema).
+Full schema in the [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper) repo.
 
 MCP itself applies no identity policy in gating mode — the sidecar is
 the only enforcer.
@@ -843,8 +843,9 @@ helm install altinity-mcp ./helm/altinity-mcp \
 - `values_examples/mcp-oauth-azure.yaml` — Azure AD
 - `values_examples/mcp-oauth-google.yaml` — Google Cloud Identity
 
-For gating mode, also deploy the sidecar via
-[`helm/ch-jwt-verify/`](../helm/ch-jwt-verify/) into the ClickHouse pod.
+For gating mode, also deploy the sidecar from
+[`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
+into the ClickHouse pod.
 
 ## Security considerations
 
@@ -876,7 +877,7 @@ For gating mode, also deploy the sidecar via
 
 Forward mode without `token_processors`. The build is OSS-only or
 otherwise lacks JWT auth. Either switch to gating mode (deploy the
-sidecar; see [`ch-jwt-verify.md`](ch-jwt-verify.md)) or upgrade to a
+sidecar; see [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)) or upgrade to a
 ClickHouse build with `token_processors` (Altinity Antalya 25.8+).
 
 ### Token validation fails with `issuer mismatch`
@@ -923,5 +924,6 @@ serializes results to JSON for the LLM itself.
 ### More troubleshooting
 
 For sidecar-specific errors (JWKS rotation, audience byte-equality,
-sidecar binding gotchas) see
-[`ch-jwt-verify.md` § Troubleshooting](ch-jwt-verify.md#troubleshooting).
+sidecar binding gotchas) see the
+[`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
+repo's troubleshooting section.
