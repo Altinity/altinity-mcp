@@ -93,12 +93,16 @@ func ClassifyDiscoveryError(err error) (auth bool, class DiscoveryErrorClass) {
 	}
 	msg := err.Error()
 
-	// net/http 401/403 surfaces (forward-mode CH proxies, embedded test
-	// rigs). Match on common substrings rather than typed errors — the
-	// ClickHouse driver returns wrapped errors whose underlying type
-	// varies across protocol+transport combinations.
+	// net/http 401/403 surfaces and embedded test rigs. Match on common
+	// substrings rather than typed errors — the ClickHouse driver returns
+	// wrapped errors whose underlying type varies across protocol+transport
+	// combinations.
 	if strings.Contains(msg, "401") || strings.Contains(msg, "Unauthorized") ||
 		strings.Contains(msg, "403") || strings.Contains(msg, "Forbidden") {
+		return true, DiscoveryAuthError
+	}
+
+	if strings.Contains(msg, "Token authentication is not configured") {
 		return true, DiscoveryAuthError
 	}
 

@@ -53,7 +53,7 @@ type dynamicToolCommentAnnotations struct {
 // every request: the fast path short-circuits once init completes.
 //
 // Discovery is deferred until the caller has usable credentials. In OAuth
-// forward mode the Bearer token only arrives on tools/call, not tools/list —
+// OAuth the Bearer token only arrives on tools/call, not tools/list —
 // so the first tools/list just returns static tools, and the first authenticated
 // tools/call triggers discovery. The MCP SDK's AddTool automatically fires
 // notifications/tools/list_changed, prompting the client to re-fetch.
@@ -292,7 +292,7 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 }
 
 // discoverWriteToolsWith is the factory-based variant of discoverWriteTools.
-// Caller is responsible for filtering rules and gating on read-only mode.
+// Caller is responsible for filtering rules and checking read-only mode.
 func discoverWriteToolsWith(
 	ctx context.Context,
 	chCfg config.ClickHouseConfig,

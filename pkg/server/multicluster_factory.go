@@ -120,8 +120,7 @@ func (f *MulticlusterServerFactory) newServer(dynamicTools map[string]dynamicToo
 
 // ValidateClusterAllowed reports whether the cluster name passes the
 // validation + allowlist gates. Exported so cmd/altinity-mcp can reject
-// /.well-known/.../mcp/{bogus} before forwarding to the existing PRM
-// handler.
+// /.well-known/.../mcp/{bogus} before delegating to the existing PRM handler.
 func (r *MulticlusterRouter) ValidateClusterAllowed(cluster string) (config.ClickHouseConfig, bool) {
 	return r.resolveCluster(cluster)
 }

@@ -37,7 +37,7 @@ config:
       enabled: false
     oauth:
       enabled: true
-      mode: "gating"
+      broker: false
       issuer: "https://accounts.google.com"
       jwks_url: "https://www.googleapis.com/oauth2/v3/certs"
       # Shared audience across clusters in v1. Per-cluster audience is v2.

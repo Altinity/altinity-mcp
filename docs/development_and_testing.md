@@ -73,7 +73,7 @@ If Docker is unavailable, the default suite will not be reliable.
 
 ## OAuth End-to-End Tests
 
-OAuth e2e tests validate bearer-token forwarding through MCP to ClickHouse. They use a lightweight in-process mock OIDC provider and an `altinity/clickhouse-server:25.8.16.20001.altinityantalya` container (required for `token_processors` support — standard ClickHouse images do not include it).
+OAuth e2e tests validate bearer-token authentication through MCP to ClickHouse. They use a lightweight in-process mock OIDC provider and an `altinity/clickhouse-server:25.8.16.20001.altinityantalya` container (required for `token_processors` support — standard ClickHouse images do not include it).
 
 These tests run automatically as part of `go test ./...` (skipped with `-short`).
 

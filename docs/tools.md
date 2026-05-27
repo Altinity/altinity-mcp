@@ -262,7 +262,7 @@ The server accepts this form but logs a deprecation warning at startup. Prefer `
 
 ## Dynamic discovery
 
-Discovery is **lazy** — it runs on the first authenticated tool call, not at startup. This matters for OAuth forward mode, where no ClickHouse credentials exist until a user request arrives.
+Discovery is **lazy** — it runs on the first authenticated tool call, not at startup. This matters for OAuth, where ClickHouse credentials can be derived from the user request.
 
 After a successful discovery pass, the server emits `notifications/tools/list_changed` so compatible MCP clients refresh their tool list.
 
@@ -275,13 +275,13 @@ If discovery fails (e.g. credential error, network issue), static tools remain a
 
 ### Credentials used for discovery
 
-| Auth mode | Credentials used |
-|-----------|------------------|
+| Auth | Credentials used |
+|------|------------------|
 | JWE | The per-request JWE token from the triggering call. |
-| OAuth forward | The forwarded Bearer token from the triggering call. |
+| OAuth | The Bearer token from the triggering call. |
 | Plain / no auth | Static `clickhouse.username` / `clickhouse.password` from config, if set. |
 
-Static credentials are no longer **required** for discovery in JWE or OAuth-forward setups — whichever token arrives with the first authenticated call is used to probe `system.tables`.
+Static credentials are no longer **required** for discovery in JWE or OAuth setups — whichever token arrives with the first authenticated call is used to probe `system.tables`.
 
 ---
 

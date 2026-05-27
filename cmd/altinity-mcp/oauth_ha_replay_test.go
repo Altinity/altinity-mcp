@@ -88,7 +88,6 @@ func TestHAReplay_UpstreamInvalidGrantOnReplay(t *testing.T) {
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:             true,
-				Mode:                "forward",
 				Issuer:              upstream.URL,
 				JWKSURL:             upstream.URL + "/jwks",
 				AuthURL:             upstream.URL + "/authorize",

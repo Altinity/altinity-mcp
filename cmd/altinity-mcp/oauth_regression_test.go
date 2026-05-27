@@ -166,31 +166,29 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 	})
 }
 
-// --- MCP auth injector is a pure forwarder ------------------------------
+// --- MCP auth injector passes bearer context ----------------------------
 
-// The refactor moved per-request JWT validation to the CH-side ch-jwt-verify
-// sidecar (gating mode) / Antalya's token_processors (forward mode). MCP's
-// injector now just confirms a bearer is present and threads it into the
-// context — anything else is the CH-side authenticator's responsibility.
+// Per-request JWT validation is handled by the CH-side ch-jwt-verify sidecar or
+// Antalya's token_processors. MCP's injector confirms a bearer is present and
+// threads it into the context; the CH-side authenticator owns the rest.
 //
 // Note for security reviewers: the previous version of this test asserted
 // that wrong-audience / expired / unsigned JWTs were rejected at the MCP
-// edge with HTTP 401. That protection now lives at the data-plane gate:
-//   - gating mode: the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper)
+// edge with HTTP 401. That protection now lives at the data plane:
+//   - broker=false: the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper)
 //     covers signature, aud byte-equal, exp/nbf, scope, identity policy,
 //     user-vs-claim match.
-//   - forward mode: ClickHouse's <token_processors> re-validates the same
+//   - OAuth: ClickHouse's <token_processors> re-validates the same
 //     JWT against the upstream JWKS on every query.
 //
 // The MCP layer intentionally does not duplicate those checks.
-func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
+func TestOAuthMCPAuthInjectorPassesBearerContext(t *testing.T) {
 	t.Parallel()
 	provider := newRegressionOIDCProvider(t, nil, nil)
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:  true,
-				Mode:     "forward",
 				Issuer:   provider.server.URL,
 				JWKSURL:  provider.server.URL + "/jwks",
 				Audience: "clickhouse-api",
@@ -268,7 +266,6 @@ func TestOAuthForwardModeTokenResourceMismatch(t *testing.T) {
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:             true,
-				Mode:                "forward",
 				Issuer:              "https://idp.example.com",
 				PublicAuthServerURL: "https://mcp.example.com",
 				SigningSecret:       signingSecret,
@@ -323,7 +320,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
+			Broker:              true,
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-aliases-32-bytes!!!!!",
@@ -333,7 +330,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app.registerOAuthHTTPRoutes(mux)
 
 	// Each alias path must return the same JSON document (modulo OIDC's
-	// id_token_signing_alg_values_supported extra in gating-mode openid
+	// id_token_signing_alg_values_supported extra in resource-server openid
 	// configuration — we run forward so neither path adds it).
 	for _, path := range []string{
 		"/.well-known/oauth-authorization-server",
@@ -414,7 +411,6 @@ func TestCIMDFullAuthCodeFlow(t *testing.T) {
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:             true,
-				Mode:                "forward",
 				Issuer:              upstream.URL,
 				JWKSURL:             upstream.URL + "/jwks",
 				AuthURL:             upstream.URL + "/authorize",
@@ -505,7 +501,7 @@ func TestOAuthRegisterGone(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
+			Broker:              true,
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-410-32bytes!!!!!!!!!!!",
@@ -530,7 +526,6 @@ func TestOAuthTokenRefreshGrantUnsupported(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-refresh-32bytes!!!!!!!",
@@ -647,7 +642,6 @@ func TestOAuthASMetadataShape(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-shape-32bytes!!!!!!!!!",
@@ -699,7 +693,6 @@ func TestOAuthTokenUpstream200WithErrorBody(t *testing.T) {
 
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 		Enabled:             true,
-		Mode:                "forward",
 		Issuer:              upstream.URL,
 		JWKSURL:             upstream.URL + "/jwks",
 		AuthURL:             upstream.URL + "/authorize",
@@ -743,7 +736,7 @@ func TestOAuthTokenUpstream200WithErrorBody(t *testing.T) {
 
 // --- helpers -------------------------------------------------------------
 
-// regressionOIDCProvider is a small fake OIDC AS used by the forward-mode
+// regressionOIDCProvider is a small fake OIDC AS used by the OAuth
 // JWT validation tests. It signs id_tokens with RS256 and exposes JWKS at
 // /jwks so altinitymcp.ValidateUpstreamIdentityToken can verify them.
 type regressionOIDCProvider struct {

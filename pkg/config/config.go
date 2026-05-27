@@ -13,8 +13,7 @@ import (
 )
 
 // OAuthConfig is an alias for oauth.OAuthConfig so existing call sites that
-// reference config.OAuthConfig continue to compile. The struct definition and
-// the NormalizedMode/IsForwardMode/IsGatingMode helpers live in pkg/oauth.
+// reference config.OAuthConfig continue to compile.
 type OAuthConfig = oauth.OAuthConfig
 
 // ClickHouseProtocol defines the protocol used to connect to ClickHouse
@@ -310,10 +309,12 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 // override is now a no-op. Exported so external tooling (linters, CI
 // gates, deploy automation) can share the same source of truth.
 var RemovedConfigKeys = []RemovedKey{
-	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
+	{Path: "clickhouse.cluster_secret", Replacement: "Use broker:false with the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
 	{Path: "clickhouse.cluster_name", Replacement: "Same as cluster_secret — drop both together."},
-	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — the gating-mode wire format no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
-	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — forward mode always uses Authorization: Bearer."},
+	{Path: "server.oauth.mode", Replacement: "Removed — use server.oauth.broker: true or false."},
+	{Path: "server.oauth.broker_upstream", Replacement: "Removed — use server.oauth.broker: true."},
+	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — MCP no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
+	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — Bearer auth uses Authorization: Bearer."},
 	{Path: "server.oauth.allowed_email_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_email_domains."},
 	{Path: "server.oauth.allowed_hosted_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_hosted_domains."},
 	{Path: "server.oauth.allow_unverified_email", Replacement: "Moved (inverted) to the ch-jwt-verify sidecar's identity.require_email_verified."},

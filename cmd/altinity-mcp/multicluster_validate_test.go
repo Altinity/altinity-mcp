@@ -19,7 +19,7 @@ func TestValidateMulticlusterRuntimeConfig(t *testing.T) {
 				Protocol: config.HTTPProtocol,
 			},
 			Server: config.ServerConfig{
-				OAuth: config.OAuthConfig{Enabled: true, Mode: "gating", SigningSecret: "x"},
+				OAuth: config.OAuthConfig{Enabled: true, SigningSecret: "x"},
 			},
 			Multicluster: config.MulticlusterConfig{
 				Enabled:            true,

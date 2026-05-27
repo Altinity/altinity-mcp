@@ -39,21 +39,19 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
-					Mode:                "gating",
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					SigningSecret:       "test-gating-secret-32-byte-key!!",
+					SigningSecret:       "test-signing-secret-32-byte-key!!",
 				},
 			},
 		},
 		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "gating",
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			SigningSecret:       "test-gating-secret-32-byte-key!!",
+			SigningSecret:       "test-signing-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -108,7 +106,6 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		},
@@ -116,7 +113,6 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		}, "test"),
@@ -140,7 +136,7 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 }
 
 // TestOAuthMCPAuthInjectorForwardModeValidatesJWT is the integration check
-// for the C-1 fix: forward mode used to skip ValidateOAuthToken entirely,
+// for the C-1 fix: OAuth used to skip ValidateOAuthToken entirely,
 // so any string in `Authorization: Bearer …` reached the inner handler
 // and was forwarded to ClickHouse. After C-1 the auth layer validates JWT
 // bearers when Issuer/JWKSURL is configured and rejects bad ones at 401.
@@ -162,7 +158,7 @@ func exchangeOAuthBrowserCode(t *testing.T, app *application, clientID, code, re
 }
 
 // TestOAuthForwardModeTokenResourceMismatch pins the RFC 8707 §2.2 enforcement
-// in forward mode: a /token (auth-code grant) request whose `resource` differs
+// in OAuth: a /token (auth-code grant) request whose `resource` differs
 // from the one already pinned at /authorize must be rejected with
 // invalid_target, regardless of which mode we're running in.
 func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
@@ -170,7 +166,7 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hashedSecret := jwe_auth.HashSHA256([]byte("test-gating-secret-32-byte-key!!"))
+	hashedSecret := jwe_auth.HashSHA256([]byte("test-signing-secret-32-byte-key!!"))
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
 	if err != nil {
 		return "", err
@@ -213,9 +209,6 @@ func newJWEStateTestApp(secret string) *application {
 	return &application{config: cfg}
 }
 
-// newGatingModeTestApp creates an application configured for gating mode OAuth.
-// doGatingAuthCodeFlow runs the full authorize→callback→token exchange and
-// returns the parsed token response.
 func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken string) *httptest.ResponseRecorder {
 	t.Helper()
 	form := url.Values{}
@@ -230,9 +223,6 @@ func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken
 	return rr
 }
 
-// newForwardModeRefreshTestApp configures a forward-mode app with
-// UpstreamOfflineAccess enabled, so the auth-code response carries a JWE
-// refresh_token wrapping the upstream IdP's refresh token.
 func TestNormalizedPath(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -633,7 +623,6 @@ func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-f1-jsonerr-32bytes!!!!",
@@ -701,7 +690,6 @@ func TestOAuthChallengeHeaderMulticluster(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled:           true,
-					Mode:              "gating",
 					Issuer:            "https://accounts.example.com",
 					Audience:          "https://otel-mcp.example.com/",
 					PublicResourceURL: "https://otel-mcp.example.com/",
@@ -751,10 +739,10 @@ func TestOAuthChallengeHeaderMulticluster(t *testing.T) {
 	})
 }
 
-// TestBrokerUpstreamAudience guards the gate that decides whether to request an
+// TestBrokerAudience guards the gate that decides whether to request an
 // API `audience` from the upstream IdP (so Auth0 mints a JWT access token with
 // aud=<resource> for the ch-jwt-verify sidecar). Google must never get it.
-func TestBrokerUpstreamAudience(t *testing.T) {
+func TestBrokerAudience(t *testing.T) {
 	t.Parallel()
 	mk := func(o config.OAuthConfig) *application {
 		o.Enabled = true
@@ -772,9 +760,7 @@ func TestBrokerUpstreamAudience(t *testing.T) {
 		{"broker+auth0+aud → request it", config.OAuthConfig{Broker: true, Issuer: auth0, Audience: aud}, aud},
 		{"broker+auth0+no aud → none", config.OAuthConfig{Broker: true, Issuer: auth0}, ""},
 		{"broker+google+aud → none (Google excluded)", config.OAuthConfig{Broker: true, Issuer: google, Audience: aud}, ""},
-		{"forward+auth0+aud → request it", config.OAuthConfig{Mode: "forward", Issuer: auth0, Audience: aud}, aud},
-		{"gating(no broker_upstream)+auth0+aud → none (not a broker)", config.OAuthConfig{Mode: "gating", Issuer: auth0, Audience: aud}, ""},
-		{"gating+broker_upstream+auth0+aud → request it", config.OAuthConfig{Mode: "gating", BrokerUpstream: true, Issuer: auth0, Audience: aud}, aud},
+		{"resource-server+auth0+aud → none", config.OAuthConfig{Issuer: auth0, Audience: aud}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

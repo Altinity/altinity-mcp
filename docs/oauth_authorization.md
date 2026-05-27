@@ -563,19 +563,7 @@ sidecar binding gotchas) see the
 [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
 repo's troubleshooting section.
 
-## Deprecated fields
+## Removed fields
 
-The following config fields still work but log a deprecation warning at
-startup. Migrate by replacing them with `broker: true`.
-
-| Deprecated | Replacement |
-|---|---|
-| `mode: forward` | `broker: true` |
-| `mode: gating` + `broker_upstream: true` | `broker: true` |
-| `mode: gating` (no broker) | `broker: false` (default) — MCP is a pure resource server; the upstream IdP must support CIMD natively |
-
-When `mode: forward` or `broker_upstream: true` is set, the startup log
-will contain:
-```
-oauth.mode=forward and oauth.broker_upstream are deprecated; use oauth.broker: true instead
-```
+OAuth configuration now uses only `broker: true` or `broker: false`.
+Older mode fields are rejected by the config linter and should be removed.

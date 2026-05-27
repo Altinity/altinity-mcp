@@ -873,11 +873,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 	if !oauth.Enabled {
 		return
 	}
-	if oauth.IsGatingMode() && strings.TrimSpace(oauth.PublicAuthServerURL) == "" && strings.TrimSpace(oauth.Issuer) != "" {
-		log.Warn().Msg("OAuth gating mode: public_auth_server_url is not set — " +
-			"minted tokens will use the request Host as issuer, but validation expects the configured issuer; " +
-			"set public_auth_server_url to match, or leave issuer empty to skip issuer validation")
-	}
 	// PublicResourceURL pins the canonical RFC 9728 `resource` URL (and the
 	// audience the RFC 8707 resource indicator is validated against in
 	// /authorize). When unset, we fall back to the request's Host header,
@@ -889,17 +884,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"validation (RFC 8707) and the advertised RFC 9728 `resource` URL fall back " +
 			"to the request Host header. For production deployments behind a single canonical " +
 			"hostname, set MCP_OAUTH_PUBLIC_RESOURCE_URL to lock the resource identity.")
-	}
-	// C-1 nudge: forward mode without any JWKS source means we cannot validate
-	// JWT bearers locally. The auth layer soft-passes such tokens to ClickHouse,
-	// which is then the sole validator. MCP authorization spec §Token Handling
-	// requires the resource server to validate tokens; configuring oauth_issuer
-	// or oauth_jwks_url enables that.
-	if oauth.IsForwardMode() && strings.TrimSpace(oauth.Issuer) == "" && strings.TrimSpace(oauth.JWKSURL) == "" {
-		log.Warn().Msg("OAuth forward mode: neither oauth_issuer nor oauth_jwks_url is set — " +
-			"JWT bearers cannot be validated locally (signature/iss/aud/exp); " +
-			"the MCP server will forward them as-is and rely entirely on ClickHouse-side validation. " +
-			"Set MCP_OAUTH_ISSUER or MCP_OAUTH_JWKS_URL to enable local validation per MCP authorization spec §Token Handling.")
 	}
 }
 
@@ -1021,10 +1005,8 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 
 	// Test connection to ClickHouse at startup, unless credentials are dynamic:
 	// - JWE: each request carries its own ClickHouse credentials
-	// - OAuth (forward or gating): credentials are derived from the JWT per
-	//   request. Forward mode rewrites the Authorization header; gating mode
-	//   sends Basic base64(email:JWT) for the CH-side JWT-verifier sidecar to
-	//   validate. The static helm-configured Username/Password are unused.
+	// - OAuth: credentials are derived from the bearer per request. The static
+	//   helm-configured Username/Password are unused.
 	skipStartupPing := cfg.Server.JWE.Enabled || cfg.Server.OAuth.Enabled
 	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
@@ -1135,17 +1117,6 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return nil
 	}
 
-	switch cfg.Server.OAuth.NormalizedMode() {
-	case "forward", "gating":
-	default:
-		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
-	}
-
-	// Deprecation: mode:forward and broker_upstream are superseded by broker:true.
-	if cfg.Server.OAuth.IsForwardMode() || cfg.Server.OAuth.BrokerUpstream {
-		log.Warn().Msg("oauth.mode=forward and oauth.broker_upstream are deprecated; use oauth.broker: true instead")
-	}
-
 	// M5: refuse to start when the operator points issuer/jwks_url at a
 	// plaintext http:// endpoint. We fetch JWKS and openid-configuration from
 	// these URLs and trust the response to validate signatures — a MitM on
@@ -1160,29 +1131,13 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	}
 
 	signingSecret := strings.TrimSpace(cfg.Server.OAuth.SigningSecret)
-	if signingSecret == "" {
-		return fmt.Errorf("oauth signing_secret is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
-	}
-	// Defence in depth: HS256 (gating-mode access token signing) and JWE A256KW
-	// (client_id + refresh-token wrap) both derive their key as SHA-256(secret).
-	// SHA-256 spreads bits but doesn't add entropy — a 4-byte secret hashed
-	// to 32 bytes still has only 32 bits of entropy. 32 bytes is the practical
-	// minimum to make brute-force forging infeasible.
-	const minSigningSecretBytes = 32
-	if len(signingSecret) < minSigningSecretBytes {
-		return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken HS256 and JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
-	}
 
-	// Both OAuth modes require HTTP for ClickHouse: forward mode rewrites the
-	// Authorization header (TCP native protocol has no equivalent); gating
-	// mode sends Basic base64(email:JWT) to a CH-side http_authentication
-	// sidecar, which ClickHouse only invokes via the HTTP interface.
+	// OAuth requires HTTP for ClickHouse: bearer headers and Basic credentials
+	// are HTTP auth mechanisms.
 	if cfg.Server.OAuth.Enabled && cfg.ClickHouse.Protocol != config.HTTPProtocol {
-		return fmt.Errorf("oauth requires clickhouse protocol http (both forward and gating modes route credentials through ClickHouse's HTTP interface)")
+		return fmt.Errorf("oauth requires clickhouse protocol http")
 	}
 
-	// broker:true — new canonical broker flag. Replaces mode:forward and
-	// mode:gating+broker_upstream. CH auth (Bearer vs Basic) is auto-detected.
 	if cfg.Server.OAuth.Broker {
 		var missing []string
 		if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
@@ -1200,63 +1155,23 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		if len(missing) > 0 {
 			return fmt.Errorf("oauth: broker=true requires upstream IdP fields: %s", strings.Join(missing, ", "))
 		}
-	}
-
-	// Deprecated gating-mode validation (mode: gating without broker: true).
-	// Two sub-shapes depending on broker_upstream:
-	//   false (default): MCP is a pure resource server; forbids broker fields.
-	//   true: MCP brokers the upstream IdP; broker fields are required.
-	// Both are superseded by broker: true; validated above if set.
-	if cfg.Server.OAuth.IsGatingMode() && !cfg.Server.OAuth.Broker {
-		if !cfg.Server.OAuth.BrokerUpstream {
-			if cfg.Server.OAuth.ClientID != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_id — remove from helm values; client_id is the external AS's responsibility under #109. To act as the AS yourself, set oauth.broker_upstream=true")
-			}
-			if cfg.Server.OAuth.ClientSecret != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_secret — remove from helm values; client_secret is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.TokenURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.token_url — remove from helm values; token_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.AuthURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.auth_url — remove from helm values; auth_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.UserInfoURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.userinfo_url — remove from helm values; userinfo_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.PublicAuthServerURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is the external AS's responsibility under #109")
-			}
-		} else {
-			// broker_upstream=true: opposite — the broker fields are required.
-			missing := []string{}
-			if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
-				missing = append(missing, "client_id")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.ClientSecret) == "" {
-				missing = append(missing, "client_secret")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.AuthURL) == "" {
-				missing = append(missing, "auth_url")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.TokenURL) == "" {
-				missing = append(missing, "token_url")
-			}
-			if len(missing) > 0 {
-				return fmt.Errorf("oauth: gating mode with broker_upstream=true requires upstream-IdP fields to be set: %s. Without these MCP cannot broker the upstream OAuth dance", strings.Join(missing, ", "))
-			}
-			log.Warn().
-				Str("issuer", cfg.Server.OAuth.Issuer).
-				Str("client_id", cfg.Server.OAuth.ClientID).
-				Str("auth_url", cfg.Server.OAuth.AuthURL).
-				Str("token_url", cfg.Server.OAuth.TokenURL).
-				Msg("oauth: deprecated mode=gating + broker_upstream=true; migrate to broker: true")
+		if signingSecret == "" {
+			return fmt.Errorf("oauth signing_secret is required when oauth.broker=true")
 		}
+		// Defence in depth: JWE A256KW derives its key from signing_secret.
+		// SHA-256 spreads bits but doesn't add entropy — a 4-byte secret hashed
+		// to 32 bytes still has only 32 bits of entropy. 32 bytes is the
+		// practical minimum to make brute-force forging infeasible.
+		const minSigningSecretBytes = 32
+		if len(signingSecret) < minSigningSecretBytes {
+			return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
+		}
+	} else {
 		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com) to be set so MCP can validate JWTs against its JWKS")
+			return fmt.Errorf("oauth: broker=false requires oauth.issuer (the external AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com)")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.audience — under !broker_upstream it must byte-equal the MCP public URL (RFC 8707); under broker_upstream it must byte-equal the upstream OAuth client_id (the value in the upstream id_token's `aud` claim)")
+			return fmt.Errorf("oauth: broker=false requires oauth.audience — it must byte-equal the MCP public resource URL (RFC 8707)")
 		}
 	}
 

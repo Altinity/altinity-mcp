@@ -358,48 +358,6 @@ func TestConfigConstants(t *testing.T) {
 	})
 }
 
-// TestNormalizedMode tests OAuthConfig.NormalizedMode()
-func TestNormalizedMode(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		mode string
-		want string
-	}{
-		{"forward", "forward", "forward"},
-		{"gating", "gating", "gating"},
-		{"empty_defaults_to_gating", "", "gating"},
-		{"uppercase_forward", "FORWARD", "forward"},
-		{"mixed_case_gating", "Gating", "gating"},
-		{"whitespace_trimmed", "  forward  ", "forward"},
-		{"unknown_mode_passthrough", "custom", "custom"},
-		{"another_unknown", "hybrid", "hybrid"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := OAuthConfig{Mode: tt.mode}
-			require.Equal(t, tt.want, cfg.NormalizedMode())
-		})
-	}
-}
-
-// TestIsForwardMode tests OAuthConfig.IsForwardMode()
-func TestIsForwardMode(t *testing.T) {
-	t.Parallel()
-	require.True(t, OAuthConfig{Mode: "forward"}.IsForwardMode())
-	require.False(t, OAuthConfig{Mode: "gating"}.IsForwardMode())
-	require.False(t, OAuthConfig{Mode: ""}.IsForwardMode())
-}
-
-// TestIsGatingMode tests OAuthConfig.IsGatingMode()
-func TestIsGatingMode(t *testing.T) {
-	t.Parallel()
-	require.True(t, OAuthConfig{Mode: "gating"}.IsGatingMode())
-	require.True(t, OAuthConfig{Mode: ""}.IsGatingMode()) // default
-	require.False(t, OAuthConfig{Mode: "forward"}.IsGatingMode())
-}
-
 // TestLoadConfigFromFile_YMLExtension tests .yml extension loading
 func TestLoadConfigFromFile_YMLExtension(t *testing.T) {
 	t.Parallel()
@@ -779,6 +737,8 @@ clickhouse:
   cluster_name: "demo"
 server:
   oauth:
+    mode: gating
+    broker_upstream: true
     claims_to_headers:
       sub: X-User
     clickhouse_header_name: X-Token
@@ -813,7 +773,7 @@ clickhouse:
 server:
   oauth:
     enabled: true
-    mode: gating
+    issuer: https://issuer.example.com
 `)
 		require.Nil(t, removedKeyWarnings(yamlData))
 	})

@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func mintSelfIssuedToken(t *testing.T, gatingSecret string, claims map[string]interface{}) string {
+func mintSelfIssuedToken(t *testing.T, signingSecret string, claims map[string]interface{}) string {
 	t.Helper()
-	hashedSecret := jwe_auth.HashSHA256([]byte(gatingSecret))
+	hashedSecret := jwe_auth.HashSHA256([]byte(signingSecret))
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret},
 		(&jose.SignerOptions{}).WithType("JWT"),
@@ -287,7 +287,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:        true,
-						Mode:           "forward",
 						Issuer:         provider.server.URL,
 						JWKSURL:        provider.server.URL + "/jwks",
 						Audience:       "clickhouse-api",
@@ -327,7 +326,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:  true,
-						Mode:     "forward",
 						Issuer:   provider.server.URL,
 						JWKSURL:  provider.server.URL + "/jwks",
 						Audience: "clickhouse-api",
@@ -354,7 +352,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:        true,
-						Mode:           "forward",
 						Issuer:         provider.server.URL,
 						JWKSURL:        provider.server.URL + "/jwks",
 						Audience:       "clickhouse-api",
@@ -375,10 +372,10 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.ErrorIs(t, err, ErrOAuthInsufficientScopes)
 	})
 
-	// C-1: forward-mode JWT with no JWKS source configured soft-passes — the
+	// C-1: JWT with no JWKS source configured soft-passes — the
 	// MCP server cannot validate locally and defers to ClickHouse. Operators
 	// who want strict local validation set Issuer or JWKSURL.
-	t.Run("forward_mode_jwt_without_jwks_source_softpasses", func(t *testing.T) {
+	t.Run("jwt_without_jwks_source_softpasses", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
@@ -386,7 +383,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled: true,
-						Mode:    "forward",
 					},
 				},
 			},
@@ -402,10 +398,10 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.Nil(t, claims, "soft-pass returns nil claims to signal 'unvalidated, defer to ClickHouse'")
 	})
 
-	// C-1: opaque (non-JWT) bearers in forward mode soft-pass even when JWKS
+	// C-1: opaque (non-JWT) bearers soft-pass even when JWKS
 	// IS configured — there is no way to validate them without RFC 7662
 	// introspection, which we do not implement.
-	t.Run("forward_mode_opaque_bearer_softpasses_with_jwks_configured", func(t *testing.T) {
+	t.Run("opaque_bearer_softpasses_with_jwks_configured", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
@@ -413,7 +409,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled: true,
-						Mode:    "forward",
 						Issuer:  provider.server.URL,
 						JWKSURL: provider.server.URL + "/jwks",
 					},
@@ -425,22 +420,19 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.Nil(t, claims)
 	})
 
-	// Gating mode rejects opaque bearers outright (MCP is a pure resource
-	// server; only AS-issued JWTs are valid; opaque tokens are never forwarded
-	// to ClickHouse in gating mode, so soft-passing them would be a silent
-	// auth bypass).
-	t.Run("gating_mode_opaque_bearer_rejected", func(t *testing.T) {
+	// Strict JWT-only deployments reject opaque bearers outright.
+	t.Run("strict_jwt_only_opaque_bearer_rejected", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
-						Enabled:  true,
-						Mode:     "gating",
-						Issuer:   provider.server.URL,
-						JWKSURL:  provider.server.URL + "/jwks",
-						Audience: "https://mcp.example.com/",
+						Enabled:       true,
+						Issuer:        provider.server.URL,
+						JWKSURL:       provider.server.URL + "/jwks",
+						Audience:      "https://mcp.example.com/",
+						StrictJWTOnly: true,
 					},
 				},
 			},
@@ -450,10 +442,10 @@ func TestOAuthValidateToken(t *testing.T) {
 		require.Nil(t, claims)
 	})
 
-	// C-1: forward-mode JWT with JWKS configured AND a tampered signature is
+	// C-1: JWT with JWKS configured AND a tampered signature is
 	// rejected at the MCP layer before reaching ClickHouse. Closes the
 	// pre-fix gap where any string in `Authorization: Bearer …` was accepted.
-	t.Run("forward_mode_jwt_with_bad_signature_rejected", func(t *testing.T) {
+	t.Run("jwt_with_bad_signature_rejected", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
@@ -461,7 +453,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled: true,
-						Mode:    "forward",
 						Issuer:  provider.server.URL,
 						JWKSURL: provider.server.URL + "/jwks",
 					},
@@ -485,11 +476,11 @@ func TestOAuthValidateToken(t *testing.T) {
 		sigStart := dot2 + 1
 		tampered := token[:sigStart] + flipBase64URLChar(token[sigStart:sigStart+1]) + token[sigStart+1:]
 		_, err := srv.ValidateOAuthToken(tampered)
-		require.Error(t, err, "tampered forward-mode JWT must be rejected (orig token: %q tampered: %q)", token, tampered)
+		require.Error(t, err, "tampered JWT must be rejected (orig token: %q tampered: %q)", token, tampered)
 	})
 
-	// C-1: forward-mode expired JWT is rejected at the MCP layer.
-	t.Run("forward_mode_expired_jwt_rejected", func(t *testing.T) {
+	// C-1: expired JWT is rejected at the MCP layer.
+	t.Run("expired_jwt_rejected", func(t *testing.T) {
 		t.Parallel()
 		provider := newTestOAuthProvider(t, nil)
 		srv := &ClickHouseJWEServer{
@@ -497,7 +488,6 @@ func TestOAuthValidateToken(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:  true,
-						Mode:     "forward",
 						Issuer:   provider.server.URL,
 						JWKSURL:  provider.server.URL + "/jwks",
 						Audience: "clickhouse-api",
@@ -530,38 +520,23 @@ func flipBase64URLChar(c string) string {
 }
 
 // TestOAuthRequiresLocalValidation locks in the C-1 invariant: the auth layer
-// MUST validate locally in both forward and gating modes. Pre-C-1 the gate
-// returned true only for gating, leaving forward-mode tokens unchecked.
+// MUST validate locally whenever OAuth is enabled.
 func TestOAuthRequiresLocalValidation(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name string
-		mode string
-		want bool
-	}{
-		{"gating_validates", "gating", true},
-		{"forward_validates", "forward", true},
-		{"empty_defaults_to_gating_validates", "", true},
+	srv := &ClickHouseJWEServer{
+		Config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{Enabled: true},
+			},
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			srv := &ClickHouseJWEServer{
-				Config: config.Config{
-					Server: config.ServerConfig{
-						OAuth: config.OAuthConfig{Enabled: true, Mode: tc.mode},
-					},
-				},
-			}
-			require.Equal(t, tc.want, srv.oauthRequiresLocalValidation())
-		})
-	}
+	require.True(t, srv.oauthRequiresLocalValidation())
 	t.Run("disabled_skips_validation", func(t *testing.T) {
 		t.Parallel()
 		srv := &ClickHouseJWEServer{
 			Config: config.Config{
 				Server: config.ServerConfig{
-					OAuth: config.OAuthConfig{Enabled: false, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: false},
 				},
 			},
 		}
@@ -581,7 +556,6 @@ func TestOAuthIssuerEnforcement(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:  true,
-						Mode:     "forward",
 						Issuer:   provider.server.URL,
 						JWKSURL:  provider.server.URL + "/jwks",
 						Audience: "clickhouse-api",
@@ -608,7 +582,6 @@ func TestOAuthIssuerEnforcement(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:  true,
-						Mode:     "forward",
 						Issuer:   "https://only-this-one.example.com",
 						JWKSURL:  provider.server.URL + "/jwks",
 						Audience: "clickhouse-api",
@@ -634,7 +607,6 @@ func TestOAuthIssuerEnforcement(t *testing.T) {
 				Server: config.ServerConfig{
 					OAuth: config.OAuthConfig{
 						Enabled:  true,
-						Mode:     "forward",
 						Issuer:   provider.server.URL + "/",
 						JWKSURL:  provider.server.URL + "/jwks",
 						Audience: "clickhouse-api",
@@ -654,20 +626,12 @@ func TestOAuthIssuerEnforcement(t *testing.T) {
 	})
 }
 
-// TestOAuthBuildClickHouseHeaders tests the forward-mode header builder. Gating
-// mode no longer goes through this helper — its CH credentials are conveyed
-// via the clickhouse-go Auth.Username/Auth.Password Basic header.
+// TestOAuthBuildClickHouseHeaders tests the bearer header builder.
 func TestOAuthBuildClickHouseHeaders(t *testing.T) {
 	t.Parallel()
-	t.Run("gating_returns_no_headers", func(t *testing.T) {
+	t.Run("wraps_token_as_bearer", func(t *testing.T) {
 		t.Parallel()
-		cfg := config.OAuthConfig{Mode: "gating"}
-		require.Nil(t, oauth.BuildClickHouseHeaders(cfg, "token"))
-	})
-
-	t.Run("forward_wraps_token_as_bearer", func(t *testing.T) {
-		t.Parallel()
-		cfg := config.OAuthConfig{Mode: "forward"}
+		cfg := config.OAuthConfig{}
 		headers := oauth.BuildClickHouseHeaders(cfg, "my-access-token")
 		require.NotNil(t, headers)
 		require.Equal(t, "Bearer my-access-token", headers["Authorization"])
@@ -708,7 +672,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -747,7 +710,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -796,7 +758,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -873,11 +834,10 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:       true,
-					Mode:          "gating",
 					Issuer:        provider.server.URL,
 					JWKSURL:       provider.server.URL + "/jwks",
 					Audience:      "https://mcp.example.com",
-					SigningSecret: "test-gating-secret-32-byte-key!!",
+					SigningSecret: "test-signing-secret-32-byte-key!!",
 				},
 			},
 		}, "test")
@@ -909,7 +869,6 @@ func TestOAuthAndJWECombined(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -933,27 +892,26 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 	chConfig := setupEmbeddedClickHouse(t)
 	provider := newTestOAuthProvider(t, nil)
 
-	t.Run("oauth_gating_routes_bearer_through_basic_to_ch", func(t *testing.T) {
+	t.Run("oauth_routes_bearer_through_basic_to_ch", func(t *testing.T) {
 		t.Parallel()
 		// Gating mode rewrites Auth to Basic email:JWT for the CH-side
 		// ch-jwt-verify sidecar. The embedded CH has no http_authentication
 		// configured, so the request fails — but the failure is at the CH
 		// layer, not at MCP. Assert non-401 to confirm MCP forwarded the
 		// bearer.
-		const gatingSecret = "test-gating-secret-32-byte-key!!"
+		const signingSecret = "test-signing-secret-32-byte-key!!"
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:       true,
-					Mode:          "gating",
-					SigningSecret: gatingSecret,
+					SigningSecret: signingSecret,
 				},
 			},
 		}, "test")
 
-		oauthToken := mintSelfIssuedToken(t, gatingSecret, map[string]interface{}{
+		oauthToken := mintSelfIssuedToken(t, signingSecret, map[string]interface{}{
 			"sub":   "user123",
 			"email": "user123@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
@@ -967,8 +925,8 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		// Embedded CH rejects unknown user → 500 from the client builder.
-		// MCP itself does not validate, so 401 would indicate a regression
-		// in the pure-forwarder contract.
+		// MCP itself does not validate, so 401 would indicate a regression in
+		// the per-request bearer contract.
 		require.NotEqual(t, http.StatusUnauthorized, rr.Code, rr.Body.String())
 	})
 
@@ -980,7 +938,6 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -1005,7 +962,6 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -1022,7 +978,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code,
-			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+			"OAuth should pass token to CH; standard CH rejects Bearer auth")
 		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
 			"response should indicate CH connection failure, not MCP rejection")
 	})
@@ -1035,7 +991,6 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:        true,
-					Mode:           "forward",
 					Issuer:         provider.server.URL,
 					JWKSURL:        provider.server.URL + "/jwks",
 					Audience:       "clickhouse-api",
@@ -1054,7 +1009,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code,
-			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+			"OAuth should pass token to CH; standard CH rejects Bearer auth")
 		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
 			"response should indicate CH connection failure, not MCP rejection")
 	})
@@ -1067,7 +1022,6 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -1084,7 +1038,7 @@ func TestOAuthOpenAPIHandler(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code,
-			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+			"OAuth should pass token to CH; standard CH rejects Bearer auth")
 		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
 			"response should indicate CH connection failure, not MCP rejection")
 	})
@@ -1146,11 +1100,10 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 		require.NoError(t, client.Close())
 	})
 
-	t.Run("with_oauth_forwarding", func(t *testing.T) {
+	t.Run("with_oauth_bearer_header", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.OAuthConfig{
 			Enabled: true,
-			Mode:    "forward",
 		}
 		headers := oauth.BuildClickHouseHeaders(cfg, "oauth-token")
 		require.NotNil(t, headers)
@@ -1193,7 +1146,7 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 		require.NoError(t, client.Close())
 	})
 
-	t.Run("gating_mode_sets_basic_creds_from_jwt", func(t *testing.T) {
+	t.Run("oauth_sets_basic_creds_from_jwt", func(t *testing.T) {
 		t.Parallel()
 		// Gating mode unverified-decodes the JWT email claim and routes it as
 		// `Authorization: Basic base64(email:JWT)` via clickhouse-go's
@@ -1202,8 +1155,8 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 		// gate); the embedded CH rejects an unknown user, so we expect a
 		// connection failure, but the error should reference the email
 		// (proving the wire-format switch fired).
-		const gatingSecret = "test-gating-secret-32-byte-key!!"
-		oauthToken := mintSelfIssuedToken(t, gatingSecret, map[string]interface{}{
+		const signingSecret = "test-signing-secret-32-byte-key!!"
+		oauthToken := mintSelfIssuedToken(t, signingSecret, map[string]interface{}{
 			"sub":   "u-alice",
 			"email": "alice@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
@@ -1213,8 +1166,7 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled:       true,
-					Mode:          "gating",
-					SigningSecret: gatingSecret,
+					SigningSecret: signingSecret,
 				},
 			},
 		}, "test")
@@ -1225,15 +1177,14 @@ func TestGetClickHouseClientWithOAuth(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("gating_mode_non_jwt_bearer_rejected", func(t *testing.T) {
+	t.Run("strict_jwt_only_non_jwt_bearer_rejected", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled:       true,
-					Mode:          "gating",
-					SigningSecret: "test-gating-secret-32-byte-key!!",
+					StrictJWTOnly: true,
 				},
 			},
 		}, "test")
@@ -1279,7 +1230,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1309,7 +1260,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1338,7 +1289,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1356,7 +1307,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt"},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1377,7 +1328,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt"},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1403,7 +1354,7 @@ func TestValidateAuth(t *testing.T) {
 			Config: config.Config{
 				Server: config.ServerConfig{
 					JWE:   config.JWEConfig{Enabled: true, JWESecretKey: jweSecret, JWTSecretKey: jwtSecret},
-					OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"},
+					OAuth: config.OAuthConfig{Enabled: true},
 				},
 			},
 		}
@@ -1464,11 +1415,10 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 		require.Equal(t, 1, qr.Count)
 	})
 
-	t.Run("execute_query_with_oauth_and_header_forwarding", func(t *testing.T) {
+	t.Run("execute_query_with_oauth_bearer_header", func(t *testing.T) {
 		t.Parallel()
 		cfg := config.OAuthConfig{
 			Enabled: true,
-			Mode:    "forward",
 		}
 		oauthToken := "opaque-access-token"
 		headers := oauth.BuildClickHouseHeaders(cfg, oauthToken)
@@ -1505,7 +1455,6 @@ func TestOAuthMCPToolExecution(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 					Issuer:  provider.server.URL,
 					JWKSURL: provider.server.URL + "/jwks",
 				},
@@ -1544,7 +1493,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		antalyaCH := setupEmbeddedAntalyaWithOIDC(t, oidcProvider.server.URL)
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: antalyaCH,
-			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true, Mode: "forward"}},
+			Server:     config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true}},
 		}, "test")
 		oauthToken := oidcProvider.issueJWT(t, map[string]interface{}{
 			"sub": "service-account-123",
@@ -1563,7 +1512,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		require.Contains(t, qr.Columns, "version")
 	})
 
-	t.Run("forward_mode_passthrough_wrong_audience", func(t *testing.T) {
+	t.Run("oauth_bearer_passthrough_wrong_audience", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
@@ -1571,7 +1520,6 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:  true,
-					Mode:     "forward",
 					Issuer:   provider.server.URL,
 					JWKSURL:  provider.server.URL + "/jwks",
 					Audience: "expected-audience",
@@ -1589,12 +1537,12 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code,
-			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+			"OAuth should pass token to CH; standard CH rejects Bearer auth")
 		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
 			"response should indicate CH connection failure, not MCP rejection")
 	})
 
-	t.Run("forward_mode_passthrough_missing_scope", func(t *testing.T) {
+	t.Run("oauth_bearer_passthrough_missing_scope", func(t *testing.T) {
 		t.Parallel()
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
@@ -1602,7 +1550,6 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 				JWE: config.JWEConfig{Enabled: false},
 				OAuth: config.OAuthConfig{
 					Enabled:        true,
-					Mode:           "forward",
 					Issuer:         provider.server.URL,
 					JWKSURL:        provider.server.URL + "/jwks",
 					Audience:       "clickhouse-api",
@@ -1621,7 +1568,7 @@ func TestOAuthOpenAPIFullFlow(t *testing.T) {
 		srv.OpenAPIHandler(rr, req)
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code,
-			"forward mode should pass token to CH; standard CH rejects Bearer auth")
+			"OAuth should pass token to CH; standard CH rejects Bearer auth")
 		require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client",
 			"response should indicate CH connection failure, not MCP rejection")
 	})

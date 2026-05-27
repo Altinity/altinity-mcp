@@ -171,9 +171,8 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jw
 		}
 	}
 
-	// Fall through to OAuth. MCP is a pure forwarder for queries: the
-	// ch-jwt-verify sidecar cryptographically validates the JWT at each
-	// ClickHouse query, so MCP does not re-validate here.
+	// Fall through to OAuth. ClickHouse or its sidecar cryptographically
+	// validates the JWT at each query, so MCP does not re-validate here.
 	if oauthEnabled {
 		oauthToken = s.ExtractOAuthTokenFromRequest(r)
 		if oauthToken == "" {
@@ -201,11 +200,11 @@ func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
 	return []string{""}
 }
 
-// GetClickHouseClientWithOAuth creates a ClickHouse client, optionally
-// forwarding OAuth headers. Uses the global s.Config.ClickHouse as the
-// base. The multi-cluster path calls GetClickHouseClientWithOAuthForConfig
-// instead, threading a per-request chCfg through so per-cluster host
-// templating is preserved.
+// GetClickHouseClientWithOAuth creates a ClickHouse client using OAuth bearer
+// credentials when present. Uses the global s.Config.ClickHouse as the base.
+// The multi-cluster path calls GetClickHouseClientWithOAuthForConfig instead,
+// threading a per-request chCfg through so per-cluster host templating is
+// preserved.
 func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
 	return s.GetClickHouseClientWithOAuthForConfig(ctx, s.Config.ClickHouse, jweToken, oauthToken, oauthClaims)
 }
@@ -264,10 +263,9 @@ const (
 // newClientWithOAuth resolves the CH auth method for the endpoint (from cache
 // or by probing), then creates and returns a connected ClickHouse client.
 //
-// Legacy explicit mode (mode:forward / mode:gating without broker:true) seeds
-// the cache deterministically without probing. broker:true auto-detects by
-// trying Bearer first; on CH auth error it falls back to Basic and caches the
-// result so subsequent requests skip the probe.
+// The method is auto-detected by trying Bearer first; on CH auth error it
+// falls back to Basic and caches the result so subsequent requests skip the
+// probe.
 func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg config.ClickHouseConfig, token string) (*clickhouse.Client, error) {
 	cfg := s.Config.Server.OAuth
 	endpoint := fmt.Sprintf("%s:%d", chCfg.Host, chCfg.Port)
@@ -277,18 +275,8 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 		return newClientForOAuthMethod(ctx, chCfg, token, v.(chOAuthMethod), cfg)
 	}
 
-	// Legacy explicit mode: seed cache from config, no probe.
-	switch {
-	case cfg.IsForwardMode():
-		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBearer)
-		return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBearer, cfg)
-	case cfg.IsGatingMode() && !cfg.Broker:
-		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBasic)
-		return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBasic, cfg)
-	}
-
-	// broker:true — auto-detect. Try Bearer first. NewClient pings internally,
-	// so a failed ping surfaces as an auth error here if CH rejects the token.
+	// Auto-detect. Try Bearer first. NewClient pings internally, so a failed
+	// ping surfaces as an auth error here if CH rejects the token.
 	bearerCfg := oauthApplyBearer(chCfg, token, cfg)
 	if client, err := clickhouse.NewClient(ctx, bearerCfg); err == nil {
 		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBearer)
