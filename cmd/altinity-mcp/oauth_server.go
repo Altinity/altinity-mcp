@@ -384,8 +384,31 @@ func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, sc
 	// ChatGPT pull cluster-correct metadata on the OAuth bootstrap. The
 	// router places the validated cluster name on ctx; if it's not there
 	// (single-cluster, or an /oauth/* path) fall through to the host-root.
+	//
+	// The fetch URL is built from the SERVING host (schemeAndHost), not from
+	// baseURL. baseURL honours public_resource_url, which is the *logical*
+	// resource identifier — advertised in the PRM `resource` field and
+	// round-tripped by the client to the token `aud`. That identifier may be
+	// a shared/foreign audience hosted elsewhere (e.g. several clusters
+	// pinned to one cluster's CH-side sidecar audience). The RFC 9728
+	// metadata document, by contrast, is served by THIS process at
+	// /mcp/{cluster}/.well-known/oauth-protected-resource on the request
+	// host, so the resource_metadata URL must point there or discovery
+	// dead-ends on a host that doesn't serve it. When public_resource_url
+	// equals the serving host (the canonical single-audience deployment)
+	// this is byte-identical to the previous behaviour.
 	if cluster, ok := altinitymcp.ClusterFromContext(r.Context()); ok {
-		resourceMetadata = broker.JoinURLPath(baseURL, "/mcp/"+cluster+defaultProtectedResourceMetadataPath)
+		metaBase := a.schemeAndHost(r)
+		// schemeAndHost can under-report https behind a TLS-terminating edge
+		// proxy when neither OpenAPI.TLS nor Server.TLS is set — and MC mode
+		// forbids OpenAPI, so there is no knob to force https there. The
+		// advertised resource identifier (baseURL) carries the real public
+		// scheme; mirror it onto the serving host so the metadata URL is
+		// fetchable over the same https the client used to reach us.
+		if strings.HasPrefix(baseURL, "https://") && strings.HasPrefix(metaBase, "http://") {
+			metaBase = "https://" + strings.TrimPrefix(metaBase, "http://")
+		}
+		resourceMetadata = broker.JoinURLPath(metaBase, "/mcp/"+cluster+defaultProtectedResourceMetadataPath)
 	}
 	if errCode == "" {
 		errCode = "invalid_token"

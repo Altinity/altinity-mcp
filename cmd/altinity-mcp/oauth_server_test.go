@@ -684,3 +684,69 @@ func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
 		require.Equal(t, "invalid_request", body["error"])
 	})
 }
+
+// TestOAuthChallengeHeaderMulticluster pins the multi-cluster WWW-Authenticate
+// resource_metadata URL to the SERVING host with the public https scheme, even
+// when public_resource_url advertises a foreign audience hosted elsewhere
+// (the shared-sidecar-audience deployment shape). Regression guard for the
+// cross-host discovery dead-end found in #134 e2e: the metadata URL must point
+// where THIS process serves the per-cluster PRM, not at the audience's host.
+func TestOAuthChallengeHeaderMulticluster(t *testing.T) {
+	t.Parallel()
+
+	// public_resource_url is a FOREIGN host (the cluster's CH-side sidecar
+	// audience); the server itself is reached at multi-mcp.example.com.
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:           true,
+					Mode:              "gating",
+					Issuer:            "https://accounts.example.com",
+					Audience:          "https://otel-mcp.example.com/",
+					PublicResourceURL: "https://otel-mcp.example.com/",
+				},
+			},
+		},
+	}
+
+	const wantPath = "/mcp/otel/.well-known/oauth-protected-resource"
+
+	extract := func(challenge string) string {
+		for _, p := range strings.Split(challenge, ",") {
+			p = strings.TrimSpace(p)
+			if strings.HasPrefix(p, "resource_metadata=") {
+				v := strings.TrimPrefix(p, "resource_metadata=")
+				return strings.Trim(v, `"`)
+			}
+		}
+		return ""
+	}
+
+	t.Run("https request keeps serving host, not foreign audience host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://multi-mcp.example.com/mcp/otel", nil)
+		req = req.WithContext(altinitymcp.WithCluster(req.Context(), "otel"))
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://multi-mcp.example.com"+wantPath, got,
+			"resource_metadata must point at the serving host where the per-cluster PRM is actually served")
+		require.NotContains(t, got, "otel-mcp.example.com",
+			"resource_metadata must not inherit public_resource_url's (foreign audience) host")
+	})
+
+	t.Run("scheme mirrored to https behind TLS-terminating proxy", func(t *testing.T) {
+		// r.TLS nil (plain HTTP to the pod) + OpenAPI/Server TLS off — the
+		// MC-forbidden-OpenAPI case where schemeAndHost would emit http://.
+		req := httptest.NewRequest(http.MethodPost, "http://multi-mcp.example.com/mcp/otel", nil)
+		req = req.WithContext(altinitymcp.WithCluster(req.Context(), "otel"))
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://multi-mcp.example.com"+wantPath, got,
+			"public https scheme (from the advertised resource) must be mirrored onto the serving host")
+	})
+
+	t.Run("single-cluster (no cluster on ctx) unchanged", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://otel-mcp.example.com/", nil)
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://otel-mcp.example.com/.well-known/oauth-protected-resource", got,
+			"non-MC path must still resolve via resourceBaseURL (public_resource_url)")
+	})
+}
