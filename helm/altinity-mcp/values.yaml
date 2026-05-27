@@ -166,7 +166,9 @@ config:
     protocol: "http"
     read_only: false
     max_execution_time: 30
-    limit: 1000
+    # Server-side result cap (PR #125). Replaces the deprecated `limit`
+    # SQL-rewrite knob. 0 = use the runtime default.
+    max_result_rows: 1000
     tls:
       enabled: false
       ca_cert: ""
