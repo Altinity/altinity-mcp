@@ -13,7 +13,7 @@
 #     deployed alongside it, with audience pinned to the shared MCP
 #     resource URL below.
 #   * Per-user CH provisioning on every cluster:
-#       CREATE USER "alice@example.com" IDENTIFIED WITH http_authenticator SERVER 'ch_jwt_verify';
+#       CREATE USER "alice@example.com" IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC';
 
 image:
   tag: "main"
