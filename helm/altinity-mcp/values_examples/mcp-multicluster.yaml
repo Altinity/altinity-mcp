@@ -1,0 +1,68 @@
+# Example values for altinity-mcp serving N ClickHouse clusters from one
+# helm release via URL-path routing (#132).
+#
+# Request URL shape:
+#   https://<ingress.host>/mcp/{cluster}
+# where {cluster} is one of `cluster_allowlist` and the literal
+# `{cluster}` placeholder in clickhouse.host is substituted at request
+# time. All other clickhouse.* fields are shared across clusters.
+#
+# Pre-requisites in the demo namespace:
+#   * Each ClickHouse pod (cluster otel, antalya, ...) must have the
+#     ch-jwt-verify sidecar from github.com/altinity/altinity-oauth-helper
+#     deployed alongside it, with audience pinned to the shared MCP
+#     resource URL below.
+#   * Per-user CH provisioning on every cluster:
+#       CREATE USER "alice@example.com" IDENTIFIED WITH http_authenticator SERVER 'ch_jwt_verify';
+
+image:
+  tag: "main"
+  pullPolicy: Always
+
+config:
+  clickhouse:
+    # The literal {cluster} placeholder is replaced with the validated
+    # cluster name from /mcp/{cluster} (RFC 1123 DNS label, must appear
+    # in cluster_allowlist below).
+    host: "chi-{cluster}-{cluster}-0-0.demo"
+    port: 8443
+    protocol: "http"
+    read_only: false
+
+  server:
+    transport: "http"
+    # OpenAPI is rejected at config-load in multi-cluster v1 — defer the
+    # per-cluster schema split to v2.
+    openapi:
+      enabled: false
+    oauth:
+      enabled: true
+      mode: "gating"
+      issuer: "https://accounts.google.com"
+      jwks_url: "https://www.googleapis.com/oauth2/v3/certs"
+      # Shared audience across clusters in v1. Per-cluster audience is v2.
+      audience: "https://multi-mcp.demo.altinity.cloud/"
+      public_resource_url: "https://multi-mcp.demo.altinity.cloud/"
+      required_scopes:
+        - "openid"
+        - "email"
+
+  multicluster:
+    enabled: true
+    cluster_allowlist:
+      - "otel"
+      - "antalya"
+    catalog_cache_max: 10000
+    catalog_ttl_fallback: "15m"
+    catalog_negative_ttl: "60s"
+
+  logging:
+    level: "info"
+
+ingress:
+  enabled: true
+  hosts:
+    - host: multi-mcp.demo.altinity.cloud
+      paths:
+        - path: /
+          pathType: Prefix

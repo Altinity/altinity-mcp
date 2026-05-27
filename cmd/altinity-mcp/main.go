@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -981,6 +982,12 @@ type application struct {
 	// cimdResolver fetches and caches inbound CIMD client metadata documents.
 	// Constructed in newApplication; tests inject an alternative resolver.
 	cimdResolver *cimdResolver
+	// mcRouter and mcCache are set only when cfg.Multicluster.Enabled is
+	// true at process start. multicluster.* fields are restart-only —
+	// changing them via config reload logs a warning but does not rebuild
+	// these.
+	mcRouter *altinitymcp.MulticlusterRouter
+	mcCache  *altinitymcp.CatalogCache
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -999,6 +1006,9 @@ func (a *application) getHTTPServer() *http.Server {
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
 	if err := validateOAuthRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateMulticlusterRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
 
@@ -1057,6 +1067,24 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		configFile:       cmd.String("config"),
 		stopConfigReload: make(chan struct{}),
 		cimdResolver:     newCIMDResolver(nil),
+	}
+
+	// Multi-cluster routing is restart-only. Build the router + catalog
+	// cache once during newApplication and stash them on the app; the
+	// HTTP server consults these on every request.
+	if cfg.Multicluster.Enabled {
+		router, err := altinitymcp.NewMulticlusterRouter(cfg.Multicluster, cfg.ClickHouse)
+		if err != nil {
+			return nil, fmt.Errorf("multicluster: failed to build router: %w", err)
+		}
+		app.mcRouter = router
+		app.mcCache = altinitymcp.NewCatalogCache(cfg.Multicluster)
+		log.Info().
+			Strs("cluster_allowlist", cfg.Multicluster.ClusterAllowlist).
+			Int("catalog_cache_max", cfg.Multicluster.CatalogCacheMax).
+			Dur("catalog_ttl_fallback", cfg.Multicluster.CatalogTTLFallback).
+			Dur("catalog_negative_ttl", cfg.Multicluster.CatalogNegativeTTL).
+			Msg("multicluster routing enabled — /mcp/{cluster} dispatches per-cluster catalogs")
 	}
 
 	// Start config reload goroutine if enabled
@@ -1210,10 +1238,61 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	return nil
 }
 
+// validateMulticlusterRuntimeConfig refuses to start the process when
+// multi-cluster routing is enabled in a combination that cannot work
+// safely. Called from newApplication before any HTTP server is bound.
+//
+// The checks are intentionally fail-loud rather than fail-quiet: an
+// operator misreads "multicluster.enabled: true" alongside JWE auth or
+// OpenAPI and ships a deployment that silently breaks per-tenant
+// isolation. Earlier failure = clearer signal.
+func validateMulticlusterRuntimeConfig(cfg config.Config) error {
+	if !cfg.Multicluster.Enabled {
+		return nil
+	}
+	if cfg.Server.JWE.Enabled {
+		return fmt.Errorf("multicluster: JWE is incompatible with multicluster mode (JWE claims carry their own host — bypass cluster routing). Disable server.jwe.enabled or server.multicluster.enabled")
+	}
+	if !cfg.Server.OAuth.Enabled {
+		return fmt.Errorf("multicluster: requires OAuth (server.oauth.enabled=true) — multicluster relies on per-bearer cache keying and per-cluster PRM advertisement")
+	}
+	if cfg.Server.OpenAPI.Enabled {
+		return fmt.Errorf("multicluster: OpenAPI must be disabled in v1 (server.openapi.enabled=false) — per-cluster OpenAPI schema is deferred to v2")
+	}
+	if !strings.Contains(cfg.ClickHouse.Host, "{cluster}") {
+		log.Warn().
+			Str("clickhouse.host", cfg.ClickHouse.Host).
+			Msg("multicluster: clickhouse.host does not contain the {cluster} placeholder — all clusters will route to the same host. Almost certainly a misconfiguration; set host to e.g. chi-{cluster}-{cluster}-0-0.demo")
+	}
+	if cfg.Multicluster.CatalogCacheMax < 100 {
+		return fmt.Errorf("multicluster: catalog_cache_max=%d is too small (min 100) — the cache would thrash under any meaningful number of concurrent users", cfg.Multicluster.CatalogCacheMax)
+	}
+	if cfg.Multicluster.CatalogTTLFallback < time.Minute || cfg.Multicluster.CatalogTTLFallback > 24*time.Hour {
+		return fmt.Errorf("multicluster: catalog_ttl_fallback=%s must be between 1m and 24h", cfg.Multicluster.CatalogTTLFallback)
+	}
+	if cfg.Multicluster.CatalogNegativeTTL < 10*time.Second || cfg.Multicluster.CatalogNegativeTTL > 5*time.Minute {
+		return fmt.Errorf("multicluster: catalog_negative_ttl=%s must be between 10s and 5m", cfg.Multicluster.CatalogNegativeTTL)
+	}
+	for _, name := range cfg.Multicluster.ClusterAllowlist {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if !altinitymcp.IsValidClusterName(trimmed) {
+			return fmt.Errorf("multicluster: cluster_allowlist entry %q is not a valid RFC 1123 DNS label", trimmed)
+		}
+	}
+	return nil
+}
+
 func (a *application) Close() {
 	// Stop config reload goroutine
 	if a.configFile != "" {
 		close(a.stopConfigReload)
+	}
+
+	if a.mcCache != nil {
+		a.mcCache.Close()
 	}
 
 	// No resources to close as the ClickHouse client is created and closed per request
@@ -1265,6 +1344,17 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
 
+	// multicluster.* fields are restart-only: the router + catalog cache
+	// were bound during newApplication and cannot be safely rebuilt
+	// mid-flight without dropping in-flight requests. Warn loudly on
+	// any change so operators see the no-op and know to roll the pod.
+	a.configMutex.RLock()
+	oldMC := a.config.Multicluster
+	a.configMutex.RUnlock()
+	if !reflect.DeepEqual(oldMC, newCfg.Multicluster) {
+		log.Warn().Msg("config reload: multicluster.* fields changed — restart required for these to take effect; routing/cache remain on the previous configuration")
+	}
+
 	// Update logging level if changed
 	a.configMutex.Lock()
 	oldLogLevel := a.config.Logging.Level
@@ -1315,6 +1405,13 @@ func (a *application) Start() error {
 	// Access the underlying MCPServer from our ClickHouseJWEServer
 	mcpServer := a.mcpServer.MCPServer
 
+	if cfg.Multicluster.Enabled {
+		if cfg.Server.Transport != config.HTTPTransport {
+			return fmt.Errorf("multicluster mode requires transport: http (got %q) — stdio/sse cannot carry per-cluster routing", cfg.Server.Transport)
+		}
+		return a.startMulticlusterHTTPServer(cfg)
+	}
+
 	switch cfg.Server.Transport {
 	case config.StdioTransport:
 		return a.startSTDIOServer(mcpServer)
@@ -1328,4 +1425,113 @@ func (a *application) Start() error {
 	default:
 		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
+}
+
+// startMulticlusterHTTPServer wires up the HTTP server for multi-cluster
+// mode (cfg.Multicluster.Enabled). Routes:
+//
+//	GET  /health, /livez, /oauth/*, /.well-known/oauth-protected-resource
+//	GET  /.well-known/oauth-protected-resource/mcp/{cluster}
+//	GET  /mcp/{cluster}/.well-known/oauth-protected-resource
+//	*    /mcp/{cluster}        ← multi-cluster MCP entrypoint
+//
+// /mcp/{cluster} chain (outer to inner):
+//   - corsHandler, stripTrailingSlash (mux-wide)
+//   - mcRouter.Middleware: extracts {cluster}, validates, expands host,
+//     injects (cluster, reqCfg) on ctx.
+//   - createMCPAuthInjector: existing OAuth bearer extraction.
+//   - serverInjector (existing): MCP server on ctx.
+//   - StreamableHTTPHandler with MulticlusterServerFactory.GetServer:
+//     per-(bearer,cluster) fresh *mcp.Server populated with cached tools.
+//
+// dynamicToolsInjector is bypassed in MC mode: a global EnsureDynamicTools
+// would poison cross-tenant catalogs. The MulticlusterServerFactory
+// consults the catalog cache for the right (bearer, cluster) entry on
+// each request and builds a fresh server.
+func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+	log.Info().
+		Str("address", addr).
+		Msg("Starting MCP server with multi-cluster HTTP transport")
+
+	corsHandler := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	authInjector := a.createMCPAuthInjector(cfg)
+	serverInjector := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	factory := altinitymcp.NewMulticlusterServerFactory(cfg, a.mcpServer, a.mcCache, version)
+	sdkHandler := mcp.NewStreamableHTTPHandler(factory.GetServer, &mcp.StreamableHTTPOptions{Stateless: true})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", a.healthHandler)
+	mux.HandleFunc("/livez", a.livenessHandler)
+	a.registerOAuthHTTPRoutes(mux)
+	a.registerMulticlusterPRMRoutes(mux)
+
+	mcpHandler := a.mcRouter.Middleware(authInjector(serverInjector(sdkHandler)))
+	mux.Handle("/mcp/{cluster}", mcpHandler)
+	mux.Handle("/mcp/{cluster}/", mcpHandler)
+
+	httpHandler := stripTrailingSlash(corsHandler(mux))
+
+	a.setHTTPServer(&http.Server{
+		Addr:    addr,
+		Handler: httpHandler,
+	})
+
+	return a.startHTTPServerWithTLS(cfg, addr, "http")
+}
+
+// registerMulticlusterPRMRoutes registers the per-cluster RFC 9728 PRM
+// routes so claude.ai / ChatGPT can auto-discover the protected-resource
+// metadata when the user types just the /mcp/{cluster} URL into the
+// connector form.
+//
+// Three routes share the same handler (`handlePRMCluster`):
+//
+//	/.well-known/oauth-protected-resource/mcp/{cluster}    ← RFC 9728 §3.1
+//	/mcp/{cluster}/.well-known/oauth-protected-resource    ← MCP-client probe path
+//
+// (The host-root /.well-known/oauth-protected-resource is owned by the
+// existing registerOAuthHTTPRoutes — we don't override it.)
+//
+// In v1 the body is identical to the host-root PRM (shared audience).
+// Per-cluster audience is v2.
+func (a *application) registerMulticlusterPRMRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp/{cluster}", a.handlePRMCluster)
+	mux.HandleFunc("GET /mcp/{cluster}/.well-known/oauth-protected-resource", a.handlePRMCluster)
+}
+
+func (a *application) handlePRMCluster(w http.ResponseWriter, r *http.Request) {
+	cluster := r.PathValue("cluster")
+	if !altinitymcp.IsValidClusterName(cluster) {
+		http.NotFound(w, r)
+		return
+	}
+	if a.mcRouter == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := a.mcRouter.ValidateClusterAllowed(cluster); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	a.handleOAuthProtectedResource(w, r)
 }

@@ -153,6 +153,11 @@ env: []
 # Configuration for the altinity-mcp application
 config:
   clickhouse:
+    # -- ClickHouse host. In multi-cluster mode (config.multicluster.enabled),
+    # the literal `{cluster}` placeholder is substituted with the validated
+    # {cluster} path value from /mcp/{cluster}. Typical k8s shape:
+    #   host: "chi-{cluster}-{cluster}-0-0.demo"
+    # Single-cluster: use the static hostname directly.
     host: "localhost"
     port: 8123
     database: "default"
@@ -213,6 +218,28 @@ config:
     dynamic_tools: []
     #  - regexp: "db\\..*"
     #    prefix: "custom_"
-  
+
+  # -- Multi-cluster routing (#132). When enabled, MCP serves N clusters
+  # from one process via /mcp/{cluster}. clickhouse.host must contain the
+  # literal `{cluster}` placeholder (substituted at request time with the
+  # validated cluster name). Incompatible with server.jwe.enabled and
+  # server.openapi.enabled (deferred to v2).
+  multicluster:
+    # -- Enable URL-path multi-cluster routing
+    enabled: false
+    # -- Whitelist of cluster names accepted in /mcp/{cluster}. Must each
+    # be a valid RFC 1123 DNS label (^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$).
+    # An empty list rejects every request — set this explicitly.
+    cluster_allowlist: []
+    # -- Maximum number of (bearer, cluster) catalog cache entries.
+    # Default 10000. Min 100.
+    catalog_cache_max: 10000
+    # -- Fallback TTL for catalog cache entries when the JWT carries no
+    # exp claim. Allowed range: 1m .. 24h.
+    catalog_ttl_fallback: 15m
+    # -- TTL for denied (auth-class) catalog cache entries. Allowed range:
+    # 10s .. 5m.
+    catalog_negative_ttl: 60s
+
   logging:
     level: "info"

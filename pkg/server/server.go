@@ -148,6 +148,33 @@ func truncateErrForClient(err error) string {
 	return msg
 }
 
+// RegisterStaticToolsOn registers the static tools described by cfg's
+// resolved Tools list on srv, without touching cfg.Server.DynamicTools or
+// the parent ClickHouseJWEServer's state. Used by multi-cluster mode where
+// each (bearer, cluster) request mints a fresh *mcp.Server.
+//
+// Returns the number of static tools actually registered.
+func RegisterStaticToolsOn(srv AltinityMCPServer, cfg *config.Config) int {
+	toolsToRegister := resolveToolDefinitions(cfg)
+	staticToolCount := 0
+	for _, td := range toolsToRegister {
+		if td.Type != "read" && td.Type != "write" {
+			continue
+		}
+		if td.ViewRegexp != "" || td.TableRegexp != "" {
+			// Dynamic rule — handled by RegisterDynamicToolsOn after discovery.
+			continue
+		}
+		if td.Name == "" {
+			continue
+		}
+		if registerStaticTool(srv, td, &cfg.Server, cfg.ClickHouse.ReadOnly) {
+			staticToolCount++
+		}
+	}
+	return staticToolCount
+}
+
 // RegisterTools adds ClickHouse tools to the MCP server. It accepts either
 // the new unified Tools configuration or the legacy DynamicTools form
 // (deprecated; converted automatically with a warning). With no config,
@@ -547,4 +574,91 @@ const (
 	JWETokenKey    contextKey = "jwe_token"
 	JWEClaimsKey   contextKey = "jwe_claims"
 	CHJWEServerKey contextKey = "clickhouse_jwe_server"
+	// clusterNameKey carries the (validated) {cluster} URL path value in
+	// multi-cluster mode. Unexported; access via ClusterFromContext.
+	clusterNameKey contextKey = "altinity_mcp_cluster"
+	// requestCHConfigKey carries the per-request ClickHouseConfig built by
+	// the multi-cluster router (host template expanded with {cluster}).
+	// Unexported; access via CHConfigFromContext.
+	requestCHConfigKey contextKey = "altinity_mcp_request_ch_config"
 )
+
+// ClusterFromContext returns the cluster name injected by the
+// multi-cluster router, if any. In single-cluster mode the router is not
+// mounted and this returns ("", false).
+func ClusterFromContext(ctx context.Context) (string, bool) {
+	v := ctx.Value(clusterNameKey)
+	if v == nil {
+		return "", false
+	}
+	name, ok := v.(string)
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// CHConfigFromContext returns the per-request ClickHouse config (host
+// templated for the active cluster) when the multi-cluster router has run,
+// or s.Config.ClickHouse otherwise. Callers should always prefer this over
+// reaching for s.Config.ClickHouse directly on a per-request hot path.
+func CHConfigFromContext(ctx context.Context, fallback config.ClickHouseConfig) config.ClickHouseConfig {
+	if v := ctx.Value(requestCHConfigKey); v != nil {
+		if cfg, ok := v.(config.ClickHouseConfig); ok {
+			return cfg
+		}
+	}
+	return fallback
+}
+
+// WithRequestCHConfig stores a per-request ClickHouseConfig on ctx. Used by
+// the multi-cluster router; exported for tests.
+func WithRequestCHConfig(ctx context.Context, chCfg config.ClickHouseConfig) context.Context {
+	return context.WithValue(ctx, requestCHConfigKey, chCfg)
+}
+
+// WithCluster stores the cluster name on ctx. Used by the multi-cluster
+// router; exported for tests.
+func WithCluster(ctx context.Context, cluster string) context.Context {
+	return context.WithValue(ctx, clusterNameKey, cluster)
+}
+
+// sdkServerAdapter wraps a raw *mcp.Server so multi-cluster code can reuse
+// the AltinityMCPServer-shaped register helpers (RegisterResources,
+// RegisterPrompts, registerStaticTool, registerDynamicToolsOn). In
+// single-cluster mode RegisterTools and friends already accept the
+// ClickHouseJWEServer directly; in multi-cluster mode each (bearer,
+// cluster) request builds a fresh *mcp.Server with its own discovered
+// tools, and we use this adapter on top of it.
+type sdkServerAdapter struct {
+	srv *mcp.Server
+}
+
+// NewSDKServerAdapter wraps srv into something callable as AltinityMCPServer.
+func NewSDKServerAdapter(srv *mcp.Server) AltinityMCPServer {
+	return &sdkServerAdapter{srv: srv}
+}
+
+func (a *sdkServerAdapter) AddTool(tool *mcp.Tool, handler ToolHandlerFunc) {
+	a.srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+func (a *sdkServerAdapter) AddResource(resource *mcp.Resource, handler ResourceHandlerFunc) {
+	a.srv.AddResource(resource, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+func (a *sdkServerAdapter) AddResourceTemplate(template *mcp.ResourceTemplate, handler ResourceHandlerFunc) {
+	a.srv.AddResourceTemplate(template, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return handler(ctx, req)
+	})
+}
+
+func (a *sdkServerAdapter) AddPrompt(prompt *mcp.Prompt, handler PromptHandlerFunc) {
+	a.srv.AddPrompt(prompt, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return handler(ctx, req)
+	})
+}

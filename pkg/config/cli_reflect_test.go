@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
@@ -164,6 +165,30 @@ func TestApplyFlags_CLIBeatsYAML(t *testing.T) {
 	ApplyFlags(cfg, cmd)
 
 	require.Equal(t, "from-cli.example", cfg.ClickHouse.Host)
+}
+
+func TestBuildFlags_Duration_BuildsAndApplies(t *testing.T) {
+	t.Parallel()
+	type S struct {
+		TTL time.Duration `flag:"ttl" default:"15m" desc:"ttl"`
+	}
+	flags := BuildFlags(&S{})
+	require.Len(t, flags, 1)
+	require.IsType(t, &cli.StringFlag{}, flags[0])
+	require.Equal(t, "15m", flags[0].(*cli.StringFlag).Value)
+
+	// Apply with default fallback (no CLI flag set, zero field).
+	s := &S{}
+	ApplyFlags(s, &fakeCmd{wasSet: map[string]bool{}})
+	require.Equal(t, 15*time.Minute, s.TTL)
+
+	// Apply with explicit CLI value overrides any in-struct value.
+	s = &S{TTL: 5 * time.Minute}
+	ApplyFlags(s, &fakeCmd{
+		strs:   map[string]string{"ttl": "1h30m"},
+		wasSet: map[string]bool{"ttl": true},
+	})
+	require.Equal(t, 90*time.Minute, s.TTL)
 }
 
 func TestBuildFlags_NoFlagTagSkipped(t *testing.T) {

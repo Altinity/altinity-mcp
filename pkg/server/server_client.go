@@ -50,10 +50,19 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	return client, nil
 }
 
-// buildConfigFromClaims builds a ClickHouse config from JWE claims
+// buildConfigFromClaims builds a ClickHouse config from JWE claims.
+// In multi-cluster mode the caller passes a base config whose Host has
+// already been template-expanded for the active cluster; we do not reach
+// for s.Config.ClickHouse so the per-request cluster routing is preserved.
 func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{}) (config.ClickHouseConfig, error) {
-	// Create a new ClickHouse config from the claims
-	chConfig := s.Config.ClickHouse // Use default as base
+	return s.buildConfigFromClaimsWithBase(s.Config.ClickHouse, claims)
+}
+
+// buildConfigFromClaimsWithBase is the explicit-base variant used by the
+// multi-cluster path. Same body as buildConfigFromClaims but takes the base
+// chCfg as a parameter so the global is never consulted on the hot path.
+func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHouseConfig, claims map[string]interface{}) (config.ClickHouseConfig, error) {
+	chConfig := base // copy
 
 	if host, ok := claims["host"].(string); ok && host != "" {
 		chConfig.Host = host
@@ -98,12 +107,16 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 	return chConfig, nil
 }
 
-// GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or OAuth tokens from context
+// GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or
+// OAuth tokens from context. When the multi-cluster router has injected a
+// per-request ClickHouseConfig (host templated for the active cluster), it
+// is used; otherwise s.Config.ClickHouse is the base.
 func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*clickhouse.Client, error) {
 	jweToken := s.ExtractTokenFromCtx(ctx)
 	oauthToken := s.ExtractOAuthTokenFromCtx(ctx)
 	oauthClaims := s.GetOAuthClaimsFromCtx(ctx)
-	return s.GetClickHouseClientWithOAuth(ctx, jweToken, oauthToken, oauthClaims)
+	chCfg := CHConfigFromContext(ctx, s.Config.ClickHouse)
+	return s.GetClickHouseClientWithOAuthForConfig(ctx, chCfg, jweToken, oauthToken, oauthClaims)
 }
 
 // GetJWEClaimsFromCtx extracts parsed JWE claims from context.
@@ -188,9 +201,22 @@ func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
 	return []string{""}
 }
 
-// GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
+// GetClickHouseClientWithOAuth creates a ClickHouse client, optionally
+// forwarding OAuth headers. Uses the global s.Config.ClickHouse as the
+// base. The multi-cluster path calls GetClickHouseClientWithOAuthForConfig
+// instead, threading a per-request chCfg through so per-cluster host
+// templating is preserved.
 func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
-	// Build base config
+	return s.GetClickHouseClientWithOAuthForConfig(ctx, s.Config.ClickHouse, jweToken, oauthToken, oauthClaims)
+}
+
+// GetClickHouseClientWithOAuthForConfig is the chCfg-explicit variant of
+// GetClickHouseClientWithOAuth. The caller is responsible for supplying a
+// ClickHouseConfig whose Host has already been template-expanded for the
+// active cluster. The global s.Config.ClickHouse is not consulted on a
+// per-request hot path under this entry point — single-cluster callers
+// route here too via the no-arg shim above.
+func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.Context, chCfg config.ClickHouseConfig, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
 	var chConfig config.ClickHouseConfig
 	var err error
 
@@ -203,12 +229,12 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 				return nil, fmt.Errorf("failed to parse JWE token: %w", err)
 			}
 		}
-		chConfig, err = s.buildConfigFromClaims(claims)
+		chConfig, err = s.buildConfigFromClaimsWithBase(chCfg, claims)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		chConfig = s.Config.ClickHouse
+		chConfig = chCfg
 	}
 
 	// Switch on OAuth mode to pick the CH wire format. Forward and gating

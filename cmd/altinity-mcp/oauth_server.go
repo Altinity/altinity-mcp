@@ -380,6 +380,13 @@ func (a *application) oauthTokenPath() string {
 func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
 	resourceMetadata := broker.JoinURLPath(baseURL, defaultProtectedResourceMetadataPath)
+	// Multi-cluster: prefer the per-cluster PRM path so claude.ai /
+	// ChatGPT pull cluster-correct metadata on the OAuth bootstrap. The
+	// router places the validated cluster name on ctx; if it's not there
+	// (single-cluster, or an /oauth/* path) fall through to the host-root.
+	if cluster, ok := altinitymcp.ClusterFromContext(r.Context()); ok {
+		resourceMetadata = broker.JoinURLPath(baseURL, "/mcp/"+cluster+defaultProtectedResourceMetadataPath)
+	}
 	if errCode == "" {
 		errCode = "invalid_token"
 	}

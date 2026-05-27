@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"gopkg.in/yaml.v3"
@@ -207,12 +208,50 @@ type LoggingConfig struct {
 	Level LogLevel `json:"level" yaml:"level" flag:"log-level" env:"LOG_LEVEL" default:"info" desc:"Logging level (debug/info/warn/error)"`
 }
 
+// MulticlusterConfig enables URL-path routing across multiple ClickHouse
+// clusters from a single MCP process. When Enabled, requests to
+// /mcp/{cluster} extract {cluster} from the path, validate it against the
+// allowlist + RFC 1123 DNS label regex, and substitute it into the
+// `{cluster}` placeholder in ClickHouseConfig.Host. All other ClickHouse
+// settings (port, TLS, mode, regexes, limits, ...) are shared across
+// clusters. See issue #132 and docs/multicluster.md.
+type MulticlusterConfig struct {
+	Enabled            bool          `json:"enabled" yaml:"enabled" flag:"multicluster-enabled" env:"MCP_MULTICLUSTER_ENABLED" desc:"Enable URL-path routing across multiple ClickHouse clusters via /mcp/{cluster}"`
+	ClusterAllowlist   []string      `json:"cluster_allowlist" yaml:"cluster_allowlist" flag:"multicluster-cluster-allowlist" env:"MCP_MULTICLUSTER_CLUSTER_ALLOWLIST" desc:"Whitelist of cluster names accepted in /mcp/{cluster}"`
+	CatalogCacheMax    int           `json:"catalog_cache_max,omitempty" yaml:"catalog_cache_max,omitempty" flag:"multicluster-catalog-cache-max" env:"MCP_MULTICLUSTER_CATALOG_CACHE_MAX" desc:"Maximum number of (bearer,cluster) catalog cache entries (default 10000)"`
+	CatalogTTLFallback time.Duration `json:"catalog_ttl_fallback,omitempty" yaml:"catalog_ttl_fallback,omitempty" flag:"multicluster-catalog-ttl-fallback" env:"MCP_MULTICLUSTER_CATALOG_TTL_FALLBACK" desc:"Fallback TTL for catalog cache entries when bearer has no exp (default 15m)"`
+	CatalogNegativeTTL time.Duration `json:"catalog_negative_ttl,omitempty" yaml:"catalog_negative_ttl,omitempty" flag:"multicluster-catalog-negative-ttl" env:"MCP_MULTICLUSTER_CATALOG_NEGATIVE_TTL" desc:"TTL for negative (denied) catalog cache entries (default 60s)"`
+}
+
+// Defaults applied by applyMulticlusterDefaults.
+const (
+	defaultMulticlusterCatalogCacheMax    = 10000
+	defaultMulticlusterCatalogTTLFallback = 15 * time.Minute
+	defaultMulticlusterCatalogNegativeTTL = 60 * time.Second
+)
+
+// applyMulticlusterDefaults fills zero-valued Multicluster fields with the
+// documented defaults. Safe to call on both Enabled and disabled configs;
+// caller decides whether to consult the values.
+func applyMulticlusterDefaults(mc *MulticlusterConfig) {
+	if mc.CatalogCacheMax == 0 {
+		mc.CatalogCacheMax = defaultMulticlusterCatalogCacheMax
+	}
+	if mc.CatalogTTLFallback == 0 {
+		mc.CatalogTTLFallback = defaultMulticlusterCatalogTTLFallback
+	}
+	if mc.CatalogNegativeTTL == 0 {
+		mc.CatalogNegativeTTL = defaultMulticlusterCatalogNegativeTTL
+	}
+}
+
 // Config is the main application configuration
 type Config struct {
-	ClickHouse ClickHouseConfig `json:"clickhouse" yaml:"clickhouse"`
-	Server     ServerConfig     `json:"server" yaml:"server"`
-	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
-	ReloadTime int              `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
+	ClickHouse   ClickHouseConfig   `json:"clickhouse" yaml:"clickhouse"`
+	Server       ServerConfig       `json:"server" yaml:"server"`
+	Logging      LoggingConfig      `json:"logging" yaml:"logging"`
+	Multicluster MulticlusterConfig `json:"multicluster" yaml:"multicluster"`
+	ReloadTime   int                `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
 
 	// RemovedKeyWarnings holds human-readable warnings about config keys
 	// that LoadConfigFromFile observed in the input file but the current
@@ -252,6 +291,7 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 		}
 	}
 	config.RemovedKeyWarnings = removedKeyWarnings(data)
+	applyMulticlusterDefaults(&config.Multicluster)
 	return config, nil
 }
 
