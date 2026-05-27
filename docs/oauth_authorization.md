@@ -563,7 +563,3 @@ sidecar binding gotchas) see the
 [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
 repo's troubleshooting section.
 
-## Removed fields
-
-OAuth configuration now uses only `broker: true` or `broker: false`.
-Older mode fields are rejected by the config linter and should be removed.
