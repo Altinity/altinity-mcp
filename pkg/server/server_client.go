@@ -379,13 +379,13 @@ func emailFromUnverifiedJWT(token string) (string, bool) {
 	if err != nil {
 		// Some IdPs emit padded segments; try the std encoding as a fallback.
 		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
-			log.Debug().Err(err).Msg("oauth gating: failed to base64-decode JWT payload")
+			log.Debug().Err(err).Msg("oauth: failed to base64-decode JWT payload")
 			return "", false
 		}
 	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		log.Debug().Err(err).Msg("oauth gating: failed to JSON-parse JWT payload")
+		log.Debug().Err(err).Msg("oauth: failed to JSON-parse JWT payload")
 		return "", false
 	}
 	if e, ok := raw["email"].(string); ok {

@@ -53,9 +53,7 @@ const (
 	// freshly-minted Google id_token (exp = iat + 1h) is never re-fetched
 	// but anything Google reused from a warm session is. Only fires when
 	// upstream_offline_access is enabled AND the upstream actually returned
-	// a refresh_token. Applies to all broker-mode deployments (forward and
-	// gating+broker_upstream alike) since the bearer is the id_token in
-	// both.
+	// a refresh_token.
 	brokerModeIDTokenRefreshThresholdSeconds = 55 * 60
 )
 

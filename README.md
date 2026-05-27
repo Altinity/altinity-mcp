@@ -7,7 +7,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 ## Features
 
 - **Multiple Transport Options**: Support for STDIO, HTTP, and Server-Sent Events (SSE) transports
-- **OAuth 2.0 Authorization**: Forward Bearer tokens to ClickHouse for token-based authentication via OIDC providers (see [OAuth 2.0 Documentation](docs/oauth_authorization.md))
+- **OAuth 2.0 Authorization**: Broker OAuth flows from MCP clients against any OIDC provider; auto-detects Bearer vs Basic auth for ClickHouse (see [OAuth 2.0 Documentation](docs/oauth_authorization.md))
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
 - **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
 - **Comprehensive Tools**: Built-in tools for listing tables, describing schemas, and executing queries
@@ -236,7 +236,7 @@ export LOG_LEVEL=debug
 # OAuth — env-var injection lets operators pull secrets from a Kubernetes
 # Secret via `valueFrom.secretKeyRef` instead of committing them to YAML.
 export MCP_OAUTH_ENABLED=true
-export MCP_OAUTH_MODE=gating
+export MCP_OAUTH_BROKER=true
 export MCP_OAUTH_ISSUER=https://accounts.example.com
 export MCP_OAUTH_SIGNING_SECRET=...
 

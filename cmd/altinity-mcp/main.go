@@ -1195,21 +1195,11 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		}
 	}
 
-	// Gating-mode validation has two shapes depending on broker_upstream:
-	//
-	//   broker_upstream=false (default, #109): MCP is a pure OAuth resource
-	//   server. The external AS (Auth0/CIMD) owns client registration and
-	//   the auth-code flow. Setting any of client_id/client_secret/auth_url/
-	//   token_url/userinfo_url/public_auth_server_url is a misconfiguration.
-	//
-	//   broker_upstream=true: MCP also acts as the AS to MCP clients
-	//   (broker-via-MCP), brokering an upstream IdP that does not natively
-	//   support CIMD (e.g. Google). The fields above become REQUIRED.
-	//   The /mcp request path is unchanged from standard gating mode —
-	//   bearer is rewritten to Basic email:JWT for the ch-jwt-verify
-	//   sidecar to validate. Only the OAuth dance changes shape.
-	//
-	// Skipped when broker:true is set — that path is validated above.
+	// Deprecated gating-mode validation (mode: gating without broker: true).
+	// Two sub-shapes depending on broker_upstream:
+	//   false (default): MCP is a pure resource server; forbids broker fields.
+	//   true: MCP brokers the upstream IdP; broker fields are required.
+	// Both are superseded by broker: true; validated above if set.
 	if cfg.Server.OAuth.IsGatingMode() && !cfg.Server.OAuth.Broker {
 		if !cfg.Server.OAuth.BrokerUpstream {
 			if cfg.Server.OAuth.ClientID != "" {
@@ -1253,7 +1243,7 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 				Str("client_id", cfg.Server.OAuth.ClientID).
 				Str("auth_url", cfg.Server.OAuth.AuthURL).
 				Str("token_url", cfg.Server.OAuth.TokenURL).
-				Msg("oauth: gating mode + broker_upstream=true — altinity-mcp is acting as the OAuth AS to MCP clients, brokering an upstream IdP. /oauth/{register,authorize,callback,token} are exposed. claude.ai/ChatGPT do DCR against this MCP, not against the upstream. Single Google redirect URI: <public_url>/oauth/callback. This is the post-#109 hybrid; see deploy/otel-google-gating/EXPERIMENT.md.")
+				Msg("oauth: deprecated mode=gating + broker_upstream=true; migrate to broker: true")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
 			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com) to be set so MCP can validate JWTs against its JWKS")
