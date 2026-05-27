@@ -229,7 +229,7 @@ config:
     enabled: false
     # -- Whitelist of cluster names accepted in /mcp/{cluster}. Must each
     # be a valid RFC 1123 DNS label (^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$).
-    # An empty list rejects every request — set this explicitly.
+    # An empty list allows any valid RFC 1123 cluster name.
     cluster_allowlist: []
     # -- Maximum number of (bearer, cluster) catalog cache entries.
     # Default 10000. Min 100.

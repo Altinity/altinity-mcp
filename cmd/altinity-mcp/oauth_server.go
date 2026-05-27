@@ -1323,8 +1323,10 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		tokenType = "Bearer"
 	}
 	bearerToken := tokenResp.IDToken
+	bearerIsAccessToken := false
 	if bearerToken == "" {
 		bearerToken = tokenResp.AccessToken
+		bearerIsAccessToken = true
 	}
 	// When we asked the upstream for an API audience (Auth0 + sidecar path),
 	// the bearer the MCP client must present — and that we forward to CH — is
@@ -1336,13 +1338,21 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	// back. Google/forward-without-audience keep the id_token path untouched.
 	if a.brokerUpstreamAudience() != "" && tokenResp.AccessToken != "" {
 		bearerToken = tokenResp.AccessToken
+		bearerIsAccessToken = true
 	}
 	var expiresIn int64
-	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+	if bearerIsAccessToken && tokenResp.AccessToken != "" {
+		if exp, ok := altinitymcp.BearerExp(tokenResp.AccessToken); ok {
+			expiresIn = int64(time.Until(exp).Seconds())
+		} else if tokenResp.ExpiresIn > 0 {
+			expiresIn = tokenResp.ExpiresIn
+		}
+	} else if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
 		expiresIn = identityClaims.ExpiresAt - time.Now().Unix()
 	} else if tokenResp.ExpiresIn > 0 {
 		expiresIn = tokenResp.ExpiresIn
-	} else {
+	}
+	if expiresIn == 0 {
 		expiresIn = int64(defaultAccessTokenTTLSeconds)
 	}
 	if expiresIn < 0 {

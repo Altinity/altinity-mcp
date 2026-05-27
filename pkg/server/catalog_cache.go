@@ -20,13 +20,18 @@ const (
 	// never displaced. Keeps the cache from being filled with attack churn.
 	negativeEvictionThreshold = 0.7
 	// maxConcurrentDiscoveries is the hardcoded ceiling on simultaneous
-	// tool-discovery round-trips to ClickHouse. Discoveries are slow (8s+
-	// for a cluster with many views); without a ceiling, a connector storm
-	// could exhaust the CH pod's connection pool. v1 decision: not
-	// configurable — re-evaluate at v2.
+	// tool-discovery round-trips to ClickHouse. A single discovery is a
+	// handful of system-table queries and completes well within the
+	// discoveryTimeout below; the ceiling exists so a connector storm
+	// (many distinct bearers missing the cache at once) cannot exhaust the
+	// CH pod's connection pool. v1 decision: not configurable — re-evaluate
+	// at v2.
 	maxConcurrentDiscoveries = 16
 	// discoveryTimeout bounds an individual DiscoverTools invocation
-	// triggered by GetOrDiscover, separate from any outer ctx timeout.
+	// triggered by GetOrDiscover, separate from any outer ctx timeout. A
+	// timeout is classified transient (not cached), so the next request
+	// retries — keep this comfortably above normal discovery latency so a
+	// busy-but-healthy cluster is not perpetually forced onto static-only.
 	discoveryTimeout = 3 * time.Second
 )
 
@@ -57,10 +62,11 @@ type catalogEntry struct {
 	ErrClass  DiscoveryErrorClass
 }
 
-// CatalogCacheMetrics is the metrics surface for the catalog cache. The
-// Prometheus registration is done by the caller; this struct only carries
-// atomic counters so the cache implementation has no Prometheus
-// dependency at this layer.
+// CatalogCacheMetrics carries the catalog cache's atomic counters. The
+// process has no Prometheus subsystem; these are surfaced as a JSON
+// snapshot on the /health endpoint (see CatalogCache.Snapshot and the
+// healthHandler in cmd/altinity-mcp). Kept as a plain struct of atomics so
+// the cache layer has no metrics-backend dependency.
 type CatalogCacheMetrics struct {
 	HitsOK            atomic.Uint64
 	HitsDenied        atomic.Uint64
@@ -70,6 +76,45 @@ type CatalogCacheMetrics struct {
 	DiscoverySaturate atomic.Uint64
 	DiscoveryAuthErr  atomic.Uint64
 	DiscoveryTransErr atomic.Uint64
+}
+
+// CatalogCacheSnapshot is a point-in-time, JSON-serialisable view of the
+// catalog cache's counters plus live size, returned by Snapshot for the
+// /health endpoint.
+type CatalogCacheSnapshot struct {
+	Entries           int    `json:"entries"`
+	DeniedEntries     int    `json:"denied_entries"`
+	Max               int    `json:"max"`
+	HitsOK            uint64 `json:"hits_ok"`
+	HitsDenied        uint64 `json:"hits_denied"`
+	Misses            uint64 `json:"misses"`
+	FullDropsOK       uint64 `json:"full_drops_ok"`
+	FullDropsDenied   uint64 `json:"full_drops_denied"`
+	DiscoverySaturate uint64 `json:"discovery_saturate"`
+	DiscoveryAuthErr  uint64 `json:"discovery_auth_err"`
+	DiscoveryTransErr uint64 `json:"discovery_transient_err"`
+}
+
+// Snapshot returns a consistent read of the cache counters and current
+// occupancy. Safe to call concurrently with cache operations.
+func (c *CatalogCache) Snapshot() CatalogCacheSnapshot {
+	c.mu.Lock()
+	entries := len(c.entries)
+	denied := len(c.deniedKeys)
+	c.mu.Unlock()
+	return CatalogCacheSnapshot{
+		Entries:           entries,
+		DeniedEntries:     denied,
+		Max:               c.max,
+		HitsOK:            c.Metrics.HitsOK.Load(),
+		HitsDenied:        c.Metrics.HitsDenied.Load(),
+		Misses:            c.Metrics.Misses.Load(),
+		FullDropsOK:       c.Metrics.FullDropsOK.Load(),
+		FullDropsDenied:   c.Metrics.FullDropsDenied.Load(),
+		DiscoverySaturate: c.Metrics.DiscoverySaturate.Load(),
+		DiscoveryAuthErr:  c.Metrics.DiscoveryAuthErr.Load(),
+		DiscoveryTransErr: c.Metrics.DiscoveryTransErr.Load(),
+	}
 }
 
 // ClientFactory creates a ClickHouse client from a context + chCfg. The

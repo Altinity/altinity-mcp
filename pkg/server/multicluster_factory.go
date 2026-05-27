@@ -19,13 +19,14 @@ import (
 // triple and exposes a single GetServer(r *http.Request) entry point
 // shaped for mcp.NewStreamableHTTPHandler's first argument.
 type MulticlusterServerFactory struct {
-	cfg        config.Config
-	parent     *ClickHouseJWEServer
-	cache      *CatalogCache
-	clientFn   ClientFactory
-	version    string
-	instrName  string
-	instrTitle string
+	cfg          config.Config
+	parent       *ClickHouseJWEServer
+	cache        *CatalogCache
+	clientFn     ClientFactory
+	dynamicRules []config.DynamicToolRule
+	version      string
+	instrName    string
+	instrTitle   string
 }
 
 // NewMulticlusterServerFactory wires up the factory. parent supplies
@@ -38,12 +39,21 @@ func NewMulticlusterServerFactory(
 	version string,
 ) *MulticlusterServerFactory {
 	f := &MulticlusterServerFactory{
-		cfg:        cfg,
-		parent:     parent,
-		cache:      cache,
-		version:    version,
-		instrName:  "Altinity ClickHouse MCP Server",
-		instrTitle: "Altinity ClickHouse MCP Server (multi-cluster)",
+		cfg:    cfg,
+		parent: parent,
+		cache:  cache,
+		// Dynamic-tool rules must come off the parent server, not cfg.
+		// RegisterTools (run inside NewClickHouseMCPServer) converts the
+		// unified `tools:` config into Config.Server.DynamicTools on the
+		// parent's own config copy; the cfg value handed to this factory is
+		// a separate copy that never saw that conversion. Reading
+		// cfg.Server.DynamicTools here would silently miss every dynamic
+		// rule declared via the unified `tools:` block (only the deprecated
+		// dynamic_tools: key, parsed straight from YAML, would survive).
+		dynamicRules: parent.Config.Server.DynamicTools,
+		version:      version,
+		instrName:    "Altinity ClickHouse MCP Server",
+		instrTitle:   "Altinity ClickHouse MCP Server (multi-cluster)",
 	}
 	f.clientFn = func(ctx context.Context, chCfg config.ClickHouseConfig) (*clickhouse.Client, error) {
 		jweToken := parent.ExtractTokenFromCtx(ctx)
@@ -77,7 +87,7 @@ func (f *MulticlusterServerFactory) GetServer(r *http.Request) *mcp.Server {
 	exp, _ := BearerExp(bearer)
 
 	tools, err := f.cache.GetOrDiscover(ctx, key, cluster, reqCfg, f.clientFn,
-		f.cfg.Server.DynamicTools, f.cfg.ClickHouse.ReadOnly, exp)
+		f.dynamicRules, f.cfg.ClickHouse.ReadOnly, exp)
 	if err != nil {
 		log.Warn().Err(err).Str("cluster", cluster).Msg("multicluster: discovery failed; static-only")
 		return f.newServer(nil)

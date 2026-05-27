@@ -364,6 +364,26 @@ func (m *mockCommand) IsSet(name string) bool {
 	return m.setFlags[name]
 }
 
+func TestBuildConfigAppliesMulticlusterDefaultsAfterFlags(t *testing.T) {
+	t.Parallel()
+	cmd := &mockCommand{
+		flags: map[string]interface{}{
+			"multicluster-enabled": true,
+		},
+		setFlags: map[string]bool{
+			"multicluster-enabled": true,
+		},
+		stringMaps: make(map[string]map[string]string),
+	}
+
+	cfg, err := buildConfig(cmd)
+	require.NoError(t, err)
+	require.True(t, cfg.Multicluster.Enabled)
+	require.Equal(t, 10000, cfg.Multicluster.CatalogCacheMax)
+	require.Equal(t, 15*time.Minute, cfg.Multicluster.CatalogTTLFallback)
+	require.Equal(t, 60*time.Second, cfg.Multicluster.CatalogNegativeTTL)
+}
+
 // TestBuildServerTLSConfig tests server TLS configuration building
 func TestBuildServerTLSConfig(t *testing.T) {
 	t.Parallel()
@@ -3512,7 +3532,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		// broker:true must not hit the gating-mode "forbids client_id" check
 		// (which applies only to mode:gating without broker_upstream/broker).
 		cfg := config.Config{
-			Server: config.ServerConfig{OAuth: brokerBase()},
+			Server:     config.ServerConfig{OAuth: brokerBase()},
 			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
 		}
 		require.NoError(t, validateOAuthRuntimeConfig(cfg))

@@ -245,6 +245,13 @@ func applyMulticlusterDefaults(mc *MulticlusterConfig) {
 	}
 }
 
+// ApplyMulticlusterDefaults fills zero-valued multicluster settings with the
+// documented defaults. Call this after config-file loading and again after
+// CLI/env overrides so env-only deployments get the same defaults.
+func ApplyMulticlusterDefaults(cfg *Config) {
+	applyMulticlusterDefaults(&cfg.Multicluster)
+}
+
 // Config is the main application configuration
 type Config struct {
 	ClickHouse   ClickHouseConfig   `json:"clickhouse" yaml:"clickhouse"`
@@ -291,7 +298,7 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 		}
 	}
 	config.RemovedKeyWarnings = removedKeyWarnings(data)
-	applyMulticlusterDefaults(&config.Multicluster)
+	ApplyMulticlusterDefaults(config)
 	return config, nil
 }
 

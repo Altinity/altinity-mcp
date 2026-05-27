@@ -686,6 +686,12 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 	}
 
+	// Surface multi-cluster catalog-cache counters (there is no Prometheus
+	// subsystem; /health is the observability surface). nil in single-cluster.
+	if a.mcCache != nil {
+		status["catalog_cache"] = a.mcCache.Snapshot()
+	}
+
 	// Test ClickHouse connection for readiness, unless credentials are per-request
 	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
 		cfg.Server.OAuth.Enabled
@@ -752,6 +758,7 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 
 	// Override with CLI flags (CLI flags take precedence over config file)
 	overrideWithCLIFlags(&cfg, cmd)
+	config.ApplyMulticlusterDefaults(&cfg)
 	if logErr := setupLogging(string(cfg.Logging.Level)); logErr != nil {
 		return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
 	}
