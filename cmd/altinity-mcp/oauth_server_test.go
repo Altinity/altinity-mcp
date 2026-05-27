@@ -750,3 +750,35 @@ func TestOAuthChallengeHeaderMulticluster(t *testing.T) {
 			"non-MC path must still resolve via resourceBaseURL (public_resource_url)")
 	})
 }
+
+// TestBrokerUpstreamAudience guards the gate that decides whether to request an
+// API `audience` from the upstream IdP (so Auth0 mints a JWT access token with
+// aud=<resource> for the ch-jwt-verify sidecar). Google must never get it.
+func TestBrokerUpstreamAudience(t *testing.T) {
+	t.Parallel()
+	mk := func(o config.OAuthConfig) *application {
+		o.Enabled = true
+		return &application{config: config.Config{Server: config.ServerConfig{OAuth: o}}}
+	}
+	const auth0 = "https://altinity.auth0.com/"
+	const google = "https://accounts.google.com"
+	const aud = "https://otel-mcp.demo.altinity.cloud/"
+
+	cases := []struct {
+		name string
+		cfg  config.OAuthConfig
+		want string
+	}{
+		{"broker+auth0+aud → request it", config.OAuthConfig{Broker: true, Issuer: auth0, Audience: aud}, aud},
+		{"broker+auth0+no aud → none", config.OAuthConfig{Broker: true, Issuer: auth0}, ""},
+		{"broker+google+aud → none (Google excluded)", config.OAuthConfig{Broker: true, Issuer: google, Audience: aud}, ""},
+		{"forward+auth0+aud → request it", config.OAuthConfig{Mode: "forward", Issuer: auth0, Audience: aud}, aud},
+		{"gating(no broker_upstream)+auth0+aud → none (not a broker)", config.OAuthConfig{Mode: "gating", Issuer: auth0, Audience: aud}, ""},
+		{"gating+broker_upstream+auth0+aud → request it", config.OAuthConfig{Mode: "gating", BrokerUpstream: true, Issuer: auth0, Audience: aud}, aud},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, mk(tc.cfg).brokerUpstreamAudience())
+		})
+	}
+}

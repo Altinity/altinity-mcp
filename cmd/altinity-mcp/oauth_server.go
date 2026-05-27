@@ -166,6 +166,33 @@ func (a *application) oauthBrokerMode() bool {
 	return cfg.Broker || cfg.IsForwardMode() || (cfg.IsGatingMode() && cfg.BrokerUpstream)
 }
 
+// brokerUpstreamAudience returns the API audience to request from the upstream
+// IdP at /authorize, or "" when none should be sent.
+//
+// Auth0 (and other RFC-8707-via-`audience` IdPs) mint a JWT *access* token with
+// `aud=<API identifier>` only when the authorize request carries an `audience`
+// param; without it they return an opaque access token plus an id_token whose
+// `aud` is the client_id. A CH-side ch-jwt-verify sidecar validating
+// `aud=<resource>` therefore can only be satisfied if we (a) request the
+// audience upstream and (b) forward the resulting access token. We key this on
+// the configured `audience` so the value byte-equals what the sidecar expects.
+//
+// Google is explicitly excluded: it ignores `audience`, never issues
+// arbitrary-aud JWT access tokens, and its CH `token_processors` path validates
+// the id_token (aud=client_id) directly. Sending `audience` to Google is at
+// best a no-op and at worst an `invalid_request`, so the Google broker path
+// (antalya, github) is left exactly as before.
+func (a *application) brokerUpstreamAudience() string {
+	cfg := a.GetCurrentConfig().Server.OAuth
+	if !a.oauthBrokerMode() {
+		return ""
+	}
+	if broker.IsGoogleIssuer(cfg.Issuer) {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Audience)
+}
+
 func (a *application) oauthJWESecret() []byte {
 	secret := strings.TrimSpace(a.GetCurrentConfig().Server.OAuth.SigningSecret)
 	return []byte(secret)
@@ -923,6 +950,13 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	upstream.Set("state", callbackState)
 	upstream.Set("code_challenge", broker.PKCEChallenge(upstreamVerifier))
 	upstream.Set("code_challenge_method", "S256")
+	// Auth0-style upstreams need an explicit `audience` to mint a JWT access
+	// token with aud=<API> (the form a ch-jwt-verify sidecar validates).
+	// No-op for Google (see brokerUpstreamAudience).
+	if aud := a.brokerUpstreamAudience(); aud != "" {
+		upstream.Set("audience", aud)
+		log.Debug().Str("upstream_audience", aud).Msg("OAuth /authorize: requesting upstream API audience for broker access token")
+	}
 	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
 
@@ -1290,6 +1324,17 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	}
 	bearerToken := tokenResp.IDToken
 	if bearerToken == "" {
+		bearerToken = tokenResp.AccessToken
+	}
+	// When we asked the upstream for an API audience (Auth0 + sidecar path),
+	// the bearer the MCP client must present — and that we forward to CH — is
+	// the *access* token: it carries aud=<API> (what the sidecar validates)
+	// whereas the id_token's aud is the client_id. The access token also
+	// carries `email` here (the upstream API is configured to include it), so
+	// the Basic base64(email:token) rewrite and the sidecar's username_claim
+	// both still resolve. Falls back to the id_token if no access token came
+	// back. Google/forward-without-audience keep the id_token path untouched.
+	if a.brokerUpstreamAudience() != "" && tokenResp.AccessToken != "" {
 		bearerToken = tokenResp.AccessToken
 	}
 	var expiresIn int64
