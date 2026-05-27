@@ -1134,6 +1134,11 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
 	}
 
+	// Deprecation: mode:forward and broker_upstream are superseded by broker:true.
+	if cfg.Server.OAuth.IsForwardMode() || cfg.Server.OAuth.BrokerUpstream {
+		log.Warn().Msg("oauth.mode=forward and oauth.broker_upstream are deprecated; use oauth.broker: true instead")
+	}
+
 	// M5: refuse to start when the operator points issuer/jwks_url at a
 	// plaintext http:// endpoint. We fetch JWKS and openid-configuration from
 	// these URLs and trust the response to validate signatures — a MitM on
@@ -1169,6 +1174,27 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return fmt.Errorf("oauth requires clickhouse protocol http (both forward and gating modes route credentials through ClickHouse's HTTP interface)")
 	}
 
+	// broker:true — new canonical broker flag. Replaces mode:forward and
+	// mode:gating+broker_upstream. CH auth (Bearer vs Basic) is auto-detected.
+	if cfg.Server.OAuth.Broker {
+		var missing []string
+		if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
+			missing = append(missing, "client_id")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.ClientSecret) == "" {
+			missing = append(missing, "client_secret")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.AuthURL) == "" {
+			missing = append(missing, "auth_url")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.TokenURL) == "" {
+			missing = append(missing, "token_url")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("oauth: broker=true requires upstream IdP fields: %s", strings.Join(missing, ", "))
+		}
+	}
+
 	// Gating-mode validation has two shapes depending on broker_upstream:
 	//
 	//   broker_upstream=false (default, #109): MCP is a pure OAuth resource
@@ -1182,7 +1208,9 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	//   The /mcp request path is unchanged from standard gating mode —
 	//   bearer is rewritten to Basic email:JWT for the ch-jwt-verify
 	//   sidecar to validate. Only the OAuth dance changes shape.
-	if cfg.Server.OAuth.IsGatingMode() {
+	//
+	// Skipped when broker:true is set — that path is validated above.
+	if cfg.Server.OAuth.IsGatingMode() && !cfg.Server.OAuth.Broker {
 		if !cfg.Server.OAuth.BrokerUpstream {
 			if cfg.Server.OAuth.ClientID != "" {
 				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_id — remove from helm values; client_id is the external AS's responsibility under #109. To act as the AS yourself, set oauth.broker_upstream=true")

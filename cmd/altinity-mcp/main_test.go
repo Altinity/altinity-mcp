@@ -3420,6 +3420,103 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		err := validateOAuthRuntimeConfig(cfg)
 		require.ErrorContains(t, err, "oauth.audience")
 	})
+
+	// broker:true — new canonical flag; replaces mode+broker_upstream.
+	brokerBase := func() config.OAuthConfig {
+		return config.OAuthConfig{
+			Enabled:       true,
+			Broker:        true,
+			SigningSecret: "test-signing-secret-32-byte-key!!",
+			Issuer:        "https://accounts.google.com",
+			Audience:      "some-google-client-id.apps.googleusercontent.com",
+			ClientID:      "some-google-client-id.apps.googleusercontent.com",
+			ClientSecret:  "GOCSPX-redacted",
+			AuthURL:       "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:      "https://oauth2.googleapis.com/token",
+		}
+	}
+
+	t.Run("broker_valid_full_config", func(t *testing.T) {
+		t.Parallel()
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: brokerBase()},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("broker_missing_client_id_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := brokerBase()
+		o.ClientID = ""
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "broker=true requires")
+		require.ErrorContains(t, err, "client_id")
+	})
+
+	t.Run("broker_missing_client_secret_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := brokerBase()
+		o.ClientSecret = ""
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "client_secret")
+	})
+
+	t.Run("broker_missing_auth_url_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := brokerBase()
+		o.AuthURL = ""
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "auth_url")
+	})
+
+	t.Run("broker_missing_token_url_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := brokerBase()
+		o.TokenURL = ""
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "token_url")
+	})
+
+	t.Run("broker_no_mode_required", func(t *testing.T) {
+		t.Parallel()
+		// broker:true works without setting mode or broker_upstream
+		o := brokerBase()
+		o.Mode = ""
+		o.BrokerUpstream = false
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("broker_allows_client_id_without_mode_gating_restriction", func(t *testing.T) {
+		t.Parallel()
+		// broker:true must not hit the gating-mode "forbids client_id" check
+		// (which applies only to mode:gating without broker_upstream/broker).
+		cfg := config.Config{
+			Server: config.ServerConfig{OAuth: brokerBase()},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
 }
 
 func TestWarnOAuthMisconfiguration(t *testing.T) {

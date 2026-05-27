@@ -156,18 +156,16 @@ func (a *application) oauthForwardMode() bool {
 }
 
 // oauthBrokerMode reports whether altinity-mcp is acting as the OAuth AS to
-// MCP clients (/authorize + /token + /callback). True for forward mode
-// always; true for gating mode iff the operator opts in via
-// oauth.broker_upstream. When true, /oauth/* routes are registered and the
-// broker-flow handlers fire. The /mcp request path still differs per mode —
-// forward forwards the upstream bearer to CH as Bearer; gating sends Basic
-// base64(email:JWT) for the ch-jwt-verify sidecar to validate.
+// MCP clients (/authorize + /token + /callback). True when:
+//   - oauth.broker: true (new canonical flag), OR
+//   - mode: forward (deprecated), OR
+//   - mode: gating + broker_upstream: true (deprecated)
+//
+// When true, /oauth/* routes are registered and the broker-flow handlers fire.
+// CH auth wire format (Bearer vs Basic) is auto-detected at runtime.
 func (a *application) oauthBrokerMode() bool {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if cfg.IsForwardMode() {
-		return true
-	}
-	return cfg.IsGatingMode() && cfg.BrokerUpstream
+	return cfg.Broker || cfg.IsForwardMode() || (cfg.IsGatingMode() && cfg.BrokerUpstream)
 }
 
 func (a *application) oauthJWESecret() []byte {

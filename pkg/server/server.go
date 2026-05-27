@@ -29,6 +29,10 @@ type ClickHouseJWEServer struct {
 	// from the verifier() getter.
 	oauthVerifier  *oauth.Verifier
 	blockedClauses map[string]bool
+	// chOAuthMethodCache stores the discovered CH auth method (Bearer vs Basic)
+	// keyed by "host:port". Populated on the first OAuth request to an endpoint;
+	// cleared on config reload so operator changes take effect without restart.
+	chOAuthMethodCache sync.Map
 }
 
 // ToolHandlerFunc is a function type for tool handlers
