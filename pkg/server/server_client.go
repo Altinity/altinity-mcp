@@ -50,10 +50,19 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	return client, nil
 }
 
-// buildConfigFromClaims builds a ClickHouse config from JWE claims
+// buildConfigFromClaims builds a ClickHouse config from JWE claims.
+// In multi-cluster mode the caller passes a base config whose Host has
+// already been template-expanded for the active cluster; we do not reach
+// for s.Config.ClickHouse so the per-request cluster routing is preserved.
 func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{}) (config.ClickHouseConfig, error) {
-	// Create a new ClickHouse config from the claims
-	chConfig := s.Config.ClickHouse // Use default as base
+	return s.buildConfigFromClaimsWithBase(s.Config.ClickHouse, claims)
+}
+
+// buildConfigFromClaimsWithBase is the explicit-base variant used by the
+// multi-cluster path. Same body as buildConfigFromClaims but takes the base
+// chCfg as a parameter so the global is never consulted on the hot path.
+func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHouseConfig, claims map[string]interface{}) (config.ClickHouseConfig, error) {
+	chConfig := base // copy
 
 	if host, ok := claims["host"].(string); ok && host != "" {
 		chConfig.Host = host
@@ -98,12 +107,16 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 	return chConfig, nil
 }
 
-// GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or OAuth tokens from context
+// GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or
+// OAuth tokens from context. When the multi-cluster router has injected a
+// per-request ClickHouseConfig (host templated for the active cluster), it
+// is used; otherwise s.Config.ClickHouse is the base.
 func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*clickhouse.Client, error) {
 	jweToken := s.ExtractTokenFromCtx(ctx)
 	oauthToken := s.ExtractOAuthTokenFromCtx(ctx)
 	oauthClaims := s.GetOAuthClaimsFromCtx(ctx)
-	return s.GetClickHouseClientWithOAuth(ctx, jweToken, oauthToken, oauthClaims)
+	chCfg := CHConfigFromContext(ctx, s.Config.ClickHouse)
+	return s.GetClickHouseClientWithOAuthForConfig(ctx, chCfg, jweToken, oauthToken, oauthClaims)
 }
 
 // GetJWEClaimsFromCtx extracts parsed JWE claims from context.
@@ -158,9 +171,8 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jw
 		}
 	}
 
-	// Fall through to OAuth. MCP is a pure forwarder for queries: the
-	// ch-jwt-verify sidecar cryptographically validates the JWT at each
-	// ClickHouse query, so MCP does not re-validate here.
+	// Fall through to OAuth. ClickHouse or its sidecar cryptographically
+	// validates the JWT at each query, so MCP does not re-validate here.
 	if oauthEnabled {
 		oauthToken = s.ExtractOAuthTokenFromRequest(r)
 		if oauthToken == "" {
@@ -188,9 +200,22 @@ func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
 	return []string{""}
 }
 
-// GetClickHouseClientWithOAuth creates a ClickHouse client, optionally forwarding OAuth headers
+// GetClickHouseClientWithOAuth creates a ClickHouse client using OAuth bearer
+// credentials when present. Uses the global s.Config.ClickHouse as the base.
+// The multi-cluster path calls GetClickHouseClientWithOAuthForConfig instead,
+// threading a per-request chCfg through so per-cluster host templating is
+// preserved.
 func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
-	// Build base config
+	return s.GetClickHouseClientWithOAuthForConfig(ctx, s.Config.ClickHouse, jweToken, oauthToken, oauthClaims)
+}
+
+// GetClickHouseClientWithOAuthForConfig is the chCfg-explicit variant of
+// GetClickHouseClientWithOAuth. The caller is responsible for supplying a
+// ClickHouseConfig whose Host has already been template-expanded for the
+// active cluster. The global s.Config.ClickHouse is not consulted on a
+// per-request hot path under this entry point — single-cluster callers
+// route here too via the no-arg shim above.
+func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.Context, chCfg config.ClickHouseConfig, jweToken string, oauthToken string, oauthClaims *OAuthClaims) (*clickhouse.Client, error) {
 	var chConfig config.ClickHouseConfig
 	var err error
 
@@ -203,64 +228,129 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuth(ctx context.Context, 
 				return nil, fmt.Errorf("failed to parse JWE token: %w", err)
 			}
 		}
-		chConfig, err = s.buildConfigFromClaims(claims)
+		chConfig, err = s.buildConfigFromClaimsWithBase(chCfg, claims)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		chConfig = s.Config.ClickHouse
+		chConfig = chCfg
 	}
 
-	// Switch on OAuth mode to pick the CH wire format. Forward and gating
-	// both apply only when an OAuth bearer is on the inbound request.
-	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
-		switch {
-		case s.Config.Server.OAuth.IsForwardMode():
-			// Forward mode: rewrite the Authorization header so ClickHouse
-			// receives `Bearer <token>` directly. Antalya's token_processors
-			// validates the bearer cryptographically.
-			oauthHeaders := oauth.BuildClickHouseHeaders(s.Config.Server.OAuth, oauthToken)
-			if len(oauthHeaders) > 0 {
-				if chConfig.HttpHeaders == nil {
-					chConfig.HttpHeaders = make(map[string]string)
-				}
-				for k, v := range oauthHeaders {
-					chConfig.HttpHeaders[k] = v
-				}
-			}
-			chConfig.Username = ""
-			chConfig.Password = ""
-		case s.Config.Server.OAuth.IsGatingMode():
-			// Gating mode: ClickHouse's <http_authentication> calls the
-			// colocated ch-jwt-verify sidecar over loopback to validate the
-			// JWT. The CH driver assembles `Authorization: Basic
-			// base64(email:JWT)` from Username/Password. The email is
-			// unverified-decoded from the JWT here; the sidecar enforces
-			// signature/iss/aud/exp/scope and the user-vs-email match.
-			email, ok := emailFromUnverifiedJWT(oauthToken)
-			if !ok {
-				return nil, fmt.Errorf("oauth gating: bearer is not a JWT with an email claim")
-			}
-			chConfig.Username = email
-			chConfig.Password = oauthToken
-			// http_authentication is HTTP-only on the CH side. Force the
-			// driver to use HTTP regardless of static config.
-			chConfig.Protocol = config.HTTPProtocol
-		}
-	}
-
-	// Merge tool-input settings from context (tool_input_settings)
+	// Merge tool-input settings before OAuth so probe configs carry them.
 	if toolSettings := ToolInputSettingsFromContext(ctx); len(toolSettings) > 0 {
 		chConfig = mergeExtraSettings(chConfig, toolSettings)
 	}
 
-	// Create client
+	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
+		return s.newClientWithOAuth(ctx, chConfig, oauthToken)
+	}
+
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
-
 	return client, nil
+}
+
+// chOAuthMethod is the wire format used to authenticate against ClickHouse.
+type chOAuthMethod int8
+
+const (
+	chOAuthMethodBearer chOAuthMethod = 1 // Authorization: Bearer <token>
+	chOAuthMethodBasic  chOAuthMethod = 2 // Authorization: Basic base64(email:token)
+)
+
+// newClientWithOAuth resolves the CH auth method for the endpoint (from cache
+// or by probing), then creates and returns a connected ClickHouse client.
+//
+// The method is auto-detected by trying Bearer first; on CH auth error it
+// falls back to Basic and caches the result so subsequent requests skip the
+// probe.
+func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg config.ClickHouseConfig, token string) (*clickhouse.Client, error) {
+	cfg := s.Config.Server.OAuth
+	endpoint := fmt.Sprintf("%s:%d", chCfg.Host, chCfg.Port)
+
+	// Cache hit — use the stored method.
+	if v, ok := s.chOAuthMethodCache.Load(endpoint); ok {
+		return newClientForOAuthMethod(ctx, chCfg, token, v.(chOAuthMethod), cfg)
+	}
+
+	// Auto-detect. Try Bearer first. NewClient pings internally, so a failed
+	// ping surfaces as an auth error here if CH rejects the token.
+	bearerCfg := oauthApplyBearer(chCfg, token, cfg)
+	if client, err := clickhouse.NewClient(ctx, bearerCfg); err == nil {
+		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBearer)
+		return client, nil // return probe client directly — no second ping
+	} else if !isChAuthError(err) {
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+	}
+
+	// Bearer got an auth error — try Basic (ch-jwt-verify sidecar path).
+	log.Debug().Str("endpoint", endpoint).Msg("oauth: Bearer rejected by CH, probing Basic")
+	email, ok := emailFromUnverifiedJWT(token)
+	if !ok {
+		return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
+	}
+	basicCfg := oauthApplyBasic(chCfg, email, token)
+	client, err := clickhouse.NewClient(ctx, basicCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+	}
+	s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBasic)
+	return client, nil
+}
+
+// newClientForOAuthMethod applies method to chCfg and creates a CH client.
+func newClientForOAuthMethod(ctx context.Context, chCfg config.ClickHouseConfig, token string, method chOAuthMethod, oauthCfg oauth.OAuthConfig) (*clickhouse.Client, error) {
+	switch method {
+	case chOAuthMethodBearer:
+		chCfg = oauthApplyBearer(chCfg, token, oauthCfg)
+	case chOAuthMethodBasic:
+		email, ok := emailFromUnverifiedJWT(token)
+		if !ok {
+			return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
+		}
+		chCfg = oauthApplyBasic(chCfg, email, token)
+	}
+	client, err := clickhouse.NewClient(ctx, chCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
+	}
+	return client, nil
+}
+
+// oauthApplyBearer returns a copy of chCfg with an Authorization: Bearer header set.
+func oauthApplyBearer(chCfg config.ClickHouseConfig, token string, oauthCfg oauth.OAuthConfig) config.ClickHouseConfig {
+	headers := oauth.BuildClickHouseHeaders(oauthCfg, token)
+	if len(headers) > 0 {
+		if chCfg.HttpHeaders == nil {
+			chCfg.HttpHeaders = make(map[string]string)
+		}
+		for k, v := range headers {
+			chCfg.HttpHeaders[k] = v
+		}
+	}
+	chCfg.Username = ""
+	chCfg.Password = ""
+	return chCfg
+}
+
+// oauthApplyBasic returns a copy of chCfg with Basic auth credentials set.
+// CH's http_authentication extension expects Basic base64(email:JWT) and
+// delegates validation to the ch-jwt-verify sidecar over loopback.
+func oauthApplyBasic(chCfg config.ClickHouseConfig, email, token string) config.ClickHouseConfig {
+	chCfg.Username = email
+	chCfg.Password = token
+	chCfg.Protocol = config.HTTPProtocol
+	return chCfg
+}
+
+// isChAuthError reports whether err is a CH authentication failure.
+// Delegates to ClassifyDiscoveryError (multicluster_identity.go) which covers
+// HTTP 401/403, CH exception codes 497/516/519, and common error strings.
+func isChAuthError(err error) bool {
+	auth, _ := ClassifyDiscoveryError(err)
+	return auth
 }
 
 // emailFromUnverifiedJWT decodes the JWT payload without verifying the
@@ -277,13 +367,13 @@ func emailFromUnverifiedJWT(token string) (string, bool) {
 	if err != nil {
 		// Some IdPs emit padded segments; try the std encoding as a fallback.
 		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
-			log.Debug().Err(err).Msg("oauth gating: failed to base64-decode JWT payload")
+			log.Debug().Err(err).Msg("oauth: failed to base64-decode JWT payload")
 			return "", false
 		}
 	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		log.Debug().Err(err).Msg("oauth gating: failed to JSON-parse JWT payload")
+		log.Debug().Err(err).Msg("oauth: failed to JSON-parse JWT payload")
 		return "", false
 	}
 	if e, ok := raw["email"].(string); ok {

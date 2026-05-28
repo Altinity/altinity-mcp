@@ -1,6 +1,7 @@
 # OAuth Troubleshooting Guide
 
-This document covers common issues encountered when deploying OAuth forward mode with ClickHouse `token_processors`, based on real-world debugging experience.
+This document covers common issues encountered when deploying OAuth with
+altinity-mcp and ClickHouse.
 
 > **claude.ai JSX artifact users:** if your connector works in the main chat
 > but not from a JSX artifact (`✗ No tools attached — proxy didn't expose this
@@ -46,15 +47,20 @@ DROP USER `user@example.com`;
 
 **Checklist:**
 
-- The server is running in `mode: forward` (token forwarding to ClickHouse is automatic in this mode)
-- The MCP client completed the OAuth flow — check MCP server logs for register, authorize, callback, and token exchange activity
+- The server has `oauth.broker: true` and the MCP client completed the OAuth flow
+- Check MCP server logs for authorize, callback, and token exchange activity
 - The MCP client is not reusing a stale token from a previous session
 
-## Forward mode does not require static ClickHouse credentials
+## OAuth broker does not require static ClickHouse credentials
 
-In forward mode, each request forwards the OAuth bearer token to ClickHouse instead of using static credentials. The MCP server health check skips the ClickHouse ping in this mode (it reports `"auth": "per_request_credentials"` in the health response).
+With `broker: true`, each request carries the OAuth bearer token to ClickHouse
+instead of static credentials. The MCP server health check skips the ClickHouse
+ping in this mode (it reports `"auth": "per_request_credentials"` in the health
+response).
 
-Any `username`/`password` in the ClickHouse config section is ignored for query execution in forward mode. If you see startup authentication errors, verify that the MCP server is not attempting a ClickHouse connection with empty or default credentials.
+Any `username`/`password` in the ClickHouse config section is ignored for query
+execution. If you see startup authentication errors, verify that the MCP server
+is not attempting a ClickHouse connection with empty or default credentials.
 
 ## `username_claim` in token_processors defaults to `sub`
 
@@ -79,13 +85,17 @@ Any `username`/`password` in the ClickHouse config section is ignored for query 
 
 **Symptom:** The MCP server logs show occasional `ClickHouse ping failed during connection` errors with `invalid token supplied` from ClickHouse, even though queries succeed for authenticated users.
 
-**Root cause:** An MCP client (e.g., Claude Desktop, Claude.ai) is retrying with a cached or stale token from a previous session. In forward mode, the MCP server does not validate tokens locally — it passes them through to ClickHouse, which rejects invalid tokens.
+**Root cause:** An MCP client (e.g., Claude Desktop, Claude.ai) is retrying with a cached or stale token from a previous session. The MCP server passes the token through to ClickHouse, which rejects invalid tokens.
 
-**Resolution:** These errors are transient and resolve once the client re-authenticates through the OAuth flow. They do not indicate a server-side configuration issue. If errors persist, ask the client to clear cached credentials for the MCP server and re-authenticate.
+**Resolution:** These errors are transient and resolve once the client re-authenticates. They do not indicate a server-side configuration issue. If errors persist, ask the client to clear cached credentials for the MCP server and re-authenticate.
 
 ## ClickHouse returns HTTP 403 with "Bearer HTTP Authorization scheme is not supported"
 
-The ClickHouse build does not support `token_processors`. Forward mode requires the Altinity Antalya build 25.8+ or a compatible ClickHouse version that supports `token_processors` and `user_directories` token authentication.
+The ClickHouse build does not support `token_processors`. altinity-mcp will
+automatically probe and fall back to Basic auth if the `ch-jwt-verify` sidecar
+is deployed next to ClickHouse. If neither Bearer nor Basic succeeds, upgrade
+to Altinity Antalya 25.8+ or deploy
+[`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper).
 
 ## Useful diagnostic queries
 

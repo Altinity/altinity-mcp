@@ -49,13 +49,11 @@ const (
 	defaultAccessTokenTTLSeconds = 60 * 60
 	// brokerModeIDTokenRefreshThresholdSeconds is the remaining-life floor
 	// below which we'll use the upstream refresh_token at /token to mint a
-	// fresh id_token before forwarding (#121). Set at 55 minutes so a
+	// fresh id_token before returning it (#121). Set at 55 minutes so a
 	// freshly-minted Google id_token (exp = iat + 1h) is never re-fetched
 	// but anything Google reused from a warm session is. Only fires when
 	// upstream_offline_access is enabled AND the upstream actually returned
-	// a refresh_token. Applies to all broker-mode deployments (forward and
-	// gating+broker_upstream alike) since the bearer is the id_token in
-	// both.
+	// a refresh_token.
 	brokerModeIDTokenRefreshThresholdSeconds = 55 * 60
 )
 
@@ -147,27 +145,39 @@ func (a *application) oauthEnabled() bool {
 	return a.GetCurrentConfig().Server.OAuth.Enabled
 }
 
-func (a *application) oauthMode() string {
-	return a.GetCurrentConfig().Server.OAuth.NormalizedMode()
-}
-
-func (a *application) oauthForwardMode() bool {
-	return a.oauthMode() == "forward"
-}
-
 // oauthBrokerMode reports whether altinity-mcp is acting as the OAuth AS to
-// MCP clients (/authorize + /token + /callback). True for forward mode
-// always; true for gating mode iff the operator opts in via
-// oauth.broker_upstream. When true, /oauth/* routes are registered and the
-// broker-flow handlers fire. The /mcp request path still differs per mode —
-// forward forwards the upstream bearer to CH as Bearer; gating sends Basic
-// base64(email:JWT) for the ch-jwt-verify sidecar to validate.
+// MCP clients (/authorize + /token + /callback). When true, /oauth/* routes
+// are registered and the broker-flow handlers fire.
+// CH auth wire format (Bearer vs Basic) is auto-detected at runtime.
 func (a *application) oauthBrokerMode() bool {
+	return a.GetCurrentConfig().Server.OAuth.Broker
+}
+
+// brokerUpstreamAudience returns the API audience to request from the upstream
+// IdP at /authorize, or "" when none should be sent.
+//
+// Auth0 (and other RFC-8707-via-`audience` IdPs) mint a JWT *access* token with
+// `aud=<API identifier>` only when the authorize request carries an `audience`
+// param; without it they return an opaque access token plus an id_token whose
+// `aud` is the client_id. A CH-side ch-jwt-verify sidecar validating
+// `aud=<resource>` therefore can only be satisfied if we (a) request the
+// audience upstream and (b) forward the resulting access token. We key this on
+// the configured `audience` so the value byte-equals what the sidecar expects.
+//
+// Google is explicitly excluded: it ignores `audience`, never issues
+// arbitrary-aud JWT access tokens, and its CH `token_processors` path validates
+// the id_token (aud=client_id) directly. Sending `audience` to Google is at
+// best a no-op and at worst an `invalid_request`, so the Google broker path
+// (antalya, github) is left exactly as before.
+func (a *application) brokerUpstreamAudience() string {
 	cfg := a.GetCurrentConfig().Server.OAuth
-	if cfg.IsForwardMode() {
-		return true
+	if !a.oauthBrokerMode() {
+		return ""
 	}
-	return cfg.IsGatingMode() && cfg.BrokerUpstream
+	if broker.IsGoogleIssuer(cfg.Issuer) {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Audience)
 }
 
 func (a *application) oauthJWESecret() []byte {
@@ -380,6 +390,36 @@ func (a *application) oauthTokenPath() string {
 func (a *application) oauthChallengeHeader(r *http.Request, errCode, errDesc, scope string) string {
 	baseURL := a.resourceBaseURL(r)
 	resourceMetadata := broker.JoinURLPath(baseURL, defaultProtectedResourceMetadataPath)
+	// Multi-cluster: prefer the per-cluster PRM path so claude.ai /
+	// ChatGPT pull cluster-correct metadata on the OAuth bootstrap. The
+	// router places the validated cluster name on ctx; if it's not there
+	// (single-cluster, or an /oauth/* path) fall through to the host-root.
+	//
+	// The fetch URL is built from the SERVING host (schemeAndHost), not from
+	// baseURL. baseURL honours public_resource_url, which is the *logical*
+	// resource identifier — advertised in the PRM `resource` field and
+	// round-tripped by the client to the token `aud`. That identifier may be
+	// a shared/foreign audience hosted elsewhere (e.g. several clusters
+	// pinned to one cluster's CH-side sidecar audience). The RFC 9728
+	// metadata document, by contrast, is served by THIS process at
+	// /mcp/{cluster}/.well-known/oauth-protected-resource on the request
+	// host, so the resource_metadata URL must point there or discovery
+	// dead-ends on a host that doesn't serve it. When public_resource_url
+	// equals the serving host (the canonical single-audience deployment)
+	// this is byte-identical to the previous behaviour.
+	if cluster, ok := altinitymcp.ClusterFromContext(r.Context()); ok {
+		metaBase := a.schemeAndHost(r)
+		// schemeAndHost can under-report https behind a TLS-terminating edge
+		// proxy when neither OpenAPI.TLS nor Server.TLS is set — and MC mode
+		// forbids OpenAPI, so there is no knob to force https there. The
+		// advertised resource identifier (baseURL) carries the real public
+		// scheme; mirror it onto the serving host so the metadata URL is
+		// fetchable over the same https the client used to reach us.
+		if strings.HasPrefix(baseURL, "https://") && strings.HasPrefix(metaBase, "http://") {
+			metaBase = "https://" + strings.TrimPrefix(metaBase, "http://")
+		}
+		resourceMetadata = broker.JoinURLPath(metaBase, "/mcp/"+cluster+defaultProtectedResourceMetadataPath)
+	}
 	if errCode == "" {
 		errCode = "invalid_token"
 	}
@@ -479,11 +519,10 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
-				// MCP is a pure forwarder: the CH-side ch-jwt-verify sidecar
-				// performs signature/iss/aud/exp/scope validation against the
-				// upstream JWKS for every query. Per-request validation here
-				// would duplicate work for opaque tokens and add a JWKS hop
-				// on the hot path; skip it and let the sidecar gate. Claims
+				// The CH-side ch-jwt-verify sidecar performs signature/iss/aud/
+				// exp/scope validation against the upstream JWKS for every query.
+				// Per-request validation here would duplicate work for opaque
+				// tokens and add a JWKS hop on the hot path. Claims
 				// stay unset on the context — ClaimsFromContext returns nil
 				// either way, so no downstream nil-deref risk.
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
@@ -611,11 +650,11 @@ func (a *application) resolveUpstreamTokenURL() (string, error) {
 }
 
 // refreshUpstreamIDToken exchanges the upstream refresh_token for a fresh
-// id_token via the upstream's RFC 6749 §6 refresh-token grant. Used in
-// forward mode at /token when the just-redeemed id_token has a short
-// remaining life (Google's silent-SSO can return a cached id_token whose
-// `exp` is near). The returned refresh_token (if any) is discarded — #115
-// keeps downstream refresh out of scope.
+// id_token via the upstream's RFC 6749 §6 refresh-token grant. Used in broker
+// mode at /token when the just-redeemed id_token has a short remaining life
+// (Google's silent-SSO can return a cached id_token whose `exp` is near). The
+// returned refresh_token (if any) is discarded — #115 keeps downstream refresh
+// out of scope.
 //
 // Returns the fresh id_token plus its parsed identity claims. On any
 // failure the caller should fall back to the original (near-expired)
@@ -659,8 +698,8 @@ func (a *application) refreshUpstreamIDToken(refreshToken string) (string, *alti
 	}
 	if parsed.IDToken == "" {
 		// Some IdPs only return a new access_token on refresh, no id_token.
-		// We need id_token specifically (it's what we forward as the bearer
-		// in forward mode), so treat absence as failure and fall back.
+		// We need id_token specifically for broker clients, so treat absence
+		// as failure and fall back.
 		return "", nil, fmt.Errorf("upstream returned no id_token")
 	}
 	claims, err := a.mcpServer.ValidateUpstreamIdentityToken(parsed.IDToken, cfg.Server.OAuth.ClientID)
@@ -678,20 +717,11 @@ func (a *application) handleOAuthProtectedResource(w http.ResponseWriter, r *htt
 	cfg := a.GetCurrentConfig().Server.OAuth
 	baseURL := a.resourceBaseURL(r)
 	// authorization_servers advertises where the MCP client should go to get
-	// a token. Three shapes:
-	//   - Pure gating (#109, no broker): MCP is a pure resource server and
-	//     the external AS (configured via `oauth.issuer`) is responsible for
-	//     DCR / authorize / token. Advertise the upstream issuer byte-equal
-	//     to what tokens carry in their `iss` claim.
-	//   - Forward mode: MCP fronts the upstream IdP and is itself the AS to
-	//     MCP clients. Advertise our own auth-server base URL.
-	//   - Gating + broker_upstream: same as forward mode from the
-	//     MCP-client's perspective — MCP exposes /oauth/{register,authorize,
-	//     callback,token} and brokers the upstream IdP behind the scenes.
-	//     Advertise our own auth-server base URL, NOT the upstream issuer.
-	//     If we advertised the upstream issuer here, claude.ai/ChatGPT would
-	//     try to DCR against it directly (which most upstreams reject) and
-	//     never discover our broker endpoints.
+	// a token:
+	//   - broker:false: MCP is a pure resource server and the external AS
+	//     (configured via oauth.issuer) is responsible for authorization.
+	//   - broker:true: MCP exposes /oauth/{register,authorize,callback,token}
+	//     and brokers the upstream IdP behind the scenes.
 	var authorizationServers []string
 	if a.oauthBrokerMode() {
 		authorizationServers = []string{strings.TrimRight(a.oauthAuthorizationServerBaseURL(r), "/")}
@@ -729,7 +759,7 @@ func handleOAuthRegisterRemoved(w http.ResponseWriter, _ *http.Request) {
 
 // oauthASMetadata returns the field set shared by RFC 8414 (oauth-authorization-server)
 // and OIDC Discovery (openid-configuration). Both endpoints serve the same
-// AS-side advertisement; OIDC adds two extra fields under gating mode (see
+// AS-side advertisement; OIDC adds two extra fields when broker=false (see
 // handleOAuthOpenIDConfiguration).
 //
 // `issuer` is published without a trailing slash to match RFC 8414 §2
@@ -767,7 +797,7 @@ func (a *application) handleOAuthOpenIDConfiguration(w http.ResponseWriter, r *h
 		return
 	}
 	resp := a.oauthASMetadata(r)
-	if !a.oauthForwardMode() {
+	if !a.oauthBrokerMode() {
 		resp["subject_types_supported"] = []string{"public"}
 		resp["id_token_signing_alg_values_supported"] = []string{"HS256"}
 	}
@@ -897,6 +927,13 @@ func (a *application) handleOAuthAuthorize(w http.ResponseWriter, r *http.Reques
 	upstream.Set("state", callbackState)
 	upstream.Set("code_challenge", broker.PKCEChallenge(upstreamVerifier))
 	upstream.Set("code_challenge_method", "S256")
+	// Auth0-style upstreams need an explicit `audience` to mint a JWT access
+	// token with aud=<API> (the form a ch-jwt-verify sidecar validates).
+	// No-op for Google (see brokerUpstreamAudience).
+	if aud := a.brokerUpstreamAudience(); aud != "" {
+		upstream.Set("audience", aud)
+		log.Debug().Str("upstream_audience", aud).Msg("OAuth /authorize: requesting upstream API audience for broker access token")
+	}
 	http.Redirect(w, r, authURL+"?"+upstream.Encode(), http.StatusFound)
 }
 
@@ -944,7 +981,7 @@ func (a *application) handleOAuthCallback(w http.ResponseWriter, r *http.Request
 
 	log.Info().
 		Str("client_id", truncateForLog(pending.ClientID, 80)).
-		Bool("forward_mode", a.oauthForwardMode()).
+		Bool("broker", a.oauthBrokerMode()).
 		Msg("OAuth /callback wrapped upstream auth code in downstream JWE; awaiting /token redemption")
 
 	redirect, err := url.Parse(pending.RedirectURI)
@@ -978,7 +1015,7 @@ func (a *application) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	grantType := r.Form.Get("grant_type")
 	log.Info().
 		Str("grant_type", grantType).
-		Bool("forward_mode", a.oauthForwardMode()).
+		Bool("broker", a.oauthBrokerMode()).
 		Msg("OAuth /oauth/token request received")
 	switch grantType {
 	case "authorization_code":
@@ -1191,7 +1228,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	log.Info().
 		Bool("has_access_token", tokenResp.AccessToken != "").
 		Bool("has_id_token", tokenResp.IDToken != "").
-		Bool("forward_mode", a.oauthForwardMode()).
+		Bool("broker", a.oauthBrokerMode()).
 		Str("scope", tokenResp.Scope).
 		Int64("expires_in", tokenResp.ExpiresIn).
 		Str("client_id", truncateForLog(clientID, 80)).
@@ -1201,7 +1238,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 	// client. Claims are NOT bound into the downstream token (audience
 	// binding deferred per #115 § Non-goals); the validation has three
 	// jobs: fail-fast on a malformed upstream response with a proper 502,
-	// confirm the upstream id_token signature/audience for forward mode,
+	// confirm the upstream id_token signature/audience for broker mode,
 	// and surface the id_token `exp` so we report an accurate `expires_in`
 	// to the MCP client below (used at the "expiresIn = identityClaims..."
 	// line further down).
@@ -1221,14 +1258,9 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	// #121: whenever we're in broker mode the bearer we return is the
-	// upstream id_token itself (`bearerToken := tokenResp.IDToken` above).
-	// Google's silent-SSO can return a cached id_token whose `exp` is set
-	// from the original mint time, not now — sometimes leaving only minutes
-	// of remaining life. Forward mode forwards that bearer to ClickHouse;
-	// gating-with-broker_upstream returns it as the session bearer the MCP
-	// client uses for /mcp. Both modes are affected — gate on broker mode,
-	// not forward mode.
+	// #121: in broker mode Google's silent-SSO can return a cached id_token
+	// whose `exp` is set from the original mint time, not now — sometimes
+	// leaving only minutes of remaining life.
 	//
 	// If we have a refresh_token and the id_token is below the freshness
 	// threshold, exchange it for a fresh id_token. Soft-fail: keep the
@@ -1241,7 +1273,7 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 			if refreshErr != nil {
 				log.Warn().Err(refreshErr).
 					Int64("remaining_seconds", remaining).
-					Msg("OAuth /token: id_token refresh failed; forwarding original near-expired token")
+					Msg("OAuth /token: id_token refresh failed; returning original near-expired token")
 			} else {
 				tokenResp.IDToken = freshIDToken
 				identityClaims = freshClaims
@@ -1263,15 +1295,36 @@ func (a *application) handleOAuthTokenAuthCode(w http.ResponseWriter, r *http.Re
 		tokenType = "Bearer"
 	}
 	bearerToken := tokenResp.IDToken
+	bearerIsAccessToken := false
 	if bearerToken == "" {
 		bearerToken = tokenResp.AccessToken
+		bearerIsAccessToken = true
+	}
+	// When we asked the upstream for an API audience (Auth0 + sidecar path),
+	// the bearer the MCP client must present — and that we forward to CH — is
+	// the *access* token: it carries aud=<API> (what the sidecar validates)
+	// whereas the id_token's aud is the client_id. The access token also
+	// carries `email` here (the upstream API is configured to include it), so
+	// the Basic base64(email:token) rewrite and the sidecar's username_claim
+	// both still resolve. Falls back to the id_token if no access token came
+	// back. Google broker deployments keep the id_token path untouched.
+	if a.brokerUpstreamAudience() != "" && tokenResp.AccessToken != "" {
+		bearerToken = tokenResp.AccessToken
+		bearerIsAccessToken = true
 	}
 	var expiresIn int64
-	if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
+	if bearerIsAccessToken && tokenResp.AccessToken != "" {
+		if exp, ok := altinitymcp.BearerExp(tokenResp.AccessToken); ok {
+			expiresIn = int64(time.Until(exp).Seconds())
+		} else if tokenResp.ExpiresIn > 0 {
+			expiresIn = tokenResp.ExpiresIn
+		}
+	} else if tokenResp.IDToken != "" && identityClaims != nil && identityClaims.ExpiresAt > 0 {
 		expiresIn = identityClaims.ExpiresAt - time.Now().Unix()
 	} else if tokenResp.ExpiresIn > 0 {
 		expiresIn = tokenResp.ExpiresIn
-	} else {
+	}
+	if expiresIn == 0 {
 		expiresIn = int64(defaultAccessTokenTTLSeconds)
 	}
 	if expiresIn < 0 {
@@ -1300,13 +1353,12 @@ func truncateForLog(value string, max int) string {
 
 func (a *application) registerOAuthHTTPRoutes(mux *http.ServeMux) {
 	// RFC 9728 protected-resource metadata is the only OAuth endpoint MCP
-	// itself owns under pure gating mode (#109): MCP is a pure resource
-	// server and points clients at the upstream IdP for everything else.
-	// Under forward mode — and under gating mode with `broker_upstream=true`
-	// — MCP also fronts the upstream IdP as a proxying AS, so
-	// /oauth/register, /authorize, /callback, /token, and the AS-discovery
-	// metadata endpoints stay registered on that path. The decision is
-	// centralised in oauthBrokerMode().
+	// itself owns when broker=false: MCP is a pure resource server and points
+	// clients at the upstream IdP for everything else. When broker=true, MCP
+	// also fronts the upstream IdP as a proxying AS, so /oauth/register,
+	// /authorize, /callback, /token, and the AS-discovery metadata endpoints
+	// stay registered on that path. The decision is centralised in
+	// oauthBrokerMode().
 	mux.HandleFunc(defaultProtectedResourceMetadataPath, a.handleOAuthProtectedResource)
 
 	if !a.oauthBrokerMode() {

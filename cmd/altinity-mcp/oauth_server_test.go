@@ -39,21 +39,19 @@ func TestOAuthMCPAuthInjector(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:             true,
-					Mode:                "gating",
 					Issuer:              "https://accounts.example.com",
 					PublicAuthServerURL: "https://mcp.example.com",
 					Audience:            "https://mcp.example.com",
-					SigningSecret:       "test-gating-secret-32-byte-key!!",
+					SigningSecret:       "test-signing-secret-32-byte-key!!",
 				},
 			},
 		},
 		mcpServer: altinitymcp.NewClickHouseMCPServer(config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "jwt-secret"}, OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "gating",
 			Issuer:              "https://accounts.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			Audience:            "https://mcp.example.com",
-			SigningSecret:       "test-gating-secret-32-byte-key!!",
+			SigningSecret:       "test-signing-secret-32-byte-key!!",
 		}}}, "test"),
 	}
 
@@ -108,7 +106,6 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		},
@@ -116,7 +113,6 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		}, "test"),
@@ -140,7 +136,7 @@ func TestOAuthMCPAuthInjectorForwardModePassesOpaqueBearerToken(t *testing.T) {
 }
 
 // TestOAuthMCPAuthInjectorForwardModeValidatesJWT is the integration check
-// for the C-1 fix: forward mode used to skip ValidateOAuthToken entirely,
+// for the C-1 fix: OAuth used to skip ValidateOAuthToken entirely,
 // so any string in `Authorization: Bearer …` reached the inner handler
 // and was forwarded to ClickHouse. After C-1 the auth layer validates JWT
 // bearers when Issuer/JWKSURL is configured and rejects bad ones at 401.
@@ -162,7 +158,7 @@ func exchangeOAuthBrowserCode(t *testing.T, app *application, clientID, code, re
 }
 
 // TestOAuthForwardModeTokenResourceMismatch pins the RFC 8707 §2.2 enforcement
-// in forward mode: a /token (auth-code grant) request whose `resource` differs
+// in OAuth: a /token (auth-code grant) request whose `resource` differs
 // from the one already pinned at /authorize must be rejected with
 // invalid_target, regardless of which mode we're running in.
 func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
@@ -170,7 +166,7 @@ func generateOAuthTokenForApp(claims map[string]interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	hashedSecret := jwe_auth.HashSHA256([]byte("test-gating-secret-32-byte-key!!"))
+	hashedSecret := jwe_auth.HashSHA256([]byte("test-signing-secret-32-byte-key!!"))
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: hashedSecret}, (&jose.SignerOptions{}).WithType("JWT"))
 	if err != nil {
 		return "", err
@@ -213,9 +209,6 @@ func newJWEStateTestApp(secret string) *application {
 	return &application{config: cfg}
 }
 
-// newGatingModeTestApp creates an application configured for gating mode OAuth.
-// doGatingAuthCodeFlow runs the full authorize→callback→token exchange and
-// returns the parsed token response.
 func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken string) *httptest.ResponseRecorder {
 	t.Helper()
 	form := url.Values{}
@@ -230,9 +223,6 @@ func exchangeRefreshToken(t *testing.T, app *application, clientID, refreshToken
 	return rr
 }
 
-// newForwardModeRefreshTestApp configures a forward-mode app with
-// UpstreamOfflineAccess enabled, so the auth-code response carries a JWE
-// refresh_token wrapping the upstream IdP's refresh token.
 func TestNormalizedPath(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -633,7 +623,6 @@ func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-f1-jsonerr-32bytes!!!!",
@@ -683,4 +672,99 @@ func TestOAuthAuthorizeErrorsAreJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 		require.Equal(t, "invalid_request", body["error"])
 	})
+}
+
+// TestOAuthChallengeHeaderMulticluster pins the multi-cluster WWW-Authenticate
+// resource_metadata URL to the SERVING host with the public https scheme, even
+// when public_resource_url advertises a foreign audience hosted elsewhere
+// (the shared-sidecar-audience deployment shape). Regression guard for the
+// cross-host discovery dead-end found in #134 e2e: the metadata URL must point
+// where THIS process serves the per-cluster PRM, not at the audience's host.
+func TestOAuthChallengeHeaderMulticluster(t *testing.T) {
+	t.Parallel()
+
+	// public_resource_url is a FOREIGN host (the cluster's CH-side sidecar
+	// audience); the server itself is reached at multi-mcp.example.com.
+	app := &application{
+		config: config.Config{
+			Server: config.ServerConfig{
+				OAuth: config.OAuthConfig{
+					Enabled:           true,
+					Issuer:            "https://accounts.example.com",
+					Audience:          "https://otel-mcp.example.com/",
+					PublicResourceURL: "https://otel-mcp.example.com/",
+				},
+			},
+		},
+	}
+
+	const wantPath = "/mcp/otel/.well-known/oauth-protected-resource"
+
+	extract := func(challenge string) string {
+		for _, p := range strings.Split(challenge, ",") {
+			p = strings.TrimSpace(p)
+			if strings.HasPrefix(p, "resource_metadata=") {
+				v := strings.TrimPrefix(p, "resource_metadata=")
+				return strings.Trim(v, `"`)
+			}
+		}
+		return ""
+	}
+
+	t.Run("https request keeps serving host, not foreign audience host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://multi-mcp.example.com/mcp/otel", nil)
+		req = req.WithContext(altinitymcp.WithCluster(req.Context(), "otel"))
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://multi-mcp.example.com"+wantPath, got,
+			"resource_metadata must point at the serving host where the per-cluster PRM is actually served")
+		require.NotContains(t, got, "otel-mcp.example.com",
+			"resource_metadata must not inherit public_resource_url's (foreign audience) host")
+	})
+
+	t.Run("scheme mirrored to https behind TLS-terminating proxy", func(t *testing.T) {
+		// r.TLS nil (plain HTTP to the pod) + OpenAPI/Server TLS off — the
+		// MC-forbidden-OpenAPI case where schemeAndHost would emit http://.
+		req := httptest.NewRequest(http.MethodPost, "http://multi-mcp.example.com/mcp/otel", nil)
+		req = req.WithContext(altinitymcp.WithCluster(req.Context(), "otel"))
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://multi-mcp.example.com"+wantPath, got,
+			"public https scheme (from the advertised resource) must be mirrored onto the serving host")
+	})
+
+	t.Run("single-cluster (no cluster on ctx) unchanged", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "https://otel-mcp.example.com/", nil)
+		got := extract(app.oauthChallengeHeader(req, "", "", ""))
+		require.Equal(t, "https://otel-mcp.example.com/.well-known/oauth-protected-resource", got,
+			"non-MC path must still resolve via resourceBaseURL (public_resource_url)")
+	})
+}
+
+// TestBrokerAudience guards the gate that decides whether to request an
+// API `audience` from the upstream IdP (so Auth0 mints a JWT access token with
+// aud=<resource> for the ch-jwt-verify sidecar). Google must never get it.
+func TestBrokerAudience(t *testing.T) {
+	t.Parallel()
+	mk := func(o config.OAuthConfig) *application {
+		o.Enabled = true
+		return &application{config: config.Config{Server: config.ServerConfig{OAuth: o}}}
+	}
+	const auth0 = "https://altinity.auth0.com/"
+	const google = "https://accounts.google.com"
+	const aud = "https://otel-mcp.demo.altinity.cloud/"
+
+	cases := []struct {
+		name string
+		cfg  config.OAuthConfig
+		want string
+	}{
+		{"broker+auth0+aud → request it", config.OAuthConfig{Broker: true, Issuer: auth0, Audience: aud}, aud},
+		{"broker+auth0+no aud → none", config.OAuthConfig{Broker: true, Issuer: auth0}, ""},
+		{"broker+google+aud → none (Google excluded)", config.OAuthConfig{Broker: true, Issuer: google, Audience: aud}, ""},
+		{"resource-server+auth0+aud → none", config.OAuthConfig{Issuer: auth0, Audience: aud}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, mk(tc.cfg).brokerUpstreamAudience())
+		})
+	}
 }

@@ -152,11 +152,11 @@ func TestOpenAPIHandlers(t *testing.T) {
 
 	t.Run("combined_auth_oauth_only_via_openapi", func(t *testing.T) {
 		t.Parallel()
-		// Gating-mode OAuth + JWE both enabled: with a bearer-only request,
-		// MCP forwards the bearer via Basic email:JWT to ClickHouse, which
-		// rejects unknown users when no sidecar is configured. MCP itself
-		// is a pure forwarder, so the request reaches the CH layer (non-401).
-		const gatingSecret = "test-gating-secret-32-byte-key!!"
+		// OAuth + JWE both enabled: with a bearer-only request, MCP presents
+		// the bearer via Basic email:JWT to ClickHouse, which rejects unknown
+		// users when no sidecar is configured. The request should reach the
+		// CH layer (non-401).
+		const signingSecret = "test-signing-secret-32-byte-key!!"
 		srv := NewClickHouseMCPServer(config.Config{
 			ClickHouse: *chConfig,
 			Server: config.ServerConfig{
@@ -167,13 +167,12 @@ func TestOpenAPIHandlers(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled:       true,
-					Mode:          "gating",
-					SigningSecret: gatingSecret,
+					SigningSecret: signingSecret,
 				},
 			},
 		}, "test")
 
-		oauthToken := mintSelfIssuedToken(t, gatingSecret, map[string]interface{}{
+		oauthToken := mintSelfIssuedToken(t, signingSecret, map[string]interface{}{
 			"sub":   "user123",
 			"email": "user123@example.com",
 			"exp":   time.Now().Add(time.Hour).Unix(),
@@ -432,7 +431,6 @@ func TestOpenAPI_SchemaIncludesCombinedAuthPaths(t *testing.T) {
 				},
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		},

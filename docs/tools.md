@@ -262,7 +262,7 @@ The server accepts this form but logs a deprecation warning at startup. Prefer `
 
 ## Dynamic discovery
 
-Discovery is **lazy** — it runs on the first authenticated tool call, not at startup. This matters for OAuth forward mode, where no ClickHouse credentials exist until a user request arrives.
+Discovery is **lazy** — it runs on the first authenticated tool call, not at startup. This matters for OAuth, where ClickHouse credentials can be derived from the user request.
 
 After a successful discovery pass, the server emits `notifications/tools/list_changed` so compatible MCP clients refresh their tool list.
 
@@ -275,13 +275,13 @@ If discovery fails (e.g. credential error, network issue), static tools remain a
 
 ### Credentials used for discovery
 
-| Auth mode | Credentials used |
-|-----------|------------------|
+| Auth | Credentials used |
+|------|------------------|
 | JWE | The per-request JWE token from the triggering call. |
-| OAuth forward | The forwarded Bearer token from the triggering call. |
+| OAuth | The Bearer token from the triggering call. |
 | Plain / no auth | Static `clickhouse.username` / `clickhouse.password` from config, if set. |
 
-Static credentials are no longer **required** for discovery in JWE or OAuth-forward setups — whichever token arrives with the first authenticated call is used to probe `system.tables`.
+Static credentials are no longer **required** for discovery in JWE or OAuth setups — whichever token arrives with the first authenticated call is used to probe `system.tables`.
 
 ---
 
@@ -325,14 +325,30 @@ Examples:
 
 ## MCP safety hints
 
-| Tool kind | `readOnlyHint` | `destructiveHint` |
-|-----------|----------------|-------------------|
-| `execute_query` | `true` | `false` |
-| Dynamic read (view) | `true` | `false` |
-| `write_query` | `false` | `true` |
-| Dynamic write (`insert`) | `false` | `false` |
+Altinity MCP sets MCP tool annotations (the OpenAI Apps SDK tool-safety hints) so
+compatible clients can gauge each tool's risk and skip unnecessary confirmation
+prompts:
 
-These hints follow the OpenAI Apps SDK tool-annotation guidance and reduce unnecessary confirmation prompts in compatible clients.
+- **`readOnlyHint`** — `true` for tools that only read, retrieve, or compute and
+  never create, update, delete, or send data outside the client.
+- **`destructiveHint`** — `true` for tools that can delete, overwrite, or
+  otherwise cause irreversible side effects. Only meaningful when
+  `readOnlyHint=false`.
+- **`openWorldHint`** — `true` for tools that write to arbitrary/unbounded
+  external targets (URLs, files, etc.); `false` for bounded writes to known
+  resources. Altinity MCP only ever touches ClickHouse, so this is `false` by
+  default. Only meaningful when `readOnlyHint=false`.
+
+| Tool kind | `readOnlyHint` | `destructiveHint` | `openWorldHint` |
+|-----------|----------------|-------------------|-----------------|
+| `execute_query` | `true` | `false` | `false` |
+| Dynamic read (view) | `true` | `false` | `false` |
+| `write_query` | `false` | `true` | `false` |
+| Dynamic write (`insert`) | `false` | `false` | `false` |
+
+Any of these can be overridden per dynamic tool via the view/table `COMMENT`
+JSON `annotations` object (see [Tool metadata via `COMMENT`](#tool-metadata-via-comment)) —
+e.g. a view that fans out to an external API can set `openWorldHint: true`.
 
 References:
 
@@ -340,6 +356,7 @@ References:
 - [Define tools](https://developers.openai.com/apps-sdk/plan/tools)
 - [Build your MCP server](https://developers.openai.com/apps-sdk/build/mcp-server)
 - [MCP concepts / server docs](https://developers.openai.com/apps-sdk/concepts/mcp-server)
+- [MCP `ToolAnnotations` schema](https://modelcontextprotocol.io/specification/2025-06-18/schema#toolannotations)
 
 ---
 

@@ -28,7 +28,7 @@ import (
 //  1. A lightweight mock OIDC provider (in-process Go HTTP server bound to 127.0.0.1)
 //  2. Altinity Antalya ClickHouse with token_processors for JWT auth, run as a host
 //     subprocess via embedded-clickhouse + an extracted Antalya binary
-//  3. MCP server forwarding Bearer tokens to ClickHouse
+//  3. MCP server presenting Bearer tokens to ClickHouse
 //
 // On Linux the Antalya binary is auto-extracted from the published Docker
 // image on first run. On macOS/other hosts there is no published binary,
@@ -76,7 +76,6 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")
@@ -164,7 +163,6 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			Server: config.ServerConfig{
 				OAuth: config.OAuthConfig{
 					Enabled: true,
-					Mode:    "forward",
 				},
 			},
 		}, "test-e2e")
@@ -316,7 +314,7 @@ func setupEmbeddedAntalyaWithOIDC(t *testing.T, oidcDiscoveryURL string) config.
 // token_processors parser requires (issuer + auth/token/jwks/userinfo/
 // introspection endpoints + response_types + subject_types + id_token_signing
 // algs). The shorter doc returned by newTestOAuthProvider is enough for
-// forward-mode bearer-passthrough tests that never look at it — Antalya
+// OAuth bearer-passthrough tests that never look at it — Antalya
 // rejects it with "Cannot extract userinfo_endpoint or introspection_endpoint".
 //
 // Uses an explicit net.Listen + http.Server.Serve loop instead of

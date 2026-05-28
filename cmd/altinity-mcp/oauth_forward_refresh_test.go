@@ -22,14 +22,13 @@ import (
 	"github.com/altinity/go-mcp-oauth-sdk/broker"
 )
 
-// Tests for issue #121: forward-mode id_token refresh.
+// Tests for issue #121: broker id_token refresh.
 //
-// In forward mode the bearer the MCP client receives is the upstream
-// id_token itself. Google's silent-SSO can return a cached id_token whose
-// `exp` is set from the original mint time, leaving the MCP client with
-// only minutes of session even though the access_token says 1h. The fix
-// uses the upstream refresh_token at /token to mint a fresh id_token
-// before forwarding.
+// In broker mode the bearer the MCP client receives is the upstream id_token
+// itself. Google's silent-SSO can return a cached id_token whose `exp` is set
+// from the original mint time, leaving the MCP client with only minutes of
+// session even though the access_token says 1h. The fix uses the upstream
+// refresh_token at /token to mint a fresh id_token before returning the bearer.
 
 // --- /authorize: access_type=offline added when upstream_offline_access ---
 
@@ -56,7 +55,7 @@ func TestOAuthAuthorize_OfflineAccessParams(t *testing.T) {
 			t.Parallel()
 			cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:               true,
-				Mode:                  "forward",
+				Broker:                true,
 				Issuer:                tc.issuer,
 				AuthURL:               "https://idp.example.com/authorize",
 				TokenURL:              "https://idp.example.com/token",
@@ -236,7 +235,7 @@ func runTokenExchange(t *testing.T, app *application, cimdURL, redirectURI strin
 	return rr
 }
 
-func buildForwardModeApp(t *testing.T, upstream *refreshProbeUpstream, cimdURL, redirectURI string) *application {
+func buildBrokerApp(t *testing.T, upstream *refreshProbeUpstream, cimdURL, redirectURI string) *application {
 	t.Helper()
 	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -245,7 +244,7 @@ func buildForwardModeApp(t *testing.T, upstream *refreshProbeUpstream, cimdURL, 
 	t.Cleanup(cimdServer.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 		Enabled:               true,
-		Mode:                  "forward",
+		Broker:                true,
 		Issuer:                upstream.server.URL,
 		JWKSURL:               upstream.server.URL + "/jwks",
 		AuthURL:               upstream.server.URL + "/authorize",
@@ -269,7 +268,7 @@ func TestOAuthToken_RefreshesNearExpiredIDToken(t *testing.T) {
 	nearExp := time.Now().Add(2 * time.Minute)
 	freshExp := time.Now().Add(60 * time.Minute)
 	upstream := newRefreshProbeUpstream(t, nearExp, freshExp, "alice@example.com")
-	app := buildForwardModeApp(t, upstream, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
+	app := buildBrokerApp(t, upstream, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
 
 	rr := runTokenExchange(t, app, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
 	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
@@ -291,7 +290,7 @@ func TestOAuthToken_SkipsRefreshWhenIDTokenFresh(t *testing.T) {
 	nearExp := time.Now().Add(57 * time.Minute)
 	freshExp := time.Now().Add(60 * time.Minute)
 	upstream := newRefreshProbeUpstream(t, nearExp, freshExp, "bob@example.com")
-	app := buildForwardModeApp(t, upstream, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
+	app := buildBrokerApp(t, upstream, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
 
 	rr := runTokenExchange(t, app, "https://demo.example.com/cimd.json", "https://demo.example.com/cb")
 	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
@@ -343,7 +342,7 @@ func TestOAuthToken_RefreshFailureSoftFallsBack(t *testing.T) {
 	}))
 	t.Cleanup(cimdServer.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-		Enabled: true, Mode: "forward", Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
+		Enabled: true, Broker: true, Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
 		AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token",
 		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
 		SigningSecret: "regression-softfail-32bytes!!!!!", UpstreamOfflineAccess: true,
@@ -358,11 +357,9 @@ func TestOAuthToken_RefreshFailureSoftFallsBack(t *testing.T) {
 	require.NotEmpty(t, body["access_token"], "must still hand back the original id_token as bearer")
 }
 
-// Gating-with-broker_upstream deployments (github-mcp, otel-google-gating-mcp)
-// also return the upstream id_token as the bearer, so the same refresh logic
-// must apply. Guards against regression to the original forward-mode-only
-// gate which left gating+broker silently broken.
-func TestOAuthToken_RefreshesNearExpiredIDToken_GatingBrokerUpstream(t *testing.T) {
+// Broker deployments return the upstream id_token as the bearer, so the refresh
+// logic must apply.
+func TestOAuthToken_RefreshesNearExpiredIDToken_Broker(t *testing.T) {
 	t.Parallel()
 	nearExp := time.Now().Add(2 * time.Minute)
 	freshExp := time.Now().Add(60 * time.Minute)
@@ -375,17 +372,16 @@ func TestOAuthToken_RefreshesNearExpiredIDToken_GatingBrokerUpstream(t *testing.
 	t.Cleanup(cimdServer.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 		Enabled:               true,
-		Mode:                  "gating",
-		BrokerUpstream:        true,
 		Issuer:                upstream.server.URL,
+		Broker:                true,
 		JWKSURL:               upstream.server.URL + "/jwks",
 		AuthURL:               upstream.server.URL + "/authorize",
 		TokenURL:              upstream.server.URL + "/token",
 		ClientID:              "broker",
 		ClientSecret:          "s",
-		Audience:              "broker", // matches client_id under broker_upstream
+		Audience:              "broker",
 		PublicAuthServerURL:   "https://mcp.example.com",
-		SigningSecret:         "regression-refresh-gating-32b!!!!",
+		SigningSecret:         "regression-refresh-broker-32b!!!!",
 		UpstreamOfflineAccess: true,
 	}}}
 	app := &application{
@@ -397,13 +393,13 @@ func TestOAuthToken_RefreshesNearExpiredIDToken_GatingBrokerUpstream(t *testing.
 	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
 	require.Equal(t, int32(1), atomic.LoadInt32(&upstream.codeExchangeCt))
 	require.Equal(t, int32(1), atomic.LoadInt32(&upstream.refreshCt),
-		"gating+broker_upstream MUST trigger refresh on near-expired id_token (#121)")
+		"broker mode MUST trigger refresh on near-expired id_token (#121)")
 }
 
 func TestOAuthToken_NoRefreshWhenUpstreamReturnsNoRefreshToken(t *testing.T) {
 	t.Parallel()
 	// upstream returns near-expired id_token but no refresh_token. We must
-	// NOT attempt refresh (would 400 or call with empty token), just forward.
+	// NOT attempt refresh (would 400 or call with empty token), just return it.
 	nearExp := time.Now().Add(3 * time.Minute)
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -446,7 +442,7 @@ func TestOAuthToken_NoRefreshWhenUpstreamReturnsNoRefreshToken(t *testing.T) {
 	}))
 	t.Cleanup(cimdServer.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-		Enabled: true, Mode: "forward", Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
+		Enabled: true, Broker: true, Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
 		AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token",
 		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
 		SigningSecret: "regression-no-rt-32bytes!!!!!!!!", UpstreamOfflineAccess: true,
@@ -464,7 +460,7 @@ func TestOAuthToken_RefreshFallsBackWhenUpstreamReturnsNoIDToken(t *testing.T) {
 	t.Parallel()
 	// Initial code exchange returns near-expired id_token + refresh_token.
 	// Refresh-token grant returns 200 OK with only an access_token (no id_token).
-	// Must soft-fail: forward original near-expired id_token, /token returns 200.
+	// Must soft-fail: return original near-expired id_token, /token returns 200.
 	nearExp := time.Now().Add(3 * time.Minute)
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -507,7 +503,7 @@ func TestOAuthToken_RefreshFallsBackWhenUpstreamReturnsNoIDToken(t *testing.T) {
 	}))
 	t.Cleanup(cimdServer.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-		Enabled: true, Mode: "forward", Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
+		Enabled: true, Broker: true, Issuer: srv.URL, JWKSURL: srv.URL + "/jwks",
 		AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token",
 		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
 		SigningSecret: "regression-no-idtok-32bytes!!!!!", UpstreamOfflineAccess: true,
@@ -518,7 +514,7 @@ func TestOAuthToken_RefreshFallsBackWhenUpstreamReturnsNoIDToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code, "missing id_token on refresh must soft-fail; body=%s", rr.Body.String())
 	var body map[string]interface{}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-	require.NotEmpty(t, body["access_token"], "must still forward original id_token")
+	require.NotEmpty(t, body["access_token"], "must still return original id_token")
 }
 
 // --- soft-fail: upstream returns RFC 6749 error_description ---------------
@@ -539,7 +535,7 @@ func TestOAuthToken_RefreshErrorDescriptionSurfacedInLog(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
-		Enabled: true, Mode: "forward", Issuer: upstream.URL, JWKSURL: upstream.URL + "/jwks",
+		Enabled: true, Broker: true, Issuer: upstream.URL, JWKSURL: upstream.URL + "/jwks",
 		AuthURL: upstream.URL + "/authorize", TokenURL: upstream.URL + "/token",
 		ClientID: "broker", ClientSecret: "s", PublicAuthServerURL: "https://mcp.example.com",
 		SigningSecret: "regression-errdesc-32bytes!!!!!!", UpstreamOfflineAccess: true,
@@ -569,7 +565,7 @@ func TestOAuthAuthorize_ForceConsentFlag(t *testing.T) {
 			t.Parallel()
 			cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 				Enabled:               true,
-				Mode:                  "forward",
+				Broker:                true,
 				Issuer:                "https://accounts.google.com",
 				AuthURL:               "https://accounts.google.com/o/oauth2/v2/auth",
 				TokenURL:              "https://oauth2.googleapis.com/token",

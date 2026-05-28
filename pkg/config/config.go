@@ -6,14 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 	"gopkg.in/yaml.v3"
 )
 
 // OAuthConfig is an alias for oauth.OAuthConfig so existing call sites that
-// reference config.OAuthConfig continue to compile. The struct definition and
-// the NormalizedMode/IsForwardMode/IsGatingMode helpers live in pkg/oauth.
+// reference config.OAuthConfig continue to compile.
 type OAuthConfig = oauth.OAuthConfig
 
 // ClickHouseProtocol defines the protocol used to connect to ClickHouse
@@ -207,12 +207,57 @@ type LoggingConfig struct {
 	Level LogLevel `json:"level" yaml:"level" flag:"log-level" env:"LOG_LEVEL" default:"info" desc:"Logging level (debug/info/warn/error)"`
 }
 
+// MulticlusterConfig enables URL-path routing across multiple ClickHouse
+// clusters from a single MCP process. When Enabled, requests to
+// /mcp/{cluster} extract {cluster} from the path, validate it against the
+// allowlist + RFC 1123 DNS label regex, and substitute it into the
+// `{cluster}` placeholder in ClickHouseConfig.Host. All other ClickHouse
+// settings (port, TLS, mode, regexes, limits, ...) are shared across
+// clusters. See issue #132 and docs/multicluster.md.
+type MulticlusterConfig struct {
+	Enabled            bool          `json:"enabled" yaml:"enabled" flag:"multicluster-enabled" env:"MCP_MULTICLUSTER_ENABLED" desc:"Enable URL-path routing across multiple ClickHouse clusters via /mcp/{cluster}"`
+	ClusterAllowlist   []string      `json:"cluster_allowlist" yaml:"cluster_allowlist" flag:"multicluster-cluster-allowlist" env:"MCP_MULTICLUSTER_CLUSTER_ALLOWLIST" desc:"Whitelist of cluster names accepted in /mcp/{cluster}"`
+	CatalogCacheMax    int           `json:"catalog_cache_max,omitempty" yaml:"catalog_cache_max,omitempty" flag:"multicluster-catalog-cache-max" env:"MCP_MULTICLUSTER_CATALOG_CACHE_MAX" desc:"Maximum number of (bearer,cluster) catalog cache entries (default 10000)"`
+	CatalogTTLFallback time.Duration `json:"catalog_ttl_fallback,omitempty" yaml:"catalog_ttl_fallback,omitempty" flag:"multicluster-catalog-ttl-fallback" env:"MCP_MULTICLUSTER_CATALOG_TTL_FALLBACK" desc:"Fallback TTL for catalog cache entries when bearer has no exp (default 15m)"`
+	CatalogNegativeTTL time.Duration `json:"catalog_negative_ttl,omitempty" yaml:"catalog_negative_ttl,omitempty" flag:"multicluster-catalog-negative-ttl" env:"MCP_MULTICLUSTER_CATALOG_NEGATIVE_TTL" desc:"TTL for negative (denied) catalog cache entries (default 60s)"`
+}
+
+// Defaults applied by applyMulticlusterDefaults.
+const (
+	defaultMulticlusterCatalogCacheMax    = 10000
+	defaultMulticlusterCatalogTTLFallback = 15 * time.Minute
+	defaultMulticlusterCatalogNegativeTTL = 60 * time.Second
+)
+
+// applyMulticlusterDefaults fills zero-valued Multicluster fields with the
+// documented defaults. Safe to call on both Enabled and disabled configs;
+// caller decides whether to consult the values.
+func applyMulticlusterDefaults(mc *MulticlusterConfig) {
+	if mc.CatalogCacheMax == 0 {
+		mc.CatalogCacheMax = defaultMulticlusterCatalogCacheMax
+	}
+	if mc.CatalogTTLFallback == 0 {
+		mc.CatalogTTLFallback = defaultMulticlusterCatalogTTLFallback
+	}
+	if mc.CatalogNegativeTTL == 0 {
+		mc.CatalogNegativeTTL = defaultMulticlusterCatalogNegativeTTL
+	}
+}
+
+// ApplyMulticlusterDefaults fills zero-valued multicluster settings with the
+// documented defaults. Call this after config-file loading and again after
+// CLI/env overrides so env-only deployments get the same defaults.
+func ApplyMulticlusterDefaults(cfg *Config) {
+	applyMulticlusterDefaults(&cfg.Multicluster)
+}
+
 // Config is the main application configuration
 type Config struct {
-	ClickHouse ClickHouseConfig `json:"clickhouse" yaml:"clickhouse"`
-	Server     ServerConfig     `json:"server" yaml:"server"`
-	Logging    LoggingConfig    `json:"logging" yaml:"logging"`
-	ReloadTime int              `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
+	ClickHouse   ClickHouseConfig   `json:"clickhouse" yaml:"clickhouse"`
+	Server       ServerConfig       `json:"server" yaml:"server"`
+	Logging      LoggingConfig      `json:"logging" yaml:"logging"`
+	Multicluster MulticlusterConfig `json:"multicluster" yaml:"multicluster"`
+	ReloadTime   int                `json:"reload_time,omitempty" yaml:"reload_time,omitempty" desc:"Configuration reload interval in seconds (0 to disable)"`
 
 	// RemovedKeyWarnings holds human-readable warnings about config keys
 	// that LoadConfigFromFile observed in the input file but the current
@@ -252,6 +297,7 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 		}
 	}
 	config.RemovedKeyWarnings = removedKeyWarnings(data)
+	ApplyMulticlusterDefaults(config)
 	return config, nil
 }
 
@@ -263,10 +309,12 @@ func LoadConfigFromFile(filename string) (*Config, error) {
 // override is now a no-op. Exported so external tooling (linters, CI
 // gates, deploy automation) can share the same source of truth.
 var RemovedConfigKeys = []RemovedKey{
-	{Path: "clickhouse.cluster_secret", Replacement: "Use mode: gating + the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
+	{Path: "clickhouse.cluster_secret", Replacement: "Use broker:false with the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper). Drop cluster_secret + cluster_name from helm values and bind users with IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'."},
 	{Path: "clickhouse.cluster_name", Replacement: "Same as cluster_secret — drop both together."},
-	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — the gating-mode wire format no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
-	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — forward mode always uses Authorization: Bearer."},
+	{Path: "server.oauth.mode", Replacement: "Removed — use server.oauth.broker: true or false."},
+	{Path: "server.oauth.broker_upstream", Replacement: "Removed — use server.oauth.broker: true."},
+	{Path: "server.oauth.claims_to_headers", Replacement: "Removed — MCP no longer forwards arbitrary claims as headers. Per-scope ClickHouse session settings live in the sidecar's settings_from_scope config."},
+	{Path: "server.oauth.clickhouse_header_name", Replacement: "Removed — Bearer auth uses Authorization: Bearer."},
 	{Path: "server.oauth.allowed_email_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_email_domains."},
 	{Path: "server.oauth.allowed_hosted_domains", Replacement: "Moved to the ch-jwt-verify sidecar's identity.allowed_hosted_domains."},
 	{Path: "server.oauth.allow_unverified_email", Replacement: "Moved (inverted) to the ch-jwt-verify sidecar's identity.require_email_verified."},

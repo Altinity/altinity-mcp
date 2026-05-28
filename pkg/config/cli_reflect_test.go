@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
@@ -48,7 +49,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.Contains(t, byName, "blocked-query-clauses")
 
 	// All OAuth fields should be wired (issue #96).
-	require.Contains(t, byName, "oauth-mode")
+	require.Contains(t, byName, "oauth-broker")
 	require.Contains(t, byName, "oauth-enabled")
 	require.Contains(t, byName, "oauth-issuer")
 	require.Contains(t, byName, "oauth-jwks-url")
@@ -85,10 +86,9 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 			"clickhouse-host":      "ch.internal",
 			"oauth-signing-secret": "shh",
 			"transport":            "http",
-			"oauth-mode":           "forward",
 		},
-		ints:   map[string]int{"clickhouse-port": 9000},
-		bools:  map[string]bool{"server-tls": true, "oauth-enabled": true},
+		ints:  map[string]int{"clickhouse-port": 9000},
+		bools: map[string]bool{"server-tls": true, "oauth-enabled": true, "oauth-broker": true},
 		slices: map[string][]string{"oauth-required-scopes": {"openid", "email"}},
 		wasSet: map[string]bool{
 			"clickhouse-host":       true,
@@ -98,7 +98,7 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 			"oauth-signing-secret":  true,
 			"oauth-required-scopes": true,
 			"transport":             true,
-			"oauth-mode":            true,
+			"oauth-broker":          true,
 		},
 	}
 
@@ -108,13 +108,13 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	require.Equal(t, 9000, cfg.ClickHouse.Port)
 	require.True(t, cfg.Server.TLS.Enabled)
 	require.True(t, cfg.Server.OAuth.Enabled)
+	require.True(t, cfg.Server.OAuth.Broker)
 	require.Equal(t, "shh", cfg.Server.OAuth.SigningSecret)
 	require.Equal(t, []string{"openid", "email"}, cfg.Server.OAuth.RequiredScopes)
 
 	// Type-alias conversion: cmd.String returns a plain string, but the
 	// struct field is MCPTransport — Convert() handles that.
 	require.Equal(t, MCPTransport("http"), cfg.Server.Transport)
-	require.Equal(t, "forward", cfg.Server.OAuth.Mode)
 }
 
 func TestApplyFlags_DefaultFallback(t *testing.T) {
@@ -164,6 +164,30 @@ func TestApplyFlags_CLIBeatsYAML(t *testing.T) {
 	ApplyFlags(cfg, cmd)
 
 	require.Equal(t, "from-cli.example", cfg.ClickHouse.Host)
+}
+
+func TestBuildFlags_Duration_BuildsAndApplies(t *testing.T) {
+	t.Parallel()
+	type S struct {
+		TTL time.Duration `flag:"ttl" default:"15m" desc:"ttl"`
+	}
+	flags := BuildFlags(&S{})
+	require.Len(t, flags, 1)
+	require.IsType(t, &cli.StringFlag{}, flags[0])
+	require.Equal(t, "15m", flags[0].(*cli.StringFlag).Value)
+
+	// Apply with default fallback (no CLI flag set, zero field).
+	s := &S{}
+	ApplyFlags(s, &fakeCmd{wasSet: map[string]bool{}})
+	require.Equal(t, 15*time.Minute, s.TTL)
+
+	// Apply with explicit CLI value overrides any in-struct value.
+	s = &S{TTL: 5 * time.Minute}
+	ApplyFlags(s, &fakeCmd{
+		strs:   map[string]string{"ttl": "1h30m"},
+		wasSet: map[string]bool{"ttl": true},
+	})
+	require.Equal(t, 90*time.Minute, s.TTL)
 }
 
 func TestBuildFlags_NoFlagTagSkipped(t *testing.T) {

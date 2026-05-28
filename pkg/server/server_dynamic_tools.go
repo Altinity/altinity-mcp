@@ -53,7 +53,7 @@ type dynamicToolCommentAnnotations struct {
 // every request: the fast path short-circuits once init completes.
 //
 // Discovery is deferred until the caller has usable credentials. In OAuth
-// forward mode the Bearer token only arrives on tools/call, not tools/list —
+// OAuth the Bearer token only arrives on tools/call, not tools/list —
 // so the first tools/list just returns static tools, and the first authenticated
 // tools/call triggers discovery. The MCP SDK's AddTool automatically fires
 // notifications/tools/list_changed, prompting the client to re-fetch.
@@ -157,8 +157,27 @@ func (s *ClickHouseJWEServer) discoverReadTools(ctx context.Context) (map[string
 	if len(readRules) == 0 {
 		return map[string]dynamicToolMeta{}, nil
 	}
+	factory := func(ctx context.Context, _ config.ClickHouseConfig) (*clickhouse.Client, error) {
+		return s.getDiscoveryClient(ctx)
+	}
+	return discoverReadToolsWith(ctx, s.Config.ClickHouse, factory, readRules)
+}
 
-	chClient, err := s.getDiscoveryClient(ctx)
+// discoverReadToolsWith is the factory-based variant of discoverReadTools.
+// chCfg is authoritative for host/port/TLS; factory is responsible for
+// credential extraction (JWE/OAuth in single-cluster mode; OAuth-only in
+// multi-cluster mode).
+func discoverReadToolsWith(
+	ctx context.Context,
+	chCfg config.ClickHouseConfig,
+	factory func(ctx context.Context, chCfg config.ClickHouseConfig) (*clickhouse.Client, error),
+	readRules []config.DynamicToolRule,
+) (map[string]dynamicToolMeta, error) {
+	if len(readRules) == 0 {
+		return map[string]dynamicToolMeta{}, nil
+	}
+
+	chClient, err := factory(ctx, chCfg)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
@@ -266,8 +285,25 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 	if len(writeRules) == 0 {
 		return map[string]dynamicToolMeta{}, nil
 	}
+	factory := func(ctx context.Context, _ config.ClickHouseConfig) (*clickhouse.Client, error) {
+		return s.getDiscoveryClient(ctx)
+	}
+	return discoverWriteToolsWith(ctx, s.Config.ClickHouse, factory, writeRules)
+}
 
-	chClient, err := s.getDiscoveryClient(ctx)
+// discoverWriteToolsWith is the factory-based variant of discoverWriteTools.
+// Caller is responsible for filtering rules and checking read-only mode.
+func discoverWriteToolsWith(
+	ctx context.Context,
+	chCfg config.ClickHouseConfig,
+	factory func(ctx context.Context, chCfg config.ClickHouseConfig) (*clickhouse.Client, error),
+	writeRules []config.DynamicToolRule,
+) (map[string]dynamicToolMeta, error) {
+	if len(writeRules) == 0 {
+		return map[string]dynamicToolMeta{}, nil
+	}
+
+	chClient, err := factory(ctx, chCfg)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic_tools: failed to get ClickHouse client: %w", err)
 	}
@@ -329,7 +365,7 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 		}
 
 		rc := rules[matched[0]]
-		cols, colErr := s.getTableColumnsForMode(ctx, chClient, db, name)
+		cols, colErr := getTableColumnsForMode(ctx, chClient, db, name)
 		if colErr != nil {
 			log.Warn().Err(colErr).Str("table", full).Msg("dynamic_tools: failed to get columns for write tool, skipping")
 			continue
@@ -373,7 +409,7 @@ func (s *ClickHouseJWEServer) discoverWriteTools(ctx context.Context) (map[strin
 // ClickHouse versions. Some older versions (e.g., 26.1.x Altinity Antalya)
 // do not expose a `column_type` column, so we rely on `default_kind` alone
 // which carries the same information for our purposes.
-func (s *ClickHouseJWEServer) getTableColumnsForMode(ctx context.Context, chClient *clickhouse.Client, db, table string) ([]dynamicToolParam, error) {
+func getTableColumnsForMode(ctx context.Context, chClient *clickhouse.Client, db, table string) ([]dynamicToolParam, error) {
 	q := fmt.Sprintf(
 		"SELECT name, type, default_kind, comment FROM system.columns WHERE database='%s' AND table='%s' ORDER BY position",
 		db, table,
@@ -446,55 +482,139 @@ func buildWriteToolDescription(comment, db, table, mode string) string {
 
 // registerDynamicTools commits discovered read and write tools to the MCP server.
 // AddTool automatically fires notifications/tools/list_changed so clients refresh.
+//
+// In multi-cluster mode the equivalent path is RegisterDynamicToolsOn, called
+// against a per-(bearer,cluster) *mcp.Server adapter — *not* via this method,
+// because s.dynamicTools is global to the single-cluster ClickHouseJWEServer
+// and would poison cross-tenant if shared.
 func (s *ClickHouseJWEServer) registerDynamicTools(readTools, writeTools map[string]dynamicToolMeta) {
-	for toolName, meta := range readTools {
-		s.dynamicTools[toolName] = meta
-		props := make(map[string]any, len(meta.Params)+1)
-		required := make([]string, 0, len(meta.Params))
-		for _, p := range meta.Params {
-			props[p.Name] = buildParamSchema(p)
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
-			props["settings"] = settingsSchema
-		}
-		s.AddTool(&mcp.Tool{
-			Name:        toolName,
-			Title:       meta.Title,
-			Description: meta.Description,
-			Annotations: meta.Annotations,
-			InputSchema: dynamicToolInputSchema(props, required),
-		}, makeDynamicToolHandler(meta))
+	merged := make(map[string]dynamicToolMeta, len(readTools)+len(writeTools))
+	for k, v := range readTools {
+		s.dynamicTools[k] = v
+		merged[k] = v
 	}
-
-	for toolName, meta := range writeTools {
-		s.dynamicTools[toolName] = meta
-		props := make(map[string]any, len(meta.Params)+1)
-		required := make([]string, 0, len(meta.Params))
-		for _, p := range meta.Params {
-			props[p.Name] = buildParamSchema(p)
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		if settingsSchema := buildToolInputSettingsSchema(s.Config.Server.ToolInputSettings); settingsSchema != nil {
-			props["settings"] = settingsSchema
-		}
-		s.AddTool(&mcp.Tool{
-			Name:        toolName,
-			Title:       meta.Title,
-			Description: meta.Description,
-			Annotations: meta.Annotations,
-			InputSchema: dynamicToolInputSchema(props, required),
-		}, s.makeDynamicWriteToolHandler(meta))
+	for k, v := range writeTools {
+		s.dynamicTools[k] = v
+		merged[k] = v
 	}
-
+	writeHandlerFactory := s.makeDynamicWriteToolHandler
+	registerDynamicToolsOn(s, merged, s.Config.Server.ToolInputSettings, writeHandlerFactory)
 	log.Info().
 		Int("read_tools", len(readTools)).
 		Int("write_tools", len(writeTools)).
 		Msg("Dynamic tools registered")
+}
+
+// RegisterDynamicToolsOn registers the discovered dynamic tools (both read
+// and write) on srv. Pure helper — no mutation of any ClickHouseJWEServer
+// state. Used by multi-cluster mode: each (bearer, cluster) request builds
+// a fresh *mcp.Server and populates it via this function.
+//
+// For write tools, the handler delegates to the JWEServer-bound
+// makeDynamicWriteToolHandler closure when one is provided (parent != nil);
+// when parent is nil, write tools use a standalone handler that pulls the
+// JWEServer from context (multi-cluster path injects it via serverInjector).
+func RegisterDynamicToolsOn(srv AltinityMCPServer, tools map[string]dynamicToolMeta, cfg *config.Config) {
+	registerDynamicToolsOn(srv, tools, cfg.Server.ToolInputSettings, nil)
+}
+
+// registerDynamicToolsOn is the internal implementation. writeHandlerFactory
+// is non-nil in single-cluster mode (binds to *ClickHouseJWEServer); nil in
+// multi-cluster mode (handler grabs the server from context).
+func registerDynamicToolsOn(
+	srv AltinityMCPServer,
+	tools map[string]dynamicToolMeta,
+	toolInputSettings []string,
+	writeHandlerFactory func(meta dynamicToolMeta) ToolHandlerFunc,
+) {
+	for toolName, meta := range tools {
+		props := make(map[string]any, len(meta.Params)+1)
+		required := make([]string, 0, len(meta.Params))
+		for _, p := range meta.Params {
+			props[p.Name] = buildParamSchema(p)
+			if p.Required {
+				required = append(required, p.Name)
+			}
+		}
+		if settingsSchema := buildToolInputSettingsSchema(toolInputSettings); settingsSchema != nil {
+			props["settings"] = settingsSchema
+		}
+		tool := &mcp.Tool{
+			Name:        toolName,
+			Title:       meta.Title,
+			Description: meta.Description,
+			Annotations: meta.Annotations,
+			InputSchema: dynamicToolInputSchema(props, required),
+		}
+		switch meta.ToolType {
+		case "write":
+			if writeHandlerFactory != nil {
+				srv.AddTool(tool, writeHandlerFactory(meta))
+			} else {
+				srv.AddTool(tool, makeStandaloneDynamicWriteToolHandler(meta))
+			}
+		default:
+			srv.AddTool(tool, makeDynamicToolHandler(meta))
+		}
+	}
+}
+
+// DiscoverTools runs the same discovery queries as
+// (*ClickHouseJWEServer).EnsureDynamicTools but accepts an explicit
+// ClickHouseConfig and a client factory, so multi-cluster mode can target
+// per-cluster hosts without reaching for any global state. Returns the
+// merged read+write tools map.
+func DiscoverTools(
+	ctx context.Context,
+	chCfg config.ClickHouseConfig,
+	factory func(ctx context.Context, chCfg config.ClickHouseConfig) (*clickhouse.Client, error),
+	rules []config.DynamicToolRule,
+	readOnly bool,
+) (map[string]dynamicToolMeta, error) {
+	merged := make(map[string]dynamicToolMeta)
+	if len(rules) == 0 {
+		return merged, nil
+	}
+
+	readRules := filterRulesByType(rules, "read")
+	if len(readRules) > 0 {
+		readTools, err := discoverReadToolsWith(ctx, chCfg, factory, readRules)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range readTools {
+			merged[k] = v
+		}
+	}
+
+	if !readOnly {
+		writeRules := filterRulesByType(rules, "write")
+		if len(writeRules) > 0 {
+			writeTools, err := discoverWriteToolsWith(ctx, chCfg, factory, writeRules)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range writeTools {
+				merged[k] = v
+			}
+		}
+	}
+
+	return merged, nil
+}
+
+// makeStandaloneDynamicWriteToolHandler returns a write-tool handler that
+// pulls the *ClickHouseJWEServer from ctx (via CHJWEServerKey) — used in
+// multi-cluster mode where there is no single parent server bound at
+// registration time.
+func makeStandaloneDynamicWriteToolHandler(meta dynamicToolMeta) ToolHandlerFunc {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		chJweServer := GetClickHouseJWEServerFromContext(ctx)
+		if chJweServer == nil {
+			return nil, fmt.Errorf("can't get JWEServer from context")
+		}
+		return chJweServer.makeDynamicWriteToolHandler(meta)(ctx, req)
+	}
 }
 
 func makeDynamicToolHandler(meta dynamicToolMeta) ToolHandlerFunc {

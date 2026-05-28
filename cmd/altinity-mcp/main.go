@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -685,6 +686,12 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		"version":   version,
 	}
 
+	// Surface multi-cluster catalog-cache counters (there is no Prometheus
+	// subsystem; /health is the observability surface). nil in single-cluster.
+	if a.mcCache != nil {
+		status["catalog_cache"] = a.mcCache.Snapshot()
+	}
+
 	// Test ClickHouse connection for readiness, unless credentials are per-request
 	credentialsArePerRequest := cfg.Server.JWE.Enabled ||
 		cfg.Server.OAuth.Enabled
@@ -751,6 +758,7 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 
 	// Override with CLI flags (CLI flags take precedence over config file)
 	overrideWithCLIFlags(&cfg, cmd)
+	config.ApplyMulticlusterDefaults(&cfg)
 	if logErr := setupLogging(string(cfg.Logging.Level)); logErr != nil {
 		return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
 	}
@@ -865,11 +873,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 	if !oauth.Enabled {
 		return
 	}
-	if oauth.IsGatingMode() && strings.TrimSpace(oauth.PublicAuthServerURL) == "" && strings.TrimSpace(oauth.Issuer) != "" {
-		log.Warn().Msg("OAuth gating mode: public_auth_server_url is not set — " +
-			"minted tokens will use the request Host as issuer, but validation expects the configured issuer; " +
-			"set public_auth_server_url to match, or leave issuer empty to skip issuer validation")
-	}
 	// PublicResourceURL pins the canonical RFC 9728 `resource` URL (and the
 	// audience the RFC 8707 resource indicator is validated against in
 	// /authorize). When unset, we fall back to the request's Host header,
@@ -881,17 +884,6 @@ func warnOAuthMisconfiguration(cfg config.Config) {
 			"validation (RFC 8707) and the advertised RFC 9728 `resource` URL fall back " +
 			"to the request Host header. For production deployments behind a single canonical " +
 			"hostname, set MCP_OAUTH_PUBLIC_RESOURCE_URL to lock the resource identity.")
-	}
-	// C-1 nudge: forward mode without any JWKS source means we cannot validate
-	// JWT bearers locally. The auth layer soft-passes such tokens to ClickHouse,
-	// which is then the sole validator. MCP authorization spec §Token Handling
-	// requires the resource server to validate tokens; configuring oauth_issuer
-	// or oauth_jwks_url enables that.
-	if oauth.IsForwardMode() && strings.TrimSpace(oauth.Issuer) == "" && strings.TrimSpace(oauth.JWKSURL) == "" {
-		log.Warn().Msg("OAuth forward mode: neither oauth_issuer nor oauth_jwks_url is set — " +
-			"JWT bearers cannot be validated locally (signature/iss/aud/exp); " +
-			"the MCP server will forward them as-is and rely entirely on ClickHouse-side validation. " +
-			"Set MCP_OAUTH_ISSUER or MCP_OAUTH_JWKS_URL to enable local validation per MCP authorization spec §Token Handling.")
 	}
 }
 
@@ -981,6 +973,12 @@ type application struct {
 	// cimdResolver fetches and caches inbound CIMD client metadata documents.
 	// Constructed in newApplication; tests inject an alternative resolver.
 	cimdResolver *cimdResolver
+	// mcRouter and mcCache are set only when cfg.Multicluster.Enabled is
+	// true at process start. multicluster.* fields are restart-only —
+	// changing them via config reload logs a warning but does not rebuild
+	// these.
+	mcRouter *altinitymcp.MulticlusterRouter
+	mcCache  *altinitymcp.CatalogCache
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -1001,13 +999,14 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 	if err := validateOAuthRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateMulticlusterRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
 
 	// Test connection to ClickHouse at startup, unless credentials are dynamic:
 	// - JWE: each request carries its own ClickHouse credentials
-	// - OAuth (forward or gating): credentials are derived from the JWT per
-	//   request. Forward mode rewrites the Authorization header; gating mode
-	//   sends Basic base64(email:JWT) for the CH-side JWT-verifier sidecar to
-	//   validate. The static helm-configured Username/Password are unused.
+	// - OAuth: credentials are derived from the bearer per request. The static
+	//   helm-configured Username/Password are unused.
 	skipStartupPing := cfg.Server.JWE.Enabled || cfg.Server.OAuth.Enabled
 	if !skipStartupPing {
 		log.Debug().Msg("Testing ClickHouse connection...")
@@ -1059,6 +1058,24 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		cimdResolver:     newCIMDResolver(nil),
 	}
 
+	// Multi-cluster routing is restart-only. Build the router + catalog
+	// cache once during newApplication and stash them on the app; the
+	// HTTP server consults these on every request.
+	if cfg.Multicluster.Enabled {
+		router, err := altinitymcp.NewMulticlusterRouter(cfg.Multicluster, cfg.ClickHouse)
+		if err != nil {
+			return nil, fmt.Errorf("multicluster: failed to build router: %w", err)
+		}
+		app.mcRouter = router
+		app.mcCache = altinitymcp.NewCatalogCache(cfg.Multicluster)
+		log.Info().
+			Strs("cluster_allowlist", cfg.Multicluster.ClusterAllowlist).
+			Int("catalog_cache_max", cfg.Multicluster.CatalogCacheMax).
+			Dur("catalog_ttl_fallback", cfg.Multicluster.CatalogTTLFallback).
+			Dur("catalog_negative_ttl", cfg.Multicluster.CatalogNegativeTTL).
+			Msg("multicluster routing enabled — /mcp/{cluster} dispatches per-cluster catalogs")
+	}
+
 	// Start config reload goroutine if enabled
 	if app.configFile != "" && cfg.ReloadTime > 0 {
 		go app.configReloadLoop(ctx, cmd)
@@ -1100,12 +1117,6 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		return nil
 	}
 
-	switch cfg.Server.OAuth.NormalizedMode() {
-	case "forward", "gating":
-	default:
-		return fmt.Errorf("unsupported oauth mode: %s", cfg.Server.OAuth.Mode)
-	}
-
 	// M5: refuse to start when the operator points issuer/jwks_url at a
 	// plaintext http:// endpoint. We fetch JWKS and openid-configuration from
 	// these URLs and trust the response to validate signatures — a MitM on
@@ -1120,93 +1131,97 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 	}
 
 	signingSecret := strings.TrimSpace(cfg.Server.OAuth.SigningSecret)
-	if signingSecret == "" {
-		return fmt.Errorf("oauth signing_secret is required when OAuth is enabled (used for client registration and token exchange in both forward and gating modes)")
-	}
-	// Defence in depth: HS256 (gating-mode access token signing) and JWE A256KW
-	// (client_id + refresh-token wrap) both derive their key as SHA-256(secret).
-	// SHA-256 spreads bits but doesn't add entropy — a 4-byte secret hashed
-	// to 32 bytes still has only 32 bits of entropy. 32 bytes is the practical
-	// minimum to make brute-force forging infeasible.
-	const minSigningSecretBytes = 32
-	if len(signingSecret) < minSigningSecretBytes {
-		return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken HS256 and JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
-	}
 
-	// Both OAuth modes require HTTP for ClickHouse: forward mode rewrites the
-	// Authorization header (TCP native protocol has no equivalent); gating
-	// mode sends Basic base64(email:JWT) to a CH-side http_authentication
-	// sidecar, which ClickHouse only invokes via the HTTP interface.
+	// OAuth requires HTTP for ClickHouse: bearer headers and Basic credentials
+	// are HTTP auth mechanisms.
 	if cfg.Server.OAuth.Enabled && cfg.ClickHouse.Protocol != config.HTTPProtocol {
-		return fmt.Errorf("oauth requires clickhouse protocol http (both forward and gating modes route credentials through ClickHouse's HTTP interface)")
+		return fmt.Errorf("oauth requires clickhouse protocol http")
 	}
 
-	// Gating-mode validation has two shapes depending on broker_upstream:
-	//
-	//   broker_upstream=false (default, #109): MCP is a pure OAuth resource
-	//   server. The external AS (Auth0/CIMD) owns client registration and
-	//   the auth-code flow. Setting any of client_id/client_secret/auth_url/
-	//   token_url/userinfo_url/public_auth_server_url is a misconfiguration.
-	//
-	//   broker_upstream=true: MCP also acts as the AS to MCP clients
-	//   (broker-via-MCP), brokering an upstream IdP that does not natively
-	//   support CIMD (e.g. Google). The fields above become REQUIRED.
-	//   The /mcp request path is unchanged from standard gating mode —
-	//   bearer is rewritten to Basic email:JWT for the ch-jwt-verify
-	//   sidecar to validate. Only the OAuth dance changes shape.
-	if cfg.Server.OAuth.IsGatingMode() {
-		if !cfg.Server.OAuth.BrokerUpstream {
-			if cfg.Server.OAuth.ClientID != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_id — remove from helm values; client_id is the external AS's responsibility under #109. To act as the AS yourself, set oauth.broker_upstream=true")
-			}
-			if cfg.Server.OAuth.ClientSecret != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.client_secret — remove from helm values; client_secret is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.TokenURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.token_url — remove from helm values; token_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.AuthURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.auth_url — remove from helm values; auth_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.UserInfoURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.userinfo_url — remove from helm values; userinfo_url is the external AS's responsibility under #109")
-			}
-			if cfg.Server.OAuth.PublicAuthServerURL != "" {
-				return fmt.Errorf("oauth: gating mode (without broker_upstream) forbids oauth.public_auth_server_url — remove from helm values; public_auth_server_url is the external AS's responsibility under #109")
-			}
-		} else {
-			// broker_upstream=true: opposite — the broker fields are required.
-			missing := []string{}
-			if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
-				missing = append(missing, "client_id")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.ClientSecret) == "" {
-				missing = append(missing, "client_secret")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.AuthURL) == "" {
-				missing = append(missing, "auth_url")
-			}
-			if strings.TrimSpace(cfg.Server.OAuth.TokenURL) == "" {
-				missing = append(missing, "token_url")
-			}
-			if len(missing) > 0 {
-				return fmt.Errorf("oauth: gating mode with broker_upstream=true requires upstream-IdP fields to be set: %s. Without these MCP cannot broker the upstream OAuth dance", strings.Join(missing, ", "))
-			}
-			log.Warn().
-				Str("issuer", cfg.Server.OAuth.Issuer).
-				Str("client_id", cfg.Server.OAuth.ClientID).
-				Str("auth_url", cfg.Server.OAuth.AuthURL).
-				Str("token_url", cfg.Server.OAuth.TokenURL).
-				Msg("oauth: gating mode + broker_upstream=true — altinity-mcp is acting as the OAuth AS to MCP clients, brokering an upstream IdP. /oauth/{register,authorize,callback,token} are exposed. claude.ai/ChatGPT do DCR against this MCP, not against the upstream. Single Google redirect URI: <public_url>/oauth/callback. This is the post-#109 hybrid; see deploy/otel-google-gating/EXPERIMENT.md.")
+	if cfg.Server.OAuth.Broker {
+		var missing []string
+		if strings.TrimSpace(cfg.Server.OAuth.ClientID) == "" {
+			missing = append(missing, "client_id")
 		}
+		if strings.TrimSpace(cfg.Server.OAuth.ClientSecret) == "" {
+			missing = append(missing, "client_secret")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.AuthURL) == "" {
+			missing = append(missing, "auth_url")
+		}
+		if strings.TrimSpace(cfg.Server.OAuth.TokenURL) == "" {
+			missing = append(missing, "token_url")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("oauth: broker=true requires upstream IdP fields: %s", strings.Join(missing, ", "))
+		}
+		if signingSecret == "" {
+			return fmt.Errorf("oauth signing_secret is required when oauth.broker=true")
+		}
+		// Defence in depth: JWE A256KW derives its key from signing_secret.
+		// SHA-256 spreads bits but doesn't add entropy — a 4-byte secret hashed
+		// to 32 bytes still has only 32 bits of entropy. 32 bytes is the
+		// practical minimum to make brute-force forging infeasible.
+		const minSigningSecretBytes = 32
+		if len(signingSecret) < minSigningSecretBytes {
+			return fmt.Errorf("oauth signing_secret must be at least %d bytes (got %d) — short secrets weaken JWE key wrapping; generate with `openssl rand -base64 32` or similar", minSigningSecretBytes, len(signingSecret))
+		}
+	} else {
 		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.issuer (the upstream AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com) to be set so MCP can validate JWTs against its JWKS")
+			return fmt.Errorf("oauth: broker=false requires oauth.issuer (the external AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com)")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
-			return fmt.Errorf("oauth: gating mode requires oauth.audience — under !broker_upstream it must byte-equal the MCP public URL (RFC 8707); under broker_upstream it must byte-equal the upstream OAuth client_id (the value in the upstream id_token's `aud` claim)")
+			return fmt.Errorf("oauth: broker=false requires oauth.audience — it must byte-equal the MCP public resource URL (RFC 8707)")
 		}
 	}
 
+	return nil
+}
+
+// validateMulticlusterRuntimeConfig refuses to start the process when
+// multi-cluster routing is enabled in a combination that cannot work
+// safely. Called from newApplication before any HTTP server is bound.
+//
+// The checks are intentionally fail-loud rather than fail-quiet: an
+// operator misreads "multicluster.enabled: true" alongside JWE auth or
+// OpenAPI and ships a deployment that silently breaks per-tenant
+// isolation. Earlier failure = clearer signal.
+func validateMulticlusterRuntimeConfig(cfg config.Config) error {
+	if !cfg.Multicluster.Enabled {
+		return nil
+	}
+	if cfg.Server.JWE.Enabled {
+		return fmt.Errorf("multicluster: JWE is incompatible with multicluster mode (JWE claims carry their own host — bypass cluster routing). Disable server.jwe.enabled or server.multicluster.enabled")
+	}
+	if !cfg.Server.OAuth.Enabled {
+		return fmt.Errorf("multicluster: requires OAuth (server.oauth.enabled=true) — multicluster relies on per-bearer cache keying and per-cluster PRM advertisement")
+	}
+	if cfg.Server.OpenAPI.Enabled {
+		return fmt.Errorf("multicluster: OpenAPI must be disabled in v1 (server.openapi.enabled=false) — per-cluster OpenAPI schema is deferred to v2")
+	}
+	if !strings.Contains(cfg.ClickHouse.Host, "{cluster}") {
+		log.Warn().
+			Str("clickhouse.host", cfg.ClickHouse.Host).
+			Msg("multicluster: clickhouse.host does not contain the {cluster} placeholder — all clusters will route to the same host. Almost certainly a misconfiguration; set host to e.g. chi-{cluster}-{cluster}-0-0.demo")
+	}
+	if cfg.Multicluster.CatalogCacheMax < 100 {
+		return fmt.Errorf("multicluster: catalog_cache_max=%d is too small (min 100) — the cache would thrash under any meaningful number of concurrent users", cfg.Multicluster.CatalogCacheMax)
+	}
+	if cfg.Multicluster.CatalogTTLFallback < time.Minute || cfg.Multicluster.CatalogTTLFallback > 24*time.Hour {
+		return fmt.Errorf("multicluster: catalog_ttl_fallback=%s must be between 1m and 24h", cfg.Multicluster.CatalogTTLFallback)
+	}
+	if cfg.Multicluster.CatalogNegativeTTL < 10*time.Second || cfg.Multicluster.CatalogNegativeTTL > 5*time.Minute {
+		return fmt.Errorf("multicluster: catalog_negative_ttl=%s must be between 10s and 5m", cfg.Multicluster.CatalogNegativeTTL)
+	}
+	for _, name := range cfg.Multicluster.ClusterAllowlist {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if !altinitymcp.IsValidClusterName(trimmed) {
+			return fmt.Errorf("multicluster: cluster_allowlist entry %q is not a valid RFC 1123 DNS label", trimmed)
+		}
+	}
 	return nil
 }
 
@@ -1214,6 +1229,10 @@ func (a *application) Close() {
 	// Stop config reload goroutine
 	if a.configFile != "" {
 		close(a.stopConfigReload)
+	}
+
+	if a.mcCache != nil {
+		a.mcCache.Close()
 	}
 
 	// No resources to close as the ClickHouse client is created and closed per request
@@ -1265,6 +1284,17 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
 
+	// multicluster.* fields are restart-only: the router + catalog cache
+	// were bound during newApplication and cannot be safely rebuilt
+	// mid-flight without dropping in-flight requests. Warn loudly on
+	// any change so operators see the no-op and know to roll the pod.
+	a.configMutex.RLock()
+	oldMC := a.config.Multicluster
+	a.configMutex.RUnlock()
+	if !reflect.DeepEqual(oldMC, newCfg.Multicluster) {
+		log.Warn().Msg("config reload: multicluster.* fields changed — restart required for these to take effect; routing/cache remain on the previous configuration")
+	}
+
 	// Update logging level if changed
 	a.configMutex.Lock()
 	oldLogLevel := a.config.Logging.Level
@@ -1315,6 +1345,13 @@ func (a *application) Start() error {
 	// Access the underlying MCPServer from our ClickHouseJWEServer
 	mcpServer := a.mcpServer.MCPServer
 
+	if cfg.Multicluster.Enabled {
+		if cfg.Server.Transport != config.HTTPTransport {
+			return fmt.Errorf("multicluster mode requires transport: http (got %q) — stdio/sse cannot carry per-cluster routing", cfg.Server.Transport)
+		}
+		return a.startMulticlusterHTTPServer(cfg)
+	}
+
 	switch cfg.Server.Transport {
 	case config.StdioTransport:
 		return a.startSTDIOServer(mcpServer)
@@ -1328,4 +1365,113 @@ func (a *application) Start() error {
 	default:
 		return fmt.Errorf("unsupported transport type: %s", cfg.Server.Transport)
 	}
+}
+
+// startMulticlusterHTTPServer wires up the HTTP server for multi-cluster
+// mode (cfg.Multicluster.Enabled). Routes:
+//
+//	GET  /health, /livez, /oauth/*, /.well-known/oauth-protected-resource
+//	GET  /.well-known/oauth-protected-resource/mcp/{cluster}
+//	GET  /mcp/{cluster}/.well-known/oauth-protected-resource
+//	*    /mcp/{cluster}        ← multi-cluster MCP entrypoint
+//
+// /mcp/{cluster} chain (outer to inner):
+//   - corsHandler, stripTrailingSlash (mux-wide)
+//   - mcRouter.Middleware: extracts {cluster}, validates, expands host,
+//     injects (cluster, reqCfg) on ctx.
+//   - createMCPAuthInjector: existing OAuth bearer extraction.
+//   - serverInjector (existing): MCP server on ctx.
+//   - StreamableHTTPHandler with MulticlusterServerFactory.GetServer:
+//     per-(bearer,cluster) fresh *mcp.Server populated with cached tools.
+//
+// dynamicToolsInjector is bypassed in MC mode: a global EnsureDynamicTools
+// would poison cross-tenant catalogs. The MulticlusterServerFactory
+// consults the catalog cache for the right (bearer, cluster) entry on
+// each request and builds a fresh server.
+func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.Port)
+	log.Info().
+		Str("address", addr).
+		Msg("Starting MCP server with multi-cluster HTTP transport")
+
+	corsHandler := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	authInjector := a.createMCPAuthInjector(cfg)
+	serverInjector := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	factory := altinitymcp.NewMulticlusterServerFactory(cfg, a.mcpServer, a.mcCache, version)
+	sdkHandler := mcp.NewStreamableHTTPHandler(factory.GetServer, &mcp.StreamableHTTPOptions{Stateless: true})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", a.healthHandler)
+	mux.HandleFunc("/livez", a.livenessHandler)
+	a.registerOAuthHTTPRoutes(mux)
+	a.registerMulticlusterPRMRoutes(mux)
+
+	mcpHandler := a.mcRouter.Middleware(authInjector(serverInjector(sdkHandler)))
+	mux.Handle("/mcp/{cluster}", mcpHandler)
+	mux.Handle("/mcp/{cluster}/", mcpHandler)
+
+	httpHandler := stripTrailingSlash(corsHandler(mux))
+
+	a.setHTTPServer(&http.Server{
+		Addr:    addr,
+		Handler: httpHandler,
+	})
+
+	return a.startHTTPServerWithTLS(cfg, addr, "http")
+}
+
+// registerMulticlusterPRMRoutes registers the per-cluster RFC 9728 PRM
+// routes so claude.ai / ChatGPT can auto-discover the protected-resource
+// metadata when the user types just the /mcp/{cluster} URL into the
+// connector form.
+//
+// Three routes share the same handler (`handlePRMCluster`):
+//
+//	/.well-known/oauth-protected-resource/mcp/{cluster}    ← RFC 9728 §3.1
+//	/mcp/{cluster}/.well-known/oauth-protected-resource    ← MCP-client probe path
+//
+// (The host-root /.well-known/oauth-protected-resource is owned by the
+// existing registerOAuthHTTPRoutes — we don't override it.)
+//
+// In v1 the body is identical to the host-root PRM (shared audience).
+// Per-cluster audience is v2.
+func (a *application) registerMulticlusterPRMRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp/{cluster}", a.handlePRMCluster)
+	mux.HandleFunc("GET /mcp/{cluster}/.well-known/oauth-protected-resource", a.handlePRMCluster)
+}
+
+func (a *application) handlePRMCluster(w http.ResponseWriter, r *http.Request) {
+	cluster := r.PathValue("cluster")
+	if !altinitymcp.IsValidClusterName(cluster) {
+		http.NotFound(w, r)
+		return
+	}
+	if a.mcRouter == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := a.mcRouter.ValidateClusterAllowed(cluster); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	a.handleOAuthProtectedResource(w, r)
 }

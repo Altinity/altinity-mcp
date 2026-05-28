@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -165,31 +166,29 @@ func TestOAuthPendingAuthAndAuthCodeRoundTrip(t *testing.T) {
 	})
 }
 
-// --- MCP auth injector is a pure forwarder ------------------------------
+// --- MCP auth injector passes bearer context ----------------------------
 
-// The refactor moved per-request JWT validation to the CH-side ch-jwt-verify
-// sidecar (gating mode) / Antalya's token_processors (forward mode). MCP's
-// injector now just confirms a bearer is present and threads it into the
-// context — anything else is the CH-side authenticator's responsibility.
+// Per-request JWT validation is handled by the CH-side ch-jwt-verify sidecar or
+// Antalya's token_processors. MCP's injector confirms a bearer is present and
+// threads it into the context; the CH-side authenticator owns the rest.
 //
 // Note for security reviewers: the previous version of this test asserted
 // that wrong-audience / expired / unsigned JWTs were rejected at the MCP
-// edge with HTTP 401. That protection now lives at the data-plane gate:
-//   - gating mode: the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper)
+// edge with HTTP 401. That protection now lives at the data plane:
+//   - broker=false: the ch-jwt-verify sidecar (github.com/altinity/altinity-oauth-helper)
 //     covers signature, aud byte-equal, exp/nbf, scope, identity policy,
 //     user-vs-claim match.
-//   - forward mode: ClickHouse's <token_processors> re-validates the same
+//   - OAuth: ClickHouse's <token_processors> re-validates the same
 //     JWT against the upstream JWKS on every query.
 //
 // The MCP layer intentionally does not duplicate those checks.
-func TestOAuthMCPAuthInjectorForwardsBearer(t *testing.T) {
+func TestOAuthMCPAuthInjectorPassesBearerContext(t *testing.T) {
 	t.Parallel()
 	provider := newRegressionOIDCProvider(t, nil, nil)
 	cfg := config.Config{
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:  true,
-				Mode:     "forward",
 				Issuer:   provider.server.URL,
 				JWKSURL:  provider.server.URL + "/jwks",
 				Audience: "clickhouse-api",
@@ -267,7 +266,6 @@ func TestOAuthForwardModeTokenResourceMismatch(t *testing.T) {
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:             true,
-				Mode:                "forward",
 				Issuer:              "https://idp.example.com",
 				PublicAuthServerURL: "https://mcp.example.com",
 				SigningSecret:       signingSecret,
@@ -322,7 +320,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
+			Broker:              true,
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-aliases-32-bytes!!!!!",
@@ -332,7 +330,7 @@ func TestRegisterOAuthHTTPRoutesAliases(t *testing.T) {
 	app.registerOAuthHTTPRoutes(mux)
 
 	// Each alias path must return the same JSON document (modulo OIDC's
-	// id_token_signing_alg_values_supported extra in gating-mode openid
+	// id_token_signing_alg_values_supported extra in resource-server openid
 	// configuration — we run forward so neither path adds it).
 	for _, path := range []string{
 		"/.well-known/oauth-authorization-server",
@@ -413,7 +411,6 @@ func TestCIMDFullAuthCodeFlow(t *testing.T) {
 		Server: config.ServerConfig{
 			OAuth: config.OAuthConfig{
 				Enabled:             true,
-				Mode:                "forward",
 				Issuer:              upstream.URL,
 				JWKSURL:             upstream.URL + "/jwks",
 				AuthURL:             upstream.URL + "/authorize",
@@ -504,7 +501,7 @@ func TestOAuthRegisterGone(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
+			Broker:              true,
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-410-32bytes!!!!!!!!!!!",
@@ -529,7 +526,6 @@ func TestOAuthTokenRefreshGrantUnsupported(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-refresh-32bytes!!!!!!!",
@@ -549,6 +545,96 @@ func TestOAuthTokenRefreshGrantUnsupported(t *testing.T) {
 	require.Equal(t, "unsupported_grant_type", body["error"])
 }
 
+func TestOAuthTokenAuthCode_AudienceBrokerExpiresInFollowsAccessToken(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID    = "https://client.example.com/metadata.json"
+		redirectURI = "https://demo.example.com/callback"
+	)
+	cimdServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"client_id":%q,"client_name":"D","redirect_uris":[%q],"token_endpoint_auth_method":"none"}`, clientID, redirectURI)
+	}))
+	defer cimdServer.Close()
+
+	now := time.Now()
+	accessToken := makeUnsignedJWT(t, map[string]interface{}{
+		"email": "alice@example.com",
+		"aud":   "https://api.example.com",
+		"exp":   now.Add(10 * time.Minute).Unix(),
+	})
+	provider := newRegressionOIDCProvider(t, nil, nil)
+	idToken := provider.issueIDToken(t, map[string]interface{}{
+		"iss":   provider.server.URL,
+		"aud":   "broker-client",
+		"sub":   "alice",
+		"email": "alice@example.com",
+		"exp":   now.Add(time.Hour).Unix(),
+	})
+	provider.tokenResp = map[string]interface{}{
+		"access_token": accessToken,
+		"id_token":     idToken,
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	}
+
+	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
+		Enabled:             true,
+		Broker:              true,
+		Issuer:              provider.server.URL,
+		JWKSURL:             provider.server.URL + "/jwks",
+		AuthURL:             provider.server.URL + "/authorize",
+		TokenURL:            provider.server.URL + "/token",
+		ClientID:            "broker-client",
+		ClientSecret:        "s",
+		Audience:            "https://api.example.com",
+		PublicAuthServerURL: "https://mcp.example.com",
+		SigningSecret:       "regression-access-expiry-32bytes!!",
+	}}}
+	app := &application{
+		config:       cfg,
+		mcpServer:    altinitymcp.NewClickHouseMCPServer(cfg, "test"),
+		cimdResolver: testResolver(t, cimdServer),
+	}
+
+	verifier, err := broker.NewPKCEVerifier()
+	require.NoError(t, err)
+	issued := oauthIssuedCode{
+		ClientID:             clientID,
+		RedirectURI:          redirectURI,
+		Scope:                "openid email",
+		CodeChallenge:        broker.PKCEChallenge(verifier),
+		CodeChallengeMethod:  "S256",
+		UpstreamAuthCode:     "upstream-code",
+		UpstreamPKCEVerifier: "upstream-verifier",
+		ExpiresAt:            time.Now().Add(60 * time.Second),
+	}
+	code, err := app.encodeAuthCode(issued)
+	require.NoError(t, err)
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", issued.ClientID)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("code", code)
+	form.Set("code_verifier", verifier)
+	req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	require.NoError(t, req.ParseForm())
+
+	rr := httptest.NewRecorder()
+	app.handleOAuthTokenAuthCode(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	require.Equal(t, accessToken, body["access_token"])
+	expiresIn, ok := body["expires_in"].(float64)
+	require.True(t, ok)
+	require.Greater(t, expiresIn, float64(8*time.Minute/time.Second))
+	require.Less(t, expiresIn, float64(12*time.Minute/time.Second), "must use access-token exp, not the one-hour id_token/token response expiry")
+}
+
 // --- AS metadata shape ---------------------------------------------------
 
 func TestOAuthASMetadataShape(t *testing.T) {
@@ -556,7 +642,6 @@ func TestOAuthASMetadataShape(t *testing.T) {
 	app := &application{
 		config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 			Enabled:             true,
-			Mode:                "forward",
 			Issuer:              "https://idp.example.com",
 			PublicAuthServerURL: "https://mcp.example.com",
 			SigningSecret:       "regression-shape-32bytes!!!!!!!!!",
@@ -608,7 +693,6 @@ func TestOAuthTokenUpstream200WithErrorBody(t *testing.T) {
 
 	cfg := config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{
 		Enabled:             true,
-		Mode:                "forward",
 		Issuer:              upstream.URL,
 		JWKSURL:             upstream.URL + "/jwks",
 		AuthURL:             upstream.URL + "/authorize",
@@ -652,7 +736,7 @@ func TestOAuthTokenUpstream200WithErrorBody(t *testing.T) {
 
 // --- helpers -------------------------------------------------------------
 
-// regressionOIDCProvider is a small fake OIDC AS used by the forward-mode
+// regressionOIDCProvider is a small fake OIDC AS used by the OAuth
 // JWT validation tests. It signs id_tokens with RS256 and exposes JWKS at
 // /jwks so altinitymcp.ValidateUpstreamIdentityToken can verify them.
 type regressionOIDCProvider struct {
@@ -736,6 +820,14 @@ func (p *regressionOIDCProvider) issueIDToken(t *testing.T, claims map[string]in
 	tok, err := obj.CompactSerialize()
 	require.NoError(t, err)
 	return tok
+}
+
+func makeUnsignedJWT(t *testing.T, claims map[string]interface{}) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 // Avoid unused-import errors if some sub-tests get gated off.

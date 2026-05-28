@@ -360,7 +360,7 @@ func TestHandleOAuthTokenAuthCode_LenientPrivateKeyJWT(t *testing.T) {
 	// helper directly. parseCIMDMetadata only fails on bad shape, so
 	// reaching here proves the parser accepts both methods (covered);
 	// the lenient runtime branch is exercised by integration tests in
-	// oauth_regression_test.go via the broker_upstream flow. This unit
+	// oauth_regression_test.go via the broker flow. This unit
 	// test guards the parser-side accept of "private_key_jwt" against a
 	// future revert to strict-mode-only.
 }

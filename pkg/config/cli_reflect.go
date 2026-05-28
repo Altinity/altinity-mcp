@@ -4,9 +4,15 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/urfave/cli/v3"
 )
+
+// durationType is the reflect.Type for time.Duration. Compared by type (not
+// kind) because Duration is an int64 alias; without the type-level check we
+// would route Durations through the int branch and lose unit parsing.
+var durationType = reflect.TypeOf(time.Duration(0))
 
 // Command is the subset of urfave/cli/v3 *cli.Command that ApplyFlags needs.
 // It mirrors the same interface used by overrideWithCLIFlags so the helper
@@ -94,6 +100,18 @@ func makeFlag(flagName, envVar, desc, defaultStr string, value reflect.Value) cl
 	if envVar != "" {
 		sources = cli.EnvVars(envVar)
 	}
+	// time.Duration is technically Kind()==Int64 — handle it as a string flag
+	// with time.ParseDuration so operators can write "15m" / "60s" instead of
+	// strconv.Atoi("15m") tripping at flag-build time.
+	if value.Type() == durationType {
+		defaultVal := defaultStr
+		if defaultStr != "" {
+			if _, err := time.ParseDuration(defaultStr); err != nil {
+				panic(fmt.Sprintf("config: bad default for duration flag %s: %v", flagName, err))
+			}
+		}
+		return &cli.StringFlag{Name: flagName, Usage: desc, Value: defaultVal, Sources: sources}
+	}
 	switch value.Kind() {
 	case reflect.String:
 		return &cli.StringFlag{Name: flagName, Usage: desc, Value: defaultStr, Sources: sources}
@@ -130,6 +148,20 @@ func makeFlag(flagName, envVar, desc, defaultStr string, value reflect.Value) cl
 }
 
 func applyOne(flagName, defaultStr string, value reflect.Value, cmd Command) {
+	// time.Duration: flag is a StringFlag carrying a parseable duration.
+	if value.Type() == durationType {
+		switch {
+		case cmd.IsSet(flagName):
+			if d, err := time.ParseDuration(cmd.String(flagName)); err == nil {
+				value.SetInt(int64(d))
+			}
+		case value.IsZero() && defaultStr != "":
+			if d, err := time.ParseDuration(defaultStr); err == nil {
+				value.SetInt(int64(d))
+			}
+		}
+		return
+	}
 	switch value.Kind() {
 	case reflect.String:
 		switch {
