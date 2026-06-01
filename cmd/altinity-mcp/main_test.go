@@ -3251,7 +3251,7 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 	resourceServerBase := func() config.OAuthConfig {
 		return config.OAuthConfig{
 			Enabled:  true,
-			Issuer:   "https://altinity.auth0.com/",
+			Issuer:   "https://example.us.auth0.com/",
 			Audience: "https://example-mcp.test/",
 		}
 	}

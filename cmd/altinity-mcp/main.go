@@ -1168,7 +1168,7 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		}
 	} else {
 		if strings.TrimSpace(cfg.Server.OAuth.Issuer) == "" {
-			return fmt.Errorf("oauth: broker=false requires oauth.issuer (the external AS, e.g. https://altinity.auth0.com/ or https://accounts.google.com)")
+			return fmt.Errorf("oauth: broker=false requires oauth.issuer (the external AS, e.g. https://your-tenant.us.auth0.com/ or https://accounts.google.com)")
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
 			return fmt.Errorf("oauth: broker=false requires oauth.audience — it must byte-equal the MCP public resource URL (RFC 8707)")

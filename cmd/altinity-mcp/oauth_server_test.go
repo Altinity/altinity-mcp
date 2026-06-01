@@ -748,7 +748,7 @@ func TestBrokerAudience(t *testing.T) {
 		o.Enabled = true
 		return &application{config: config.Config{Server: config.ServerConfig{OAuth: o}}}
 	}
-	const auth0 = "https://altinity.auth0.com/"
+	const auth0 = "https://example.us.auth0.com/"
 	const google = "https://accounts.google.com"
 	const aud = "https://otel-mcp.demo.altinity.cloud/"
 
