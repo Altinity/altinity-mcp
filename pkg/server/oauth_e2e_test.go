@@ -219,6 +219,7 @@ func TestOAuthE2EWithMockOIDC(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query="+query, nil)
 			req.Header.Set("Authorization", "Bearer "+generateUnsignedJWT(t, map[string]any{
 				"sub":   "forged-user",
+				"email": "forged@forged-issuer.invalid",
 				"iss":   "http://forged-issuer.invalid",
 				"aud":   []string{"forged-client"},
 				"exp":   time.Now().Add(10 * time.Minute).Unix(),
