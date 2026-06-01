@@ -208,11 +208,11 @@ func TestOAuthMCPAuthInjectorPassesBearerContext(t *testing.T) {
 		return httptest.NewRecorder(), req
 	}
 
-	t.Run("any bearer reaches handler verbatim", func(t *testing.T) {
+	t.Run("unexpired bearer reaches handler verbatim", func(t *testing.T) {
 		t.Parallel()
-		// MCP no longer validates the JWT here — even a wrong-audience or
-		// expired token reaches the inner handler. The sidecar / token
-		// processor is the cryptographic gate.
+		// MCP does only an exp-only check here (no signature/aud/scope) — a
+		// wrong-audience but unexpired token still reaches the inner handler.
+		// The sidecar / token processor is the cryptographic gate.
 		tok := provider.issueIDToken(t, map[string]interface{}{
 			"sub": "u-good",
 			"iss": provider.server.URL,
@@ -228,6 +228,49 @@ func TestOAuthMCPAuthInjectorPassesBearerContext(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})).ServeHTTP(rr, req)
 		require.True(t, called)
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("expired bearer rejected with 401 on tools/list", func(t *testing.T) {
+		t.Parallel()
+		// Regression for the claude.ai "stuck with one tool" state
+		// (anthropics/claude-code#46328): an expired token must yield a
+		// transport-level 401 even on tools/list, so the client re-authorizes.
+		tok := provider.issueIDToken(t, map[string]interface{}{
+			"sub": "u-stale",
+			"iss": provider.server.URL,
+			"aud": "clickhouse-api",
+			"exp": time.Now().Add(-time.Hour).Unix(),
+			"iat": time.Now().Add(-2 * time.Hour).Unix(),
+		})
+		body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		req := httptest.NewRequest(http.MethodPost, "https://mcp.example.com/", body)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		called := false
+		app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rr, req)
+		require.False(t, called, "expired token must not reach inner handler")
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		challenge := rr.Header().Get("WWW-Authenticate")
+		require.Contains(t, challenge, `error="invalid_token"`)
+		require.Contains(t, challenge, `error_description="OAuth token expired"`)
+	})
+
+	t.Run("opaque bearer soft-passes", func(t *testing.T) {
+		t.Parallel()
+		// Non-JWT (opaque) tokens cannot be exp-checked locally; they must
+		// soft-pass and let the CH sidecar validate, preserving forward-mode.
+		rr, req := mkReq("opaque-access-token-not-a-jwt")
+		called := false
+		app.createMCPAuthInjector(app.config)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rr, req)
+		require.True(t, called, "opaque token must reach inner handler")
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
 

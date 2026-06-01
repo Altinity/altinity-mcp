@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
@@ -216,5 +218,81 @@ func TestEmailFromUnverifiedJWT(t *testing.T) {
 		got, ok := emailFromUnverifiedJWT(tok)
 		require.True(t, ok)
 		require.Equal(t, "alice@example.com", got)
+	})
+}
+
+// jwtWithClaims builds an unsigned-but-well-formed three-segment JWT string
+// (the signature segment is a dummy) for exp-claim tests. unverifiedExp never
+// checks the signature, so this is sufficient.
+func jwtWithClaims(t *testing.T, claims map[string]interface{}) string {
+	t.Helper()
+	body, err := json.Marshal(claims)
+	require.NoError(t, err)
+	return "header." + base64.RawURLEncoding.EncodeToString(body) + ".sig"
+}
+
+func TestUnverifiedExpAndOAuthTokenExpired(t *testing.T) {
+	t.Parallel()
+	srv := &ClickHouseJWEServer{Config: config.Config{
+		Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true}},
+	}}
+
+	t.Run("expired_jwt", func(t *testing.T) {
+		t.Parallel()
+		exp := time.Now().Add(-time.Hour).Unix()
+		tok := jwtWithClaims(t, map[string]interface{}{"exp": exp})
+		gotExp, isJWT := unverifiedExp(tok)
+		require.True(t, isJWT)
+		require.Equal(t, exp, gotExp)
+		require.True(t, srv.OAuthTokenExpired(tok))
+	})
+
+	t.Run("unexpired_jwt", func(t *testing.T) {
+		t.Parallel()
+		tok := jwtWithClaims(t, map[string]interface{}{"exp": time.Now().Add(time.Hour).Unix()})
+		_, isJWT := unverifiedExp(tok)
+		require.True(t, isJWT)
+		require.False(t, srv.OAuthTokenExpired(tok))
+	})
+
+	t.Run("within_clock_skew_not_expired", func(t *testing.T) {
+		t.Parallel()
+		// Expired 30s ago — inside the 60s skew window, so NOT treated as expired.
+		tok := jwtWithClaims(t, map[string]interface{}{"exp": time.Now().Add(-30 * time.Second).Unix()})
+		require.False(t, srv.OAuthTokenExpired(tok))
+	})
+
+	t.Run("opaque_token_softpasses", func(t *testing.T) {
+		t.Parallel()
+		_, isJWT := unverifiedExp("opaque-access-token")
+		require.False(t, isJWT)
+		require.False(t, srv.OAuthTokenExpired("opaque-access-token"))
+	})
+
+	t.Run("jwt_without_exp_softpasses", func(t *testing.T) {
+		t.Parallel()
+		tok := jwtWithClaims(t, map[string]interface{}{"sub": "u-1"})
+		gotExp, isJWT := unverifiedExp(tok)
+		require.True(t, isJWT)
+		require.Zero(t, gotExp)
+		require.False(t, srv.OAuthTokenExpired(tok))
+	})
+
+	t.Run("exp_as_float_parsed", func(t *testing.T) {
+		t.Parallel()
+		// json numbers can decode as float; ensure fractional exp still works.
+		raw := time.Now().Add(-time.Hour).Unix()
+		tok := "header." + base64.RawURLEncoding.EncodeToString(
+			[]byte(fmt.Sprintf(`{"exp":%d.5}`, raw))) + ".sig"
+		gotExp, isJWT := unverifiedExp(tok)
+		require.True(t, isJWT)
+		require.Equal(t, raw, gotExp)
+		require.True(t, srv.OAuthTokenExpired(tok))
+	})
+
+	t.Run("malformed_payload_softpasses", func(t *testing.T) {
+		t.Parallel()
+		_, isJWT := unverifiedExp("head.!!notbase64!!.sig")
+		require.False(t, isJWT)
 	})
 }

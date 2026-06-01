@@ -519,12 +519,20 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					a.writeOAuthError(w, r, altinitymcp.ErrMissingOAuthToken)
 					return
 				}
-				// The CH-side ch-jwt-verify sidecar performs signature/iss/aud/
-				// exp/scope validation against the upstream JWKS for every query.
-				// Per-request validation here would duplicate work for opaque
-				// tokens and add a JWKS hop on the hot path. Claims
-				// stay unset on the context — ClaimsFromContext returns nil
-				// either way, so no downstream nil-deref risk.
+				// Reject expired tokens at the transport layer so EVERY MCP
+				// method — including tools/list — returns a 401 with
+				// WWW-Authenticate: Bearer error="invalid_token". We issue no
+				// refresh tokens (#115), and claude.ai otherwise gets stuck
+				// showing stale tools instead of re-authorizing when its token
+				// lapses (anthropics/claude-code#46328). This is an exp-only
+				// check (signature NOT verified): the CH-side ch-jwt-verify
+				// sidecar still does full signature/iss/aud/scope validation per
+				// query, so we avoid a JWKS hop on the hot path. Opaque/non-JWT
+				// tokens soft-pass (OAuthTokenExpired returns false).
+				if a.mcpServer.OAuthTokenExpired(oauthToken) {
+					a.writeOAuthError(w, r, altinitymcp.ErrOAuthTokenExpired)
+					return
+				}
 				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, oauthToken)
 			}
 
