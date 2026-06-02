@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.1
-	github.com/Altinity/clickhouse-go/v2 v2.45.1-0.20260424134931-fb5f38b1cac7
+	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/franchb/embedded-clickhouse v0.4.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/modelcontextprotocol/go-sdk v1.6.1
