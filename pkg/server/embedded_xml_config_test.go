@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/Altinity/clickhouse-go/v2"
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/stretchr/testify/require"
 )
 
