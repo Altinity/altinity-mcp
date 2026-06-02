@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
@@ -385,4 +386,67 @@ func emailFromUnverifiedJWT(token string) (string, bool) {
 		return e, true
 	}
 	return "", false
+}
+
+// oauthExpiryClockSkewSecs tolerates small clock differences between this
+// server and the IdP that signed the token so a token expiring within seconds
+// does not bounce clients with slightly fast clocks.
+const oauthExpiryClockSkewSecs = 60
+
+// unverifiedExp decodes the JWT payload WITHOUT verifying the signature and
+// returns the `exp` claim. isJWT is false for anything that is not a
+// three-segment JWT with a decodable payload (opaque tokens, malformed input) —
+// callers treat that as "cannot tell, soft-pass". Crypto validation (signature,
+// iss, aud, scope) stays delegated to the CH-side ch-jwt-verify sidecar per
+// query; this only catches the expiry case so the MCP transport can return a
+// 401 on tools/list instead of letting an expired session linger as stale tools.
+func unverifiedExp(token string) (exp int64, isJWT bool) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		// Some IdPs emit padded segments; try the std encoding as a fallback.
+		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
+			log.Debug().Err(err).Msg("oauth: failed to base64-decode JWT payload for exp")
+			return 0, false
+		}
+	}
+	var raw struct {
+		Exp json.Number `json:"exp"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(payload)))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
+		log.Debug().Err(err).Msg("oauth: failed to JSON-parse JWT payload for exp")
+		return 0, false
+	}
+	if raw.Exp == "" {
+		// Valid JWT but no exp claim — nothing to expire on.
+		return 0, true
+	}
+	v, err := raw.Exp.Int64()
+	if err != nil {
+		// exp present but non-numeric/float; fall back to float parse.
+		f, ferr := raw.Exp.Float64()
+		if ferr != nil {
+			log.Debug().Err(err).Msg("oauth: JWT exp claim is not numeric")
+			return 0, true
+		}
+		v = int64(f)
+	}
+	return v, true
+}
+
+// OAuthTokenExpired reports whether token is a JWT whose `exp` claim is in the
+// past (with clock skew). Opaque/non-JWT tokens and JWTs without an exp claim
+// return false (soft-pass) so forward-mode and opaque-token deployments keep
+// working unchanged. Signature is NOT verified — see unverifiedExp.
+func (s *ClickHouseJWEServer) OAuthTokenExpired(token string) bool {
+	exp, isJWT := unverifiedExp(token)
+	if !isJWT || exp <= 0 {
+		return false
+	}
+	return time.Now().Unix() > exp+oauthExpiryClockSkewSecs
 }
