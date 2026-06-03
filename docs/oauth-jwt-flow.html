@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OAuth &amp; JWT: Claude / ChatGPT → ClickHouse — Altinity MCP</title>
+<style>
+  :root{
+    --bg0:#0d0f16; --bg1:#161a26; --card:#1c2130; --card2:#232a3d;
+    --line:#33415c; --txt:#e7eaf2; --mut:#94a0bb; --dim:#6b7793;
+    --client:#6ea8fe;  /* claude / chatgpt */
+    --mcp:#ffcc33;     /* altinity mcp */
+    --idp:#c08bff;     /* auth0 / google */
+    --ch:#ff8fab;      /* clickhouse */
+    --side:#5fd98a;    /* sidecar */
+    --bad:#ff6b6b; --good:#5fd98a;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 70% -10%,#1d2640 0%,var(--bg0) 55%) fixed;
+    color:var(--txt); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .deck{height:100vh;width:100vw;position:relative}
+  .slide{
+    position:absolute; inset:0; display:none; flex-direction:column;
+    padding:4.2vh 5vw 7vh; opacity:0; transition:opacity .35s ease;
+    overflow:auto;
+  }
+  .slide.active{display:flex; opacity:1}
+  h1{font-size:clamp(28px,4.4vw,56px); line-height:1.05; margin:.1em 0 .15em; letter-spacing:-.02em}
+  h2{font-size:clamp(22px,2.9vw,40px); margin:0 0 .5em; letter-spacing:-.015em}
+  h2 .k{color:var(--mcp)}
+  p,li{font-size:clamp(14px,1.45vw,20px); line-height:1.5; color:var(--txt)}
+  .sub{color:var(--mut)}
+  .lead{color:var(--mut); max-width:60ch}
+  code,.mono{font-family:var(--mono)}
+  code{background:#0c1322; border:1px solid var(--line); padding:.08em .4em; border-radius:6px; font-size:.86em; color:#cfe3ff}
+  .tag{display:inline-block;font-family:var(--mono);font-size:.72em;letter-spacing:.04em;text-transform:uppercase;padding:.2em .6em;border-radius:999px;border:1px solid var(--line);color:var(--mut)}
+  .fill{flex:1; display:flex; flex-direction:column; justify-content:center}
+  .center{align-items:center; text-align:center}
+  .muted{color:var(--mut)}
+  .small{font-size:clamp(12px,1.15vw,16px)}
+  ul{margin:.3em 0; padding-left:1.1em}
+  li{margin:.32em 0}
+  b.cl{color:var(--client)} b.mc{color:var(--mcp)} b.id{color:var(--idp)} b.ch{color:var(--ch)} b.sd{color:var(--side)}
+
+  /* node/flow diagram */
+  .row{display:flex; align-items:stretch; gap:0; flex-wrap:wrap; justify-content:center}
+  .node{
+    background:var(--card); border:1.5px solid var(--line); border-radius:14px;
+    padding:14px 16px; min-width:130px; text-align:center; position:relative;
+  }
+  .node .t{font-weight:700; font-size:clamp(13px,1.35vw,18px)}
+  .node .d{color:var(--mut); font-size:clamp(10px,1.0vw,13px); margin-top:3px}
+  .node.client{border-color:var(--client)} .node.client .t{color:var(--client)}
+  .node.mcp{border-color:var(--mcp)} .node.mcp .t{color:var(--mcp)}
+  .node.idp{border-color:var(--idp)} .node.idp .t{color:var(--idp)}
+  .node.ch{border-color:var(--ch)} .node.ch .t{color:var(--ch)}
+  .node.side{border-color:var(--side)} .node.side .t{color:var(--side)}
+  .arrow{display:flex;align-items:center;color:var(--dim);font-size:22px;padding:0 6px}
+  .arrow.lbl{flex-direction:column;justify-content:center;min-width:90px}
+  .arrow.lbl .a{font-family:var(--mono);font-size:11px;color:var(--mut);text-align:center;line-height:1.25}
+
+  /* generic grid */
+  .grid{display:grid;gap:18px}
+  .cols-2{grid-template-columns:1fr 1fr}
+  .cols-3{grid-template-columns:1fr 1fr 1fr}
+  .panel{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:18px 20px}
+  .panel h3{margin:.1em 0 .5em;font-size:clamp(15px,1.7vw,22px)}
+  .panel.mcp{border-color:rgba(255,204,51,.5)}
+  .panel.cl{border-color:rgba(110,168,254,.5)}
+  .panel.ch{border-color:rgba(255,143,171,.5)}
+  .panel.sd{border-color:rgba(95,217,138,.5)}
+
+  /* sequence steps */
+  .seq{display:flex;flex-direction:column;gap:9px;max-width:1100px;margin:0 auto;width:100%}
+  .step{display:grid;grid-template-columns:34px 150px 1fr;align-items:center;gap:14px;
+        background:var(--card);border:1px solid var(--line);border-radius:11px;padding:9px 14px}
+  .step .n{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+           font-family:var(--mono);font-weight:700;background:#0c1322;border:1.5px solid var(--mcp);color:var(--mcp);font-size:14px}
+  .step .who{font-family:var(--mono);font-size:12px;color:var(--mut);line-height:1.25}
+  .step .what{font-size:clamp(12.5px,1.3vw,17px)}
+  .step .what code{font-size:.82em}
+  .step.b .n{border-color:var(--client);color:var(--client)}
+  .step.g .n{border-color:var(--idp);color:var(--idp)}
+  .step.c .n{border-color:var(--ch);color:var(--ch)}
+
+  table{border-collapse:collapse;width:100%;font-size:clamp(12px,1.25vw,16.5px)}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:#0c1322;color:var(--mut);font-weight:600}
+  td code{font-size:.82em}
+  .yes{color:var(--good);font-weight:700} .no{color:var(--bad);font-weight:700}
+
+  .note{background:#0c1322;border-left:3px solid var(--mcp);border-radius:0 10px 10px 0;padding:10px 14px;color:var(--mut);font-size:clamp(12px,1.2vw,16px)}
+  .pill{display:inline-block;border-radius:999px;padding:.15em .7em;font-family:var(--mono);font-size:.8em;border:1px solid var(--line)}
+  .pill.basic{color:var(--side);border-color:rgba(95,217,138,.5)}
+  .pill.bearer{color:var(--client);border-color:rgba(110,168,254,.5)}
+
+  /* footer / nav */
+  .foot{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:space-between;
+        padding:10px 22px;font-size:12px;color:var(--dim);font-family:var(--mono);pointer-events:none}
+  .dots{display:flex;gap:7px;pointer-events:auto}
+  .dot{width:9px;height:9px;border-radius:50%;background:#2b3450;border:1px solid var(--line);cursor:pointer;transition:.2s}
+  .dot.on{background:var(--mcp);border-color:var(--mcp);transform:scale(1.2)}
+  .nav{position:fixed;bottom:14px;right:18px;display:flex;gap:8px;pointer-events:auto;z-index:5}
+  .nav button{background:var(--card);border:1px solid var(--line);color:var(--txt);border-radius:9px;
+              width:40px;height:34px;font-size:17px;cursor:pointer}
+  .nav button:hover{border-color:var(--mcp);color:var(--mcp)}
+  .brand{position:fixed;top:16px;right:22px;font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.08em}
+  .kbd{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .two-axis{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:1000px;margin:6px auto 0;width:100%}
+  .axis{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:16px 20px}
+  .axis .h{font-weight:700;font-size:clamp(15px,1.7vw,21px);margin-bottom:6px}
+  .axis.front{border-color:rgba(192,139,255,.5)} .axis.front .h{color:var(--idp)}
+  .axis.back{border-color:rgba(95,217,138,.5)} .axis.back .h{color:var(--side)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+  .legend span{font-size:12px;color:var(--mut);font-family:var(--mono)}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:middle}
+  .matrix td:first-child{background:#0c1322;font-weight:600;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="brand">ALTINITY&nbsp;MCP · OAuth &amp; JWT</div>
+<div class="deck" id="deck">
+
+  <!-- 1 — TITLE -->
+  <section class="slide active">
+    <div class="fill center">
+      <div class="tag">Technical walkthrough</div>
+      <h1>OAuth login &amp; JWT flow<br><span style="color:var(--mut)">from</span> Claude / ChatGPT <span style="color:var(--mut)">to</span> <span style="color:var(--ch)">ClickHouse</span></h1>
+      <p class="lead" style="margin-top:.6em">How an MCP client signs in through Altinity MCP, and how the user's
+      identity reaches ClickHouse — including the <b class="sd">ch-jwt-verify</b> sidecar for OSS ClickHouse.</p>
+      <div class="legend">
+        <span><i style="background:var(--client)"></i>MCP client (claude.ai / ChatGPT)</span>
+        <span><i style="background:var(--mcp)"></i>Altinity MCP</span>
+        <span><i style="background:var(--idp)"></i>Upstream IdP (Auth0 / Google)</span>
+        <span><i style="background:var(--ch)"></i>ClickHouse</span>
+        <span><i style="background:var(--side)"></i>ch-jwt-verify sidecar</span>
+      </div>
+      <p class="kbd" style="margin-top:1.4em">← → / Space to navigate · click dots to jump</p>
+    </div>
+  </section>
+
+  <!-- 2 — CAST / BIG PICTURE -->
+  <section class="slide">
+    <h2>The cast — <span class="k">one identity, four hops</span></h2>
+    <p class="lead">A single sign-in turns into a token that ClickHouse can trust, per query.</p>
+    <div class="fill">
+      <div class="row" style="margin:6px 0 18px">
+        <div class="node client"><div class="t">MCP client</div><div class="d">claude.ai · ChatGPT</div></div>
+        <div class="arrow lbl"><div class="a">OAuth<br>sign-in</div><div>→</div></div>
+        <div class="node mcp"><div class="t">Altinity MCP</div><div class="d">MCP server · tools</div></div>
+        <div class="arrow lbl"><div class="a">auth-code<br>flow</div><div>→</div></div>
+        <div class="node idp"><div class="t">Upstream IdP</div><div class="d">Auth0 · Google</div></div>
+      </div>
+      <div class="row" style="margin:0 0 6px">
+        <div class="node mcp"><div class="t">Altinity MCP</div><div class="d">holds user JWT</div></div>
+        <div class="arrow lbl"><div class="a">Bearer&nbsp;<i>or</i><br>Basic(email:JWT)</div><div>→</div></div>
+        <div class="node ch"><div class="t">ClickHouse</div><div class="d">runs the query</div></div>
+        <div class="arrow lbl"><div class="a">delegated<br>verify</div><div>→</div></div>
+        <div class="node side"><div class="t">ch-jwt-verify</div><div class="d">OSS sidecar</div></div>
+      </div>
+      <div class="note" style="margin-top:18px">Two questions decide everything: <b class="id">who is the OAuth Authorization Server to the client?</b>
+      (the <b>broker</b> axis) and <b class="sd">how does MCP prove the user to ClickHouse?</b> (the <b>gating vs forwarding</b> axis). They are independent.</div>
+    </div>
+  </section>
+
+  <!-- 3 — TWO AXES (key concept) -->
+  <section class="slide">
+    <h2>Two independent axes <span class="sub" style="font-size:.6em">— don't conflate them</span></h2>
+    <div class="two-axis">
+      <div class="axis front">
+        <div class="h">① Front door — <code>broker: true / false</code></div>
+        <p class="small">Who acts as the <b>OAuth Authorization Server</b> to claude.ai / ChatGPT?</p>
+        <ul class="small">
+          <li><b class="mc">broker: true</b> — MCP <i>is</i> the AS. It runs <code>/authorize</code>, <code>/callback</code>, <code>/token</code> and brokers the upstream IdP (CIMD inbound).</li>
+          <li><b>broker: false</b> — MCP is a <i>pure resource server</i>. The external IdP runs the whole auth-code flow; MCP only validates the bearer.</li>
+        </ul>
+      </div>
+      <div class="axis back">
+        <div class="h">② Back door — gating vs forwarding</div>
+        <p class="small">How does MCP authenticate the user <b>to ClickHouse</b>? <b>Auto-detected per endpoint</b>, cached for the server's lifetime.</p>
+        <ul class="small">
+          <li><span class="pill bearer">forwarding</span> <code>Authorization: Bearer &lt;JWT&gt;</code> — CH validates the JWT natively (ClickHouse Antalya's <code>token_processor</code>).</li>
+          <li><span class="pill basic">gating</span> <code>Basic base64(email:JWT)</code> — the <b class="sd">ch-jwt-verify</b> sidecar verifies per query (OSS CH).</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note" style="max-width:1000px;margin:16px auto 0">Historically these were one knob (<code>mode: gating|forward</code>). Today they're <b>orthogonal</b>:
+    the front door is config (<code>broker</code>); the back door is <b>discovered at runtime</b> (Bearer first, fall back to Basic on an auth error).</div>
+  </section>
+
+  <!-- 4 — BROKER TRUE flow -->
+  <section class="slide">
+    <h2><code>broker: true</code> — <span class="k">MCP is the Authorization Server</span></h2>
+    <p class="lead">Canonical mode. MCP fronts an IdP that clients can't talk to directly, using <b>CIMD</b> (no Dynamic Client Registration).</p>
+    <div class="seq">
+      <div class="step b"><div class="n">1</div><div class="who">client → MCP</div><div class="what">GET <code>/oauth/authorize</code> · <code>client_id</code> is an <b>HTTPS CIMD URL</b> · PKCE&nbsp;S256 · resource indicator</div></div>
+      <div class="step"><div class="n">2</div><div class="who">MCP</div><div class="what">Resolves &amp; caches the <b>CIMD</b> doc (redirect_uris, <code>none</code> / <code>private_key_jwt</code>). Mints its <b>own</b> upstream PKCE. Packs state into a <b>JWE</b>.</div></div>
+      <div class="step g"><div class="n">3</div><div class="who">MCP → IdP</div><div class="what">302 to Auth0 / Google <code>/authorize</code> with MCP's <code>client_id</code> + <code>audience</code>. User logs in &amp; consents.</div></div>
+      <div class="step g"><div class="n">4</div><div class="who">IdP → MCP</div><div class="what">302 to <code>/oauth/callback?code=…</code>. MCP <b>does not redeem yet</b> — it wraps the upstream code into a 60s downstream JWE code.</div></div>
+      <div class="step b"><div class="n">5</div><div class="who">MCP → client</div><div class="what">302 to the client's <code>redirect_uri</code> with the downstream code.</div></div>
+      <div class="step b"><div class="n">6</div><div class="who">client → MCP</div><div class="what">POST <code>/oauth/token</code> · downstream code + PKCE verifier (+ <code>private_key_jwt</code> assertion for ChatGPT).</div></div>
+      <div class="step g"><div class="n">7</div><div class="who">MCP → IdP</div><div class="what"><b>Now</b> redeems the upstream code (client_secret + MCP's PKCE). Validates the returned <code>id_token</code>/<code>access_token</code>.</div></div>
+      <div class="step b"><div class="n">8</div><div class="who">MCP → client</div><div class="what">Returns the bearer <code>access_token</code>. <b>No downstream refresh token</b> — client re-authorizes on expiry.</div></div>
+    </div>
+    <div class="note" style="margin-top:12px"><b>Why defer redemption to step 7?</b> The upstream IdP becomes the single cross-replica
+    "used-codes" oracle — a replayed downstream code hits upstream <code>invalid_grant</code>. No shared state needed across MCP replicas.</div>
+  </section>
+
+  <!-- 5 — BROKER FALSE flow -->
+  <section class="slide">
+    <h2><code>broker: false</code> — <span class="k">MCP is a pure resource server</span></h2>
+    <p class="lead">Use when the upstream IdP natively supports CIMD. MCP exposes <b>no</b> <code>/authorize</code>·<code>/callback</code>·<code>/token</code>.</p>
+    <div class="fill">
+      <div class="row" style="margin:8px 0 16px">
+        <div class="node client"><div class="t">MCP client</div><div class="d">claude.ai · ChatGPT</div></div>
+        <div class="arrow lbl"><div class="a">full auth-code<br>flow (direct)</div><div>→</div></div>
+        <div class="node idp"><div class="t">Upstream IdP</div><div class="d">is the AS</div></div>
+        <div class="arrow lbl"><div class="a">issues<br>bearer JWT</div><div>→</div></div>
+        <div class="node client"><div class="t">MCP client</div><div class="d">holds JWT</div></div>
+      </div>
+      <div class="row">
+        <div class="node client"><div class="t">MCP client</div></div>
+        <div class="arrow lbl"><div class="a"><code>Bearer JWT</code></div><div>→</div></div>
+        <div class="node mcp"><div class="t">Altinity MCP</div><div class="d">validates sig · aud · scope</div></div>
+        <div class="arrow lbl"><div class="a">→ ClickHouse<br>(axis ②)</div><div>→</div></div>
+        <div class="node ch"><div class="t">ClickHouse</div></div>
+      </div>
+      <div class="grid cols-2" style="margin-top:18px">
+        <div class="panel"><h3 style="color:var(--idp)">Only endpoint MCP serves</h3>
+          <p class="small"><code>/.well-known/oauth-protected-resource</code> (RFC&nbsp;9728) — points <code>authorization_servers</code> at the <b>upstream issuer</b>. On 401 it returns <code>WWW-Authenticate: Bearer … resource_metadata=…</code>.</p></div>
+        <div class="panel"><h3 style="color:var(--idp)">Who does what</h3>
+          <p class="small">The IdP runs login, consent, code exchange &amp; (if any) refresh. MCP never sees a client secret — it just verifies the presented JWT and forwards identity to CH.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 — CIMD + endpoints -->
+  <section class="slide">
+    <h2>Broker endpoints &amp; <span class="k">CIMD</span> <span class="sub" style="font-size:.55em">(broker: true only)</span></h2>
+    <div class="grid cols-2" style="margin-top:6px">
+      <div class="panel mcp">
+        <h3>Endpoints exposed</h3>
+        <table>
+          <tr><th>Path</th><th>Role</th></tr>
+          <tr><td><code>/.well-known/oauth-protected-resource</code></td><td>RFC 9728 — always served</td></tr>
+          <tr><td><code>/.well-known/oauth-authorization-server</code></td><td>RFC 8414 AS metadata</td></tr>
+          <tr><td><code>/.well-known/openid-configuration</code></td><td>OIDC discovery</td></tr>
+          <tr><td><code>/oauth/authorize</code></td><td>start auth-code flow</td></tr>
+          <tr><td><code>/oauth/callback</code></td><td>receive upstream code</td></tr>
+          <tr><td><code>/oauth/token</code></td><td>redeem code → bearer</td></tr>
+          <tr><td><code>/oauth/register</code></td><td><span class="no">HTTP 410 Gone</span></td></tr>
+        </table>
+      </div>
+      <div class="panel">
+        <h3>CIMD — <span class="muted">Client ID Metadata Documents</span></h3>
+        <ul class="small">
+          <li><b>DCR is gone</b> (#115). <code>/oauth/register</code> → 410 with an RFC&nbsp;7591 error pointing at CIMD.</li>
+          <li>The <code>client_id</code> <b>is itself an HTTPS URL</b> to the client's published metadata.</li>
+          <li>MCP fetches &amp; validates it each flow: HTTPS-only, no query/fragment, port 443, ≤5&nbsp;KB, SSRF-guarded, LRU-cached.</li>
+          <li><code>token_endpoint_auth_method</code>: <code>none</code> (PKCE-only — claude.ai) or <code>private_key_jwt</code> (signed assertion via <code>jwks_uri</code> — ChatGPT).</li>
+          <li>Metadata advertises <code>client_id_metadata_document_supported: true</code>.</li>
+        </ul>
+        <div class="note" style="margin-top:8px">Two independent PKCE pairs: client↔MCP and MCP↔upstream. State travels as a stateless JWE, so any replica can finish the flow.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 — JWT → CH auto-detect -->
+  <section class="slide">
+    <h2>JWT → ClickHouse: <span class="k">the wire format is auto-detected</span></h2>
+    <p class="lead">On the first request to a CH endpoint, MCP probes — then caches the answer for the server's lifetime (per <code>host:port</code>).</p>
+    <div class="fill center">
+      <div class="seq" style="max-width:880px">
+        <div class="step c"><div class="n">1</div><div class="who">MCP</div><div class="what">Cache hit for <code>host:port</code>? → use the stored method, skip probing.</div></div>
+        <div class="step"><div class="n">2</div><div class="who">probe</div><div class="what">Try <span class="pill bearer">Bearer</span> <code>Authorization: Bearer &lt;JWT&gt;</code>. <code>NewClient</code> pings internally.</div></div>
+        <div class="step c"><div class="n">3a</div><div class="who">ping OK</div><div class="what"><span class="yes">→ cache <code>Bearer</code></span> · reuse the probe connection. <b>(forwarding)</b></div></div>
+        <div class="step"><div class="n">3b</div><div class="who">auth error</div><div class="what">Decode <code>email</code> from the <b>unverified</b> JWT payload (or namespaced <code>*/email</code>).</div></div>
+        <div class="step c"><div class="n">4</div><div class="who">probe</div><div class="what">Try <span class="pill basic">Basic</span> <code>base64(email:JWT)</code> → <span class="yes">cache <code>Basic</code></span>. <b>(gating)</b></div></div>
+      </div>
+      <div class="note" style="max-width:880px;margin-top:14px">The email in the Basic <i>username</i> is just a hint so the sidecar knows who to check —
+      the <b class="sd">sidecar still verifies the JWT signature</b> and rejects any mismatch between the signed email and the Basic user.</div>
+    </div>
+  </section>
+
+  <!-- 8 — GATING / sidecar (OSS) -->
+  <section class="slide">
+    <h2>Gating mode + <span class="k">ch-jwt-verify</span> <span class="sub" style="font-size:.55em">— OSS ClickHouse</span></h2>
+    <p class="lead">OSS ClickHouse can't verify a JWT itself, so it <b>delegates</b> to a colocated sidecar over loopback.</p>
+    <div class="fill">
+      <div class="row" style="margin:6px 0 14px">
+        <div class="node mcp"><div class="t">Altinity MCP</div></div>
+        <div class="arrow lbl"><div class="a"><code>Basic</code><br>base64(email:JWT)</div><div>→</div></div>
+        <div class="node ch"><div class="t">ClickHouse</div><div class="d">http_authentication_servers</div></div>
+        <div class="arrow lbl"><div class="a">delegate over<br>loopback</div><div>→</div></div>
+        <div class="node side"><div class="t">ch-jwt-verify</div><div class="d">verifies sig + email</div></div>
+      </div>
+      <div class="grid cols-2">
+        <div class="panel ch">
+          <h3>Bind the user in ClickHouse</h3>
+          <pre class="mono small" style="white-space:pre-wrap;margin:0;color:#cfe3ff">CREATE USER "alice@example.com"
+  IDENTIFIED WITH http
+  SERVER 'ch_jwt_verify'
+  SCHEME 'BASIC';</pre>
+          <p class="small muted" style="margin-top:8px">CH routes the Basic header to the <code>ch_jwt_verify</code> auth server; the name must match the user's email.</p>
+        </div>
+        <div class="panel sd">
+          <h3>What the sidecar does, <i>per query</i></h3>
+          <ul class="small">
+            <li>Cryptographically verifies the JWT signature (JWKS).</li>
+            <li>Checks <code>iss</code> / <code>aud</code> / <code>exp</code> and the identity policy (e.g. <code>require_email_verified</code>, allowed domains).</li>
+            <li>Asserts the <b>signed email == Basic username</b>.</li>
+            <li>Source + helm chart live in <code>altinity-oauth-helper</code> (separate repo).</li>
+          </ul>
+        </div>
+      </div>
+      <div class="note" style="margin-top:14px">This replaced the old client-side <code>cluster_secret</code> approach — that config key is now removed, and the sidecar owns identity policy.</div>
+    </div>
+  </section>
+
+  <!-- 9 — FORWARDING (Antalya) -->
+  <section class="slide">
+    <h2>Forwarding mode <span class="sub" style="font-size:.55em">— ClickHouse Antalya, native JWT</span></h2>
+    <p class="lead">Antalya CH (<code>token_processor</code> since 26.1; latest 26.3) validates JWTs <b>itself</b>, so MCP just forwards the bearer — no sidecar, no Basic. Mainline CH lacks this, which is why forward mode targets Antalya / <code>altinityantalya</code> builds.</p>
+    <div class="fill center">
+      <div class="row" style="margin:10px 0 18px">
+        <div class="node mcp"><div class="t">Altinity MCP</div></div>
+        <div class="arrow lbl"><div class="a"><code>Authorization:</code><br><code>Bearer &lt;JWT&gt;</code></div><div>→</div></div>
+        <div class="node ch"><div class="t">ClickHouse Antalya</div><div class="d">token_processor + token user_directory</div></div>
+      </div>
+      <div class="grid cols-2" style="max-width:1000px">
+        <div class="panel cl"><h3 style="color:var(--client)">How MCP sends it</h3>
+          <p class="small">The bearer goes in <code>HttpHeaders</code>. Over HTTPS, MCP hands the token to clickhouse-go's <code>GetJWT</code> callback (so the driver can refresh it on reconnect). Auto-detect's first <code>Bearer</code> probe just succeeds.</p></div>
+        <div class="panel ch"><h3 style="color:var(--ch)">What Antalya does</h3>
+          <ul class="small">
+            <li><code>&lt;token_processor&gt;</code> (e.g. <code>google_oauth</code>) verifies the signature against the IdP's JWKS.</li>
+            <li>The <code>&lt;token&gt;</code> <b>user_directory mints an ephemeral CH user</b> on the fly, with a preset role (e.g. <code>oauth_demo_role</code>).</li>
+            <li>No pre-created user, no <code>email</code> extraction, no Basic — identity comes straight from the verified JWT.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 — END TO END combined -->
+  <section class="slide">
+    <h2>End-to-end <span class="k">— broker: true + gating (OSS)</span></h2>
+    <p class="lead">The common production shape: MCP brokers the IdP, and CH delegates to the sidecar.</p>
+    <div class="seq">
+      <div class="step b"><div class="n">1</div><div class="who">client ↔ MCP ↔ IdP</div><div class="what">OAuth broker flow (slide 4). User signs in at Auth0 / Google; MCP returns a bearer JWT to the client.</div></div>
+      <div class="step b"><div class="n">2</div><div class="who">client → MCP</div><div class="what">Calls a tool (<code>execute_query</code>) with <code>Authorization: Bearer &lt;JWT&gt;</code>. MCP validates it.</div></div>
+      <div class="step c"><div class="n">3</div><div class="who">MCP → CH</div><div class="what">Auto-detect picks <span class="pill basic">Basic</span> → sends <code>base64(email:JWT)</code> to ClickHouse over HTTPS.</div></div>
+      <div class="step c"><div class="n">4</div><div class="who">CH → sidecar</div><div class="what">CH delegates to <b class="sd">ch_jwt_verify</b>; it verifies the signature &amp; email, returns allow/deny.</div></div>
+      <div class="step c"><div class="n">5</div><div class="who">CH → MCP → client</div><div class="what">Query runs as <code>alice@example.com</code> with her grants; rows flow back to the client.</div></div>
+    </div>
+    <div class="note" style="margin-top:14px">Same user identity end-to-end: the <code>email</code> claim signed by the IdP is the ClickHouse user — RBAC &amp; row policies apply per person.</div>
+  </section>
+
+  <!-- 11 — DEPRECATED / migration -->
+  <section class="slide">
+    <h2>Legacy knobs → <span class="k">today's config</span></h2>
+    <p class="lead">The old single <code>mode</code> knob is gone. The front door is config; the back door is auto-detected.</p>
+    <table style="max-width:1000px;margin:6px auto 0">
+      <tr><th>Deprecated</th><th>What it meant</th><th>Today</th></tr>
+      <tr><td><code>mode: gating</code></td><td>CH-side JWT check via sidecar (Basic)</td><td><code>broker: true/false</code> + sidecar present → <b class="sd">Basic auto-detected</b></td></tr>
+      <tr><td><code>mode: forward</code></td><td>Forward bearer; CH validates natively</td><td><code>broker: true/false</code>, no sidecar → <b class="cl">Bearer auto-detected</b></td></tr>
+      <tr><td><code>broker_upstream: true</code></td><td>MCP proxies an upstream IdP</td><td><code>broker: true</code></td></tr>
+      <tr><td><code>clickhouse.cluster_secret</code></td><td>Client-side interserver auth</td><td><span class="no">removed</span> — use the ch-jwt-verify sidecar</td></tr>
+      <tr><td><code>claims_to_headers</code>, <code>allowed_email_domains</code> …</td><td>MCP-side identity policy</td><td>moved into the <b class="sd">sidecar's</b> identity config</td></tr>
+    </table>
+    <div class="note" style="max-width:1000px;margin:16px auto 0"><b>Key change:</b> <code>mode</code> no longer controls the CH wire format — auto-detection supersedes it.
+    Legacy keys still work but log a deprecation warning at startup.</div>
+  </section>
+
+  <!-- 12 — SUMMARY -->
+  <section class="slide">
+    <h2>Cheat-sheet</h2>
+    <table class="matrix" style="max-width:1040px;margin:6px auto 0">
+      <tr><th></th><th>Front door — <code>broker</code></th><th>Back door — CH auth</th></tr>
+      <tr><td>Question</td><td>Who is the AS to the client?</td><td>How does MCP prove the user to CH?</td></tr>
+      <tr><td>Set by</td><td><b>config</b> (<code>broker: true/false</code>)</td><td><b>auto-detected</b> &amp; cached per endpoint</td></tr>
+      <tr><td>Option A</td><td><b class="mc">true</b> — MCP is AS, CIMD, <code>/authorize</code>·<code>/token</code></td><td><span class="pill basic">Basic(email:JWT)</span> + ch-jwt-verify <i>(gating, OSS)</i></td></tr>
+      <tr><td>Option B</td><td><b>false</b> — pure resource server, IdP is AS</td><td><span class="pill bearer">Bearer JWT</span> native <i>(forwarding, Antalya)</i></td></tr>
+      <tr><td>Replay safety</td><td>upstream IdP = used-codes oracle (<code>invalid_grant</code>)</td><td>sidecar verifies signature + email <i>per query</i></td></tr>
+    </table>
+    <div class="grid cols-3" style="max-width:1040px;margin:20px auto 0">
+      <div class="panel"><h3 style="color:var(--mcp)">One identity</h3><p class="small">The IdP-signed <code>email</code> is the ClickHouse user — RBAC end-to-end.</p></div>
+      <div class="panel"><h3 style="color:var(--side)">No shared secret to CH</h3><p class="small">The sidecar (OSS) or Antalya's <code>token_processor</code> verifies the JWT cryptographically — MCP never holds a CH password.</p></div>
+      <div class="panel"><h3 style="color:var(--client)">Stateless &amp; HA</h3><p class="small">JWE state + deferred redemption let any replica finish a flow; no downstream refresh tokens.</p></div>
+    </div>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button id="prev" aria-label="Previous">‹</button>
+  <button id="next" aria-label="Next">›</button>
+</div>
+<div class="foot">
+  <span id="counter">1 / 12</span>
+  <div class="dots" id="dots"></div>
+  <span class="kbd">← → · Space · Home/End</span>
+</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  const dotsWrap=document.getElementById('dots');
+  const counter=document.getElementById('counter');
+  let i=0;
+  slides.forEach((_,idx)=>{
+    const d=document.createElement('div'); d.className='dot'+(idx===0?' on':'');
+    d.addEventListener('click',()=>go(idx)); dotsWrap.appendChild(d);
+  });
+  const dots=[...dotsWrap.children];
+  function go(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,idx)=>s.classList.toggle('active',idx===i));
+    dots.forEach((d,idx)=>d.classList.toggle('on',idx===i));
+    counter.textContent=(i+1)+' / '+slides.length;
+    slides[i].scrollTop=0;
+  }
+  function next(){go(i+1)} function prev(){go(i-1)}
+  document.getElementById('next').onclick=next;
+  document.getElementById('prev').onclick=prev;
+  addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();next();}
+    else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prev();}
+    else if(e.key==='Home'){go(0);} else if(e.key==='End'){go(slides.length-1);}
+  });
+  // swipe
+  let x0=null;
+  addEventListener('touchstart',e=>x0=e.touches[0].clientX,{passive:true});
+  addEventListener('touchend',e=>{if(x0===null)return;const dx=e.changedTouches[0].clientX-x0;if(Math.abs(dx)>50){dx<0?next():prev();}x0=null;},{passive:true});
+</script>
+</body>
+</html>
