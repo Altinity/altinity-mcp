@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakeJWT (an unsigned header.payload.sig JWT carrying the given claims) is
+// defined in server_client_test.go and reused here. MCP doesn't verify the
+// signature — CH validates the forwarded token — so the placeholder sig is fine.
+
 // roleServer builds a struct-literal server with OAuth + per-request role
 // filtering configured. roleFilter() lazily compiles the pattern.
 func roleServer(claim, filter string) *ClickHouseJWEServer {
@@ -71,4 +75,41 @@ func TestOAuthRoleFilterPassesGate(t *testing.T) {
 	require.Nil(t, client)
 	require.NotContains(t, err.Error(), "access denied")
 	require.NotContains(t, err.Error(), "protocol http")
+}
+
+// TestOAuthRoleFilterReadsClaimFromToken covers the MCP forward path, where no
+// pre-validated claims are stored in context (oauthClaims == nil): the role
+// claim must be decoded from the forwarded token itself. A matching role passes
+// the gate and the request proceeds to client construction (fails only on the
+// unreachable host), proving the role was read from the token.
+func TestOAuthRoleFilterReadsClaimFromToken(t *testing.T) {
+	t.Parallel()
+	s := roleServer(rolesClaimKey, "^anon_")
+	chCfg := config.ClickHouseConfig{Host: "127.0.0.1", Port: 1, Protocol: config.HTTPProtocol}
+	token := fakeJWT(t, map[string]interface{}{
+		rolesClaimKey: []interface{}{"anon_reader", "admin_real"},
+	})
+
+	client, err := s.GetClickHouseClientWithOAuthForConfig(context.Background(), chCfg, "", token, nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.NotContains(t, err.Error(), "access denied") // anon_reader matched ^anon_
+	require.NotContains(t, err.Error(), "protocol http")
+}
+
+// TestOAuthRoleFilterFailClosedFromToken is the fail-closed counterpart on the
+// MCP forward path: when the token's claim has no role matching the filter, the
+// request is denied without building a client.
+func TestOAuthRoleFilterFailClosedFromToken(t *testing.T) {
+	t.Parallel()
+	s := roleServer(rolesClaimKey, "^anon_")
+	chCfg := config.ClickHouseConfig{Host: "127.0.0.1", Port: 1, Protocol: config.HTTPProtocol}
+	token := fakeJWT(t, map[string]interface{}{
+		rolesClaimKey: []interface{}{"admin_real", "analyst"},
+	})
+
+	client, err := s.GetClickHouseClientWithOAuthForConfig(context.Background(), chCfg, "", token, nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Contains(t, err.Error(), "access denied")
 }

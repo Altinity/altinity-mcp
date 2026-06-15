@@ -244,7 +244,18 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 
 	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
 		if claimName := strings.TrimSpace(s.Config.Server.OAuth.RoleClaim); claimName != "" {
-			roles := oauth.RolesFromClaim(oauthClaims, claimName, s.roleFilter())
+			// Prefer pre-validated claims from context; on the MCP forward path
+			// none are stored (MCP doesn't pre-validate — CH does, per request),
+			// so fall back to reading the role claim from the same token we
+			// forward to CH. CH re-validates the signature and rejects any
+			// activated role the user isn't granted, so this only ever narrows.
+			claims := oauthClaims
+			if claims == nil || claims.Extra == nil {
+				if raw, ok := decodeUnverifiedJWTClaims(oauthToken); ok {
+					claims = &OAuthClaims{Extra: raw}
+				}
+			}
+			roles := oauth.RolesFromClaim(claims, claimName, s.roleFilter())
 			if len(roles) == 0 {
 				// Fail closed: an empty filtered set must NOT fall back to the
 				// user's default (full) grant. Reject the request.
@@ -387,27 +398,41 @@ func isChAuthError(err error) bool {
 	return auth
 }
 
-// emailFromUnverifiedJWT decodes the JWT payload without verifying the
-// signature and returns the `email` claim (or first namespaced `*/email`
-// fallback). Used only to populate the CH `Basic` username so the sidecar can
-// receive it; the sidecar still verifies the JWT signature and rejects any
-// mismatch between the JWT's signed email and the Basic user.
-func emailFromUnverifiedJWT(token string) (string, bool) {
+// decodeUnverifiedJWTClaims base64-decodes and JSON-parses a JWT payload
+// WITHOUT verifying the signature, returning the raw claim map. MCP does not
+// cryptographically validate OAuth JWTs on the forward path — ClickHouse (its
+// token_processors / sidecar) re-validates the same forwarded token on every
+// request (see ValidateAuth). So this is only used to read claims MCP needs to
+// shape the outgoing request, never as a standalone authorization oracle.
+func decodeUnverifiedJWTClaims(token string) (map[string]interface{}, bool) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
-		return "", false
+		return nil, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		// Some IdPs emit padded segments; try the std encoding as a fallback.
 		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
 			log.Debug().Err(err).Msg("oauth: failed to base64-decode JWT payload")
-			return "", false
+			return nil, false
 		}
 	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		log.Debug().Err(err).Msg("oauth: failed to JSON-parse JWT payload")
+		return nil, false
+	}
+	return raw, true
+}
+
+// emailFromUnverifiedJWT returns the `email` claim (or first namespaced
+// `*/email` fallback) from the JWT payload. Used only to populate the CH
+// `Basic` username so the sidecar can receive it; the sidecar still verifies
+// the JWT signature and rejects any mismatch between the signed email and the
+// Basic user.
+func emailFromUnverifiedJWT(token string) (string, bool) {
+	raw, ok := decodeUnverifiedJWTClaims(token)
+	if !ok {
 		return "", false
 	}
 	if e, ok := raw["email"].(string); ok {
