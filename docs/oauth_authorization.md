@@ -276,7 +276,9 @@ server:
     # holding a JSON array of role names; only the role_filter-matching subset
     # is activated per request (HTTP role= params), narrowing the user's roles.
     # role_filter is required when role_claim is set. Empty filtered set fails
-    # closed (request denied). Leave both empty to disable.
+    # closed (request denied). Leave both empty to disable. Anchor role_filter
+    # (^…/…$) — it is a partial match, so an unanchored "anon" would also match
+    # "not_anon_real".
     role_claim: ""        # e.g. "https://clickhouse/roles"
     role_filter: ""       # e.g. "_mcp$"
 
@@ -309,7 +311,7 @@ server:
 | `public_auth_server_url` | Externally visible OAuth AS URL. **Required** behind a reverse proxy when `broker: true`. |
 | `upstream_offline_access` | Request `offline_access` upstream so the IdP consent screen offers long-lived sessions. Default `false`. |
 | `role_claim` | JWT claim holding a JSON array of ClickHouse role names to activate per request (e.g. `https://clickhouse/roles`). Empty disables. Read from the validated token's namespaced/custom claims. |
-| `role_filter` | Regex selecting which `role_claim` roles are activated (e.g. `_mcp$`). **Required** when `role_claim` is set. Only narrows the user's grant; an empty filtered set fails closed (request denied, no fallback). HTTP protocol only; applies in both Bearer and Basic/sidecar paths. |
+| `role_filter` | Regex selecting which `role_claim` roles are activated (e.g. `_mcp$`). **Required** when `role_claim` is set. Only narrows the user's grant; an empty filtered set fails closed (request denied, no fallback). HTTP protocol only; applies in both Bearer and Basic/sidecar paths. **Anchor it** (`^…`/`…$`) — it's a partial match, so an unanchored `anon` would also match `not_anon_real`. |
 
 ## Provider-specific setup
 

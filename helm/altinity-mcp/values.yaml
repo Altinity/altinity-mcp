@@ -225,6 +225,8 @@ config:
       # Required when role_claim is set; it is the safety net that stops an
       # over-broad claim from activating real-data roles. An empty filtered set
       # fails closed (request denied), never falling back to the full grant.
+      # Anchor it (^…/…$): it is a partial match, so an unanchored "anon" would
+      # also match "not_anon_real".
       role_filter: ""
     # Dynamic tools generated from ClickHouse views
     dynamic_tools: []
