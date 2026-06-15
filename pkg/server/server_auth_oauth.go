@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/altinity/go-mcp-oauth-sdk/oauth"
 )
@@ -106,4 +108,24 @@ func (s *ClickHouseJWEServer) verifier() *oauth.Verifier {
 		s.oauthVerifier = oauth.NewVerifier(s.Config.Server.OAuth)
 	}
 	return s.oauthVerifier
+}
+
+// roleFilter returns the compiled oauth.role_filter regex, or nil when the
+// feature is unconfigured (or the pattern failed to compile, in which case
+// callers fail closed). Mirrors verifier(): the constructor path compiles it
+// up-front; struct-literal test servers get a lazily-built one.
+func (s *ClickHouseJWEServer) roleFilter() *regexp.Regexp {
+	if s.roleFilterRe != nil {
+		return s.roleFilterRe
+	}
+	pat := strings.TrimSpace(s.Config.Server.OAuth.RoleFilter)
+	if pat == "" {
+		return nil
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		return nil
+	}
+	s.roleFilterRe = re
+	return re
 }

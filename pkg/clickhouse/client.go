@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -130,7 +131,7 @@ func (c *Client) connect() error {
 		Password: c.config.Password,
 	}
 
-	conn, openErr := clickhouse.Open(&clickhouse.Options{
+	opts := &clickhouse.Options{
 		Addr:            []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth:            auth,
 		TLS:             tlsConfig,
@@ -143,7 +144,22 @@ func (c *Client) connect() error {
 		MaxIdleConns:    5,
 		ConnMaxLifetime: time.Hour,
 		DialStrategy:    dialWithoutQueryDeadline,
-	})
+	}
+
+	// Per-request role activation: append repeated `role=` query params to every
+	// HTTP request. The driver's Settings map is single-valued and serialized
+	// with url.Values.Set, so it can't express `?role=a&role=b`; wrapping the
+	// transport is the supported way. TransportFunc is HTTP-only in the driver
+	// (native TCP ignores it) — OAuth mode runs over HTTP, and the caller
+	// refuses role activation on non-HTTP protocols.
+	if len(c.config.Roles) > 0 {
+		roles := append([]string(nil), c.config.Roles...)
+		opts.TransportFunc = func(t *http.Transport) (http.RoundTripper, error) {
+			return &roleRoundTripper{wrapped: t, roles: roles}, nil
+		}
+	}
+
+	conn, openErr := clickhouse.Open(opts)
 
 	if openErr != nil {
 		log.Error().
@@ -181,6 +197,26 @@ func (c *Client) connect() error {
 // DialTimeout for network-level bounds.
 func dialWithoutQueryDeadline(ctx context.Context, connID int, opt *clickhouse.Options, dial clickhouse.Dial) (clickhouse.DialResult, error) {
 	return clickhouse.DefaultDialStrategy(context.WithoutCancel(ctx), connID, opt, dial)
+}
+
+// roleRoundTripper appends a `role=` query param per configured role to every
+// outgoing HTTP request, activating exactly those roles for the request
+// (ClickHouse honours repeated role params, e.g. ?role=a&role=b). It wraps the
+// driver's default transport; the request is cloned so the shared *http.Request
+// is never mutated (the client may retry).
+type roleRoundTripper struct {
+	wrapped http.RoundTripper
+	roles   []string
+}
+
+func (rt *roleRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	r2 := req.Clone(req.Context())
+	q := r2.URL.Query()
+	for _, role := range rt.roles {
+		q.Add("role", role)
+	}
+	r2.URL.RawQuery = q.Encode()
+	return rt.wrapped.RoundTrip(r2)
 }
 
 func prepareHTTPAuthForClickHouse(cfg config.ClickHouseConfig) (map[string]string, clickhouse.GetJWTFunc) {

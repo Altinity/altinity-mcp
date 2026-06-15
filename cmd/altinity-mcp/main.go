@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -1172,6 +1173,18 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		}
 		if strings.TrimSpace(cfg.Server.OAuth.Audience) == "" {
 			return fmt.Errorf("oauth: broker=false requires oauth.audience — it must byte-equal the MCP public resource URL (RFC 8707)")
+		}
+	}
+
+	// Per-request role activation: role_filter is the safety net that stops an
+	// over-broad/misconfigured role_claim from activating real-data roles, so
+	// it is required (and must compile) whenever role_claim is set.
+	if strings.TrimSpace(cfg.Server.OAuth.RoleClaim) != "" {
+		if strings.TrimSpace(cfg.Server.OAuth.RoleFilter) == "" {
+			return fmt.Errorf("oauth: role_filter is required when role_claim is set (it bounds which roles may be activated)")
+		}
+		if _, err := regexp.Compile(cfg.Server.OAuth.RoleFilter); err != nil {
+			return fmt.Errorf("oauth: role_filter is not a valid regex: %w", err)
 		}
 	}
 

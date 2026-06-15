@@ -243,6 +243,21 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 	}
 
 	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
+		if claimName := strings.TrimSpace(s.Config.Server.OAuth.RoleClaim); claimName != "" {
+			roles := oauth.RolesFromClaim(oauthClaims, claimName, s.roleFilter())
+			if len(roles) == 0 {
+				// Fail closed: an empty filtered set must NOT fall back to the
+				// user's default (full) grant. Reject the request.
+				return nil, fmt.Errorf("oauth: access denied — no ClickHouse roles in claim %q matched role_filter", claimName)
+			}
+			if chConfig.Protocol != config.HTTPProtocol {
+				// role= activation is an HTTP-interface feature; silently
+				// dropping it on TCP would run the request with the full grant
+				// (fail open), so refuse instead.
+				return nil, fmt.Errorf("oauth: role activation requires clickhouse protocol http, got %q", chConfig.Protocol)
+			}
+			chConfig.Roles = roles
+		}
 		return s.newClientWithOAuth(ctx, chConfig, oauthToken)
 	}
 
@@ -271,17 +286,31 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 	cfg := s.Config.Server.OAuth
 	endpoint := fmt.Sprintf("%s:%d", chCfg.Host, chCfg.Port)
 
-	// Cache hit — use the stored method.
+	// Cache hit — use the stored method. chCfg carries any per-request roles,
+	// which newClientForOAuthMethod applies via the CH client.
 	if v, ok := s.chOAuthMethodCache.Load(endpoint); ok {
 		return newClientForOAuthMethod(ctx, chCfg, token, v.(chOAuthMethod), cfg)
 	}
 
-	// Auto-detect. Try Bearer first. NewClient pings internally, so a failed
-	// ping surfaces as an auth error here if CH rejects the token.
-	bearerCfg := oauthApplyBearer(chCfg, token, cfg)
+	// Auto-detect the CH auth wire format with a ROLE-FREE probe. A role the
+	// user isn't granted makes CH return ACCESS_DENIED (code 497), which
+	// isChAuthError treats as an auth failure — on a role-carrying probe that
+	// would be misread as "Bearer rejected" and trigger a spurious Basic
+	// fallback. Probing without roles keeps the auth-method signal clean; the
+	// detected method then builds the real, role-carrying client below.
+	probeCfg := chCfg
+	probeCfg.Roles = nil
+
+	// Try Bearer first. NewClient pings internally, so a failed ping surfaces
+	// as an auth error here if CH rejects the token.
+	bearerCfg := oauthApplyBearer(probeCfg, token, cfg)
 	if client, err := clickhouse.NewClient(ctx, bearerCfg); err == nil {
 		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBearer)
-		return client, nil // return probe client directly — no second ping
+		if len(chCfg.Roles) == 0 {
+			return client, nil // no roles — reuse the probe client, no second ping
+		}
+		_ = client.Close()
+		return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBearer, cfg)
 	} else if !isChAuthError(err) {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
@@ -292,13 +321,17 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 	if !ok {
 		return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
 	}
-	basicCfg := oauthApplyBasic(chCfg, email, token)
+	basicCfg := oauthApplyBasic(probeCfg, email, token)
 	client, err := clickhouse.NewClient(ctx, basicCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 	s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBasic)
-	return client, nil
+	if len(chCfg.Roles) == 0 {
+		return client, nil
+	}
+	_ = client.Close()
+	return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBasic, cfg)
 }
 
 // newClientForOAuthMethod applies method to chCfg and creates a CH client.
