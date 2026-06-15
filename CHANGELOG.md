@@ -1,3 +1,45 @@
+# v1.6.0
+
+This release reworks the OAuth subsystem into a CIMD-capable broker (extracted into the shared `go-mcp-oauth-sdk`), adds multi-cluster URL-path routing, ClickHouse-side JWT verification via a sidecar, per-request role activation, and server-enforced result caps.
+
+BREAKING CHANGES
+- **OAuth mode model replaced by `server.oauth.broker`**: `server.oauth.mode` (`forward`/`gating`) and `server.oauth.broker_upstream` are removed — set `server.oauth.broker: true` (MCP acts as the OAuth AS and brokers the upstream IdP) or `false` (pure OAuth resource server). The ClickHouse auth wire format (`Authorization: Bearer` vs `Basic`) is now **auto-detected** per endpoint and cached, so it is no longer a config mode ([PR #115](https://github.com/Altinity/altinity-mcp/pull/115), [#128](https://github.com/Altinity/altinity-mcp/pull/128))
+- **`clickhouse.cluster_secret` / `clickhouse.cluster_name` removed** (added in v1.5.0): the cluster interserver-secret impersonation path is superseded by `broker: false` + the [`ch-jwt-verify`](https://github.com/altinity/altinity-oauth-helper) sidecar. Drop both keys and bind users with `IDENTIFIED WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'` ([PR #128](https://github.com/Altinity/altinity-mcp/pull/128))
+- **`server.oauth.claims_to_headers` / `clickhouse_header_name` removed**: MCP no longer forwards arbitrary claims as ClickHouse headers; per-scope session settings live in the sidecar's `settings_from_scope` config ([PR #128](https://github.com/Altinity/altinity-mcp/pull/128))
+- **`server.oauth.allowed_email_domains` / `allowed_hosted_domains` / `allow_unverified_email` moved to the sidecar** (`identity.*`, the last one inverted to `require_email_verified`) ([PR #109](https://github.com/Altinity/altinity-mcp/pull/109), [#128](https://github.com/Altinity/altinity-mcp/pull/128))
+- **Dynamic Client Registration (`/oauth/register`) removed**: broker mode now requires MCP clients to use OAuth Client ID Metadata Documents (CIMD); `/oauth/register` returns HTTP 410 Gone with an RFC 7591-shaped error pointing at CIMD ([PR #115](https://github.com/Altinity/altinity-mcp/pull/115))
+
+  All removed/renamed keys are detected at startup and surfaced as explicit migration warnings (no silent failures).
+
+FEATURES
+- multi-cluster routing: a single MCP instance serves N ClickHouse clusters under `/mcp/{cluster}`, each with its own lazily-built tool catalog; enabled via `config.multicluster` with a `cluster_allowlist` ([PR #134](https://github.com/Altinity/altinity-mcp/pull/134), fixes [#132](https://github.com/Altinity/altinity-mcp/issues/132))
+- OAuth broker mode (`server.oauth.broker: true`): MCP acts as the OAuth AS to MCP clients (CIMD, `/authorize` + `/callback` + `/token`) and brokers an upstream IdP that lacks native CIMD; CH auth format auto-detected per endpoint ([PR #128](https://github.com/Altinity/altinity-mcp/pull/128))
+- CIMD inbound: clients (claude.ai, ChatGPT) authenticate via OAuth Client ID Metadata Documents instead of DCR; includes `private_key_jwt` client support and HA-safe replay handling ([PR #115](https://github.com/Altinity/altinity-mcp/pull/115), [#118](https://github.com/Altinity/altinity-mcp/pull/118), [#119](https://github.com/Altinity/altinity-mcp/pull/119))
+- ClickHouse-side JWT verification via the [`ch-jwt-verify`](https://github.com/altinity/altinity-oauth-helper) sidecar: `broker: true` discovers Basic-delegation automatically; CH validates the forwarded JWT per request, no `token_processors` required ([PR #128](https://github.com/Altinity/altinity-mcp/pull/128))
+- per-request ClickHouse role activation from a JWT claim: `server.oauth.role_claim` + optional `server.oauth.role_filter` activate (and narrow) roles per request via HTTP `role=` params; fail-closed on an empty resolved set ([PR #141](https://github.com/Altinity/altinity-mcp/pull/141), fixes [#140](https://github.com/Altinity/altinity-mcp/issues/140))
+- server-enforced query result caps: `max_result_rows` / `max_result_bytes` are applied as ClickHouse session settings + an MCP-side hard cap instead of rewriting SQL; truncation is reported to the client ([PR #125](https://github.com/Altinity/altinity-mcp/pull/125), fixes [#124](https://github.com/Altinity/altinity-mcp/issues/124))
+- HA: stateless StreamableHTTP transport and stateless-JWE pending-auth/auth-code state so any replica can serve any request ([PR #114](https://github.com/Altinity/altinity-mcp/pull/114))
+- forward/broker id_token refresh: near-expired upstream id_tokens are refreshed at `/token` ([PR #121](https://github.com/Altinity/altinity-mcp/pull/121), [#122](https://github.com/Altinity/altinity-mcp/pull/122))
+- secure-by-default email verification (`require_email_verified`) and DCR-via-Auth0 enrollment helper ([PR #110](https://github.com/Altinity/altinity-mcp/pull/110), [#111](https://github.com/Altinity/altinity-mcp/pull/111))
+- emit strict-mode-compatible tool input schemas (`additionalProperties: false` + `required`) for clients that enforce strict JSON Schema
+
+IMPROVEMENTS
+- OAuth implementation extracted into the shared `github.com/altinity/go-mcp-oauth-sdk` (adopts `oauthex` discovery types, drops duplicated logic) ([PR #127](https://github.com/Altinity/altinity-mcp/pull/127))
+- OAuth spec-compliance hardening: HKDF-derived keys, strict OIDC scope advertisement, Google URI-form scope normalization, canonical RFC 9728 trailing-slash resource URL (tolerant inbound audience) ([PR #104](https://github.com/Altinity/altinity-mcp/pull/104))
+- enforce `https://` on `oauth.issuer` / `oauth.jwks_url` at startup (localhost exempt); re-fetch JWKS on `kid` miss to survive key rotation; reject opaque bearers in resource-server mode
+- all OAuth config fields auto-wired to CLI flags / env vars via struct tags — new fields need no `main.go` edits ([PR #101](https://github.com/Altinity/altinity-mcp/pull/101))
+- helm: default `clickhouse.max_result_rows` instead of the deprecated `limit`
+
+BUG FIXES
+- return HTTP 401 on an expired OAuth token at the MCP transport, including `tools/list` ([PR #135](https://github.com/Altinity/altinity-mcp/pull/135))
+- broker requests the upstream API audience for Auth0 and forwards the access token to CH
+- multicluster: point the `WWW-Authenticate` `resource_metadata` at the serving host
+
+DEPENDENCY UPDATES
+- drop the `github.com/Altinity/clickhouse-go/v2` fork (introduced in v1.5.0) and return to upstream `github.com/ClickHouse/clickhouse-go/v2 v2.46.0` — the cluster interserver-secret path it carried is superseded by the sidecar ([PR #138](https://github.com/Altinity/altinity-mcp/pull/138))
+- add `github.com/altinity/go-mcp-oauth-sdk` (extracted OAuth subsystem) ([PR #127](https://github.com/Altinity/altinity-mcp/pull/127))
+- bump `github.com/modelcontextprotocol/go-sdk` to 1.6.1, `golang.org/x/crypto` to 0.53.0, `golang.org/x/net` to 0.56.0, `golang.org/x/sync` to 0.21.0, `github.com/urfave/cli/v3` to 3.10.0
+
 # v1.5.0
 
 BREAKING CHANGES
