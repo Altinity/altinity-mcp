@@ -10,7 +10,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
-	github.com/urfave/cli/v3 v3.9.0
+	github.com/urfave/cli/v3 v3.10.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sync v0.21.0
 	gopkg.in/yaml.v3 v3.0.1
