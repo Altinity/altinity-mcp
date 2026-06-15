@@ -1176,14 +1176,12 @@ func validateOAuthRuntimeConfig(cfg config.Config) error {
 		}
 	}
 
-	// Per-request role activation: role_filter is the safety net that stops an
-	// over-broad/misconfigured role_claim from activating real-data roles, so
-	// it is required (and must compile) whenever role_claim is set.
-	if strings.TrimSpace(cfg.Server.OAuth.RoleClaim) != "" {
-		if strings.TrimSpace(cfg.Server.OAuth.RoleFilter) == "" {
-			return fmt.Errorf("oauth: role_filter is required when role_claim is set (it bounds which roles may be activated)")
-		}
-		if _, err := regexp.Compile(cfg.Server.OAuth.RoleFilter); err != nil {
+	// Per-request role activation: role_filter is OPTIONAL. When set it narrows
+	// which role_claim roles are activated and must be a valid regex; when unset
+	// every role the claim carries is activated (the IdP curates the set, and CH
+	// re-validates the token and enforces grants).
+	if rf := strings.TrimSpace(cfg.Server.OAuth.RoleFilter); rf != "" {
+		if _, err := regexp.Compile(rf); err != nil {
 			return fmt.Errorf("oauth: role_filter is not a valid regex: %w", err)
 		}
 	}

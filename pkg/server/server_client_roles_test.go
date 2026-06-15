@@ -113,3 +113,40 @@ func TestOAuthRoleFilterFailClosedFromToken(t *testing.T) {
 	require.Nil(t, client)
 	require.Contains(t, err.Error(), "access denied")
 }
+
+// TestOAuthRoleClaimNoFilterActivatesAll verifies that role_filter is optional:
+// with role_claim set and no filter, every role the claim carries is activated
+// (the IdP curates the set; CH enforces grants). A non-empty set passes the
+// gate and proceeds to client construction (failing only on the unreachable
+// host).
+func TestOAuthRoleClaimNoFilterActivatesAll(t *testing.T) {
+	t.Parallel()
+	s := roleServer(rolesClaimKey, "") // no filter → match all
+	chCfg := config.ClickHouseConfig{Host: "127.0.0.1", Port: 1, Protocol: config.HTTPProtocol}
+	token := fakeJWT(t, map[string]interface{}{
+		rolesClaimKey: []interface{}{"reader", "writer"},
+	})
+
+	client, err := s.GetClickHouseClientWithOAuthForConfig(context.Background(), chCfg, "", token, nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.NotContains(t, err.Error(), "access denied") // both roles activated, not denied
+	require.NotContains(t, err.Error(), "protocol http")
+}
+
+// TestOAuthRoleClaimNoFilterEmptyClaimFailsClosed verifies fail-closed still
+// holds without a filter: a token missing the claim yields no roles → denied
+// (never falls back to the full grant).
+func TestOAuthRoleClaimNoFilterEmptyClaimFailsClosed(t *testing.T) {
+	t.Parallel()
+	s := roleServer(rolesClaimKey, "") // no filter
+	chCfg := config.ClickHouseConfig{Host: "127.0.0.1", Port: 1, Protocol: config.HTTPProtocol}
+	token := fakeJWT(t, map[string]interface{}{
+		"some_other_claim": "x", // role claim absent
+	})
+
+	client, err := s.GetClickHouseClientWithOAuthForConfig(context.Background(), chCfg, "", token, nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Contains(t, err.Error(), "access denied")
+}

@@ -82,11 +82,13 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		oauthVerifier:  oauth.NewVerifier(cfg.Server.OAuth),
 		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
 	}
-	// Compile the role filter up-front. validateOAuthRuntimeConfig has already
-	// confirmed it is non-empty and valid when role_claim is set, so a compile
-	// error here is not expected; leave roleFilterRe nil if it ever occurs so
-	// role activation fails closed (empty role set => request rejected).
-	if pat := strings.TrimSpace(cfg.Server.OAuth.RoleFilter); pat != "" {
+	// Compile the role filter up-front when role activation is configured. An
+	// empty role_filter compiles to a match-all regex (filtering is optional —
+	// every role_claim role is activated). validateOAuthRuntimeConfig already
+	// rejected an invalid pattern, so a compile error here is not expected;
+	// leave roleFilterRe nil if it ever occurs so role activation fails closed.
+	if strings.TrimSpace(cfg.Server.OAuth.RoleClaim) != "" {
+		pat := strings.TrimSpace(cfg.Server.OAuth.RoleFilter)
 		if re, err := regexp.Compile(pat); err == nil {
 			chJweServer.roleFilterRe = re
 		} else {
