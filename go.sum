@@ -4,8 +4,8 @@ github.com/ClickHouse/ch-go v0.71.0 h1:bUdZ/EZj/LcVHsMqaRUP2holqygrPWQKeMjc6nZoy
 github.com/ClickHouse/ch-go v0.71.0/go.mod h1:NwbNc+7jaqfY58dmdDUbG4Jl22vThgx1cYjBw0vtgXw=
 github.com/ClickHouse/clickhouse-go/v2 v2.46.0 h1:s3eRy+hYmu5uzotB6ZhDofgHu8kDgGN/fpmjxRkqSpk=
 github.com/ClickHouse/clickhouse-go/v2 v2.46.0/go.mod h1:giJfUVlMkcfUEPVfRpt51zZaGEx9i17gCos8gBl392c=
-github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260527145654-bdefa859fd1b h1:b6XHGgSAedsoRet5sahr4YABFC2tG+0Imd+8JGx16SY=
-github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260527145654-bdefa859fd1b/go.mod h1:yLgv0x586vIzPB5JaA6DkqQsSe4PLRT3PhU2iHO7qsI=
+github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260615131821-f4243cfb3ce3 h1:xiK3uD0pyN4WDNf5XbfTYqVQFxHqnS1ttK5yfgY0JxE=
+github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260615131821-f4243cfb3ce3/go.mod h1:yLgv0x586vIzPB5JaA6DkqQsSe4PLRT3PhU2iHO7qsI=
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

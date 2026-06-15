@@ -20,7 +20,7 @@ require golang.org/x/crypto v0.52.0 // indirect
 
 require (
 	github.com/ClickHouse/ch-go v0.71.0 // indirect
-	github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260527145654-bdefa859fd1b
+	github.com/altinity/go-mcp-oauth-sdk v0.1.1-0.20260615131821-f4243cfb3ce3
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -45,5 +45,3 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
-
-replace github.com/altinity/go-mcp-oauth-sdk => ../go-mcp-oauth-sdk
