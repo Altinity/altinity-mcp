@@ -243,6 +243,32 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 	}
 
 	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
+		if claimName := strings.TrimSpace(s.Config.Server.OAuth.RoleClaim); claimName != "" {
+			// Prefer pre-validated claims from context; on the MCP forward path
+			// none are stored (MCP doesn't pre-validate — CH does, per request),
+			// so fall back to reading the role claim from the same token we
+			// forward to CH. CH re-validates the signature and rejects any
+			// activated role the user isn't granted, so this only ever narrows.
+			claims := oauthClaims
+			if claims == nil || claims.Extra == nil {
+				if raw, ok := decodeUnverifiedJWTClaims(oauthToken); ok {
+					claims = &OAuthClaims{Extra: raw}
+				}
+			}
+			roles := oauth.RolesFromClaim(claims, claimName, s.roleFilter())
+			if len(roles) == 0 {
+				// Fail closed: an empty filtered set must NOT fall back to the
+				// user's default (full) grant. Reject the request.
+				return nil, fmt.Errorf("oauth: access denied — no ClickHouse roles in claim %q matched role_filter", claimName)
+			}
+			if chConfig.Protocol != config.HTTPProtocol {
+				// role= activation is an HTTP-interface feature; silently
+				// dropping it on TCP would run the request with the full grant
+				// (fail open), so refuse instead.
+				return nil, fmt.Errorf("oauth: role activation requires clickhouse protocol http, got %q", chConfig.Protocol)
+			}
+			chConfig.Roles = roles
+		}
 		return s.newClientWithOAuth(ctx, chConfig, oauthToken)
 	}
 
@@ -271,17 +297,31 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 	cfg := s.Config.Server.OAuth
 	endpoint := fmt.Sprintf("%s:%d", chCfg.Host, chCfg.Port)
 
-	// Cache hit — use the stored method.
+	// Cache hit — use the stored method. chCfg carries any per-request roles,
+	// which newClientForOAuthMethod applies via the CH client.
 	if v, ok := s.chOAuthMethodCache.Load(endpoint); ok {
 		return newClientForOAuthMethod(ctx, chCfg, token, v.(chOAuthMethod), cfg)
 	}
 
-	// Auto-detect. Try Bearer first. NewClient pings internally, so a failed
-	// ping surfaces as an auth error here if CH rejects the token.
-	bearerCfg := oauthApplyBearer(chCfg, token, cfg)
+	// Auto-detect the CH auth wire format with a ROLE-FREE probe. A role the
+	// user isn't granted makes CH return ACCESS_DENIED (code 497), which
+	// isChAuthError treats as an auth failure — on a role-carrying probe that
+	// would be misread as "Bearer rejected" and trigger a spurious Basic
+	// fallback. Probing without roles keeps the auth-method signal clean; the
+	// detected method then builds the real, role-carrying client below.
+	probeCfg := chCfg
+	probeCfg.Roles = nil
+
+	// Try Bearer first. NewClient pings internally, so a failed ping surfaces
+	// as an auth error here if CH rejects the token.
+	bearerCfg := oauthApplyBearer(probeCfg, token, cfg)
 	if client, err := clickhouse.NewClient(ctx, bearerCfg); err == nil {
 		s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBearer)
-		return client, nil // return probe client directly — no second ping
+		if len(chCfg.Roles) == 0 {
+			return client, nil // no roles — reuse the probe client, no second ping
+		}
+		_ = client.Close()
+		return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBearer, cfg)
 	} else if !isChAuthError(err) {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
@@ -292,13 +332,17 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 	if !ok {
 		return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
 	}
-	basicCfg := oauthApplyBasic(chCfg, email, token)
+	basicCfg := oauthApplyBasic(probeCfg, email, token)
 	client, err := clickhouse.NewClient(ctx, basicCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 	s.chOAuthMethodCache.Store(endpoint, chOAuthMethodBasic)
-	return client, nil
+	if len(chCfg.Roles) == 0 {
+		return client, nil
+	}
+	_ = client.Close()
+	return newClientForOAuthMethod(ctx, chCfg, token, chOAuthMethodBasic, cfg)
 }
 
 // newClientForOAuthMethod applies method to chCfg and creates a CH client.
@@ -354,27 +398,41 @@ func isChAuthError(err error) bool {
 	return auth
 }
 
-// emailFromUnverifiedJWT decodes the JWT payload without verifying the
-// signature and returns the `email` claim (or first namespaced `*/email`
-// fallback). Used only to populate the CH `Basic` username so the sidecar can
-// receive it; the sidecar still verifies the JWT signature and rejects any
-// mismatch between the JWT's signed email and the Basic user.
-func emailFromUnverifiedJWT(token string) (string, bool) {
+// decodeUnverifiedJWTClaims base64-decodes and JSON-parses a JWT payload
+// WITHOUT verifying the signature, returning the raw claim map. MCP does not
+// cryptographically validate OAuth JWTs on the forward path — ClickHouse (its
+// token_processors / sidecar) re-validates the same forwarded token on every
+// request (see ValidateAuth). So this is only used to read claims MCP needs to
+// shape the outgoing request, never as a standalone authorization oracle.
+func decodeUnverifiedJWTClaims(token string) (map[string]interface{}, bool) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
-		return "", false
+		return nil, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		// Some IdPs emit padded segments; try the std encoding as a fallback.
 		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
 			log.Debug().Err(err).Msg("oauth: failed to base64-decode JWT payload")
-			return "", false
+			return nil, false
 		}
 	}
 	var raw map[string]interface{}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		log.Debug().Err(err).Msg("oauth: failed to JSON-parse JWT payload")
+		return nil, false
+	}
+	return raw, true
+}
+
+// emailFromUnverifiedJWT returns the `email` claim (or first namespaced
+// `*/email` fallback) from the JWT payload. Used only to populate the CH
+// `Basic` username so the sidecar can receive it; the sidecar still verifies
+// the JWT signature and rejects any mismatch between the signed email and the
+// Basic user.
+func emailFromUnverifiedJWT(token string) (string, bool) {
+	raw, ok := decodeUnverifiedJWTClaims(token)
+	if !ok {
 		return "", false
 	}
 	if e, ok := raw["email"].(string); ok {

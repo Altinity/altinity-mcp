@@ -53,6 +53,11 @@ type ClickHouseConfig struct {
 	MaxResultBytes int               `json:"max_result_bytes,omitempty" yaml:"max_result_bytes,omitempty" flag:"clickhouse-max-result-bytes" env:"CLICKHOUSE_MAX_RESULT_BYTES" desc:"Per-request approximate byte cap on result body (0=default 50000, <0=disable)"`
 	HttpHeaders    map[string]string `json:"http_headers" yaml:"http_headers" flag:"clickhouse-http-headers" env:"CLICKHOUSE_HTTP_HEADERS" desc:"HTTP Headers for ClickHouse"`
 	ExtraSettings  map[string]string `json:"extra_settings,omitempty" yaml:"extra_settings,omitempty" desc:"Per-request ClickHouse settings injected by tool_input_settings"`
+	// Roles is the per-request set of ClickHouse roles to activate for this
+	// request (sent as HTTP `role=` query params). Populated at request time
+	// from the OAuth role_claim/role_filter; never set from CLI/file/env. Only
+	// narrows the user's active roles. HTTP protocol only.
+	Roles []string `json:"-" yaml:"-"`
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
 	// Default 10 MB when 0. Set to a negative number to disable the check.
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" env:"CLICKHOUSE_MAX_QUERY_LENGTH" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`

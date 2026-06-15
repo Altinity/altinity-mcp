@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -33,6 +34,12 @@ type ClickHouseJWEServer struct {
 	// keyed by "host:port". Populated on the first OAuth request to an endpoint;
 	// cleared on config reload so operator changes take effect without restart.
 	chOAuthMethodCache sync.Map
+	// roleFilterRe is the compiled oauth.role_filter, used to narrow the roles
+	// activated per ClickHouse request. Compiled up-front in
+	// NewClickHouseMCPServer when role_claim is set; the roleFilter() getter
+	// lazily builds it for struct-literal test servers. nil when the feature
+	// is unconfigured.
+	roleFilterRe *regexp.Regexp
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -74,6 +81,19 @@ func NewClickHouseMCPServer(cfg config.Config, version string) *ClickHouseJWESer
 		dynamicTools:   make(map[string]dynamicToolMeta),
 		oauthVerifier:  oauth.NewVerifier(cfg.Server.OAuth),
 		blockedClauses: NormalizeBlockedClauses(cfg.Server.BlockedQueryClauses),
+	}
+	// Compile the role filter up-front when role activation is configured. An
+	// empty role_filter compiles to a match-all regex (filtering is optional —
+	// every role_claim role is activated). validateOAuthRuntimeConfig already
+	// rejected an invalid pattern, so a compile error here is not expected;
+	// leave roleFilterRe nil if it ever occurs so role activation fails closed.
+	if strings.TrimSpace(cfg.Server.OAuth.RoleClaim) != "" {
+		pat := strings.TrimSpace(cfg.Server.OAuth.RoleFilter)
+		if re, err := regexp.Compile(pat); err == nil {
+			chJweServer.roleFilterRe = re
+		} else {
+			log.Error().Err(err).Str("role_filter", pat).Msg("oauth: failed to compile role_filter; per-request role activation will fail closed")
+		}
 	}
 
 	// Register tools, resources, and prompts.

@@ -216,6 +216,18 @@ config:
       scopes: []
       # -- Required scopes for access (token must have all of these)
       required_scopes: []
+      # -- JWT claim holding a JSON array of ClickHouse role names to activate
+      # per request (e.g. "https://clickhouse/roles"). When set, only the
+      # role_filter-matching subset is activated via HTTP `role=` params,
+      # narrowing the user's active roles. Empty disables the feature.
+      role_claim: ""
+      # -- Optional regex narrowing which role_claim roles are activated
+      # (e.g. "^anon_"). When empty, all roles in the claim are activated (the
+      # IdP curates the set; CH re-validates the token and enforces grants). An
+      # empty resolved set fails closed (request denied), never falling back to
+      # the full grant. Anchor it (^…/…$): it is a partial match, so an
+      # unanchored "anon" would also match "not_anon_real".
+      role_filter: ""
     # Dynamic tools generated from ClickHouse views
     dynamic_tools: []
     #  - regexp: "db\\..*"

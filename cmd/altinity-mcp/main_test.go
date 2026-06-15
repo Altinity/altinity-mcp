@@ -3409,6 +3409,42 @@ func TestValidateOAuthRuntimeConfig(t *testing.T) {
 		err := validateOAuthRuntimeConfig(cfg)
 		require.ErrorContains(t, err, "token_url")
 	})
+
+	t.Run("role_claim_without_filter_ok", func(t *testing.T) {
+		t.Parallel()
+		o := resourceServerBase()
+		o.RoleClaim = "https://clickhouse/roles" // role_filter intentionally empty
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("role_filter_valid_regex_ok", func(t *testing.T) {
+		t.Parallel()
+		o := resourceServerBase()
+		o.RoleClaim = "https://clickhouse/roles"
+		o.RoleFilter = "^anon_"
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		require.NoError(t, validateOAuthRuntimeConfig(cfg))
+	})
+
+	t.Run("role_filter_invalid_regex_rejected", func(t *testing.T) {
+		t.Parallel()
+		o := resourceServerBase()
+		o.RoleClaim = "https://clickhouse/roles"
+		o.RoleFilter = "(["
+		cfg := config.Config{
+			Server:     config.ServerConfig{OAuth: o},
+			ClickHouse: config.ClickHouseConfig{Protocol: config.HTTPProtocol},
+		}
+		err := validateOAuthRuntimeConfig(cfg)
+		require.ErrorContains(t, err, "role_filter is not a valid regex")
+	})
 }
 
 func TestWarnOAuthMisconfiguration(t *testing.T) {
