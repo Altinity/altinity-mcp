@@ -483,17 +483,20 @@ func parseCIMDMetadata(clientIDURL string, body []byte) (*statelessRegisteredCli
 			switch gt {
 			case "authorization_code":
 				hasAuthCode = true
-			case "refresh_token":
-				// Tolerated in metadata, deliberately NOT honored in v1: a client
-				// publishing ["authorization_code","refresh_token"] (which
-				// claude.ai does today) silently gets no refresh capability —
-				// .well-known/oauth-authorization-server only advertises
-				// authorization_code and /token returns unsupported_grant_type
-				// for refresh. If/when refresh ships, do NOT treat the CIMD
-				// grant_types array as authoritative for what we issue — the AS
-				// metadata is the source of truth.
 			default:
-				return nil, fmt.Errorf("%w: unsupported grant_type %q", errCIMDInvalidMetadata, gt)
+				// Any other grant_type (refresh_token, and as of 2026-06 claude.ai
+				// also publishes urn:ietf:params:oauth:grant-type:jwt-bearer) is
+				// TOLERATED but deliberately NOT honored in v1. The CIMD grant_types
+				// array is advertising what the *client* can do, not what we issue:
+				// .well-known/oauth-authorization-server only lists authorization_code
+				// and /token returns unsupported_grant_type for everything else, so a
+				// client gets exactly the capabilities the AS metadata declares
+				// regardless of what it lists here. Hard-rejecting unknown entries
+				// just breaks resolution whenever a client adds a new grant_type to
+				// its published doc (this is what took claude.ai connectors down when
+				// jwt-bearer was added). Requiring authorization_code to be present is
+				// the only real constraint. If refresh ever ships, the AS metadata —
+				// not this array — remains the source of truth for what we issue.
 			}
 		}
 		if !hasAuthCode {

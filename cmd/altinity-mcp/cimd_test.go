@@ -160,7 +160,7 @@ func TestParseCIMDMetadata_OK(t *testing.T) {
 		"client_name": "Claude",
 		"client_uri": "https://claude.ai",
 		"redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
-		"grant_types": ["authorization_code","refresh_token"],
+		"grant_types": ["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],
 		"response_types": ["code"],
 		"token_endpoint_auth_method": "none"
 	}`)
@@ -183,7 +183,10 @@ func TestParseCIMDMetadata_Reject(t *testing.T) {
 		"empty_redirect_uris":     `{"client_id":"` + u + `","client_name":"X","redirect_uris":[],"token_endpoint_auth_method":"none"}`,
 		"duplicate_redirect_uris": `{"client_id":"` + u + `","client_name":"X","redirect_uris":["https://x/cb","https://x/cb"],"token_endpoint_auth_method":"none"}`,
 		"http_redirect_uri":       `{"client_id":"` + u + `","client_name":"X","redirect_uris":["http://x/cb"],"token_endpoint_auth_method":"none"}`,
-		"unsupported_grant":       `{"client_id":"` + u + `","client_name":"X","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none","grant_types":["password"]}`,
+		// Unknown grant_types are now TOLERATED (claude.ai publishes jwt-bearer);
+		// this case still rejects, but because authorization_code is absent — not
+		// because "password" itself is unsupported. See parseCIMDMetadata.
+		"grant_types_without_authcode": `{"client_id":"` + u + `","client_name":"X","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none","grant_types":["password"]}`,
 		"unsupported_response":    `{"client_id":"` + u + `","client_name":"X","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none","response_types":["token"]}`,
 		"empty_name":              `{"client_id":"` + u + `","client_name":"","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none"}`,
 		"oversize_name":           `{"client_id":"` + u + `","client_name":"` + strings.Repeat("a", cimdMaxClientNameLength+1) + `","redirect_uris":["https://x/cb"],"token_endpoint_auth_method":"none"}`,
