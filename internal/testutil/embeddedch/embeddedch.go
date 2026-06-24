@@ -82,7 +82,7 @@ func WithTCPProtocol() Option {
 	return func(o *Options) { o.Protocol = config.TCPProtocol }
 }
 
-// WithStartTimeout overrides the default 60s start timeout.
+// WithStartTimeout overrides the default 120s start timeout.
 func WithStartTimeout(d time.Duration) Option {
 	return func(o *Options) { o.StartTimeout = d }
 }
@@ -105,8 +105,13 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 	}
 
 	o := Options{
-		Protocol:     config.HTTPProtocol,
-		StartTimeout: 60 * time.Second,
+		Protocol: config.HTTPProtocol,
+		// 120s, not 60s: CI runs the suite with `-parallel 4 -shuffle`, so up to
+		// four real ClickHouse servers start concurrently on a cold runner that
+		// may also still be extracting the downloaded binary. 60s intermittently
+		// timed out at Start() (flaky release-build failures); 120s absorbs the
+		// contention without masking a genuine startup error (those fail fast).
+		StartTimeout: 120 * time.Second,
 	}
 	for _, fn := range opts {
 		fn(&o)
