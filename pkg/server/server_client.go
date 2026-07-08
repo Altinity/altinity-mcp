@@ -328,11 +328,11 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 
 	// Bearer got an auth error — try Basic (ch-jwt-verify sidecar path).
 	log.Debug().Str("endpoint", endpoint).Msg("oauth: Bearer rejected by CH, probing Basic")
-	email, ok := emailFromUnverifiedJWT(token)
+	user, ok := basicUsernameFromJWT(token, cfg.UsernameClaim)
 	if !ok {
-		return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
+		return nil, basicUsernameError(cfg.UsernameClaim)
 	}
-	basicCfg := oauthApplyBasic(probeCfg, email, token)
+	basicCfg := oauthApplyBasic(probeCfg, user, token)
 	client, err := clickhouse.NewClient(ctx, basicCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
@@ -351,11 +351,11 @@ func newClientForOAuthMethod(ctx context.Context, chCfg config.ClickHouseConfig,
 	case chOAuthMethodBearer:
 		chCfg = oauthApplyBearer(chCfg, token, oauthCfg)
 	case chOAuthMethodBasic:
-		email, ok := emailFromUnverifiedJWT(token)
+		user, ok := basicUsernameFromJWT(token, oauthCfg.UsernameClaim)
 		if !ok {
-			return nil, fmt.Errorf("oauth: bearer is not a JWT with an email claim")
+			return nil, basicUsernameError(oauthCfg.UsernameClaim)
 		}
-		chCfg = oauthApplyBasic(chCfg, email, token)
+		chCfg = oauthApplyBasic(chCfg, user, token)
 	}
 	client, err := clickhouse.NewClient(ctx, chCfg)
 	if err != nil {
@@ -444,6 +444,33 @@ func emailFromUnverifiedJWT(token string) (string, bool) {
 		return e, true
 	}
 	return "", false
+}
+
+// basicUsernameFromJWT returns the ClickHouse Basic-auth username for token.
+// When usernameClaim is empty it keeps the default behavior (the `email` claim
+// with a namespaced `*/email` fallback). When set, it does a strict top-level
+// lookup of that single claim via oauth.UsernameFromExtra and fails closed
+// (ok=false) on a missing, empty, or non-string value — never falling back to
+// email or any other identity. The value is an unverified hint only; CH / the
+// ch-jwt-verify sidecar still validate the JWT.
+func basicUsernameFromJWT(token, usernameClaim string) (string, bool) {
+	if strings.TrimSpace(usernameClaim) == "" {
+		return emailFromUnverifiedJWT(token)
+	}
+	raw, ok := decodeUnverifiedJWTClaims(token)
+	if !ok {
+		return "", false
+	}
+	return oauth.UsernameFromExtra(raw, usernameClaim)
+}
+
+// basicUsernameError builds the fail-closed error returned when no usable Basic
+// username can be derived, naming the configured claim when one is set.
+func basicUsernameError(usernameClaim string) error {
+	if c := strings.TrimSpace(usernameClaim); c != "" {
+		return fmt.Errorf("oauth: bearer JWT has no usable Basic username (claim %q missing, empty, or non-string)", c)
+	}
+	return fmt.Errorf("oauth: bearer is not a JWT with an email claim")
 }
 
 // oauthExpiryClockSkewSecs tolerates small clock differences between this
