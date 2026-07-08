@@ -228,6 +228,14 @@ config:
       # the full grant. Anchor it (^…/…$): it is a partial match, so an
       # unanchored "anon" would also match "not_anon_real".
       role_filter: ""
+      # -- JWT claim used as the ClickHouse Basic-auth username on the
+      # ch-jwt-verify sidecar path (#152). Empty (default) uses the `email`
+      # claim with a namespaced `*/email` fallback. When set (e.g. "username",
+      # "preferred_username", "sub"), a strict top-level lookup of that single
+      # claim is used and a missing/empty/non-string value fails closed rather
+      # than falling back to another identity. Must match the sidecar's
+      # identity.username_claim. Applies only to the Basic path, not Bearer.
+      username_claim: ""
     # Dynamic tools generated from ClickHouse views
     dynamic_tools: []
     #  - regexp: "db\\..*"

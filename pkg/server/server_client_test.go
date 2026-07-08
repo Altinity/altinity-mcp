@@ -221,6 +221,98 @@ func TestEmailFromUnverifiedJWT(t *testing.T) {
 	})
 }
 
+// TestBasicUsernameFromJWT covers the orchestration around the configurable
+// username_claim: unset preserves the email default (incl. namespaced
+// fallback); a set claim does a strict top-level lookup and fails closed on
+// missing/empty/non-string, never falling back to email.
+func TestBasicUsernameFromJWT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unset_claim_uses_email", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{"email": "alice@example.com"})
+		got, ok := basicUsernameFromJWT(tok, "")
+		require.True(t, ok)
+		require.Equal(t, "alice@example.com", got)
+	})
+
+	t.Run("unset_claim_whitespace_uses_email", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{"email": "alice@example.com"})
+		got, ok := basicUsernameFromJWT(tok, "   ")
+		require.True(t, ok)
+		require.Equal(t, "alice@example.com", got)
+	})
+
+	t.Run("unset_claim_namespaced_email_fallback", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{
+			"https://example.com/email": "alice@example.com",
+		})
+		got, ok := basicUsernameFromJWT(tok, "")
+		require.True(t, ok)
+		require.Equal(t, "alice@example.com", got)
+	})
+
+	t.Run("configured_username_claim", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{
+			"username": "alice",
+			"email":    "alice@example.com",
+		})
+		got, ok := basicUsernameFromJWT(tok, "username")
+		require.True(t, ok)
+		require.Equal(t, "alice", got)
+	})
+
+	t.Run("configured_claim_whitespace_trimmed", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{"preferred_username": "  bob  "})
+		got, ok := basicUsernameFromJWT(tok, "preferred_username")
+		require.True(t, ok)
+		require.Equal(t, "bob", got)
+	})
+
+	t.Run("configured_claim_missing_fails_closed", func(t *testing.T) {
+		t.Parallel()
+		// email present but the configured claim is absent — must NOT fall back.
+		tok := fakeJWT(t, map[string]interface{}{"email": "alice@example.com"})
+		_, ok := basicUsernameFromJWT(tok, "username")
+		require.False(t, ok)
+	})
+
+	t.Run("configured_claim_empty_fails_closed", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{"username": "   "})
+		_, ok := basicUsernameFromJWT(tok, "username")
+		require.False(t, ok)
+	})
+
+	t.Run("configured_claim_non_string_fails_closed", func(t *testing.T) {
+		t.Parallel()
+		tok := fakeJWT(t, map[string]interface{}{"username": 12345})
+		_, ok := basicUsernameFromJWT(tok, "username")
+		require.False(t, ok)
+	})
+
+	t.Run("configured_email_is_strict_top_level", func(t *testing.T) {
+		t.Parallel()
+		// With username_claim="email" set, the namespaced */email key is NOT
+		// consulted — explicit config means a strict single-claim lookup.
+		tok := fakeJWT(t, map[string]interface{}{
+			"https://example.com/email": "namespaced@example.com",
+		})
+		_, ok := basicUsernameFromJWT(tok, "email")
+		require.False(t, ok)
+	})
+
+	t.Run("configured_claim_not_a_jwt_fails_closed", func(t *testing.T) {
+		t.Parallel()
+		_, ok := basicUsernameFromJWT("only.two", "username")
+		require.False(t, ok)
+	})
+}
+
 // jwtWithClaims builds an unsigned-but-well-formed three-segment JWT string
 // (the signature segment is a dummy) for exp-claim tests. unverifiedExp never
 // checks the signature, so this is sufficient.

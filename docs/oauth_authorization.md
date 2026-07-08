@@ -75,6 +75,18 @@ user-vs-claim match.
   WITH http SERVER 'ch_jwt_verify' SCHEME 'BASIC'`.
 - Forces HTTP protocol on the driver.
 
+By default the Basic username is the JWT `email` claim (with a namespaced
+`*/email` fallback for Auth0 DCR tokens). Set **`oauth.username_claim`** to
+use a different claim (`username`, `preferred_username`, `sub`, …) when your
+ClickHouse users are provisioned from that claim. When set, MCP does a strict
+top-level lookup of that single claim and **fails closed** on a
+missing/empty/non-string value — it never silently falls back to email or
+another identity. An explicit `username_claim: email` is therefore strict and
+does *not* do the namespaced fallback; leave it unset if you rely on that.
+**`oauth.username_claim` must match the sidecar's `identity.username_claim`**
+(see below) — a mismatch fails authentication. The value is an unverified
+hint only; the sidecar still validates the JWT and the user-vs-claim match.
+
 ### Detection logic
 
 On the first authenticated request to `host:port`, MCP tries Bearer. If
@@ -166,6 +178,12 @@ identity:
   require_email_verified: true
   allowed_email_domains: ["example.com"]
 ```
+
+The sidecar's `identity.username_claim` here **must match** MCP's
+`oauth.username_claim` (default `email`). MCP puts that claim's value in the
+Basic username; the sidecar re-reads the same claim from the verified token
+and rejects the request if they disagree. If you point the sidecar at a
+non-email claim, set MCP's `oauth.username_claim` to the same claim.
 
 ## ClickHouse `token_processors` (Bearer auth path)
 
@@ -283,6 +301,13 @@ server:
     role_claim: ""        # e.g. "https://clickhouse/roles"
     role_filter: ""       # optional; e.g. "^anon_" (empty = activate all claim roles)
 
+    # JWT claim used as the ClickHouse Basic-auth username on the sidecar path.
+    # Empty = default `email` claim + namespaced */email fallback. When set, a
+    # strict top-level lookup of this single claim is used and a missing/empty/
+    # non-string value fails closed. Must match the sidecar's
+    # identity.username_claim. Applies only to the Basic path, not Bearer.
+    username_claim: ""    # e.g. "username", "preferred_username", "sub"
+
     # Token lifetimes (broker mode)
     access_token_ttl_seconds: 3600
     refresh_token_ttl_seconds: 2592000   # 30 d
@@ -313,6 +338,7 @@ server:
 | `upstream_offline_access` | Request `offline_access` upstream so the IdP consent screen offers long-lived sessions. Default `false`. |
 | `role_claim` | JWT claim holding a JSON array of ClickHouse role names to activate per request (e.g. `https://clickhouse/roles`). Empty disables. Read from the validated token's namespaced/custom claims. |
 | `role_filter` | **Optional** regex narrowing which `role_claim` roles are activated (e.g. `_mcp$`). When empty, **all** roles in the claim are activated (the IdP curates the set; CH re-validates the token and enforces grants). Only ever narrows; an empty *resolved* set (claim absent/empty, or filter matched nothing) fails closed — request denied, no fallback to the full grant. HTTP protocol only; applies in both Bearer and Basic/sidecar paths. **Anchor it** (`^…`/`…$`) — it's a partial match, so an unanchored `anon` would also match `not_anon_real`. |
+| `username_claim` | JWT claim used as the ClickHouse Basic-auth username on the `ch-jwt-verify` sidecar path. Empty (default) = `email` claim with a namespaced `*/email` fallback. When set (e.g. `username`, `preferred_username`, `sub`), a strict top-level lookup of that single claim is used and a missing/empty/non-string value **fails closed** — never falling back to another identity. An explicit `email` is strict (no namespaced fallback). Unverified hint only (CH/sidecar still validate). **Must match the sidecar's `identity.username_claim`.** Basic path only; no effect on Bearer. |
 
 ## Provider-specific setup
 
