@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.1
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
-	github.com/franchb/embedded-clickhouse v0.4.1
+	github.com/franchb/embedded-clickhouse v0.4.2
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/rs/zerolog v1.35.1
@@ -42,6 +42,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )
