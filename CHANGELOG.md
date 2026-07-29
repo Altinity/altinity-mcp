@@ -1,6 +1,6 @@
 # v1.6.0
 
-This release reworks the OAuth subsystem into a CIMD-capable broker (extracted into the shared `go-mcp-oauth-sdk`), adds multi-cluster URL-path routing, ClickHouse-side JWT verification via a sidecar, per-request role activation, and server-enforced result caps.
+This release reworks the OAuth subsystem into a CIMD-capable broker (extracted into the shared `go-mcp-oauth-sdk`), adds multi-cluster URL-path routing, ClickHouse-side JWT verification via a sidecar, per-request role activation, server-enforced result caps, and serves the stateless MCP protocol (spec revision 2026-07-28) over HTTP.
 
 BREAKING CHANGES
 - **OAuth mode model replaced by `server.oauth.broker`**: `server.oauth.mode` (`forward`/`gating`) and `server.oauth.broker_upstream` are removed — set `server.oauth.broker: true` (MCP acts as the OAuth AS and brokers the upstream IdP) or `false` (pure OAuth resource server). The ClickHouse auth wire format (`Authorization: Bearer` vs `Basic`) is now **auto-detected** per endpoint and cached, so it is no longer a config mode ([PR #115](https://github.com/Altinity/altinity-mcp/pull/115), [#128](https://github.com/Altinity/altinity-mcp/pull/128))
@@ -18,7 +18,9 @@ FEATURES
 - ClickHouse-side JWT verification via the [`ch-jwt-verify`](https://github.com/altinity/altinity-oauth-helper) sidecar: `broker: true` discovers Basic-delegation automatically; CH validates the forwarded JWT per request, no `token_processors` required ([PR #128](https://github.com/Altinity/altinity-mcp/pull/128))
 - per-request ClickHouse role activation from a JWT claim: `server.oauth.role_claim` + optional `server.oauth.role_filter` activate (and narrow) roles per request via HTTP `role=` params; fail-closed on an empty resolved set ([PR #141](https://github.com/Altinity/altinity-mcp/pull/141), fixes [#140](https://github.com/Altinity/altinity-mcp/issues/140))
 - server-enforced query result caps: `max_result_rows` / `max_result_bytes` are applied as ClickHouse session settings + an MCP-side hard cap instead of rewriting SQL; truncation is reported to the client ([PR #125](https://github.com/Altinity/altinity-mcp/pull/125), fixes [#124](https://github.com/Altinity/altinity-mcp/issues/124))
+- stateless MCP protocol (spec revision 2026-07-28) on the HTTP transport via `go-sdk` 1.7.0: no session affinity required, safe behind round-robin load balancers; older clients transparently negotiate down to 2025-11-25 and earlier; abandoned HTTP requests now cancel the running ClickHouse query (`PropagateRequestCancellation`); CORS preflight echoes the browser-requested headers so per-request `Mcp-Method` / `Mcp-Param-*` routing headers pass preflight
 - HA: stateless StreamableHTTP transport and stateless-JWE pending-auth/auth-code state so any replica can serve any request ([PR #114](https://github.com/Altinity/altinity-mcp/pull/114))
+- configurable ClickHouse Basic-auth username claim on the sidecar path: `server.oauth.username_claim` (CLI: `--oauth-username-claim`; env: `MCP_OAUTH_USERNAME_CLAIM`) selects which JWT claim becomes the Basic username; unset keeps the `email` + namespaced `*/email` fallback; fails closed on a missing/empty claim ([PR #153](https://github.com/Altinity/altinity-mcp/pull/153), fixes [#152](https://github.com/Altinity/altinity-mcp/issues/152))
 - forward/broker id_token refresh: near-expired upstream id_tokens are refreshed at `/token` ([PR #121](https://github.com/Altinity/altinity-mcp/pull/121), [#122](https://github.com/Altinity/altinity-mcp/pull/122))
 - secure-by-default email verification (`require_email_verified`) and DCR-via-Auth0 enrollment helper ([PR #110](https://github.com/Altinity/altinity-mcp/pull/110), [#111](https://github.com/Altinity/altinity-mcp/pull/111))
 - emit strict-mode-compatible tool input schemas (`additionalProperties: false` + `required`) for clients that enforce strict JSON Schema
@@ -29,16 +31,19 @@ IMPROVEMENTS
 - enforce `https://` on `oauth.issuer` / `oauth.jwks_url` at startup (localhost exempt); re-fetch JWKS on `kid` miss to survive key rotation; reject opaque bearers in resource-server mode
 - all OAuth config fields auto-wired to CLI flags / env vars via struct tags — new fields need no `main.go` edits ([PR #101](https://github.com/Altinity/altinity-mcp/pull/101))
 - helm: default `clickhouse.max_result_rows` instead of the deprecated `limit`
+- add a simple `Makefile` (`make build` / `make test`)
+- tests: raise embedded-clickhouse start timeout 60s→120s to de-flake CI ([PR #145](https://github.com/Altinity/altinity-mcp/pull/145))
 
 BUG FIXES
+- CIMD: tolerate unknown `grant_types` entries in client metadata (require only `authorization_code`) — claude.ai started advertising `jwt-bearer` in its client metadata document, which failed the whole CIMD resolution and broke every claude.ai connector at `/authorize` ([PR #147](https://github.com/Altinity/altinity-mcp/pull/147))
 - return HTTP 401 on an expired OAuth token at the MCP transport, including `tools/list` ([PR #135](https://github.com/Altinity/altinity-mcp/pull/135))
 - broker requests the upstream API audience for Auth0 and forwards the access token to CH
 - multicluster: point the `WWW-Authenticate` `resource_metadata` at the serving host
 
 DEPENDENCY UPDATES
-- drop the `github.com/Altinity/clickhouse-go/v2` fork (introduced in v1.5.0) and return to upstream `github.com/ClickHouse/clickhouse-go/v2 v2.46.0` — the cluster interserver-secret path it carried is superseded by the sidecar ([PR #138](https://github.com/Altinity/altinity-mcp/pull/138))
+- drop the `github.com/Altinity/clickhouse-go/v2` fork (introduced in v1.5.0) and return to upstream `github.com/ClickHouse/clickhouse-go/v2 v2.47.0` — the cluster interserver-secret path it carried is superseded by the sidecar ([PR #138](https://github.com/Altinity/altinity-mcp/pull/138))
 - add `github.com/altinity/go-mcp-oauth-sdk` (extracted OAuth subsystem) ([PR #127](https://github.com/Altinity/altinity-mcp/pull/127))
-- bump `github.com/modelcontextprotocol/go-sdk` to 1.6.1, `golang.org/x/crypto` to 0.53.0, `golang.org/x/net` to 0.56.0, `golang.org/x/sync` to 0.21.0, `github.com/urfave/cli/v3` to 3.10.0
+- bump `github.com/modelcontextprotocol/go-sdk` to 1.7.0 (stateless MCP 2026-07-28 support), `github.com/urfave/cli/v3` to 3.10.1, `github.com/franchb/embedded-clickhouse` to 0.4.2, `github.com/AfterShip/clickhouse-sql-parser` to 0.5.3, `golang.org/x/crypto` to 0.54.0, `golang.org/x/net` to 0.57.0, `golang.org/x/sync` to 0.22.0
 
 # v1.5.0
 

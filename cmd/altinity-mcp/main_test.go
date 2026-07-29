@@ -27,6 +27,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 )
@@ -1817,21 +1818,33 @@ func TestCORSSupport(t *testing.T) {
 			}
 
 			if serverPort != "" {
-				// Test CORS preflight request
 				client := &http.Client{}
-				req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/", serverPort), nil)
-				req.Header.Set("Access-Control-Request-Method", "POST")
-				req.Header.Set("Access-Control-Request-Headers", "Content-Type, Authorization")
-				req.Header.Set("Origin", "http://localhost")
-
-				resp, err := client.Do(req)
-				require.NoError(t, err)
-				require.Equal(t, http.StatusOK, resp.StatusCode)
-				require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
-				require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
-				require.Equal(t, "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent", resp.Header.Get("Access-Control-Allow-Headers"))
-				if closeErr := resp.Body.Close(); closeErr != nil {
-					t.Fatalf("can't close response body, %v", closeErr)
+				// Preflight echoes back the requested headers (needed for
+				// dynamic Mcp-Param-* headers in the stateless protocol);
+				// without Access-Control-Request-Headers it falls back to
+				// the static allowlist.
+				for _, tc := range []struct {
+					requestHeaders string
+					wantAllow      string
+				}{
+					{"Content-Type, Authorization", "Content-Type, Authorization"},
+					{"", defaultCORSAllowHeaders},
+				} {
+					req, _ := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%s/", serverPort), nil)
+					req.Header.Set("Access-Control-Request-Method", "POST")
+					req.Header.Set("Origin", "http://localhost")
+					if tc.requestHeaders != "" {
+						req.Header.Set("Access-Control-Request-Headers", tc.requestHeaders)
+					}
+					resp, err := client.Do(req)
+					require.NoError(t, err)
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+					require.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
+					require.Equal(t, tc.wantAllow, resp.Header.Get("Access-Control-Allow-Headers"))
+					if closeErr := resp.Body.Close(); closeErr != nil {
+						t.Fatalf("can't close response body, %v", closeErr)
+					}
 				}
 			}
 
@@ -1858,6 +1871,56 @@ func getFreeRandomPort() (int, error) {
 	addr := listener.Addr().(*net.TCPAddr)
 	_ = listener.Close()
 	return addr.Port, nil
+}
+
+// TestStatelessHTTPProtocol verifies the HTTP transport serves the stateless
+// MCP protocol (2026-07-28): a client connects without an initialize
+// handshake or Mcp-Session-Id and lists tools over plain request/response
+// POSTs.
+func TestStatelessHTTPProtocol(t *testing.T) {
+	t.Parallel()
+	port, err := getFreeRandomPort()
+	require.NoError(t, err)
+	cfg := config.Config{
+		Server: config.ServerConfig{
+			Transport:  config.HTTPTransport,
+			Address:    "localhost",
+			Port:       port,
+			CORSOrigin: "*",
+		},
+	}
+	app := &application{
+		config:    cfg,
+		mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test-version"),
+	}
+	go func() { _ = app.Start() }()
+	defer func() {
+		if srv := app.getHTTPServer(); srv != nil {
+			_ = srv.Close()
+		}
+	}()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+	require.Eventually(t, func() bool {
+		resp, livezErr := http.Get(baseURL + "/livez")
+		if livezErr != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 5*time.Second, 50*time.Millisecond, "server did not start")
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "stateless-test", Version: "0.0.1"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: baseURL + "/"}, nil)
+	require.NoError(t, err)
+	defer func() { _ = session.Close() }()
+
+	require.Equal(t, "2026-07-28", session.InitializeResult().ProtocolVersion)
+
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, tools.Tools)
 }
 
 // TestApplicationStart tests the application Start method

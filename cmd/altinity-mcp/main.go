@@ -197,6 +197,55 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 	})
 }
 
+// defaultCORSAllowHeaders is the static Access-Control-Allow-Headers value
+// used when a preflight request does not name specific headers.
+const defaultCORSAllowHeaders = "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Mcp-Method, Referer, User-Agent"
+
+// corsMiddleware sets CORS headers for browser-based MCP clients. The
+// stateless 2026-07-28 protocol sends per-request routing headers
+// (Mcp-Method, Mcp-Param-*); Mcp-Param-* names are derived from tool
+// arguments and cannot be enumerated statically, so preflight requests echo
+// back the headers the browser asks for.
+func corsMiddleware(origin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+
+		if r.Method == "OPTIONS" {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			allowHeaders := defaultCORSAllowHeaders
+			if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+				allowHeaders = requested
+			}
+			w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			// The Allow-Headers value depends on the request and Max-Age lets
+			// browsers cache it, so caches must key on the requested headers.
+			w.Header().Set("Vary", "Access-Control-Request-Headers")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// statelessStreamableOptions configures the streamable HTTP transport for
+// stateless operation (MCP 2026-07-28; older clients negotiate down to
+// 2025-11-25 and earlier). Stateless is required for replicas>=2 behind a
+// non-sticky LB, where consecutive tool calls from one client may land on
+// different pods. Trade-off: server-initiated requests (sampling,
+// elicitation, etc.) are not supported; altinity-mcp only uses
+// client-initiated tool calls so this is safe. PropagateRequestCancellation
+// ties handler contexts to the HTTP request lifecycle so abandoned requests
+// stop running queries. Returns a fresh struct per call: the SDK mutates the
+// options struct, so it must not be shared between handlers.
+func statelessStreamableOptions() *mcp.StreamableHTTPOptions {
+	return &mcp.StreamableHTTPOptions{
+		Stateless:                    true,
+		PropagateRequestCancellation: true,
+	}
+}
+
 // transportRoutePatterns returns the mux patterns to register for the given
 // transport. Passing an empty transport string serves the MCP protocol at the
 // root path ("/" and "/{token}") — used for the HTTP transport so clients
@@ -434,37 +483,15 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
 	}
 
-	corsHandler := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
-			w.Header().Set("Access-Control-Max-Age", "86400")
-
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-
 	var httpHandler http.Handler
 	if cfg.Server.JWE.Enabled {
 		log.Info().Msg("Using dynamic base path for JWE authentication")
 
 		tokenInjector := a.createTokenInjector()
 		dtInjector := a.dynamicToolsInjector
-		// Stateless: true makes the streamable HTTP transport carry no per-pod
-		// session state — each request stands alone. Required for replicas>=2
-		// behind a non-sticky LB, where consecutive tool calls from one client
-		// may land on different pods. Trade-off: server-initiated requests
-		// (sampling, roots/list, etc.) are not supported; altinity-mcp only
-		// uses client-initiated tool calls so this is safe.
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return mcpServer
-		}, &mcp.StreamableHTTPOptions{Stateless: true})
+		}, statelessStreamableOptions())
 
 		mux := http.NewServeMux()
 		transportHandler := serverInjector(tokenInjector(dtInjector(httpServer)))
@@ -489,18 +516,12 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = stripTrailingSlash(corsHandler(mux))
+		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
 	} else {
 		// Use standard HTTP server without dynamic paths
-		// Stateless: true makes the streamable HTTP transport carry no per-pod
-		// session state — each request stands alone. Required for replicas>=2
-		// behind a non-sticky LB, where consecutive tool calls from one client
-		// may land on different pods. Trade-off: server-initiated requests
-		// (sampling, roots/list, etc.) are not supported; altinity-mcp only
-		// uses client-initiated tool calls so this is safe.
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return mcpServer
-		}, &mcp.StreamableHTTPOptions{Stateless: true})
+		}, statelessStreamableOptions())
 		dtInjector := a.dynamicToolsInjector
 		mux := http.NewServeMux()
 		transportHandler := serverInjector(dtInjector(httpServer))
@@ -520,7 +541,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = stripTrailingSlash(corsHandler(mux))
+		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
 	}
 
 	a.setHTTPServer(&http.Server{
@@ -553,22 +574,6 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
 		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
-	}
-
-	corsHandler := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
-			w.Header().Set("Access-Control-Max-Age", "86400")
-
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
 	}
 
 	openAPIProtocol := "http"
@@ -611,7 +616,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = stripTrailingSlash(corsHandler(mux))
+		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
 	} else {
 		// Use SSEHandler for legacy SSE transport
 		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
@@ -636,7 +641,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = stripTrailingSlash(corsHandler(mux))
+		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
 	}
 
 	a.setHTTPServer(&http.Server{
@@ -1387,7 +1392,7 @@ func (a *application) Start() error {
 //	*    /mcp/{cluster}        ← multi-cluster MCP entrypoint
 //
 // /mcp/{cluster} chain (outer to inner):
-//   - corsHandler, stripTrailingSlash (mux-wide)
+//   - corsMiddleware, stripTrailingSlash (mux-wide)
 //   - mcRouter.Middleware: extracts {cluster}, validates, expands host,
 //     injects (cluster, reqCfg) on ctx.
 //   - createMCPAuthInjector: existing OAuth bearer extraction.
@@ -1405,20 +1410,6 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 		Str("address", addr).
 		Msg("Starting MCP server with multi-cluster HTTP transport")
 
-	corsHandler := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", cfg.Server.CORSOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Altinity-MCP-Key, Mcp-Protocol-Version, Referer, User-Agent")
-			w.Header().Set("Access-Control-Max-Age", "86400")
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1428,7 +1419,7 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 	}
 
 	factory := altinitymcp.NewMulticlusterServerFactory(cfg, a.mcpServer, a.mcCache, version)
-	sdkHandler := mcp.NewStreamableHTTPHandler(factory.GetServer, &mcp.StreamableHTTPOptions{Stateless: true})
+	sdkHandler := mcp.NewStreamableHTTPHandler(factory.GetServer, statelessStreamableOptions())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.healthHandler)
@@ -1440,7 +1431,7 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 	mux.Handle("/mcp/{cluster}", mcpHandler)
 	mux.Handle("/mcp/{cluster}/", mcpHandler)
 
-	httpHandler := stripTrailingSlash(corsHandler(mux))
+	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
 
 	a.setHTTPServer(&http.Server{
 		Addr:    addr,

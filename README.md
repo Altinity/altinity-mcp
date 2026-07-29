@@ -7,6 +7,7 @@ A Model Context Protocol (MCP) server that provides tools for interacting with C
 ## Features
 
 - **Multiple Transport Options**: Support for STDIO, HTTP, and Server-Sent Events (SSE) transports
+- **Stateless MCP Protocol**: The HTTP transport serves the stateless MCP protocol (spec revision 2026-07-28) — no session affinity required, safe to run behind round-robin load balancers; older clients transparently negotiate down to 2025-11-25 and earlier
 - **OAuth 2.0 Authorization**: Broker OAuth flows from MCP clients against any OIDC provider; auto-detects Bearer vs Basic auth for ClickHouse (see [OAuth 2.0 Documentation](docs/oauth_authorization.md))
 - **JWE Authentication**: Optional JWE-based authentication with encryption for secure database access
 - **TLS Support**: Full TLS encryption support for both ClickHouse® connections and MCP server endpoints
