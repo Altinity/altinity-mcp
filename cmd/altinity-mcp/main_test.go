@@ -1918,7 +1918,7 @@ func TestStatelessHTTPProtocol(t *testing.T) {
 
 	require.Equal(t, "2026-07-28", session.InitializeResult().ProtocolVersion)
 
-	tools, err := session.ListTools(ctx, nil)
+	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	require.NoError(t, err)
 	require.NotEmpty(t, tools.Tools)
 }
