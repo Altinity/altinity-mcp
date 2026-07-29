@@ -11,17 +11,25 @@
 package embeddedch
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
 	embeddedclickhouse "github.com/franchb/embedded-clickhouse"
@@ -137,24 +145,40 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 		defer release()
 	}
 
-	if len(o.ConfigDropIns) > 0 || o.UsersXML != "" {
-		dataDir := t.TempDir()
-		if len(o.ConfigDropIns) > 0 {
-			configDDir := filepath.Join(dataDir, "config.d")
-			require.NoError(t, os.MkdirAll(configDDir, 0o755))
-			for i, xml := range o.ConfigDropIns {
-				path := filepath.Join(configDDir, "drop-in-"+strconv.Itoa(i)+".xml")
-				require.NoError(t, os.WriteFile(path, []byte(xml), 0o644))
+	var ch *embeddedclickhouse.EmbeddedClickHouse
+	for attempt := 1; ; attempt++ {
+		attemptBuilder := cfgBuilder
+		if len(o.ConfigDropIns) > 0 || o.UsersXML != "" {
+			// Fresh DataPath per attempt: a restarted server must not inherit
+			// state written by a discarded instance.
+			dataDir := t.TempDir()
+			if len(o.ConfigDropIns) > 0 {
+				configDDir := filepath.Join(dataDir, "config.d")
+				require.NoError(t, os.MkdirAll(configDDir, 0o755))
+				for i, xml := range o.ConfigDropIns {
+					path := filepath.Join(configDDir, "drop-in-"+strconv.Itoa(i)+".xml")
+					require.NoError(t, os.WriteFile(path, []byte(xml), 0o644))
+				}
 			}
+			if o.UsersXML != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dataDir, "users.xml"), []byte(o.UsersXML), 0o644))
+			}
+			attemptBuilder = attemptBuilder.DataPath(dataDir)
 		}
-		if o.UsersXML != "" {
-			require.NoError(t, os.WriteFile(filepath.Join(dataDir, "users.xml"), []byte(o.UsersXML), 0o644))
-		}
-		cfgBuilder = cfgBuilder.DataPath(dataDir)
-	}
 
-	ch := embeddedclickhouse.NewServer(cfgBuilder)
-	require.NoError(t, ch.Start(), "embedded-clickhouse start failed")
+		ch = embeddedclickhouse.NewServer(attemptBuilder)
+		require.NoError(t, ch.Start(), "embedded-clickhouse start failed")
+
+		err := verifyListeners(ch.HTTPAddr(), ch.TCPAddr())
+		if err == nil {
+			break
+		}
+		_ = ch.Stop()
+		if attempt == maxStartAttempts {
+			t.Fatalf("embedded ClickHouse listener verification failed after %d attempts: %v", maxStartAttempts, err)
+		}
+		t.Logf("embedded ClickHouse listener verification failed (attempt %d/%d), restarting: %v", attempt, maxStartAttempts, err)
+	}
 	t.Cleanup(func() { _ = ch.Stop() })
 
 	addr := ch.HTTPAddr()
@@ -176,6 +200,90 @@ func Setup(t *testing.T, opts ...Option) *config.ClickHouseConfig {
 		ReadOnly:         false,
 		MaxExecutionTime: 60,
 	}
+}
+
+// maxStartAttempts bounds how many times Setup restarts the server when
+// listener verification fails. Each restart allocates fresh ports, so one
+// retry normally clears a port collision.
+const maxStartAttempts = 3
+
+// verifyListeners guards against the bind-and-release port-allocation race in
+// embedded-clickhouse (https://github.com/franchb/embedded-clickhouse/issues/51):
+// with parallel tests a concurrent server can steal a just-released port, and
+// ClickHouse logs the failed bind as a warning and keeps running while
+// Start() health-checks only HTTP /ping. HTTPAddr()/TCPAddr() may therefore
+// point at another instance's listener. Cross-checking getServerPort() over
+// both protocols proves each port answers its own protocol and belongs to the
+// same server: a stolen port either speaks the wrong protocol (handshake
+// error) or reports the other server's port numbers (mismatch).
+func verifyListeners(httpAddr, tcpAddr string) error {
+	_, httpPort, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		return fmt.Errorf("parse http addr %q: %w", httpAddr, err)
+	}
+	_, tcpPort, err := net.SplitHostPort(tcpAddr)
+	if err != nil {
+		return fmt.Errorf("parse tcp addr %q: %w", tcpAddr, err)
+	}
+
+	// Probes authenticate as default/no-password (the library's built-in
+	// user). Fixtures may override users via config drop-ins, so an
+	// authentication rejection is accepted as proof that a real ClickHouse
+	// endpoint answered with the right protocol — the getServerPort identity
+	// cross-check then runs only where auth succeeds (the common case).
+
+	// The HTTP listener must speak ClickHouse HTTP and, when the query
+	// succeeds, belong to the server that owns our native port.
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Get("http://" + httpAddr + "/?query=" + url.QueryEscape("SELECT getServerPort('tcp_port')"))
+	if err != nil {
+		return fmt.Errorf("http probe on %s: %w", httpAddr, err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("http probe on %s: read body: %w", httpAddr, err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		if got := strings.TrimSpace(string(body)); got != tcpPort {
+			return fmt.Errorf("http listener %s reports tcp_port=%s, want %s (port stolen by another instance)", httpAddr, got, tcpPort)
+		}
+	case resp.Header.Get("X-ClickHouse-Exception-Code") != "":
+		// A ClickHouse HTTP server rejected the query (typically auth in
+		// fixtures that set a default-user password) — protocol confirmed.
+	default:
+		return fmt.Errorf("http probe on %s: status %d: %s", httpAddr, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// The native listener must answer the native protocol and, when the query
+	// succeeds, belong to the server that owns our HTTP port.
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr:        []string{tcpAddr},
+		Auth:        clickhouse.Auth{Database: "default", Username: "default"},
+		DialTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("native open on %s: %w", tcpAddr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var gotHTTPPort uint16
+	if err := conn.QueryRow(ctx, "SELECT getServerPort('http_port')").Scan(&gotHTTPPort); err != nil {
+		// A server-side exception means the native handshake completed and a
+		// real ClickHouse server answered (e.g. auth rejection in fixtures
+		// with custom users) — protocol confirmed. The stolen-port failure
+		// mode surfaces as a client-side handshake error instead.
+		if _, ok := errors.AsType[*clickhouse.Exception](err); ok {
+			return nil
+		}
+		return fmt.Errorf("native probe on %s: %w", tcpAddr, err)
+	}
+	if got := strconv.Itoa(int(gotHTTPPort)); got != httpPort {
+		return fmt.Errorf("native listener %s reports http_port=%s, want %s (port stolen by another instance)", tcpAddr, got, httpPort)
+	}
+	return nil
 }
 
 // antalyaBinaryCache memoizes the extracted binary path for the lifetime
