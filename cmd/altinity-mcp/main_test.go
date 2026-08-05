@@ -845,6 +845,22 @@ func TestReloadConfig(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "failed to load config file")
 	})
+
+	t.Run("invalid_connect_host_preserves_active_config", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("clickhouse:\n  connect_host: https://10.0.0.25\n"), 0o600))
+		oldCfg := config.Config{ClickHouse: config.ClickHouseConfig{Host: "old.example", ConnectHost: "10.0.0.10"}}
+		app := &application{
+			configFile: path,
+			config:     oldCfg,
+			mcpServer:  altinitymcp.NewClickHouseMCPServer(oldCfg, "test-version"),
+		}
+		err := app.reloadConfig(&mockCommand{flags: map[string]interface{}{}, setFlags: map[string]bool{}, stringMaps: map[string]map[string]string{}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "clickhouse.connect_host")
+		require.Equal(t, oldCfg.ClickHouse, app.GetCurrentConfig().ClickHouse)
+	})
 }
 
 // TestTestConnection tests the testConnection function
@@ -1374,6 +1390,7 @@ func TestBuildConfigWithFile(t *testing.T) {
 reload_time: 10
 clickhouse:
   host: "config-host"
+  connect_host: "10.0.0.25"
   port: 9000
   database: "config-db"
   http_headers:
@@ -1422,6 +1439,7 @@ logging:
 
 		// CLI flag should override config file
 		require.Equal(t, "cli-host", cfg.ClickHouse.Host)
+		require.Equal(t, "10.0.0.25", cfg.ClickHouse.ConnectHost)
 		// Config file values should be used where CLI flags aren't set
 		require.Equal(t, 9000, cfg.ClickHouse.Port)
 		require.Equal(t, "config-db", cfg.ClickHouse.Database)
@@ -1439,6 +1457,40 @@ logging:
 
 		// Verify reload time was preserved from CLI flag (not overwritten by config file)
 		require.Equal(t, 10, cfg.ReloadTime)
+	})
+
+	t.Run("rejects_invalid_connect_host_after_overrides", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("clickhouse:\n  connect_host: proxy.internal/path\n"), 0o600))
+		cmd := &mockCommand{
+			flags:      map[string]interface{}{"config": path},
+			setFlags:   map[string]bool{"config": true},
+			stringMaps: map[string]map[string]string{},
+		}
+		_, err := buildConfig(cmd)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "clickhouse.connect_host")
+	})
+
+	t.Run("cli_connect_host_overrides_invalid_file_value_before_validation", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("clickhouse:\n  connect_host: proxy.internal/path\n"), 0o600))
+		cmd := &mockCommand{
+			flags: map[string]interface{}{
+				"config":                  path,
+				"clickhouse-connect-host": "10.0.0.25",
+			},
+			setFlags: map[string]bool{
+				"config":                  true,
+				"clickhouse-connect-host": true,
+			},
+			stringMaps: map[string]map[string]string{},
+		}
+		cfg, err := buildConfig(cmd)
+		require.NoError(t, err)
+		require.Equal(t, "10.0.0.25", cfg.ClickHouse.ConnectHost)
 	})
 
 	t.Run("with_http_headers_cli_override", func(t *testing.T) {

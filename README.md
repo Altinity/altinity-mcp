@@ -172,6 +172,9 @@ Create a YAML or JSON configuration file:
 # config.yaml
 clickhouse:
   host: "localhost"
+  # Optional TCP destination override. The logical host above remains the
+  # HTTP Host header and TLS SNI/certificate verification name.
+  connect_host: ""
   port: 8123
   database: "default"
   username: "default"
@@ -433,6 +436,7 @@ For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Aut
 ### ClickHouse® Flags
 
 - `--clickhouse-host`: ClickHouse® server host
+- `--clickhouse-connect-host`: Optional hostname or IP used only for the underlying TCP connection (`CLICKHOUSE_CONNECT_HOST`)
 - `--clickhouse-port`: ClickHouse® server port
 - `--clickhouse-database`: Database name
 - `--clickhouse-username`: Username

@@ -1,12 +1,28 @@
 package config
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 )
+
+func TestBuildFlagsConnectHostEnvironment(t *testing.T) {
+	t.Setenv("CLICKHOUSE_CONNECT_HOST", "2001:db8::10")
+	var cfg Config
+	cmd := &cli.Command{
+		Name:  "test",
+		Flags: BuildFlags(&cfg),
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			ApplyFlags(&cfg, cmd)
+			return nil
+		},
+	}
+	require.NoError(t, cmd.Run(context.Background(), []string{"test"}))
+	require.Equal(t, "2001:db8::10", cfg.ClickHouse.ConnectHost)
+}
 
 // fakeCmd implements Command for tests.
 type fakeCmd struct {
@@ -36,6 +52,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 
 	// Spot-check a representative cross-section across all sub-structs.
 	require.Contains(t, byName, "clickhouse-host")
+	require.Contains(t, byName, "clickhouse-connect-host")
 	require.Contains(t, byName, "clickhouse-port")
 	require.Contains(t, byName, "clickhouse-tls")
 	require.Contains(t, byName, "clickhouse-http-headers")
@@ -62,6 +79,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 
 	// Type assertions on a sample of each kind.
 	require.IsType(t, &cli.StringFlag{}, byName["clickhouse-host"])
+	require.IsType(t, &cli.StringFlag{}, byName["clickhouse-connect-host"])
 	require.IsType(t, &cli.IntFlag{}, byName["clickhouse-port"])
 	require.IsType(t, &cli.BoolFlag{}, byName["server-tls"])
 	require.IsType(t, &cli.StringSliceFlag{}, byName["oauth-scopes"])
@@ -83,28 +101,31 @@ func TestApplyFlags_SetsValues(t *testing.T) {
 	cfg := &Config{}
 	cmd := &fakeCmd{
 		strs: map[string]string{
-			"clickhouse-host":      "ch.internal",
-			"oauth-signing-secret": "shh",
-			"transport":            "http",
+			"clickhouse-host":         "ch.internal",
+			"clickhouse-connect-host": "10.0.0.25",
+			"oauth-signing-secret":    "shh",
+			"transport":               "http",
 		},
-		ints:  map[string]int{"clickhouse-port": 9000},
-		bools: map[string]bool{"server-tls": true, "oauth-enabled": true, "oauth-broker": true},
+		ints:   map[string]int{"clickhouse-port": 9000},
+		bools:  map[string]bool{"server-tls": true, "oauth-enabled": true, "oauth-broker": true},
 		slices: map[string][]string{"oauth-required-scopes": {"openid", "email"}},
 		wasSet: map[string]bool{
-			"clickhouse-host":       true,
-			"clickhouse-port":       true,
-			"server-tls":            true,
-			"oauth-enabled":         true,
-			"oauth-signing-secret":  true,
-			"oauth-required-scopes": true,
-			"transport":             true,
-			"oauth-broker":          true,
+			"clickhouse-host":         true,
+			"clickhouse-connect-host": true,
+			"clickhouse-port":         true,
+			"server-tls":              true,
+			"oauth-enabled":           true,
+			"oauth-signing-secret":    true,
+			"oauth-required-scopes":   true,
+			"transport":               true,
+			"oauth-broker":            true,
 		},
 	}
 
 	ApplyFlags(cfg, cmd)
 
 	require.Equal(t, "ch.internal", cfg.ClickHouse.Host)
+	require.Equal(t, "10.0.0.25", cfg.ClickHouse.ConnectHost)
 	require.Equal(t, 9000, cfg.ClickHouse.Port)
 	require.True(t, cfg.Server.TLS.Enabled)
 	require.True(t, cfg.Server.OAuth.Enabled)
@@ -156,14 +177,19 @@ func TestApplyFlags_CLIBeatsYAML(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{}
 	cfg.ClickHouse.Host = "from-yaml.example"
+	cfg.ClickHouse.ConnectHost = "192.0.2.10"
 	cmd := &fakeCmd{
-		strs:   map[string]string{"clickhouse-host": "from-cli.example"},
-		wasSet: map[string]bool{"clickhouse-host": true},
+		strs: map[string]string{
+			"clickhouse-host":         "from-cli.example",
+			"clickhouse-connect-host": "198.51.100.10",
+		},
+		wasSet: map[string]bool{"clickhouse-host": true, "clickhouse-connect-host": true},
 	}
 
 	ApplyFlags(cfg, cmd)
 
 	require.Equal(t, "from-cli.example", cfg.ClickHouse.Host)
+	require.Equal(t, "198.51.100.10", cfg.ClickHouse.ConnectHost)
 }
 
 func TestBuildFlags_Duration_BuildsAndApplies(t *testing.T) {

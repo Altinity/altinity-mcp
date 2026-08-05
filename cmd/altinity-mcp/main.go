@@ -765,6 +765,9 @@ func buildConfig(cmd CommandInterface) (config.Config, error) {
 	// Override with CLI flags (CLI flags take precedence over config file)
 	overrideWithCLIFlags(&cfg, cmd)
 	config.ApplyMulticlusterDefaults(&cfg)
+	if err := cfg.ClickHouse.ValidateConnectHost(); err != nil {
+		return cfg, err
+	}
 	if logErr := setupLogging(string(cfg.Logging.Level)); logErr != nil {
 		return cfg, fmt.Errorf("failed setup logging %s level: %w", cfg.Logging.Level, logErr)
 	}
@@ -1299,6 +1302,9 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
+	if err := newCfg.ClickHouse.ValidateConnectHost(); err != nil {
+		return err
+	}
 
 	// multicluster.* fields are restart-only: the router + catalog cache
 	// were bound during newApplication and cannot be safely rebuilt

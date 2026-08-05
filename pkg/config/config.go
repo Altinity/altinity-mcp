@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,7 @@ type TLSConfig struct {
 // ClickHouseConfig defines configuration for connecting to ClickHouse
 type ClickHouseConfig struct {
 	Host             string             `json:"host" yaml:"host" flag:"clickhouse-host" env:"CLICKHOUSE_HOST" default:"localhost" desc:"ClickHouse server host"`
+	ConnectHost      string             `json:"connect_host,omitempty" yaml:"connect_host,omitempty" flag:"clickhouse-connect-host" env:"CLICKHOUSE_CONNECT_HOST" desc:"Alternative host or IP used only to open the TCP connection"`
 	Port             int                `json:"port" yaml:"port" flag:"clickhouse-port" env:"CLICKHOUSE_PORT" default:"8123" desc:"ClickHouse server port"`
 	Database         string             `json:"database" yaml:"database" flag:"clickhouse-database" env:"CLICKHOUSE_DATABASE" default:"default" desc:"ClickHouse database name"`
 	Username         string             `json:"username" yaml:"username" flag:"clickhouse-username" env:"CLICKHOUSE_USERNAME" default:"default" desc:"ClickHouse username"`
@@ -61,6 +63,48 @@ type ClickHouseConfig struct {
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
 	// Default 10 MB when 0. Set to a negative number to disable the check.
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" env:"CLICKHOUSE_MAX_QUERY_LENGTH" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
+}
+
+// ValidateConnectHost checks that ConnectHost contains only a hostname or an
+// unbracketed IP address. The ClickHouse port is configured separately and is
+// deliberately reused for both the logical and dial addresses.
+func (c ClickHouseConfig) ValidateConnectHost() error {
+	host := c.ConnectHost
+	if host == "" {
+		return nil
+	}
+	if strings.TrimSpace(host) != host {
+		return fmt.Errorf("clickhouse.connect_host must not contain surrounding whitespace")
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	if strings.ContainsAny(host, "/\\?#@[]:") {
+		return fmt.Errorf("clickhouse.connect_host %q must contain only a hostname or unbracketed IP address, without a scheme, port, path, userinfo, query, or fragment", host)
+	}
+
+	// Validate DNS hostname syntax without resolving it. A trailing dot is
+	// accepted for fully-qualified domain names, but empty/interior labels and
+	// labels that do not follow RFC 1123 host syntax are rejected.
+	dnsName := strings.TrimSuffix(host, ".")
+	if dnsName == "" || len(dnsName) > 253 {
+		return fmt.Errorf("clickhouse.connect_host %q is not a valid hostname or IP address", host)
+	}
+	for _, label := range strings.Split(dnsName, ".") {
+		if len(label) == 0 || len(label) > 63 || !isHostnameAlphaNum(label[0]) || !isHostnameAlphaNum(label[len(label)-1]) {
+			return fmt.Errorf("clickhouse.connect_host %q is not a valid hostname or IP address", host)
+		}
+		for i := 1; i < len(label)-1; i++ {
+			if !isHostnameAlphaNum(label[i]) && label[i] != '-' {
+				return fmt.Errorf("clickhouse.connect_host %q is not a valid hostname or IP address", host)
+			}
+		}
+	}
+	return nil
+}
+
+func isHostnameAlphaNum(ch byte) bool {
+	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
 }
 
 // Defaults applied by the Effective* getters when the corresponding field is 0.

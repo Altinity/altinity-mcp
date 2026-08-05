@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,9 @@ type Client struct {
 
 // NewClient creates a new ClickHouse client
 func NewClient(ctx context.Context, cfg config.ClickHouseConfig) (*Client, error) {
+	if err := cfg.ValidateConnectHost(); err != nil {
+		return nil, err
+	}
 	clickhouseCtx, cancel := context.WithCancel(ctx)
 	client := &Client{
 		config:     cfg,
@@ -132,7 +137,6 @@ func (c *Client) connect() error {
 	}
 
 	opts := &clickhouse.Options{
-		Addr:            []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth:            auth,
 		TLS:             tlsConfig,
 		Protocol:        protocol,
@@ -145,6 +149,7 @@ func (c *Client) connect() error {
 		ConnMaxLifetime: time.Hour,
 		DialStrategy:    dialWithoutQueryDeadline,
 	}
+	configureDialOverride(opts, c.config, protocol, tlsConfig)
 
 	// Per-request role activation: append repeated `role=` query params to every
 	// HTTP request. The driver's Settings map is single-valued and serialized
@@ -189,6 +194,38 @@ func (c *Client) connect() error {
 	}
 
 	return nil
+}
+
+// configureDialOverride keeps the driver-facing address logical while
+// optionally replacing only the underlying ClickHouse TCP destination.
+func configureDialOverride(opts *clickhouse.Options, cfg config.ClickHouseConfig, protocol clickhouse.Protocol, tlsConfig *tls.Config) {
+	logicalAddress := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	opts.Addr = []string{logicalAddress}
+	if cfg.ConnectHost == "" {
+		return
+	}
+
+	dialAddress := net.JoinHostPort(cfg.ConnectHost, strconv.Itoa(cfg.Port))
+	netDialer := &net.Dialer{Timeout: opts.DialTimeout}
+	if tlsConfig != nil {
+		// The logical host, rather than the alternate TCP destination,
+		// remains the TLS SNI and certificate-verification identity.
+		tlsConfig.ServerName = cfg.Host
+	}
+	opts.DialContext = func(ctx context.Context, addr string) (net.Conn, error) {
+		target := addr
+		if addr == logicalAddress {
+			target = dialAddress
+		}
+
+		// clickhouse-go performs HTTP TLS after DialContext returns, but a
+		// native custom dialer must perform the TLS handshake itself.
+		if protocol == clickhouse.Native && tlsConfig != nil {
+			tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: tlsConfig}
+			return tlsDialer.DialContext(ctx, "tcp", target)
+		}
+		return netDialer.DialContext(ctx, "tcp", target)
+	}
 }
 
 // clickhouse-go derives max_execution_time from connection-establishment context

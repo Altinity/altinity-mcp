@@ -47,7 +47,7 @@ func TestMulticlusterRouter_AllowlistRejection(t *testing.T) {
 		Enabled:          true,
 		ClusterAllowlist: []string{"otel", "antalya"},
 	}
-	ch := config.ClickHouseConfig{Host: "chi-{cluster}-{cluster}-0-0.demo", Port: 8443}
+	ch := config.ClickHouseConfig{Host: "chi-{cluster}-{cluster}-0-0.demo", ConnectHost: "10.0.0.25", Port: 8443}
 	router, err := NewMulticlusterRouter(mc, ch)
 	require.NoError(t, err)
 
@@ -92,9 +92,9 @@ func TestMulticlusterRouter_HostExpansion(t *testing.T) {
 	t.Parallel()
 	mc := config.MulticlusterConfig{
 		Enabled:          true,
-		ClusterAllowlist: []string{"alpha"},
+		ClusterAllowlist: []string{"alpha", "beta"},
 	}
-	ch := config.ClickHouseConfig{Host: "chi-{cluster}-{cluster}-0-0.demo", Port: 8443}
+	ch := config.ClickHouseConfig{Host: "chi-{cluster}-{cluster}-0-0.demo", ConnectHost: "10.0.0.25", Port: 8443}
 	router, err := NewMulticlusterRouter(mc, ch)
 	require.NoError(t, err)
 
@@ -102,7 +102,14 @@ func TestMulticlusterRouter_HostExpansion(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "chi-alpha-alpha-0-0.demo", cfg.Host)
 	// Other fields preserved.
+	require.Equal(t, "10.0.0.25", cfg.ConnectHost)
 	require.Equal(t, 8443, cfg.Port)
+
+	cfg2, ok := router.ValidateClusterAllowed("beta")
+	require.True(t, ok)
+	require.Equal(t, "chi-beta-beta-0-0.demo", cfg2.Host)
+	require.Equal(t, cfg.ConnectHost, cfg2.ConnectHost)
+	require.Equal(t, cfg.Port, cfg2.Port)
 }
 
 func TestMulticlusterRouter_EmptyAllowlistAllowsAny(t *testing.T) {

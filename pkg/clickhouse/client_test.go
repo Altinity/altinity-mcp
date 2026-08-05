@@ -2,13 +2,159 @@ package clickhouse
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
+	chdriver "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/altinity/altinity-mcp/internal/testutil/embeddedch"
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestConfigureDialOverride(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unset_preserves_default_dialing_and_formats_ipv6", func(t *testing.T) {
+		t.Parallel()
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		tlsConfig := &tls.Config{}
+		configureDialOverride(opts, config.ClickHouseConfig{Host: "2001:db8::10", Port: 8443}, chdriver.HTTP, tlsConfig)
+		require.Equal(t, []string{"[2001:db8::10]:8443"}, opts.Addr)
+		require.Nil(t, opts.DialContext)
+		require.Empty(t, tlsConfig.ServerName)
+	})
+
+	t.Run("non_clickhouse_destination_is_not_redirected", func(t *testing.T) {
+		t.Parallel()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		accepted := make(chan struct{})
+		go func() {
+			conn, acceptErr := listener.Accept()
+			if acceptErr == nil {
+				close(accepted)
+				_ = conn.Close()
+			}
+		}()
+
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		configureDialOverride(opts, config.ClickHouseConfig{
+			Host: "logical.example", ConnectHost: "192.0.2.10", Port: 8443,
+		}, chdriver.HTTP, nil)
+		conn, err := opts.DialContext(context.Background(), listener.Addr().String())
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+		select {
+		case <-accepted:
+		case <-time.After(time.Second):
+			t.Fatal("unrelated destination was not dialed")
+		}
+	})
+}
+
+func TestConnectHostHTTPPreservesLogicalHostAndTLSIdentity(t *testing.T) {
+	type observedRequest struct {
+		host       string
+		serverName string
+	}
+	observed := make(chan observedRequest, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observedRequest{host: r.Host, serverName: r.TLS.ServerName}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	host, portString, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portString)
+	require.NoError(t, err)
+	require.NotEmpty(t, server.Certificate().DNSNames)
+	logicalHost := server.Certificate().DNSNames[0]
+
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	tlsConfig := &tls.Config{RootCAs: roots}
+	opts := &chdriver.Options{DialTimeout: time.Second}
+	configureDialOverride(opts, config.ClickHouseConfig{
+		Host: logicalHost, ConnectHost: host, Port: port,
+	}, chdriver.HTTP, tlsConfig)
+
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+		DialContext: func(ctx context.Context, _ string, addr string) (net.Conn, error) {
+			return opts.DialContext(ctx, addr)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	resp, err := client.Get("https://" + opts.Addr[0] + "/")
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	got := <-observed
+	require.Equal(t, logicalHost+":"+portString, got.host)
+	require.Equal(t, logicalHost, got.serverName)
+	require.Equal(t, logicalHost, tlsConfig.ServerName)
+}
+
+func TestConnectHostNativeTLSUsesLogicalCertificateName(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+
+	host, portString, err := net.SplitHostPort(server.Listener.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portString)
+	require.NoError(t, err)
+	require.NotEmpty(t, server.Certificate().DNSNames)
+	logicalHost := server.Certificate().DNSNames[0]
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+
+	t.Run("logical_name_succeeds", func(t *testing.T) {
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		configureDialOverride(opts, config.ClickHouseConfig{
+			Host: logicalHost, ConnectHost: host, Port: port,
+		}, chdriver.Native, &tls.Config{RootCAs: roots})
+		conn, err := opts.DialContext(context.Background(), opts.Addr[0])
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+	})
+
+	t.Run("connect_host_identity_is_rejected", func(t *testing.T) {
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		configureDialOverride(opts, config.ClickHouseConfig{
+			Host: "wrong.example", ConnectHost: host, Port: port,
+		}, chdriver.Native, &tls.Config{RootCAs: roots})
+		conn, err := opts.DialContext(context.Background(), opts.Addr[0])
+		require.Error(t, err)
+		require.Nil(t, conn)
+		require.Contains(t, err.Error(), "wrong.example")
+	})
+}
+
+func TestConnectHostPlainProtocols(t *testing.T) {
+	for _, protocol := range []config.ClickHouseProtocol{config.HTTPProtocol, config.TCPProtocol} {
+		protocol := protocol
+		t.Run(string(protocol), func(t *testing.T) {
+			options := []embeddedch.Option{}
+			if protocol == config.TCPProtocol {
+				options = append(options, embeddedch.WithTCPProtocol())
+			}
+			cfg := embeddedch.Setup(t, options...)
+			cfg.ConnectHost = cfg.Host
+			cfg.Host = "logical.invalid"
+			client, err := NewClient(context.Background(), *cfg)
+			require.NoError(t, err)
+			require.NoError(t, client.Close())
+		})
+	}
+}
 
 // setupEmbeddedClickHouse boots a ClickHouse server as a host subprocess via
 // embedded-clickhouse and returns a TCP-protocol config. This replaces the
@@ -21,6 +167,14 @@ func setupEmbeddedClickHouse(t *testing.T) *config.ClickHouseConfig {
 // TestNewClient tests client creation
 func TestNewClient(t *testing.T) {
 	t.Parallel()
+	t.Run("invalid_connect_host", func(t *testing.T) {
+		t.Parallel()
+		client, err := NewClient(context.Background(), config.ClickHouseConfig{ConnectHost: "https://10.0.0.25"})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "clickhouse.connect_host")
+		require.Nil(t, client)
+	})
+
 	t.Run("invalid_config", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
