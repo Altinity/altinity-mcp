@@ -5,7 +5,8 @@
 #   https://<ingress.host>/mcp/{cluster}
 # where {cluster} is one of `cluster_allowlist` and the literal
 # `{cluster}` placeholder in clickhouse.host is substituted at request
-# time. All other clickhouse.* fields are shared across clusters.
+# time. connect_host, when set, remains a static TCP destination shared by
+# all logical cluster hosts. All other clickhouse.* fields are also shared.
 #
 # Pre-requisites in the demo namespace:
 #   * Each ClickHouse pod (cluster otel, antalya, ...) must have the
@@ -25,6 +26,9 @@ config:
     # cluster name from /mcp/{cluster} (RFC 1123 DNS label, must appear
     # in cluster_allowlist below).
     host: "chi-{cluster}-{cluster}-0-0.demo"
+    # Optional fixed network destination. HTTP Host, TLS SNI, and certificate
+    # validation continue to use the cluster-expanded logical host above.
+    connect_host: "10.0.0.25"
     port: 8443
     protocol: "http"
     read_only: false

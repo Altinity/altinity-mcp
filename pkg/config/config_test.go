@@ -186,6 +186,7 @@ func TestLoadConfigFromFile(t *testing.T) {
 		yamlContent := `
 clickhouse:
   host: "test-host"
+  connect_host: "10.0.0.25"
   port: 9000
   database: "test-db"
   username: "test-user"
@@ -212,6 +213,7 @@ logging:
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 		require.Equal(t, "test-host", cfg.ClickHouse.Host)
+		require.Equal(t, "10.0.0.25", cfg.ClickHouse.ConnectHost)
 		require.Equal(t, 9000, cfg.ClickHouse.Port)
 		require.Equal(t, "test-db", cfg.ClickHouse.Database)
 		require.Equal(t, "test-user", cfg.ClickHouse.Username)
@@ -234,6 +236,7 @@ logging:
 		jsonContent := `{
   "clickhouse": {
     "host": "json-host",
+    "connect_host": "proxy.internal",
     "port": 8123,
     "database": "json-db",
     "username": "json-user",
@@ -264,6 +267,7 @@ logging:
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 		require.Equal(t, "json-host", cfg.ClickHouse.Host)
+		require.Equal(t, "proxy.internal", cfg.ClickHouse.ConnectHost)
 		require.Equal(t, 8123, cfg.ClickHouse.Port)
 		require.Equal(t, "json-db", cfg.ClickHouse.Database)
 		require.Equal(t, "json-user", cfg.ClickHouse.Username)
@@ -331,6 +335,33 @@ clickhouse:
 		require.Error(t, err)
 		require.Nil(t, cfg)
 	})
+}
+
+func TestClickHouseConfigValidateConnectHost(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{"", "proxy.internal", "localhost", "service-name", "service.example.", "10.0.0.25", "2001:db8::10"}
+	for _, host := range valid {
+		host := host
+		t.Run("valid_"+strings.ReplaceAll(host, ":", "_"), func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, (ClickHouseConfig{ConnectHost: host}).ValidateConnectHost())
+		})
+	}
+
+	invalid := []string{
+		" https://10.0.0.25", "https://10.0.0.25", "10.0.0.25:8443",
+		"proxy.internal/path", "proxy.internal?x=1", "proxy.internal#fragment",
+		"user@proxy.internal", "[2001:db8::10]", "[2001:db8::10]:8443",
+		"proxy_internal", "-proxy.internal", "proxy..internal", "proxy.internal ",
+	}
+	for _, host := range invalid {
+		host := host
+		t.Run("invalid_"+strings.NewReplacer(":", "_", "/", "_").Replace(host), func(t *testing.T) {
+			t.Parallel()
+			require.Error(t, (ClickHouseConfig{ConnectHost: host}).ValidateConnectHost())
+		})
+	}
 }
 
 // TestConfigConstants tests configuration constants

@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,9 @@ type Client struct {
 
 // NewClient creates a new ClickHouse client
 func NewClient(ctx context.Context, cfg config.ClickHouseConfig) (*Client, error) {
+	if err := cfg.ValidateConnectHost(); err != nil {
+		return nil, err
+	}
 	clickhouseCtx, cancel := context.WithCancel(ctx)
 	client := &Client{
 		config:     cfg,
@@ -132,7 +137,6 @@ func (c *Client) connect() error {
 	}
 
 	opts := &clickhouse.Options{
-		Addr:            []string{fmt.Sprintf("%s:%d", c.config.Host, c.config.Port)},
 		Auth:            auth,
 		TLS:             tlsConfig,
 		Protocol:        protocol,
@@ -145,19 +149,8 @@ func (c *Client) connect() error {
 		ConnMaxLifetime: time.Hour,
 		DialStrategy:    dialWithoutQueryDeadline,
 	}
-
-	// Per-request role activation: append repeated `role=` query params to every
-	// HTTP request. The driver's Settings map is single-valued and serialized
-	// with url.Values.Set, so it can't express `?role=a&role=b`; wrapping the
-	// transport is the supported way. TransportFunc is HTTP-only in the driver
-	// (native TCP ignores it) — OAuth mode runs over HTTP, and the caller
-	// refuses role activation on non-HTTP protocols.
-	if len(c.config.Roles) > 0 {
-		roles := append([]string(nil), c.config.Roles...)
-		opts.TransportFunc = func(t *http.Transport) (http.RoundTripper, error) {
-			return &roleRoundTripper{wrapped: t, roles: roles}, nil
-		}
-	}
+	configureDialOverride(opts, c.config, protocol, tlsConfig)
+	configureHTTPTransport(opts, c.config, protocol)
 
 	conn, openErr := clickhouse.Open(opts)
 
@@ -189,6 +182,78 @@ func (c *Client) connect() error {
 	}
 
 	return nil
+}
+
+// configureDialOverride keeps the driver-facing address logical while
+// optionally replacing only the underlying ClickHouse TCP destination.
+func configureDialOverride(opts *clickhouse.Options, cfg config.ClickHouseConfig, protocol clickhouse.Protocol, tlsConfig *tls.Config) {
+	logicalHost := normalizeLogicalHost(cfg.Host)
+	logicalAddress := net.JoinHostPort(logicalHost, strconv.Itoa(cfg.Port))
+	opts.Addr = []string{logicalAddress}
+	if cfg.ConnectHost == "" {
+		return
+	}
+
+	dialAddress := net.JoinHostPort(cfg.ConnectHost, strconv.Itoa(cfg.Port))
+	netDialer := &net.Dialer{Timeout: opts.DialTimeout}
+	if tlsConfig != nil {
+		// The logical host, rather than the alternate TCP destination,
+		// remains the TLS SNI and certificate-verification identity.
+		tlsConfig.ServerName = logicalHost
+	}
+	opts.DialContext = func(ctx context.Context, addr string) (net.Conn, error) {
+		target := addr
+		if addr == logicalAddress {
+			target = dialAddress
+		}
+
+		// clickhouse-go performs HTTP TLS after DialContext returns, but a
+		// native custom dialer must perform the TLS handshake itself.
+		if protocol == clickhouse.Native && tlsConfig != nil {
+			tlsDialer := &tls.Dialer{NetDialer: netDialer, Config: tlsConfig}
+			return tlsDialer.DialContext(ctx, "tcp", target)
+		}
+		return netDialer.DialContext(ctx, "tcp", target)
+	}
+}
+
+// normalizeLogicalHost preserves compatibility with configurations that used
+// bracketed IPv6 with the previous host:port formatter. net.JoinHostPort and
+// tls.Config.ServerName both require the host without brackets.
+func normalizeLogicalHost(host string) string {
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		candidate := host[1 : len(host)-1]
+		ipCandidate := candidate
+		if zoneAt := strings.LastIndexByte(ipCandidate, '%'); zoneAt >= 0 {
+			ipCandidate = ipCandidate[:zoneAt]
+		}
+		if net.ParseIP(ipCandidate) != nil {
+			return candidate
+		}
+	}
+	return host
+}
+
+// configureHTTPTransport composes ClickHouse-specific transport behavior in a
+// single hook. An explicit connect_host takes precedence over environment
+// proxies so it remains the actual TCP destination; with no override, the
+// driver's existing ProxyFromEnvironment behavior is preserved. Role query
+// injection wraps the resulting transport rather than replacing it.
+func configureHTTPTransport(opts *clickhouse.Options, cfg config.ClickHouseConfig, protocol clickhouse.Protocol) {
+	if protocol != clickhouse.HTTP || (cfg.ConnectHost == "" && len(cfg.Roles) == 0) {
+		return
+	}
+
+	roles := append([]string(nil), cfg.Roles...)
+	opts.TransportFunc = func(t *http.Transport) (http.RoundTripper, error) {
+		if cfg.ConnectHost != "" {
+			t.Proxy = nil
+		}
+		if len(roles) > 0 {
+			return &roleRoundTripper{wrapped: t, roles: roles}, nil
+		}
+		return t, nil
+	}
 }
 
 // clickhouse-go derives max_execution_time from connection-establishment context

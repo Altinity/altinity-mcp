@@ -159,6 +159,11 @@ config:
     #   host: "chi-{cluster}-{cluster}-0-0.demo"
     # Single-cluster: use the static hostname directly.
     host: "localhost"
+    # -- Optional static hostname or IP used only to open the TCP connection.
+    # HTTP Host, TLS SNI, and certificate verification continue to use `host`.
+    # In multi-cluster mode this value is not subject to {cluster} substitution.
+    # When set, it takes precedence over HTTP_PROXY/HTTPS_PROXY for ClickHouse.
+    connect_host: ""
     port: 8123
     database: "default"
     username: "default"
