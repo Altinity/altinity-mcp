@@ -214,6 +214,11 @@ logging:
   level: "info"
 ```
 
+When `connect_host` is set, it takes precedence over `HTTP_PROXY` and
+`HTTPS_PROXY` for ClickHouse HTTP connections so the configured address is
+always the TCP destination. Environment proxy behavior is unchanged when
+`connect_host` is empty.
+
 > **Note**: For detailed information about dynamic tools configuration, see the [Tools Documentation](docs/tools.md).
 
 Use the configuration file:

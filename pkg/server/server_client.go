@@ -5,9 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -297,7 +295,7 @@ const (
 // probe.
 func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg config.ClickHouseConfig, token string) (*clickhouse.Client, error) {
 	cfg := s.Config.Server.OAuth
-	endpoint := net.JoinHostPort(chCfg.Host, strconv.Itoa(chCfg.Port))
+	endpoint := fmt.Sprintf("%s:%d", chCfg.Host, chCfg.Port)
 
 	// Cache hit — use the stored method. chCfg carries any per-request roles,
 	// which newClientForOAuthMethod applies via the CH client.

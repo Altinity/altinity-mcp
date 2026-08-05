@@ -30,6 +30,24 @@ func TestConfigureDialOverride(t *testing.T) {
 		require.Empty(t, tlsConfig.ServerName)
 	})
 
+	t.Run("bracketed_logical_ipv6_is_normalized", func(t *testing.T) {
+		t.Parallel()
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		unsetTLSConfig := &tls.Config{}
+		configureDialOverride(opts, config.ClickHouseConfig{Host: "[2001:db8::10]", Port: 8443}, chdriver.Native, unsetTLSConfig)
+		require.Equal(t, []string{"[2001:db8::10]:8443"}, opts.Addr)
+		require.Nil(t, opts.DialContext)
+		require.Empty(t, unsetTLSConfig.ServerName)
+
+		tlsConfig := &tls.Config{}
+		configureDialOverride(opts, config.ClickHouseConfig{
+			Host: "[2001:db8::10]", ConnectHost: "10.0.0.25", Port: 8443,
+		}, chdriver.Native, tlsConfig)
+		require.Equal(t, []string{"[2001:db8::10]:8443"}, opts.Addr)
+		require.NotNil(t, opts.DialContext)
+		require.Equal(t, "2001:db8::10", tlsConfig.ServerName)
+	})
+
 	t.Run("non_clickhouse_destination_is_not_redirected", func(t *testing.T) {
 		t.Parallel()
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -57,6 +75,130 @@ func TestConfigureDialOverride(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("unrelated destination was not dialed")
 		}
+	})
+
+	t.Run("connect_host_equal_to_logical_host", func(t *testing.T) {
+		t.Parallel()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+		host, portString, err := net.SplitHostPort(listener.Addr().String())
+		require.NoError(t, err)
+		port, err := strconv.Atoi(portString)
+		require.NoError(t, err)
+
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		configureDialOverride(opts, config.ClickHouseConfig{Host: host, ConnectHost: host, Port: port}, chdriver.HTTP, nil)
+		conn, err := opts.DialContext(context.Background(), opts.Addr[0])
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+	})
+
+	t.Run("ipv6_connect_host_is_joined_and_dialed", func(t *testing.T) {
+		t.Parallel()
+		listener, err := net.Listen("tcp6", "[::1]:0")
+		if err != nil {
+			t.Skipf("IPv6 loopback is unavailable: %v", err)
+		}
+		defer listener.Close()
+		_, portString, err := net.SplitHostPort(listener.Addr().String())
+		require.NoError(t, err)
+		port, err := strconv.Atoi(portString)
+		require.NoError(t, err)
+
+		opts := &chdriver.Options{DialTimeout: time.Second}
+		configureDialOverride(opts, config.ClickHouseConfig{
+			Host: "logical.invalid", ConnectHost: "::1", Port: port,
+		}, chdriver.HTTP, nil)
+		conn, err := opts.DialContext(context.Background(), opts.Addr[0])
+		require.NoError(t, err)
+		require.Equal(t, "[::1]:"+portString, conn.RemoteAddr().String())
+		require.NoError(t, conn.Close())
+	})
+}
+
+func TestConnectHostDisablesEnvironmentProxyAndComposesRoles(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
+	for _, useTLS := range []bool{false, true} {
+		useTLS := useTLS
+		name := "http_proxy"
+		if useTLS {
+			name = "https_proxy"
+		}
+		t.Run(name, func(t *testing.T) {
+			observed := make(chan *http.Request, 1)
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				observed <- r.Clone(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
+			if useTLS {
+				server.StartTLS()
+			} else {
+				server.Start()
+			}
+			defer server.Close()
+
+			connectHost, portString, err := net.SplitHostPort(server.Listener.Addr().String())
+			require.NoError(t, err)
+			port, err := strconv.Atoi(portString)
+			require.NoError(t, err)
+			logicalHost := "logical.invalid"
+			var tlsConfig *tls.Config
+			if useTLS {
+				require.NotEmpty(t, server.Certificate().DNSNames)
+				logicalHost = server.Certificate().DNSNames[0]
+				roots := x509.NewCertPool()
+				roots.AddCert(server.Certificate())
+				tlsConfig = &tls.Config{RootCAs: roots}
+			}
+
+			cfg := config.ClickHouseConfig{
+				Host: logicalHost, ConnectHost: connectHost, Port: port,
+				Protocol: config.HTTPProtocol, Roles: []string{"analyst"},
+			}
+			opts := &chdriver.Options{DialTimeout: time.Second}
+			configureDialOverride(opts, cfg, chdriver.HTTP, tlsConfig)
+			configureHTTPTransport(opts, cfg, chdriver.HTTP)
+			require.NotNil(t, opts.TransportFunc)
+
+			baseTransport := &http.Transport{
+				Proxy:           http.ProxyFromEnvironment,
+				TLSClientConfig: tlsConfig,
+				DialContext: func(ctx context.Context, _ string, addr string) (net.Conn, error) {
+					return opts.DialContext(ctx, addr)
+				},
+			}
+			roundTripper, err := opts.TransportFunc(baseTransport)
+			require.NoError(t, err)
+			require.Nil(t, baseTransport.Proxy, "connect_host must take precedence over environment proxies")
+			require.IsType(t, &roleRoundTripper{}, roundTripper)
+
+			scheme := "http"
+			if useTLS {
+				scheme = "https"
+			}
+			client := &http.Client{Transport: roundTripper, Timeout: 2 * time.Second}
+			resp, err := client.Get(scheme + "://" + opts.Addr[0] + "/")
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			got := <-observed
+			require.Equal(t, logicalHost+":"+portString, got.Host)
+			require.Equal(t, "analyst", got.URL.Query().Get("role"))
+		})
+	}
+
+	t.Run("unset_preserves_proxy_selection", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{Roles: []string{"analyst"}}
+		opts := &chdriver.Options{}
+		configureHTTPTransport(opts, cfg, chdriver.HTTP)
+		require.NotNil(t, opts.TransportFunc)
+		baseTransport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+		_, err := opts.TransportFunc(baseTransport)
+		require.NoError(t, err)
+		require.NotNil(t, baseTransport.Proxy)
 	})
 }
 
@@ -139,6 +281,10 @@ func TestConnectHostNativeTLSUsesLogicalCertificateName(t *testing.T) {
 }
 
 func TestConnectHostPlainProtocols(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
 	for _, protocol := range []config.ClickHouseProtocol{config.HTTPProtocol, config.TCPProtocol} {
 		protocol := protocol
 		t.Run(string(protocol), func(t *testing.T) {

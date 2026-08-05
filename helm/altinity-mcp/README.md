@@ -13,7 +13,7 @@ A Helm chart for Altinity MCP Server
 | autoscaling.maxReplicas | int | `100` | Maximum number of replicas |
 | autoscaling.minReplicas | int | `1` | Minimum number of replicas |
 | autoscaling.targetCPUUtilizationPercentage | int | `80` | Target CPU utilization percentage |
-| config.clickhouse.connect_host | string | `""` | Optional static hostname or IP used only to open the TCP connection. HTTP Host, TLS SNI, and certificate verification continue to use `host`. In multi-cluster mode this value is not subject to {cluster} substitution. |
+| config.clickhouse.connect_host | string | `""` | Optional static hostname or IP used only to open the TCP connection. HTTP Host, TLS SNI, and certificate verification continue to use `host`. In multi-cluster mode this value is not subject to {cluster} substitution. When set, it takes precedence over HTTP_PROXY/HTTPS_PROXY for ClickHouse. |
 | config.clickhouse.database | string | `"default"` |  |
 | config.clickhouse.host | string | `"localhost"` |  |
 | config.clickhouse.limit | int | `1000` |  |
