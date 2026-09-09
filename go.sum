@@ -1,5 +1,5 @@
-github.com/AfterShip/clickhouse-sql-parser v0.5.3 h1:6iap8XGjuSjD3w7r1UNrg66ljBugcv2P39s4eo/ZLRw=
-github.com/AfterShip/clickhouse-sql-parser v0.5.3/go.mod h1:Qi3qvPTfZb/aFwI5V4WFOahgjsLJa4MzVijIAfwOhDw=
+github.com/AfterShip/clickhouse-sql-parser v0.5.6 h1:njgRLxQz/pE16ZO1MSjWadIzabwqsjDMMX8RR5Dbv7Y=
+github.com/AfterShip/clickhouse-sql-parser v0.5.6/go.mod h1:Qi3qvPTfZb/aFwI5V4WFOahgjsLJa4MzVijIAfwOhDw=
 github.com/ClickHouse/ch-go v0.73.0 h1:jsHiGRbQ3sz+gekvDFJF29LWDo5dzbJm5s1h8TWVP2M=
 github.com/ClickHouse/ch-go v0.73.0/go.mod h1:wkFIxrqlXeRJ9cn3r5Fz5Qen9jl5aTMPuGZeuJpANNY=
 github.com/ClickHouse/clickhouse-go/v2 v2.47.0 h1:ZDAzrnKSOPTIsm4tdUNfrii2yc8dk4SVRLC77BR7Z5Q=
