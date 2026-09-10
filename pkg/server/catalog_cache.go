@@ -64,9 +64,9 @@ type catalogEntry struct {
 
 // CatalogCacheMetrics carries the catalog cache's atomic counters. The
 // process has no Prometheus subsystem; these are surfaced as a JSON
-// snapshot on the /health endpoint (see CatalogCache.Snapshot and the
-// healthHandler in cmd/altinity-mcp). Kept as a plain struct of atomics so
-// the cache layer has no metrics-backend dependency.
+// snapshot on the /health endpoint and, when enabled, by the Prometheus
+// collector. Kept as a plain struct of atomics so cache updates do not depend
+// on a metrics backend.
 type CatalogCacheMetrics struct {
 	HitsOK            atomic.Uint64
 	HitsDenied        atomic.Uint64

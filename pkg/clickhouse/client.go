@@ -16,6 +16,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/altinity-mcp/pkg/metrics"
 	"github.com/rs/zerolog/log"
 )
 
@@ -528,6 +529,24 @@ func (c *Client) ExecuteCappedQuery(ctx context.Context, query string, maxRows, 
 }
 
 func (c *Client) executeWithCaps(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
+	kind := "execute"
+	if IsSelectQuery(query) {
+		kind = "select"
+	}
+	start := time.Now()
+	result, err := c.executeWithCapsUninstrumented(ctx, query, maxRows, maxBytes, args...)
+	metrics.ObserveClickHouseQuery(kind, start, err)
+	if err == nil && result != nil {
+		bytesApprox := 0
+		for _, row := range result.Rows {
+			bytesApprox += approxRowBytes(row)
+		}
+		metrics.ObserveClickHouseResult(kind, result.Count, bytesApprox)
+	}
+	return result, err
+}
+
+func (c *Client) executeWithCapsUninstrumented(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
 	if c.config.ReadOnly && !IsSelectQuery(query) {
 		return nil, fmt.Errorf("query rejected: read-only mode allows only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN statements")
 	}

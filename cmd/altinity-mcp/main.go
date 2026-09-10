@@ -20,9 +20,12 @@ import (
 
 	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/altinity-mcp/pkg/metrics"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -195,6 +198,18 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// registerMetricsRoute adds the Prometheus scrape endpoint alongside
+// /health and /livez when the operator opted in. Unconditional registration
+// would expose query-shape and timing data (via the ClickHouse histograms)
+// to anyone who can reach the port, which is why every other optional
+// surface here (OpenAPI, OAuth) is also config-gated rather than always on.
+func registerMetricsRoute(mux *http.ServeMux, cfg config.Config) {
+	if !cfg.Server.Metrics.Enabled {
+		return
+	}
+	mux.Handle("/metrics", promhttp.Handler())
 }
 
 // defaultCORSAllowHeaders is the static Access-Control-Allow-Headers value
@@ -516,7 +531,8 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+		registerMetricsRoute(mux, cfg)
+		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
@@ -541,7 +557,8 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+		registerMetricsRoute(mux, cfg)
+		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
 	}
 
 	a.setHTTPServer(&http.Server{
@@ -616,7 +633,8 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+		registerMetricsRoute(mux, cfg)
+		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
 	} else {
 		// Use SSEHandler for legacy SSE transport
 		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
@@ -704,6 +722,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 	if !credentialsArePerRequest {
 		chClient, err := clickhouse.NewClient(ctx, cfg.ClickHouse)
 		if err != nil {
+			metrics.ObserveClickHouseHealth(err)
 			log.Error().Err(err).Msg("Health check: failed to create ClickHouse client")
 			status["status"] = "unhealthy"
 			status["error"] = "ClickHouse connection failed"
@@ -719,6 +738,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		if err := chClient.Ping(ctx); err != nil {
+			metrics.ObserveClickHouseHealth(err)
 			log.Error().Err(err).Msg("Health check: ClickHouse ping failed")
 			status["status"] = "unhealthy"
 			status["error"] = "ClickHouse connection failed"
@@ -727,9 +747,11 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(status)
 			return
 		}
+		metrics.ObserveClickHouseHealth(nil)
 
 		status["clickhouse"] = "connected"
 	} else {
+		metrics.ObserveClickHouseHealthUnknown()
 		status["auth"] = "per_request_credentials"
 	}
 
@@ -986,8 +1008,9 @@ type application struct {
 	// true at process start. multicluster.* fields are restart-only —
 	// changing them via config reload logs a warning but does not rebuild
 	// these.
-	mcRouter *altinitymcp.MulticlusterRouter
-	mcCache  *altinitymcp.CatalogCache
+	mcRouter  *altinitymcp.MulticlusterRouter
+	mcCache   *altinitymcp.CatalogCache
+	mcMetrics prometheus.Collector
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -1077,6 +1100,13 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		}
 		app.mcRouter = router
 		app.mcCache = altinitymcp.NewCatalogCache(cfg.Multicluster)
+		if cfg.Server.Metrics.Enabled {
+			app.mcMetrics = altinitymcp.NewCatalogCacheCollector(app.mcCache)
+			if err := prometheus.Register(app.mcMetrics); err != nil {
+				app.mcCache.Close()
+				return nil, fmt.Errorf("register catalog cache metrics: %w", err)
+			}
+		}
 		log.Info().
 			Strs("cluster_allowlist", cfg.Multicluster.ClusterAllowlist).
 			Int("catalog_cache_max", cfg.Multicluster.CatalogCacheMax).
@@ -1252,6 +1282,9 @@ func (a *application) Close() {
 
 	if a.mcCache != nil {
 		a.mcCache.Close()
+	}
+	if a.mcMetrics != nil {
+		prometheus.Unregister(a.mcMetrics)
 	}
 
 	// No resources to close as the ClickHouse client is created and closed per request
@@ -1432,12 +1465,13 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 	mux.HandleFunc("/livez", a.livenessHandler)
 	a.registerOAuthHTTPRoutes(mux)
 	a.registerMulticlusterPRMRoutes(mux)
+	registerMetricsRoute(mux, cfg)
 
 	mcpHandler := a.mcRouter.Middleware(authInjector(serverInjector(sdkHandler)))
 	mux.Handle("/mcp/{cluster}", mcpHandler)
 	mux.Handle("/mcp/{cluster}/", mcpHandler)
 
-	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
 
 	a.setHTTPServer(&http.Server{
 		Addr:    addr,

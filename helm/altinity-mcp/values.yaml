@@ -66,6 +66,18 @@ service:
   #   clientIP:
   #     timeoutSeconds: 10800
 
+# -- Prometheus metrics and Prometheus Operator discovery.
+metrics:
+  # -- Expose Prometheus metrics at /metrics on the HTTP service port.
+  enabled: false
+  serviceMonitor:
+    # -- Create a ServiceMonitor. Requires the Prometheus Operator CRDs.
+    enabled: false
+    # -- Additional labels for selecting this ServiceMonitor.
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+
 ingress:
   # -- Enable ingress controller resource
   enabled: false

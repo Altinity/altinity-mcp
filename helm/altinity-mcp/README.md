@@ -64,6 +64,11 @@ A Helm chart for Altinity MCP Server
 | ingress.hosts[0].paths[0] | object | `{"path":"/","pathType":"Prefix"}` | Ingress path |
 | ingress.hosts[0].paths[0].pathType | string | `"Prefix"` | Ingress path type |
 | ingress.tls | list | `[]` | Ingress TLS configuration |
+| metrics.enabled | bool | `false` | Expose Prometheus metrics at `/metrics` on the HTTP service port |
+| metrics.serviceMonitor.enabled | bool | `false` | Create a Prometheus Operator ServiceMonitor |
+| metrics.serviceMonitor.interval | string | `"30s"` | Prometheus scrape interval |
+| metrics.serviceMonitor.labels | object | `{}` | Additional ServiceMonitor labels |
+| metrics.serviceMonitor.scrapeTimeout | string | `"10s"` | Prometheus scrape timeout |
 | nameOverride | string | `""` | Override the name of the chart |
 | nodeSelector | object | `{}` | Node labels for pod assignment |
 | podAnnotations | object | `{}` | Pod annotations |

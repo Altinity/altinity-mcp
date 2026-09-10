@@ -204,6 +204,8 @@ server:
   openapi:
     enabled: false
     tls: false
+  metrics:
+    enabled: false
   dynamic_tools:
     - regexp: "mydb\\..*"
       prefix: "db_"
@@ -240,6 +242,7 @@ export CLICKHOUSE_DATABASE=analytics
 export CLICKHOUSE_LIMIT=5000
 export MCP_TRANSPORT=http
 export MCP_PORT=8080
+export MCP_METRICS_ENABLED=true
 export LOG_LEVEL=debug
 
 # OAuth — env-var injection lets operators pull secrets from a Kubernetes
@@ -253,6 +256,19 @@ export MCP_OAUTH_SIGNING_SECRET=...
 ```
 
 Special flags that don't follow this pattern: `--config` (config file path), `--config-reload-time`, `--openapi` (one flag → two struct fields). See `altinity-mcp --help`.
+
+### Prometheus metrics
+
+HTTP and SSE transports expose `/metrics` when `server.metrics.enabled` or
+`MCP_METRICS_ENABLED` is true. Metrics are disabled by default. The endpoint
+reports HTTP request count and latency, ClickHouse query count, latency and
+result size, blocked-clause rejections, readiness health, and multicluster
+catalog-cache activity. Route labels use registered patterns rather than raw
+URLs, so request tokens do not become metric labels.
+
+The Helm chart uses `metrics.enabled` for the endpoint. Set
+`metrics.serviceMonitor.enabled` as well to create a Prometheus Operator
+`ServiceMonitor` that scrapes the existing HTTP service port.
 
 ## Available Tools
 
