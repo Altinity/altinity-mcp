@@ -4,6 +4,7 @@
 package metrics
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,6 +12,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+func init() {
+	// Until a readiness ping has actually run, there is no observation. This
+	// remains NaN in OAuth/JWE modes where credentials only exist per request,
+	// instead of claiming that a healthy deployment is down.
+	ClickHouseUp.Set(math.NaN())
+}
 
 var (
 	// HTTPRequestsTotal counts every HTTP request the MCP server's own mux
@@ -191,4 +199,10 @@ func ObserveClickHouseHealth(err error) {
 		return
 	}
 	ClickHouseUp.Set(0)
+}
+
+// ObserveClickHouseHealthUnknown clears any stale process-local readiness
+// result when the active mode cannot perform a credentialed readiness ping.
+func ObserveClickHouseHealthUnknown() {
+	ClickHouseUp.Set(math.NaN())
 }

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClickHouseHealthUnknownIsNotReportedDown(t *testing.T) {
+	ClickHouseUp.Set(0)
+	ObserveClickHouseHealthUnknown()
+	require.True(t, math.IsNaN(testutil.ToFloat64(ClickHouseUp)))
+}
 
 func TestHTTPMiddlewareRecordsMatchedRouteAndStatusClass(t *testing.T) {
 	mux := http.NewServeMux()

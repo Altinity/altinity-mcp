@@ -751,6 +751,7 @@ func (a *application) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 		status["clickhouse"] = "connected"
 	} else {
+		metrics.ObserveClickHouseHealthUnknown()
 		status["auth"] = "per_request_credentials"
 	}
 
@@ -1464,12 +1465,13 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 	mux.HandleFunc("/livez", a.livenessHandler)
 	a.registerOAuthHTTPRoutes(mux)
 	a.registerMulticlusterPRMRoutes(mux)
+	registerMetricsRoute(mux, cfg)
 
 	mcpHandler := a.mcRouter.Middleware(authInjector(serverInjector(sdkHandler)))
 	mux.Handle("/mcp/{cluster}", mcpHandler)
 	mux.Handle("/mcp/{cluster}/", mcpHandler)
 
-	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
 
 	a.setHTTPServer(&http.Server{
 		Addr:    addr,
