@@ -204,6 +204,8 @@ server:
   openapi:
     enabled: false
     tls: false
+  metrics:
+    enabled: false
   dynamic_tools:
     - regexp: "mydb\\..*"
       prefix: "db_"
@@ -240,6 +242,7 @@ export CLICKHOUSE_DATABASE=analytics
 export CLICKHOUSE_LIMIT=5000
 export MCP_TRANSPORT=http
 export MCP_PORT=8080
+export MCP_METRICS_ENABLED=true
 export LOG_LEVEL=debug
 
 # OAuth — env-var injection lets operators pull secrets from a Kubernetes
@@ -253,6 +256,46 @@ export MCP_OAUTH_SIGNING_SECRET=...
 ```
 
 Special flags that don't follow this pattern: `--config` (config file path), `--config-reload-time`, `--openapi` (one flag → two struct fields). See `altinity-mcp --help`.
+
+### Prometheus metrics
+
+HTTP and SSE transports (including JWE and multicluster modes) expose
+`/metrics` when `server.metrics.enabled`, `MCP_METRICS_ENABLED`, or
+`--metrics-enabled` is true. Metrics are disabled by default, and a disabled
+server is a true no-op: no `/metrics` route, no request middleware, no query
+instrumentation, and no collectors registered.
+
+`server.metrics.enabled` is **restart-only**. A config reload that changes it
+logs a warning and keeps the running value, because the route and middleware
+are bound when the HTTP server starts.
+
+The endpoint serves the standard Go runtime and process collectors plus:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `altinity_mcp_http_requests_total` | counter | `route`, `method`, `status` | Requests by registered route pattern, normalized method (`GET`, `POST`, ..., `other`) and status class (`2xx`, `4xx`, ...) |
+| `altinity_mcp_http_request_duration_seconds` | histogram | `route` | End-to-end handler latency |
+| `altinity_mcp_clickhouse_queries_total` | counter | `kind`, `outcome` | ClickHouse queries by `select`/`execute` and `ok`/`error` |
+| `altinity_mcp_clickhouse_query_duration_seconds` | histogram | `kind` | ClickHouse round-trip latency |
+| `altinity_mcp_clickhouse_query_rows` | histogram | `kind` | Rows returned by successful queries |
+| `altinity_mcp_clickhouse_query_bytes` | histogram | `kind` | Approximate bytes returned by successful queries |
+| `altinity_mcp_blocked_clause_rejections_total` | counter | `clause` | Queries rejected by `blocked_query_clauses` |
+| `altinity_mcp_clickhouse_up` | gauge | | `1`/`0` from the last `/health` readiness ping; `NaN` in JWE/OAuth modes where no static credentials exist |
+| `altinity_mcp_catalog_cache_*` | gauge/counter | | Multicluster catalog-cache activity (multicluster mode only) |
+
+Every label is drawn from a fixed set: route labels use registered patterns
+rather than raw URLs (so JWE tokens never appear), methods outside the
+standard set collapse to `other`, and status codes collapse to their class.
+
+The `/metrics` endpoint is unauthenticated. Restrict network access to it in
+the same way you would for `/health`.
+
+The Helm chart uses `metrics.enabled` for the endpoint. Set
+`metrics.serviceMonitor.enabled` as well to create a Prometheus Operator
+`ServiceMonitor` that scrapes the existing HTTP service port. When
+`config.server.tls.enabled` is true the ServiceMonitor scrapes over `https`
+automatically; supply `metrics.serviceMonitor.tlsConfig` if Prometheus does
+not trust the server certificate.
 
 ## Available Tools
 

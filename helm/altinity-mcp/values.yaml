@@ -66,6 +66,33 @@ service:
   #   clientIP:
   #     timeoutSeconds: 10800
 
+# -- Prometheus metrics and Prometheus Operator discovery.
+metrics:
+  # -- Expose Prometheus metrics at /metrics on the HTTP service port.
+  # Restart-only: the endpoint is bound when the server starts.
+  enabled: false
+  serviceMonitor:
+    # -- Create a ServiceMonitor. Requires the Prometheus Operator CRDs.
+    enabled: false
+    # -- Additional labels for selecting this ServiceMonitor.
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    # -- Scrape scheme. Leave empty to follow config.server.tls.enabled
+    # (https when the MCP port serves TLS, http otherwise).
+    scheme: ""
+    # -- Prometheus Operator tlsConfig for the scrape endpoint. Required when
+    # the server serves TLS with a certificate Prometheus does not trust, e.g.
+    #   tlsConfig:
+    #     insecureSkipVerify: true
+    # or
+    #   tlsConfig:
+    #     ca:
+    #       secret:
+    #         name: altinity-mcp-tls
+    #         key: ca.crt
+    tlsConfig: {}
+
 ingress:
   # -- Enable ingress controller resource
   enabled: false

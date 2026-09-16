@@ -192,6 +192,7 @@ type ServerConfig struct {
 	JWE                 JWEConfig         `json:"jwe" yaml:"jwe"`
 	OAuth               oauth.OAuthConfig `json:"oauth" yaml:"oauth"`
 	OpenAPI             OpenAPIConfig     `json:"openapi" yaml:"openapi" desc:"OpenAPI endpoints configuration"`
+	Metrics             MetricsConfig     `json:"metrics" yaml:"metrics" desc:"Prometheus metrics configuration"`
 	CORSOrigin          string            `json:"cors_origin" yaml:"cors_origin" flag:"cors-origin" env:"MCP_CORS_ORIGIN" default:"*" desc:"CORS origin for HTTP/SSE transports"`
 	ToolInputSettings   []string          `json:"tool_input_settings" yaml:"tool_input_settings" flag:"tool-input-settings" env:"TOOL_INPUT_SETTINGS" desc:"ClickHouse setting names allowed in tool arguments (e.g. custom_tenant_id)"`
 	BlockedQueryClauses []string          `json:"blocked_query_clauses" yaml:"blocked_query_clauses" flag:"blocked-query-clauses" env:"BLOCKED_QUERY_CLAUSES" desc:"AST clause kinds to block: SQL-style names derived from clickhouse-sql-parser types (e.g. WHERE, SETTINGS, FORMAT, SET, EXPLAIN) or full type stems (WHERECLAUSE); INTO OUTFILE is a special form"`
@@ -201,6 +202,11 @@ type ServerConfig struct {
 	// DynamicTools is the legacy rule list for generating tools from ClickHouse views.
 	// DEPRECATED: use Tools instead. Retained for backwards compatibility.
 	DynamicTools []DynamicToolRule `json:"dynamic_tools" yaml:"dynamic_tools" desc:"(Deprecated: use tools instead) Rules for generating tools from ClickHouse views"`
+}
+
+// MetricsConfig defines Prometheus metrics endpoint configuration.
+type MetricsConfig struct {
+	Enabled bool `json:"enabled" yaml:"enabled" flag:"metrics-enabled" env:"MCP_METRICS_ENABLED" desc:"Expose a /metrics endpoint (Prometheus text format) on HTTP/SSE transports"`
 }
 
 // OpenAPIConfig defines OpenAPI endpoints configuration

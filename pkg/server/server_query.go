@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
+	"github.com/altinity/altinity-mcp/pkg/metrics"
 )
 
 // NormalizeBlockedClauses converts a list of clause names into a normalized
@@ -45,6 +46,7 @@ func checkBlockedClauses(query string, blocked map[string]bool) (blockedClause s
 
 	for _, stmt := range stmts {
 		if name := findBlockedClauseInAST(stmt, blocked); name != "" {
+			metrics.ObserveBlockedClause(name)
 			return name, nil
 		}
 	}
