@@ -6,7 +6,7 @@ require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.6
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/franchb/embedded-clickhouse v0.4.2
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/rs/zerolog v1.35.1
