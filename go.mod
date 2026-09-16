@@ -1,6 +1,6 @@
 module github.com/altinity/altinity-mcp
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.6
@@ -13,7 +13,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/net v0.58.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
