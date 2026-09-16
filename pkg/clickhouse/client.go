@@ -28,6 +28,11 @@ type QueryResult struct {
 	Count     int             `json:"count"`
 	Error     string          `json:"error,omitempty"`
 	Truncated *TruncationInfo `json:"truncated,omitempty"`
+
+	// bytesApprox is the approxRowBytes sum over Rows, computed once by
+	// executeSelect while it enforces the byte cap. Kept so the metrics
+	// wrapper can report result size without a second pass over the rows.
+	bytesApprox int
 }
 
 // TruncationReason identifies which server-side cap fired.
@@ -529,6 +534,9 @@ func (c *Client) ExecuteCappedQuery(ctx context.Context, query string, maxRows, 
 }
 
 func (c *Client) executeWithCaps(ctx context.Context, query string, maxRows, maxBytes int, args ...interface{}) (*QueryResult, error) {
+	if !metrics.Enabled() {
+		return c.executeWithCapsUninstrumented(ctx, query, maxRows, maxBytes, args...)
+	}
 	kind := "execute"
 	if IsSelectQuery(query) {
 		kind = "select"
@@ -537,11 +545,7 @@ func (c *Client) executeWithCaps(ctx context.Context, query string, maxRows, max
 	result, err := c.executeWithCapsUninstrumented(ctx, query, maxRows, maxBytes, args...)
 	metrics.ObserveClickHouseQuery(kind, start, err)
 	if err == nil && result != nil {
-		bytesApprox := 0
-		for _, row := range result.Rows {
-			bytesApprox += approxRowBytes(row)
-		}
-		metrics.ObserveClickHouseResult(kind, result.Count, bytesApprox)
+		metrics.ObserveClickHouseResult(kind, result.Count, result.bytesApprox)
 	}
 	return result, err
 }
@@ -631,6 +635,7 @@ func (c *Client) executeSelect(ctx context.Context, query string, maxRows, maxBy
 	}
 
 	result.Count = len(result.Rows)
+	result.bytesApprox = bytesApprox
 	log.Debug().
 		Int("rows", result.Count).
 		Int("columns", len(result.Columns)).
@@ -660,6 +665,7 @@ func (c *Client) executeNonSelect(ctx context.Context, query string, args ...int
 	result.Types = []string{"String"}
 	result.Rows = [][]interface{}{{"OK"}}
 	result.Count = 1
+	result.bytesApprox = approxRowBytes(result.Rows[0])
 
 	log.Debug().
 		Str("query", truncateString(query, 100)).

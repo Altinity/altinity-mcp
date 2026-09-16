@@ -1,33 +1,50 @@
 // Package metrics defines the Prometheus collectors exposed by the MCP server
 // on its /metrics endpoint (see MetricsConfig.Enabled in pkg/config) and the
 // helpers that instrument the HTTP layer and the ClickHouse client with them.
+//
+// Metrics are opt-in. Until Enable is called nothing is registered anywhere
+// (not even in the default Prometheus registry) and every Observe* helper is
+// a cheap no-op, so a deployment with server.metrics.enabled=false pays no
+// per-request or per-query instrumentation cost and exposes no scrape data.
 package metrics
 
 import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func init() {
-	// Until a readiness ping has actually run, there is no observation. This
-	// remains NaN in OAuth/JWE modes where credentials only exist per request,
-	// instead of claiming that a healthy deployment is down.
-	ClickHouseUp.Set(math.NaN())
-}
+var (
+	// enabled gates every Observe* helper. It is process-global because the
+	// ClickHouse client and the query guard have no handle on the server's
+	// configuration; the operator's choice is applied once at startup by
+	// Enable (server.metrics.* is restart-only, see reloadConfig).
+	enabled atomic.Bool
+
+	// registry is private rather than prometheus.DefaultRegisterer so that a
+	// disabled server has no collectors registered at all, and so tests can
+	// gather from it without racing on global state.
+	registry     = prometheus.NewRegistry()
+	registerOnce sync.Once
+	registered   atomic.Bool
+)
 
 var (
 	// HTTPRequestsTotal counts every HTTP request the MCP server's own mux
 	// handled, labeled by route pattern (not raw path, which for the JWE
-	// transport includes a per-request token) and response status class.
-	HTTPRequestsTotal = promauto.NewCounterVec(
+	// transport includes a per-request token), normalized method, and
+	// response status class.
+	HTTPRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "altinity_mcp_http_requests_total",
-			Help: "Total HTTP requests handled by the MCP server, by route and status class.",
+			Help: "Total HTTP requests handled by the MCP server, by route, method and status class.",
 		},
 		[]string{"route", "method", "status"},
 	)
@@ -36,7 +53,7 @@ var (
 	// tool calls served over the streamable HTTP/SSE transports -- this is
 	// deliberately the outermost middleware so it reflects what a client
 	// actually waited, not just routing overhead.
-	HTTPRequestDuration = promauto.NewHistogramVec(
+	HTTPRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "altinity_mcp_http_request_duration_seconds",
 			Help:    "HTTP request duration in seconds, by route.",
@@ -48,7 +65,7 @@ var (
 	// ClickHouseQueriesTotal counts ClickHouse queries executed through
 	// pkg/clickhouse.Client, labeled by statement kind (select vs. the
 	// non-select/DDL path) and outcome.
-	ClickHouseQueriesTotal = promauto.NewCounterVec(
+	ClickHouseQueriesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "altinity_mcp_clickhouse_queries_total",
 			Help: "Total ClickHouse queries executed, by kind and outcome.",
@@ -60,7 +77,7 @@ var (
 	// by the MCP server -- network plus server-side execution, not just the
 	// driver call, since that is the number an operator tuning timeouts or
 	// caps actually needs.
-	ClickHouseQueryDuration = promauto.NewHistogramVec(
+	ClickHouseQueryDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "altinity_mcp_clickhouse_query_duration_seconds",
 			Help:    "ClickHouse query duration in seconds, by kind.",
@@ -69,7 +86,7 @@ var (
 		[]string{"kind"},
 	)
 
-	ClickHouseQueryRows = promauto.NewHistogramVec(
+	ClickHouseQueryRows = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "altinity_mcp_clickhouse_query_rows",
 			Help:    "Rows returned by successful ClickHouse queries, by kind.",
@@ -78,7 +95,7 @@ var (
 		[]string{"kind"},
 	)
 
-	ClickHouseQueryBytes = promauto.NewHistogramVec(
+	ClickHouseQueryBytes = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "altinity_mcp_clickhouse_query_bytes",
 			Help:    "Approximate bytes returned by successful ClickHouse queries, by kind.",
@@ -87,7 +104,7 @@ var (
 		[]string{"kind"},
 	)
 
-	BlockedClauseRejectionsTotal = promauto.NewCounterVec(
+	BlockedClauseRejectionsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "altinity_mcp_blocked_clause_rejections_total",
 			Help: "Queries rejected by the blocked-clause guard, by normalized clause.",
@@ -95,13 +112,71 @@ var (
 		[]string{"clause"},
 	)
 
-	ClickHouseUp = promauto.NewGauge(
+	// ClickHouseUp reports the most recent readiness ping. It starts as NaN
+	// ("unknown") and stays NaN in OAuth/JWE modes where credentials only
+	// exist per request and the health handler cannot ping ClickHouse, so a
+	// healthy deployment is never falsely reported as down.
+	ClickHouseUp = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "altinity_mcp_clickhouse_up",
-			Help: "Whether the most recent ClickHouse readiness ping succeeded (1) or failed (0).",
+			Help: "Whether the most recent ClickHouse readiness ping succeeded (1) or failed (0). NaN when no credentialed ping is possible.",
 		},
 	)
 )
+
+func init() {
+	ClickHouseUp.Set(math.NaN())
+}
+
+// Enable turns instrumentation on and registers the collectors (plus the
+// standard Go runtime and process collectors) in the private registry.
+// Safe to call more than once; registration happens only the first time.
+func Enable() {
+	registerOnce.Do(func() {
+		registry.MustRegister(
+			collectors.NewGoCollector(),
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+			HTTPRequestsTotal,
+			HTTPRequestDuration,
+			ClickHouseQueriesTotal,
+			ClickHouseQueryDuration,
+			ClickHouseQueryRows,
+			ClickHouseQueryBytes,
+			BlockedClauseRejectionsTotal,
+			ClickHouseUp,
+		)
+		registered.Store(true)
+	})
+	enabled.Store(true)
+}
+
+// Enabled reports whether Enable has been called. Instrumentation call sites
+// that would otherwise do work just to feed a metric (e.g. sizing a result)
+// should check this first.
+func Enabled() bool {
+	return enabled.Load()
+}
+
+// Handler serves the private registry in Prometheus exposition format.
+func Handler() http.Handler {
+	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+}
+
+// Register adds an additional collector (e.g. the multicluster catalog-cache
+// collector) to the metrics registry.
+func Register(c prometheus.Collector) error {
+	return registry.Register(c)
+}
+
+// Unregister removes a collector previously added with Register.
+func Unregister(c prometheus.Collector) bool {
+	return registry.Unregister(c)
+}
+
+// Gatherer exposes the private registry for tests and tooling.
+func Gatherer() prometheus.Gatherer {
+	return registry
+}
 
 // statusRecorder wraps a ResponseWriter to capture the status code a handler
 // wrote, so middleware can label a metric with it after the handler returns.
@@ -139,6 +214,9 @@ func (r *statusRecorder) WriteHeader(code int) {
 // Wrap mux with this first, innermost, then layer request-rewriting
 // middleware (stripTrailingSlash, CORS) around the result -- the pattern it
 // resolves must see the request the way mux itself will see it.
+//
+// Callers should only install this when metrics are enabled; it does not
+// re-check Enabled on every request.
 func HTTPMiddleware(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Handler(r)
@@ -149,8 +227,21 @@ func HTTPMiddleware(mux *http.ServeMux) http.Handler {
 		start := time.Now()
 		mux.ServeHTTP(rec, r)
 		HTTPRequestDuration.WithLabelValues(pattern).Observe(time.Since(start).Seconds())
-		HTTPRequestsTotal.WithLabelValues(pattern, r.Method, statusClass(rec.status)).Inc()
+		HTTPRequestsTotal.WithLabelValues(pattern, normalizeMethod(r.Method), statusClass(rec.status)).Inc()
 	})
+}
+
+// normalizeMethod maps the request method onto a fixed set of label values.
+// The wire method is client-controlled free text, so labeling with it
+// directly would let any caller mint unbounded series.
+func normalizeMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // statusClass reduces a status code to Prometheus's conventional class label
@@ -168,6 +259,9 @@ func statusClass(status int) string {
 // ClickHouseQueryDuration for one query. kind is "select" or "execute"
 // (pkg/clickhouse.IsSelectQuery's two paths); outcome is "ok" or "error".
 func ObserveClickHouseQuery(kind string, start time.Time, err error) {
+	if !Enabled() {
+		return
+	}
 	outcome := "ok"
 	if err != nil {
 		outcome = "error"
@@ -179,6 +273,9 @@ func ObserveClickHouseQuery(kind string, start time.Time, err error) {
 // ObserveClickHouseResult records result size only when a query returned a
 // complete result. Negative values mean the caller could not measure it.
 func ObserveClickHouseResult(kind string, rows, bytesApprox int) {
+	if !Enabled() {
+		return
+	}
 	if rows >= 0 {
 		ClickHouseQueryRows.WithLabelValues(kind).Observe(float64(rows))
 	}
@@ -188,12 +285,16 @@ func ObserveClickHouseResult(kind string, rows, bytesApprox int) {
 }
 
 func ObserveBlockedClause(clause string) {
-	if clause != "" {
-		BlockedClauseRejectionsTotal.WithLabelValues(clause).Inc()
+	if !Enabled() || clause == "" {
+		return
 	}
+	BlockedClauseRejectionsTotal.WithLabelValues(clause).Inc()
 }
 
 func ObserveClickHouseHealth(err error) {
+	if !Enabled() {
+		return
+	}
 	if err == nil {
 		ClickHouseUp.Set(1)
 		return
@@ -204,5 +305,8 @@ func ObserveClickHouseHealth(err error) {
 // ObserveClickHouseHealthUnknown clears any stale process-local readiness
 // result when the active mode cannot perform a credentialed readiness ping.
 func ObserveClickHouseHealthUnknown() {
+	if !Enabled() {
+		return
+	}
 	ClickHouseUp.Set(math.NaN())
 }

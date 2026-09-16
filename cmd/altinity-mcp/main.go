@@ -25,7 +25,6 @@ import (
 	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v3"
@@ -200,16 +199,28 @@ func stripTrailingSlash(next http.Handler) http.Handler {
 	})
 }
 
-// registerMetricsRoute adds the Prometheus scrape endpoint alongside
-// /health and /livez when the operator opted in. Unconditional registration
-// would expose query-shape and timing data (via the ClickHouse histograms)
-// to anyone who can reach the port, which is why every other optional
-// surface here (OpenAPI, OAuth) is also config-gated rather than always on.
-func registerMetricsRoute(mux *http.ServeMux, cfg config.Config) {
-	if !cfg.Server.Metrics.Enabled {
-		return
+// finalizeTransportHandler wraps a fully-populated transport mux with the
+// common outer middleware stack. It is the single place where the Prometheus
+// scrape endpoint and request instrumentation are attached, so every
+// transport (HTTP, SSE, multicluster, with or without JWE) behaves the same:
+//
+//   - server.metrics.enabled=true: /metrics is registered on mux and the
+//     request-counting middleware is installed (innermost, so it labels by
+//     the pattern mux itself resolves).
+//   - server.metrics.enabled=false: nothing is registered and no middleware
+//     is installed -- a disabled configuration is a true no-op rather than a
+//     hidden route.
+//
+// Unconditional registration would expose query-shape and timing data (via
+// the ClickHouse histograms) to anyone who can reach the port, which is why
+// every other optional surface here (OpenAPI, OAuth) is also config-gated.
+func finalizeTransportHandler(mux *http.ServeMux, cfg config.Config) http.Handler {
+	var h http.Handler = mux
+	if cfg.Server.Metrics.Enabled {
+		mux.Handle("/metrics", metrics.Handler())
+		h = metrics.HTTPMiddleware(mux)
 	}
-	mux.Handle("/metrics", promhttp.Handler())
+	return stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, h))
 }
 
 // defaultCORSAllowHeaders is the static Access-Control-Allow-Headers value
@@ -477,6 +488,21 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 	log.Info().
 		Str("address", addr).
 		Msg("Starting MCP server with Streaming HTTP transport")
+
+	a.setHTTPServer(&http.Server{
+		Addr:    addr,
+		Handler: a.buildHTTPHandler(cfg, mcpServer),
+	})
+
+	return a.startHTTPServerWithTLS(cfg, addr, "http")
+}
+
+// buildHTTPHandler assembles the complete request handler for the streamable
+// HTTP transport (MCP routes, health/liveness, OpenAPI, OAuth, JWE token
+// generator, and -- when enabled -- /metrics plus request instrumentation).
+// Split from startHTTPServer so tests can exercise the exact production
+// routing without binding a port.
+func (a *application) buildHTTPHandler(cfg config.Config, mcpServer *mcp.Server) http.Handler {
 	openAPIProtocol := "http"
 	if cfg.Server.OpenAPI.TLS {
 		openAPIProtocol = "https"
@@ -531,8 +557,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		registerMetricsRoute(mux, cfg)
-		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
+		httpHandler = finalizeTransportHandler(mux, cfg)
 	} else {
 		// Use standard HTTP server without dynamic paths
 		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
@@ -557,16 +582,10 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		registerMetricsRoute(mux, cfg)
-		httpHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
+		httpHandler = finalizeTransportHandler(mux, cfg)
 	}
 
-	a.setHTTPServer(&http.Server{
-		Addr:    addr,
-		Handler: httpHandler,
-	})
-
-	return a.startHTTPServerWithTLS(cfg, addr, "http")
+	return httpHandler
 }
 
 // startSSEServer starts the SSE transport server
@@ -577,6 +596,18 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		Str("address", addr).
 		Msg("Starting MCP server with SSE transport")
 
+	a.setHTTPServer(&http.Server{
+		Addr:    addr,
+		Handler: a.buildSSEHandler(cfg, mcpServer),
+	})
+
+	return a.startHTTPServerWithTLS(cfg, addr, "sse")
+}
+
+// buildSSEHandler assembles the complete request handler for the legacy SSE
+// transport; see buildHTTPHandler for why it is separate from the server
+// start.
+func (a *application) buildSSEHandler(cfg config.Config, mcpServer *mcp.Server) http.Handler {
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -633,8 +664,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		registerMetricsRoute(mux, cfg)
-		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
+		sseHandler = finalizeTransportHandler(mux, cfg)
 	} else {
 		// Use SSEHandler for legacy SSE transport
 		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
@@ -659,15 +689,10 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 		mux.HandleFunc("/livez", a.livenessHandler)
 		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
 		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, mux))
+		sseHandler = finalizeTransportHandler(mux, cfg)
 	}
 
-	a.setHTTPServer(&http.Server{
-		Addr:    addr,
-		Handler: sseHandler,
-	})
-
-	return a.startHTTPServerWithTLS(cfg, addr, "sse")
+	return sseHandler
 }
 
 // livenessHandler provides a process-level health check endpoint for liveness probes.
@@ -1011,6 +1036,10 @@ type application struct {
 	mcRouter  *altinitymcp.MulticlusterRouter
 	mcCache   *altinitymcp.CatalogCache
 	mcMetrics prometheus.Collector
+	// metricsReloadWarned is set while the on-disk server.metrics.* differs
+	// from the running (restart-only) value, so the reload loop warns once
+	// per mismatch instead of on every tick. Guarded by configMutex.
+	metricsReloadWarned bool
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -1090,6 +1119,14 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		cimdResolver:     newCIMDResolver(nil),
 	}
 
+	// Metrics are restart-only (see reloadConfig). Enabling here, before any
+	// transport is built, means the ClickHouse client and query guard start
+	// recording from the first request; when disabled nothing is registered
+	// and the Observe* helpers stay no-ops.
+	if cfg.Server.Metrics.Enabled {
+		metrics.Enable()
+	}
+
 	// Multi-cluster routing is restart-only. Build the router + catalog
 	// cache once during newApplication and stash them on the app; the
 	// HTTP server consults these on every request.
@@ -1102,7 +1139,7 @@ func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface
 		app.mcCache = altinitymcp.NewCatalogCache(cfg.Multicluster)
 		if cfg.Server.Metrics.Enabled {
 			app.mcMetrics = altinitymcp.NewCatalogCacheCollector(app.mcCache)
-			if err := prometheus.Register(app.mcMetrics); err != nil {
+			if err := metrics.Register(app.mcMetrics); err != nil {
 				app.mcCache.Close()
 				return nil, fmt.Errorf("register catalog cache metrics: %w", err)
 			}
@@ -1284,7 +1321,7 @@ func (a *application) Close() {
 		a.mcCache.Close()
 	}
 	if a.mcMetrics != nil {
-		prometheus.Unregister(a.mcMetrics)
+		metrics.Unregister(a.mcMetrics)
 	}
 
 	// No resources to close as the ClickHouse client is created and closed per request
@@ -1348,6 +1385,30 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	a.configMutex.RUnlock()
 	if !reflect.DeepEqual(oldMC, newCfg.Multicluster) {
 		log.Warn().Msg("config reload: multicluster.* fields changed — restart required for these to take effect; routing/cache remain on the previous configuration")
+	}
+
+	// server.metrics.* is restart-only for the same reason: the /metrics
+	// route and the request middleware are bound into the HTTP mux at start.
+	// Keep the effective value in the stored config so GetCurrentConfig
+	// never claims a state the running server does not have (a reload to
+	// enabled=false must not pretend the endpoint went away, and a reload
+	// to enabled=true must not pretend it appeared).
+	a.configMutex.Lock()
+	oldMetrics := a.config.Server.Metrics
+	changed := oldMetrics != newCfg.Server.Metrics
+	// The reload ticker re-reads the file every period, so warn once per
+	// mismatch rather than on every tick; re-arm once the file agrees again.
+	warn := changed && !a.metricsReloadWarned
+	a.metricsReloadWarned = changed
+	a.configMutex.Unlock()
+	if changed {
+		if warn {
+			log.Warn().
+				Bool("running_enabled", oldMetrics.Enabled).
+				Bool("requested_enabled", newCfg.Server.Metrics.Enabled).
+				Msg("config reload: server.metrics.* changed — restart required for this to take effect; /metrics remains on the previous configuration")
+		}
+		newCfg.Server.Metrics = oldMetrics
 	}
 
 	// Update logging level if changed
@@ -1449,6 +1510,18 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 		Str("address", addr).
 		Msg("Starting MCP server with multi-cluster HTTP transport")
 
+	a.setHTTPServer(&http.Server{
+		Addr:    addr,
+		Handler: a.buildMulticlusterHandler(cfg),
+	})
+
+	return a.startHTTPServerWithTLS(cfg, addr, "http")
+}
+
+// buildMulticlusterHandler assembles the complete request handler for the
+// multi-cluster HTTP transport; see buildHTTPHandler for why it is separate
+// from the server start.
+func (a *application) buildMulticlusterHandler(cfg config.Config) http.Handler {
 	authInjector := a.createMCPAuthInjector(cfg)
 	serverInjector := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1465,20 +1538,12 @@ func (a *application) startMulticlusterHTTPServer(cfg config.Config) error {
 	mux.HandleFunc("/livez", a.livenessHandler)
 	a.registerOAuthHTTPRoutes(mux)
 	a.registerMulticlusterPRMRoutes(mux)
-	registerMetricsRoute(mux, cfg)
 
 	mcpHandler := a.mcRouter.Middleware(authInjector(serverInjector(sdkHandler)))
 	mux.Handle("/mcp/{cluster}", mcpHandler)
 	mux.Handle("/mcp/{cluster}/", mcpHandler)
 
-	httpHandler := stripTrailingSlash(corsMiddleware(cfg.Server.CORSOrigin, metrics.HTTPMiddleware(mux)))
-
-	a.setHTTPServer(&http.Server{
-		Addr:    addr,
-		Handler: httpHandler,
-	})
-
-	return a.startHTTPServerWithTLS(cfg, addr, "http")
+	return finalizeTransportHandler(mux, cfg)
 }
 
 // registerMulticlusterPRMRoutes registers the per-cluster RFC 9728 PRM

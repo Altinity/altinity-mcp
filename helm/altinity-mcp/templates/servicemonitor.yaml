@@ -1,4 +1,11 @@
 {{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+{{- /*
+The scrape scheme must match what the MCP port actually speaks: when
+config.server.tls.enabled is true the same port serves HTTPS, and a plain
+HTTP scrape would fail. Follow the server setting unless the operator pins
+metrics.serviceMonitor.scheme explicitly.
+*/}}
+{{- $scheme := .Values.metrics.serviceMonitor.scheme | default (ternary "https" "http" (.Values.config.server.tls.enabled | default false)) }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -15,6 +22,11 @@ spec:
   endpoints:
     - port: http
       path: /metrics
+      scheme: {{ $scheme }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      {{- with .Values.metrics.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}
