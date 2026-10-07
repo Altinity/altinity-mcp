@@ -26,6 +26,10 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	// Validate authentication (JWE and/or OAuth)
 	jweToken, jweClaims, oauthToken, oauthClaims, err := s.ValidateAuth(r)
 	if err != nil {
+		if errors.Is(err, ErrJWEIncompleteConnection) {
+			http.Error(w, ErrJWEIncompleteConnection.Error(), http.StatusUnauthorized)
+			return
+		}
 		if errors.Is(err, jwe_auth.ErrMissingToken) || errors.Is(err, ErrMissingOAuthToken) {
 			http.Error(w, "Missing authentication token", http.StatusUnauthorized)
 			return

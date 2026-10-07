@@ -603,6 +603,7 @@ server:
   jwe:
     enabled: true
     jwe_secret_key: "jwe-secret"
+    tls_material_dir: "/operator/jwe-tls"
     jwt_secret_key: "jwt-secret"
   oauth:
     enabled: true
@@ -639,6 +640,7 @@ logging:
 		// Verify JWE config
 		require.True(t, cfg.Server.JWE.Enabled)
 		require.Equal(t, "jwe-secret", cfg.Server.JWE.JWESecretKey)
+		require.Equal(t, "/operator/jwe-tls", cfg.Server.JWE.TLSMaterialDir)
 		require.Equal(t, "jwt-secret", cfg.Server.JWE.JWTSecretKey)
 
 		// Verify OAuth config

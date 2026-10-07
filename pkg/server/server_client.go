@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +17,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// GetClickHouseClient creates a ClickHouse client from JWE token or falls back to default config.
+// GetClickHouseClient creates a self-contained JWE connection when JWE is
+// enabled, and uses the operator connection only when JWE is disabled.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
 	var chConfig config.ClickHouseConfig
 
@@ -45,73 +47,85 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
+		if s.Config.Server.JWE.Enabled && (chConfig.TLS.CaCert != "" || chConfig.TLS.ClientCert != "" || chConfig.TLS.ClientKey != "") {
+			return nil, fmt.Errorf("jwe: failed to create ClickHouse client with TLS material")
+		}
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 
 	return client, nil
 }
 
-// buildConfigFromClaims builds a ClickHouse config from JWE claims.
-// In multi-cluster mode the caller passes a base config whose Host has
-// already been template-expanded for the active cluster; we do not reach
-// for s.Config.ClickHouse so the per-request cluster routing is preserved.
+// buildConfigFromClaims builds a self-contained connection from token claims and
+// non-identity operator defaults. JWE is incompatible with multicluster routing.
 func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{}) (config.ClickHouseConfig, error) {
 	return s.buildConfigFromClaimsWithBase(s.Config.ClickHouse, claims)
 }
 
-// buildConfigFromClaimsWithBase is the explicit-base variant used by the
-// multi-cluster path. Same body as buildConfigFromClaims but takes the base
-// chCfg as a parameter so the global is never consulted on the hot path.
+// buildConfigFromClaimsWithBase copies only operational defaults from base;
+// endpoint, credentials, headers, roles, and TLS material must never be inherited.
 func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHouseConfig, claims map[string]interface{}) (config.ClickHouseConfig, error) {
-	chConfig := base.Clone()
-
-	if host, ok := claims["host"].(string); ok && host != "" {
-		chConfig.Host = host
+	if !s.JWEClaimsHaveCredentials(claims) {
+		return config.ClickHouseConfig{}, ErrJWEIncompleteConnection
 	}
-	if port, ok := claims["port"].(float64); ok && port > 0 {
-		chConfig.Port = int(port)
+	chConfig := config.ClickHouseConfig{
+		Host: claims["host"].(string), Username: claims["username"].(string),
+		Protocol: base.Protocol, ReadOnly: base.ReadOnly,
+		MaxExecutionTime: base.MaxExecutionTime, MaxResultRows: base.MaxResultRows,
+		MaxResultBytes: base.MaxResultBytes, MaxQueryLength: base.MaxQueryLength,
+		ExtraSettings: maps.Clone(base.ExtraSettings),
 	}
-	if database, ok := claims["database"].(string); ok && database != "" {
-		chConfig.Database = database
-	}
-	if username, ok := claims["username"].(string); ok && username != "" {
-		chConfig.Username = username
-	}
-	if password, ok := claims["password"].(string); ok && password != "" {
-		chConfig.Password = password
+	if chConfig.Protocol == "" {
+		chConfig.Protocol = config.HTTPProtocol
 	}
 	if protocol, ok := claims["protocol"].(string); ok && protocol != "" {
 		chConfig.Protocol = config.ClickHouseProtocol(protocol)
 	}
+	if chConfig.Protocol != config.HTTPProtocol && chConfig.Protocol != config.TCPProtocol {
+		return config.ClickHouseConfig{}, fmt.Errorf("jwe: protocol must be http or tcp")
+	}
+	chConfig.Port = 8123
+	if chConfig.Protocol == config.TCPProtocol {
+		chConfig.Port = 9000
+	}
+	if port, ok := claims["port"].(float64); ok && port > 0 {
+		chConfig.Port = int(port)
+	}
+	chConfig.Database, _ = claims["database"].(string)
+	chConfig.Password, _ = claims["password"].(string)
 	if limit, ok := claims["limit"].(float64); ok && limit > 0 {
 		chConfig.Limit = int(limit)
 	}
 
-	// Handle TLS configuration from JWE claims
-	if tlsEnabled, ok := claims["tls_enabled"].(bool); ok && tlsEnabled {
-		chConfig.TLS.Enabled = true
-
-		if caCert, ok := claims["tls_ca_cert"].(string); ok && caCert != "" {
-			chConfig.TLS.CaCert = caCert
-		}
-		if clientCert, ok := claims["tls_client_cert"].(string); ok && clientCert != "" {
-			chConfig.TLS.ClientCert = clientCert
-		}
-		if clientKey, ok := claims["tls_client_key"].(string); ok && clientKey != "" {
-			chConfig.TLS.ClientKey = clientKey
-		}
-		if insecureSkipVerify, ok := claims["tls_insecure_skip_verify"].(bool); ok {
-			chConfig.TLS.InsecureSkipVerify = insecureSkipVerify
+	// Validate all token paths even when TLS is disabled. Return resolved paths
+	// so the TLS client cannot follow the original symlink outside the allowlist.
+	for claim, dest := range map[string]*string{
+		"tls_ca_cert":     &chConfig.TLS.CaCert,
+		"tls_client_cert": &chConfig.TLS.ClientCert,
+		"tls_client_key":  &chConfig.TLS.ClientKey,
+	} {
+		if value, present := claims[claim]; present {
+			path, ok := value.(string)
+			if !ok {
+				return config.ClickHouseConfig{}, fmt.Errorf("jwe: invalid TLS material path")
+			}
+			resolved, err := s.Config.Server.JWE.ValidateTLSMaterialPath(path)
+			if err != nil {
+				return config.ClickHouseConfig{}, err
+			}
+			*dest = resolved
 		}
 	}
-
+	chConfig.TLS.Enabled, _ = claims["tls_enabled"].(bool)
+	chConfig.TLS.InsecureSkipVerify, _ = claims["tls_insecure_skip_verify"].(bool)
 	return chConfig, nil
 }
 
 // GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or
 // OAuth tokens from context. When the multi-cluster router has injected a
 // per-request ClickHouseConfig (host templated for the active cluster), it
-// is used; otherwise s.Config.ClickHouse is the base.
+// supplies the OAuth/static endpoint or JWE operational defaults. JWE never
+// inherits its connection fields and cannot fall back to static credentials.
 func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*clickhouse.Client, error) {
 	jweToken := s.ExtractTokenFromCtx(ctx)
 	oauthToken := s.ExtractOAuthTokenFromCtx(ctx)
@@ -139,7 +153,8 @@ func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthC
 
 // ValidateAuth validates authentication using priority/fallback semantics.
 // JWE takes priority: if present and valid with credentials, OAuth is skipped.
-// If JWE is absent or has no credentials, falls through to OAuth.
+// If JWE is absent or incomplete, falls through to OAuth when enabled.
+// In JWE-only mode incomplete tokens are rejected.
 func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jweClaims map[string]interface{}, oauthToken string, oauthClaims *OAuthClaims, err error) {
 	jweEnabled := s.Config.Server.JWE.Enabled
 	oauthEnabled := s.Config.Server.OAuth.Enabled
@@ -187,7 +202,7 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jw
 		return "", nil, "", nil, jwe_auth.ErrMissingToken
 	}
 
-	return jweToken, jweClaims, "", nil, nil
+	return "", nil, "", nil, ErrJWEIncompleteConnection
 }
 
 func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
@@ -220,7 +235,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 	var chConfig config.ClickHouseConfig
 	var err error
 
-	// If JWE is enabled and token provided, use JWE config
+	// A self-contained JWE wins. Partial JWE claims must not alter OAuth routing.
+	useJWE := false
+	chConfig = chCfg.Clone()
 	if s.Config.Server.JWE.Enabled && jweToken != "" {
 		claims := s.GetJWEClaimsFromCtx(ctx)
 		if claims == nil {
@@ -229,12 +246,17 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 				return nil, fmt.Errorf("failed to parse JWE token: %w", err)
 			}
 		}
-		chConfig, err = s.buildConfigFromClaimsWithBase(chCfg, claims)
-		if err != nil {
-			return nil, err
+		if s.JWEClaimsHaveCredentials(claims) {
+			chConfig, err = s.buildConfigFromClaimsWithBase(chCfg, claims)
+			if err != nil {
+				return nil, err
+			}
+			useJWE = true
+		} else if !s.Config.Server.OAuth.Enabled || oauthToken == "" {
+			return nil, ErrJWEIncompleteConnection
 		}
-	} else {
-		chConfig = chCfg.Clone()
+	} else if s.Config.Server.JWE.Enabled && (!s.Config.Server.OAuth.Enabled || oauthToken == "") {
+		return nil, jwe_auth.ErrMissingToken
 	}
 
 	// Merge tool-input settings before OAuth so probe configs carry them.
@@ -242,7 +264,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 		chConfig = mergeExtraSettings(chConfig, toolSettings)
 	}
 
-	if s.Config.Server.OAuth.Enabled && oauthToken != "" {
+	if !useJWE && s.Config.Server.OAuth.Enabled && oauthToken != "" {
 		if claimName := strings.TrimSpace(s.Config.Server.OAuth.RoleClaim); claimName != "" {
 			// Prefer pre-validated claims from context; on the MCP forward path
 			// none are stored (MCP doesn't pre-validate — CH does, per request),
@@ -274,6 +296,9 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 
 	client, err := clickhouse.NewClient(ctx, chConfig)
 	if err != nil {
+		if useJWE && (chConfig.TLS.CaCert != "" || chConfig.TLS.ClientCert != "" || chConfig.TLS.ClientKey != "") {
+			return nil, fmt.Errorf("jwe: failed to create ClickHouse client with TLS material")
+		}
 		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
 	}
 	return client, nil
