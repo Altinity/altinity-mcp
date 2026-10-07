@@ -1,4 +1,15 @@
-# Unreleased
+# v1.7.1
+
+This release fixes JWE issuance, request credential isolation, and OpenAPI safety issues.
+
+UPGRADE NOTES
+- Regenerate JWE tokens that relied on server connection defaults: tokens must carry nonblank host and username claims. Empty passwords remain valid. Token TLS file paths require `server.jwe.tls_material_dir`.
+- `/jwe-token-generator` is disabled by default. Enable it explicitly and configure an admin bearer secret of at least 32 bytes for administrative issuance.
+- Authenticated `/openapi` schema imports now require a credential. JWE-only REST actions use `/{token}/openapi/...`; the tokenized schema route is also available. SSE clients must reconnect after credential or effective configuration changes.
+
+FEATURES
+- add opt-in Prometheus metrics on HTTP/SSE transports, disabled by default (`server.metrics.enabled`, `--metrics-enabled`, `MCP_METRICS_ENABLED`) ([PR #168](https://github.com/Altinity/altinity-mcp/pull/168))
+- add `clickhouse.connect_host` to select the TCP dial host independently of the logical endpoint, including IPv6 and proxy precedence fixes ([PR #160](https://github.com/Altinity/altinity-mcp/pull/160))
 
 BUG FIXES
 - security: disable `/jwe-token-generator` by default and require an admin bearer secret of at least 32 bytes when enabled; bound complete request bodies to 64 KiB, limit token lifetime, validate TLS file claims, and log issuance without secrets (fixes [#180](https://github.com/Altinity/altinity-mcp/issues/180)). Existing endpoint users must explicitly enable `server.jwe.token_generator.enabled` and configure the admin token.
@@ -6,6 +17,9 @@ BUG FIXES
 - security: require self-contained JWE ClickHouse connections with host and username; prevent inheritance of operator endpoints, credentials, headers, roles, and TLS material; restrict token TLS file paths to `server.jwe.tls_material_dir` (fixes [#179](https://github.com/Altinity/altinity-mcp/issues/179)). Missing request tokens now fail closed in JWE-only and combined JWE/OAuth client paths, including discovery, instead of using static operator credentials. Regenerate tokens that relied on static connection defaults.
 - security: OpenAPI `execute_query` always rejects write statements and enforces `max_query_length`; dynamic-tool JSON bodies use the same input-size limit (fixes [#183](https://github.com/Altinity/altinity-mcp/issues/183))
 - security: isolate per-request ClickHouse headers, settings, and roles; prevent concurrent OAuth bearer forwarding from crashing the server, confusing caller identities, or leaking a stale bearer into later JWE or static-credential requests (fixes [#181](https://github.com/Altinity/altinity-mcp/issues/181))
+
+DEPENDENCY UPDATES
+- update ClickHouse Go driver to 2.48.0, ch-go to 0.74.0, MCP Go SDK to 1.8.0, Altinity OAuth SDK to 0.2.1, SQL parser to 0.5.6, CLI to 3.14.0, go-jose to 4.1.5, x/net to 0.59.0, x/sync to 0.23.0, and related dependencies
 
 # v1.7.0
 
