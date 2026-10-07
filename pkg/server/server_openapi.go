@@ -67,6 +67,11 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 	case strings.HasSuffix(r.URL.Path, "/openapi/execute_query"):
 		s.handleExecuteQueryOpenAPI(w, r)
 	case strings.Contains(r.URL.Path, "/openapi/") && r.Method == http.MethodPost:
+		// Validate the body before discovery, which itself contacts ClickHouse.
+		body, ok := s.decodeDynamicToolOpenAPIBody(w, r)
+		if !ok {
+			return
+		}
 		// Ensure dynamic tools are loaded
 		if err := s.EnsureDynamicTools(r.Context()); err != nil {
 			log.Warn().Err(err).Msg("Failed to ensure dynamic tools in OpenAPI handler")
@@ -82,7 +87,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 			s.dynamicToolsMu.RUnlock()
 
 			if ok {
-				s.handleDynamicToolOpenAPI(w, r, meta)
+				s.handleDynamicToolOpenAPIWithBody(w, r, meta, body)
 				return
 			}
 		}
@@ -343,6 +348,16 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	body, ok := s.decodeDynamicToolOpenAPIBody(w, r)
+	if !ok {
+		return
+	}
+	s.handleDynamicToolOpenAPIWithBody(w, r, meta, body)
+}
+
+// decodeDynamicToolOpenAPIBody checks the whole body before either catalog
+// discovery or tool execution can create a ClickHouse client.
+func (s *ClickHouseJWEServer) decodeDynamicToolOpenAPIBody(w http.ResponseWriter, r *http.Request) (map[string]interface{}, bool) {
 	// Authentication is already checked by the caller. Bound the entire body,
 	// including trailing whitespace, before creating a ClickHouse client.
 	if limit := s.Config.ClickHouse.EffectiveMaxQueryLength(); limit > 0 {
@@ -368,9 +383,13 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		} else {
 			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
 		}
-		return
+		return nil, false
 	}
 
+	return body, true
+}
+
+func (s *ClickHouseJWEServer) handleDynamicToolOpenAPIWithBody(w http.ResponseWriter, r *http.Request, meta dynamicToolMeta, body map[string]interface{}) {
 	ctx := r.Context()
 
 	if len(s.Config.Server.ToolInputSettings) > 0 {

@@ -178,3 +178,55 @@ func TestOpenAPISchemaExecuteQueryAlwaysReadOnly(t *testing.T) {
 	require.Contains(t, string(body), "write statements are always rejected")
 	require.NotContains(t, string(body), "In read-only mode")
 }
+
+// Exercise the outer handler with an undiscovered catalog: discovery must not
+// run until the complete POST body passes its size and JSON checks.
+func TestOpenAPIDynamicBodyBeforeDiscovery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, body    string
+		unknownLength bool
+		status        int
+		connects      bool
+	}{
+		{"oversized", `{"x":12}`, false, http.StatusRequestEntityTooLarge, false},
+		{"oversized_unknown_length", `{"x":12}`, true, http.StatusRequestEntityTooLarge, false},
+		{"oversized_trailing_whitespace", `{}` + strings.Repeat(" ", 20), true, http.StatusRequestEntityTooLarge, false},
+		{"accepted_body_discovers", `{"x":1}`, true, http.StatusNotFound, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv, calls := openAPIGuardServer(t, 7)
+			srv.Config.Server.DynamicTools = []config.DynamicToolRule{{Regexp: "^test$"}}
+			req := httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader(tc.body))
+			if tc.unknownLength {
+				req.ContentLength = -1
+			}
+			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+			rr := httptest.NewRecorder()
+			srv.OpenAPIHandler(rr, req)
+			require.Equal(t, tc.status, rr.Code, rr.Body.String())
+			require.False(t, srv.dynamicToolsInit)
+			if tc.connects {
+				require.Positive(t, calls.Load(), "accepted body must still allow discovery")
+			} else {
+				require.Zero(t, calls.Load(), "oversized body must prevent discovery")
+			}
+		})
+	}
+}
+
+func TestOpenAPIDynamicBodyReusedAfterDiscovery(t *testing.T) {
+	t.Parallel()
+	srv, calls := openAPIGuardServer(t, 7)
+	srv.dynamicToolsInit = true
+	srv.dynamicTools = map[string]dynamicToolMeta{"tool": {ToolName: "tool", Database: "default", Table: "test", Params: []dynamicToolParam{{Name: "x", JSONType: "integer", Required: true}}}}
+	req := httptest.NewRequest(http.MethodPost, "/openapi/tool", strings.NewReader(`{"x":1}`))
+	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
+	rr := httptest.NewRecorder()
+	srv.OpenAPIHandler(rr, req)
+	// A second body decode would fail with EOF before reaching the client.
+	require.Equal(t, http.StatusInternalServerError, rr.Code, rr.Body.String())
+	require.Positive(t, calls.Load())
+	require.Contains(t, rr.Body.String(), "Failed to get ClickHouse client")
+}
