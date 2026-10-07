@@ -40,6 +40,8 @@ type ClickHouseJWEServer struct {
 	// lazily builds it for struct-literal test servers. nil when the feature
 	// is unconfigured.
 	roleFilterRe *regexp.Regexp
+	catalogOnce  sync.Once
+	catalogCache *CatalogCache
 }
 
 // ToolHandlerFunc is a function type for tool handlers

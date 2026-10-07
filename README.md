@@ -342,10 +342,14 @@ OpenAI MCP/tooling references:
 
 ### Authentication
 - **With JWE**: Add the JWE token to either:
-  1. Path parameter: `/{jwe_token}/openapi/...` (now required)
+  1. Path parameter: `/{jwe_token}/openapi/...`
   2. Authorization header: `Bearer {token}` (alternative)
   3. `x-altinity-mcp-key` header (alternative)
-- **Without JWE**: Use server-configured credentials (no auth needed in requests)
+- **With OAuth**: Send `Authorization: Bearer {token}`.
+- **With both**: A self-contained JWE takes priority; otherwise OAuth supplies the credentials.
+- **With both disabled**: Use server-configured ClickHouse credentials.
+
+The exact `/openapi` schema route also requires authentication when either mode is enabled. Dynamic HTTP/SSE tools and OpenAPI schemas use catalogs isolated by the caller's effective credential; server credentials are never a fallback under authentication. Reloading configuration resets catalog generations and requires existing SSE clients to reconnect. See [dynamic discovery](docs/tools.md#dynamic-discovery).
 
 ### Available Actions
 

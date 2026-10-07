@@ -606,3 +606,9 @@ sidecar binding gotchas) see the
 [`altinity-oauth-helper`](https://github.com/altinity/altinity-oauth-helper)
 repo's troubleshooting section.
 
+
+## Dynamic catalogs and schema authentication
+
+With OAuth enabled, `/openapi` and MCP requests require a bearer or a self-contained JWE when JWE is also enabled. Dynamic catalogs are isolated by the effective credential. Discovery and execution never fall back to server credentials. In combined mode, a self-contained JWE wins; a partial JWE falls through to OAuth.
+
+SSE clients must send the same effective credential on their GET stream and POST messages. Sessions from another credential, or from a retired configuration generation, return 404. Reconnect SSE after configuration reload. See [dynamic discovery](tools.md#dynamic-discovery) for cache lifetimes and STDIO behavior.

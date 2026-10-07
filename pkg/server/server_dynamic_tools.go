@@ -48,22 +48,17 @@ type dynamicToolCommentAnnotations struct {
 	OpenWorldHint *bool `json:"openWorldHint"`
 }
 
-// EnsureDynamicTools discovers dynamic tools (views for reads, tables for writes)
-// from ClickHouse and registers them with the MCP server. It's safe to call on
-// every request: the fast path short-circuits once init completes.
-//
-// Discovery is deferred until the caller has usable credentials. In OAuth
-// OAuth the Bearer token only arrives on tools/call, not tools/list —
-// so the first tools/list just returns static tools, and the first authenticated
-// tools/call triggers discovery. The MCP SDK's AddTool automatically fires
-// notifications/tools/list_changed, prompting the client to re-fetch.
-//
-// Concurrency: discovery does CH round-trips which can be slow. We hold the
-// write lock only while discovery is in progress. If another goroutine is
-// already discovering we return immediately without blocking — concurrent
-// tools/list calls see the current (static-only) tool set and get updated
-// when the in-flight discovery notifies.
+// EnsureDynamicTools discovers and registers the shared catalog only when
+// authentication is disabled. Authenticated HTTP/SSE requests use requestCatalog
+// and fresh MCP registries instead; caller metadata must never enter this
+// process-wide registry. Successful shared discovery emits tools/list_changed.
+// Concurrent discovery leaves other callers with the current registry until
+// registration completes.
 func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
+	// Authenticated catalogs belong to a caller, never the process registry.
+	if s.Config.Server.JWE.Enabled || s.Config.Server.OAuth.Enabled {
+		return nil
+	}
 	// Fast path: already initialized.
 	s.dynamicToolsMu.RLock()
 	if s.dynamicToolsInit {
@@ -89,9 +84,8 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 		return nil
 	}
 
-	// In forward-OAuth mode with blank static credentials, the OAuth bearer
-	// isn't in context on the tools/list handshake. Don't mark dynamicToolsInit
-	// true here — let the next request retry with a real token.
+	// Without static credentials, leave discovery pending so a later
+	// configuration generation with usable credentials can discover.
 	if !s.hasDiscoveryCredentials(ctx) {
 		log.Debug().Msg("dynamic_tools: no credentials available yet; deferring discovery")
 		return nil
@@ -114,16 +108,11 @@ func (s *ClickHouseJWEServer) EnsureDynamicTools(ctx context.Context) error {
 // hasDiscoveryCredentials reports whether the current context has any form
 // of credentials that can be used to query ClickHouse for tool discovery.
 func (s *ClickHouseJWEServer) hasDiscoveryCredentials(ctx context.Context) bool {
-	if s.ExtractTokenFromCtx(ctx) != "" {
-		return true
+	if s.Config.Server.JWE.Enabled || s.Config.Server.OAuth.Enabled {
+		_, _, err := s.CredentialCatalogKey(ctx)
+		return err == nil
 	}
-	if s.ExtractOAuthTokenFromCtx(ctx) != "" {
-		return true
-	}
-	if s.Config.ClickHouse.Username != "" {
-		return true
-	}
-	return false
+	return s.Config.ClickHouse.Username != ""
 }
 
 // getDiscoveryClient returns a ClickHouse client that honors whichever kind

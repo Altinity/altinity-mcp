@@ -72,19 +72,14 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 		if !ok {
 			return
 		}
-		// Ensure dynamic tools are loaded
-		if err := s.EnsureDynamicTools(r.Context()); err != nil {
-			log.Warn().Err(err).Msg("Failed to ensure dynamic tools in OpenAPI handler")
-		}
+		catalog := s.requestCatalog(r.Context())
 
 		// dynamic tool endpoint: /openapi/{tool}
 		parts := strings.Split(r.URL.Path, "/openapi/")
 		if len(parts) == 2 {
 			tool := strings.Trim(parts[1], "/")
 
-			s.dynamicToolsMu.RLock()
-			meta, ok := s.dynamicTools[tool]
-			s.dynamicToolsMu.RUnlock()
+			meta, ok := catalog[tool]
 
 			if ok {
 				s.handleDynamicToolOpenAPIWithBody(w, r, meta, body)
@@ -99,10 +94,7 @@ func (s *ClickHouseJWEServer) OpenAPIHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.Request) {
-	// Ensure dynamic tools are loaded
-	if err := s.EnsureDynamicTools(r.Context()); err != nil {
-		log.Warn().Err(err).Msg("Failed to ensure dynamic tools in ServeOpenAPISchema")
-	}
+	catalog := s.requestCatalog(r.Context())
 
 	// Get host URL based on OpenAPI TLS configuration
 	protocol := "http"
@@ -210,11 +202,8 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 		}
 	}
 
-	s.dynamicToolsMu.RLock()
-	defer s.dynamicToolsMu.RUnlock()
-
 	for _, prefix := range s.openAPIPathPrefixes() {
-		for toolName, meta := range s.dynamicTools {
+		for toolName, meta := range catalog {
 			path := prefix + "/openapi/" + toolName
 			props := map[string]interface{}{}
 			var required []string

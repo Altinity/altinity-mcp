@@ -3,7 +3,7 @@
 Altinity MCP Server exposes ClickHouse functionality to MCP clients through **tools**. There are two categories:
 
 - **Static tools** — fixed, registered at startup, always available regardless of ClickHouse state.
-- **Dynamic tools** — discovered lazily from ClickHouse (views and tables) on the first authenticated request and surfaced to clients via `notifications/tools/list_changed`.
+- **Dynamic tools** — discovered lazily from ClickHouse (views and tables); authenticated HTTP/SSE callers receive their own credential-isolated catalogs.
 
 Both kinds are configured under a single unified key: `server.tools`.
 
@@ -262,11 +262,13 @@ The server accepts this form but logs a deprecation warning at startup. Prefer `
 
 ## Dynamic discovery
 
-Discovery is **lazy** — it runs on the first authenticated tool call, not at startup. This matters for OAuth, where ClickHouse credentials can be derived from the user request.
+Discovery is **lazy**: the first authenticated MCP request or OpenAPI schema/tool request discovers the caller's catalog. Single-cluster HTTP and SSE catalogs are cached by the effective JWE or OAuth credential, so each caller's `tools/list`, schema, and dynamic-tool lookup use that caller's own metadata. A self-contained JWE takes priority over OAuth; a partial JWE uses OAuth when available. The unified `server.tools` rules and legacy `dynamic_tools` rules both use this isolation.
 
-After a successful discovery pass, the server emits `notifications/tools/list_changed` so compatible MCP clients refresh their tool list.
+Successful catalogs expire at the earlier of token expiry and 15 minutes. Authentication failures are cached for 60 seconds; transient discovery failures are retried on the next request. Static tools remain available if discovery fails. With authentication disabled, the server keeps its shared static-credential catalog and emits `notifications/tools/list_changed` after discovery.
 
-If discovery fails (e.g. credential error, network issue), static tools remain available and discovery is retried on the next authenticated call.
+Configuration reload starts a new catalog generation. Existing SSE clients must reconnect; old session POST endpoints return 404. SSE GET and POST requests must present the same effective credential, including when multiple sessions share a credential. Closing the final GET stream removes its handler bucket.
+
+Authenticated STDIO exposes static tools only; it cannot discover or query with server credentials when no request token is available.
 
 ### What gets discovered
 
@@ -281,7 +283,7 @@ If discovery fails (e.g. credential error, network issue), static tools remain a
 | OAuth | The Bearer token from the triggering call. |
 | Plain / no auth | Static `clickhouse.username` / `clickhouse.password` from config, if set. |
 
-Static credentials are no longer **required** for discovery in JWE or OAuth setups — whichever token arrives with the first authenticated call is used to probe `system.tables`.
+Static credentials are used only when both JWE and OAuth are disabled. Enabling either auth mode requires usable request credentials for all database access, including discovery.
 
 ---
 
@@ -368,7 +370,7 @@ Dynamic tools have `POST /openapi/{tool_name}` endpoints with JSON request schem
 
 `clickhouse.max_query_length` limits both SQL query bytes and the entire dynamic-tool JSON body, including trailing whitespace. The default is 10 MiB; a negative value disables the limit. Oversized inputs return HTTP 413 before any ClickHouse connection; write statements sent to `execute_query` return HTTP 400.
 
-Because dynamic discovery is lazy, dynamic tools only appear in the OpenAPI document **after** the first authenticated call has triggered discovery.
+The exact `/openapi` schema route requires authentication whenever JWE or OAuth is enabled and discovers only the caller's catalog. There is no public schema setting. Oversized dynamic-tool bodies are rejected before discovery.
 
 ---
 
@@ -376,7 +378,7 @@ Because dynamic discovery is lazy, dynamic tools only appear in the OpenAPI docu
 
 ### Dynamic tools don't show up immediately after the server starts
 
-Expected. Discovery runs on the first authenticated tool call, not at startup. Make one call (e.g. `execute_query`) and clients that honor `notifications/tools/list_changed` will refresh to show the new dynamic tools. Clients that don't honor the notification need to re-list tools manually.
+Expected before a request is made. With HTTP or SSE authentication enabled, an authenticated `tools/list` request discovers and returns that caller's tools. With authentication disabled, discovery uses the server credentials and clients can refresh after `notifications/tools/list_changed`.
 
 ### A view or table isn't being exposed
 

@@ -3615,7 +3615,8 @@ func TestOpenAPIRoutePatterns(t *testing.T) {
 	t.Run("jwe_only", func(t *testing.T) {
 		t.Parallel()
 		patterns := openAPIRoutePatterns(true, false)
-		require.Equal(t, 5, len(patterns))
+		require.Equal(t, 6, len(patterns))
+		require.Contains(t, patterns, "/openapi")
 		require.Contains(t, patterns, "/{token}/openapi")
 	})
 	t.Run("no_jwe", func(t *testing.T) {
