@@ -606,3 +606,86 @@ func TestCredentialCatalogReservedOpenAPIToolName(t *testing.T) {
 		})
 	}
 }
+
+func TestCredentialCatalogPartialJWEUsesOAuthEndpoint(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sse=%t", sse), func(t *testing.T) {
+			operator := newCatalogUpstream(t)
+			rejected := newCatalogUpstream(t)
+			cfg := catalogConfig(operator.chConfig(t), true, true)
+			app := catalogApp(t, cfg)
+			var handler http.Handler = app.buildHTTPHandler(cfg, app.mcpServer.MCPServer)
+			suffix := ""
+			if sse {
+				handler = app.buildSSEHandler(cfg, app.mcpServer.MCPServer)
+				suffix = "/sse"
+			}
+			web := httptest.NewServer(handler)
+			defer web.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			for _, partial := range []string{"host_only", "username_only"} {
+				t.Run(partial, func(t *testing.T) {
+					ch := rejected.chConfig(t)
+					claims := map[string]interface{}{"port": ch.Port, "protocol": "http", "password": "unused-password", "exp": time.Now().Add(time.Hour).Unix()}
+					if partial == "host_only" {
+						claims["host"] = ch.Host
+					} else {
+						claims["username"] = "unused-user"
+					}
+					token, err := jwe_auth.GenerateJWEToken(claims, []byte(cfg.Server.JWE.JWESecretKey), []byte(cfg.Server.JWE.JWTSecretKey))
+					require.NoError(t, err)
+					tr := &credentialRoundTripper{token: "alice", jwe: token}
+					session := catalogSession(t, ctx, web.URL+suffix, tr, sse)
+					assertCatalogSession(t, ctx, session, "alice", "bob")
+					catalogSchema(t, web.URL, tr, "alice", "bob")
+					catalogREST(t, web.URL, tr, "alice", "bob")
+				})
+			}
+			require.Zero(t, rejected.requests.Load(), "partial JWE routing and credentials must never be used")
+			operator.mu.Lock()
+			require.Equal(t, 1, operator.discovers["alice"], "partial JWEs share the effective OAuth cache key")
+			require.Equal(t, 4, operator.queries["alice"])
+			operator.mu.Unlock()
+		})
+	}
+}
+
+func TestLegacyClientEffectiveCredentials(t *testing.T) {
+	for _, auth := range []string{"oauth", "jwe", "combined"} {
+		t.Run(auth, func(t *testing.T) {
+			up := newCatalogUpstream(t)
+			cfg := catalogConfig(up.chConfig(t), auth != "oauth", auth != "jwe")
+			app := catalogApp(t, cfg)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tokenParam := ""
+			if auth == "oauth" {
+				ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, "alice")
+			} else {
+				tokenParam = catalogJWE(t, cfg, cfg.ClickHouse, "alice")
+				// The context intentionally contains a different validated JWE. The
+				// legacy API's explicit argument must retain its historical precedence.
+				other := catalogJWE(t, cfg, cfg.ClickHouse, "bob")
+				claims, err := app.mcpServer.ParseJWEClaims(other)
+				require.NoError(t, err)
+				ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, other)
+				ctx = context.WithValue(ctx, altinitymcp.JWEClaimsKey, claims)
+				if auth == "combined" {
+					ctx = context.WithValue(ctx, altinitymcp.OAuthTokenKey, "bob")
+				}
+			}
+			client, err := app.mcpServer.GetClickHouseClient(ctx, tokenParam)
+			require.NoError(t, err)
+			defer client.Close()
+			result, err := client.ExecuteQuery(ctx, "SELECT * FROM tenant.alice")
+			require.NoError(t, err)
+			require.Equal(t, [][]interface{}{{"alice"}}, result.Rows)
+			up.mu.Lock()
+			require.Equal(t, 1, up.queries["alice"])
+			require.Zero(t, up.queries["bob"])
+			require.Zero(t, up.queries["static"])
+			up.mu.Unlock()
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,4 +64,75 @@ func TestCredentialCatalogCacheLifetime(t *testing.T) {
 	closed.Close()
 	require.Empty(t, closed.requestCatalog(ctx))
 	require.Nil(t, closed.catalogCache)
+}
+
+func TestAuthenticatedClientBoundaryNoStaticFallback(t *testing.T) {
+	for _, mode := range []string{"jwe", "oauth", "combined"} {
+		for _, credentials := range []string{"none", "disabled_token"} {
+			t.Run(mode+"/"+credentials, func(t *testing.T) {
+				srv, calls := openAPIGuardServer(t, 100)
+				srv.Config.Server.JWE.Enabled = mode != "oauth"
+				srv.Config.Server.OAuth.Enabled = mode != "jwe"
+				ctx := context.Background()
+				tokenParam := ""
+				if credentials == "disabled_token" {
+					if mode == "oauth" {
+						ctx = context.WithValue(ctx, JWETokenKey, "disabled-jwe-token")
+						tokenParam = "disabled-jwe-token"
+					} else if mode == "jwe" {
+						ctx = context.WithValue(ctx, OAuthTokenKey, "disabled-oauth-token")
+					}
+				}
+				client, err := srv.GetClickHouseClientFromCtx(ctx)
+				if mode == "oauth" {
+					require.ErrorIs(t, err, ErrMissingOAuthToken)
+				} else {
+					require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+				}
+				require.Error(t, err)
+				require.Nil(t, client)
+				require.Zero(t, calls.Load())
+				client, err = srv.GetClickHouseClient(ctx, tokenParam)
+				require.Error(t, err)
+				require.Nil(t, client)
+				require.Zero(t, calls.Load())
+				client, err = srv.GetClickHouseClientWithOAuthForConfig(ctx, srv.Config.ClickHouse, tokenParam, srv.ExtractOAuthTokenFromCtx(ctx), nil)
+				require.Error(t, err)
+				require.Nil(t, client)
+				require.Zero(t, calls.Load())
+			})
+		}
+	}
+}
+
+func TestLegacyClientExplicitJWEArgument(t *testing.T) {
+	srv, calls := openAPIGuardServer(t, 100)
+	srv.Config.Server.JWE = config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "fake-jwt-secret"}
+	ctx := context.WithValue(context.Background(), JWETokenKey, "different-token")
+	ctx = context.WithValue(ctx, JWEClaimsKey, map[string]interface{}{"host": srv.Config.ClickHouse.Host, "port": float64(srv.Config.ClickHouse.Port), "username": "fake-user"})
+	client, err := srv.GetClickHouseClient(ctx, "")
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Zero(t, calls.Load())
+	client, err = srv.GetClickHouseClient(ctx, "invalid-explicit-token")
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.Zero(t, calls.Load())
+}
+
+func TestCombinedClientPartialJWEWithoutOAuthNoIO(t *testing.T) {
+	srv, calls := openAPIGuardServer(t, 100)
+	srv.Config.Server.JWE = config.JWEConfig{Enabled: true, JWESecretKey: "this-is-a-32-byte-secret-key!!", JWTSecretKey: "fake-jwt-secret"}
+	srv.Config.Server.OAuth.Enabled = true
+	token, err := jwe_auth.GenerateJWEToken(map[string]interface{}{"username": "alice", "exp": time.Now().Add(time.Hour).Unix()}, []byte(srv.Config.Server.JWE.JWESecretKey), []byte(srv.Config.Server.JWE.JWTSecretKey))
+	require.NoError(t, err)
+	ctx := context.WithValue(context.Background(), JWETokenKey, token)
+	client, err := srv.GetClickHouseClientFromCtx(ctx)
+	require.ErrorIs(t, err, ErrJWEIncompleteConnection)
+	require.Nil(t, client)
+	require.Zero(t, calls.Load())
+	client, err = srv.GetClickHouseClient(ctx, token)
+	require.ErrorIs(t, err, ErrJWEIncompleteConnection)
+	require.Nil(t, client)
+	require.Zero(t, calls.Load())
 }
