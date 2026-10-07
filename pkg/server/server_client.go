@@ -17,43 +17,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// GetClickHouseClient creates a self-contained JWE connection when JWE is
-// enabled, and uses the operator connection only when JWE is disabled.
+// GetClickHouseClient uses its explicit JWE token argument and any OAuth
+// credential in the request context. All connection paths share the central
+// authentication boundary; authenticated modes never use static credentials.
 func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenParam string) (*clickhouse.Client, error) {
-	var chConfig config.ClickHouseConfig
-
-	if !s.Config.Server.JWE.Enabled {
-		chConfig = s.Config.ClickHouse.Clone()
-	} else {
-		if tokenParam == "" {
-			// JWE auth is enabled but no token provided
-			return nil, jwe_auth.ErrMissingToken
-		}
-
-		// Parse and validate JWE token
-		claims, err := jwe_auth.ParseAndDecryptJWE(tokenParam, []byte(s.Config.Server.JWE.JWESecretKey), []byte(s.Config.Server.JWE.JWTSecretKey))
-		if err != nil {
-			log.Error().Err(err).Msg("failed to parse/decrypt JWE token")
-			return nil, err
-		}
-
-		var buildErr error
-		// Create ClickHouse config from JWE claims
-		chConfig, buildErr = s.buildConfigFromClaims(claims)
-		if buildErr != nil {
-			return nil, buildErr
-		}
-	}
-
-	client, err := clickhouse.NewClient(ctx, chConfig)
-	if err != nil {
-		if s.Config.Server.JWE.Enabled && (chConfig.TLS.CaCert != "" || chConfig.TLS.ClientCert != "" || chConfig.TLS.ClientKey != "") {
-			return nil, fmt.Errorf("jwe: failed to create ClickHouse client with TLS material")
-		}
-		return nil, fmt.Errorf("failed to create ClickHouse client: %w", err)
-	}
-
-	return client, nil
+	// The legacy API has always validated the explicit argument. A parsed JWE
+	// from another context token must not override it.
+	ctx = context.WithValue(ctx, JWEClaimsKey, map[string]interface{}(nil))
+	return s.GetClickHouseClientWithOAuthForConfig(ctx, CHConfigFromContext(ctx, s.Config.ClickHouse),
+		tokenParam, s.ExtractOAuthTokenFromCtx(ctx), s.GetOAuthClaimsFromCtx(ctx))
 }
 
 // buildConfigFromClaims builds a self-contained connection from token claims and
@@ -257,6 +229,10 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 		}
 	} else if s.Config.Server.JWE.Enabled && (!s.Config.Server.OAuth.Enabled || oauthToken == "") {
 		return nil, jwe_auth.ErrMissingToken
+	}
+
+	if !useJWE && s.Config.Server.OAuth.Enabled && oauthToken == "" {
+		return nil, ErrMissingOAuthToken
 	}
 
 	// Merge tool-input settings before OAuth so probe configs carry them.

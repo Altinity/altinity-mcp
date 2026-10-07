@@ -40,6 +40,8 @@ type ClickHouseJWEServer struct {
 	// lazily builds it for struct-literal test servers. nil when the feature
 	// is unconfigured.
 	roleFilterRe *regexp.Regexp
+	catalogOnce  sync.Once
+	catalogCache *CatalogCache
 }
 
 // ToolHandlerFunc is a function type for tool handlers
@@ -179,7 +181,7 @@ func truncateErrForClient(err error) string {
 //
 // Returns the number of static tools actually registered.
 func RegisterStaticToolsOn(srv AltinityMCPServer, cfg *config.Config) int {
-	toolsToRegister := resolveToolDefinitions(cfg)
+	toolsToRegister := resolveToolDefinitionsWithLogs(cfg, false)
 	staticToolCount := 0
 	for _, td := range toolsToRegister {
 		if td.Type != "read" && td.Type != "write" {
@@ -192,7 +194,7 @@ func RegisterStaticToolsOn(srv AltinityMCPServer, cfg *config.Config) int {
 		if td.Name == "" {
 			continue
 		}
-		if registerStaticTool(srv, td, &cfg.Server, cfg.ClickHouse.ReadOnly) {
+		if registerStaticToolWithLogs(srv, td, &cfg.Server, cfg.ClickHouse.ReadOnly, false) {
 			staticToolCount++
 		}
 	}
@@ -266,11 +268,19 @@ func RegisterTools(srv AltinityMCPServer, cfg *config.Config) {
 // the new unified Tools array, the legacy DynamicTools slice (with a
 // deprecation warning), or a sensible default (execute_query + write_query).
 func resolveToolDefinitions(cfg *config.Config) []config.ToolDefinition {
+	return resolveToolDefinitionsWithLogs(cfg, true)
+}
+
+// Request registries reuse startup-validated definitions without repeating
+// startup deprecation messages.
+func resolveToolDefinitionsWithLogs(cfg *config.Config, startupLogs bool) []config.ToolDefinition {
 	if len(cfg.Server.Tools) > 0 {
 		return cfg.Server.Tools
 	}
 	if len(cfg.Server.DynamicTools) > 0 {
-		log.Warn().Msg("dynamic_tools config is deprecated, use tools instead")
+		if startupLogs {
+			log.Warn().Msg("dynamic_tools config is deprecated, use tools instead")
+		}
 		out := make([]config.ToolDefinition, 0, len(cfg.Server.DynamicTools))
 		for _, old := range cfg.Server.DynamicTools {
 			td := config.ToolDefinition{
@@ -302,11 +312,17 @@ func resolveToolDefinitions(cfg *config.Config) []config.ToolDefinition {
 // registerStaticTool registers one of the supported static tools ("execute_query"
 // or "write_query"). Returns true if the tool was actually added to srv.
 func registerStaticTool(srv AltinityMCPServer, td config.ToolDefinition, srvCfg *config.ServerConfig, readOnly bool) bool {
+	return registerStaticToolWithLogs(srv, td, srvCfg, readOnly, true)
+}
+
+func registerStaticToolWithLogs(srv AltinityMCPServer, td config.ToolDefinition, srvCfg *config.ServerConfig, readOnly, startupLogs bool) bool {
 	switch td.Type {
 	case "read":
 		if td.Name == "execute_query" {
 			srv.AddTool(buildExecuteQueryTool(srvCfg), HandleReadOnlyQuery)
-			log.Info().Str("tool", "execute_query").Msg("Static read tool registered")
+			if startupLogs {
+				log.Info().Str("tool", "execute_query").Msg("Static read tool registered")
+			}
 			return true
 		}
 		log.Warn().Str("tool_name", td.Name).Msg("Unknown static read tool name")
@@ -315,11 +331,15 @@ func registerStaticTool(srv AltinityMCPServer, td config.ToolDefinition, srvCfg 
 	case "write":
 		if td.Name == "write_query" {
 			if readOnly {
-				log.Info().Str("tool", "write_query").Msg("Write tool skipped (read-only mode)")
+				if startupLogs {
+					log.Info().Str("tool", "write_query").Msg("Write tool skipped (read-only mode)")
+				}
 				return false
 			}
 			srv.AddTool(buildWriteQueryTool(srvCfg), HandleExecuteQuery)
-			log.Info().Str("tool", "write_query").Msg("Static write tool registered")
+			if startupLogs {
+				log.Info().Str("tool", "write_query").Msg("Static write tool registered")
+			}
 			return true
 		}
 		log.Warn().Str("tool_name", td.Name).Msg("Unknown static write tool name")

@@ -294,3 +294,5 @@ http://localhost:8080/<generated-jwe-token>/sse
 - Use a strong, random secret key for token signing
 - Set appropriate token expiration times
 - To implementing token revocation if needed for additional security, change using jwe-secret-key in `altinity-mcp` configuration
+
+Dynamic catalogs and OpenAPI schemas are isolated by the effective request credential. The exact `/openapi` route also requires authentication; server credentials cannot supply anonymous discovery. In combined JWE/OAuth mode, a self-contained JWE takes priority and a partial JWE uses OAuth when available. SSE GET and POST must use the same effective credential, and clients must reconnect after an effective configuration change. Unchanged reload polls preserve sessions. See [dynamic discovery](tools.md#dynamic-discovery).
