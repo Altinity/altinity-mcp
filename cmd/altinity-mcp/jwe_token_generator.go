@@ -122,19 +122,20 @@ func serveJWETokenGeneration(w http.ResponseWriter, r *http.Request, cfg config.
 	if request.Limit > 0 {
 		claims["limit"] = request.Limit
 	}
-	// Validate file claims even when TLS is disabled. Only resolved paths are minted.
+	// Validate file claims even when TLS is disabled. Preserve the validated
+	// request paths so server-side validation can resolve symlinks per connection.
 	for name, path := range map[string]string{
 		"tls_ca_cert":     request.TLSCaCert,
 		"tls_client_cert": request.TLSClientCert,
 		"tls_client_key":  request.TLSClientKey,
 	} {
-		resolved, err := cfg.ValidateTLSMaterialPath(path)
+		_, err := cfg.ValidateTLSMaterialPath(path)
 		if err != nil {
 			http.Error(w, "jwe: invalid TLS material path", http.StatusBadRequest)
 			return
 		}
-		if resolved != "" {
-			claims[name] = resolved
+		if path != "" {
+			claims[name] = path
 		}
 	}
 	if request.TLSEnabled {

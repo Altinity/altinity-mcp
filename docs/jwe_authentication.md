@@ -193,9 +193,10 @@ expiry above `max_expiry_seconds` are rejected. Zero maximum uses the default
 
 Nonempty `tls_ca_cert`, `tls_client_cert`, and `tls_client_key` must pass the
 [server TLS allowlist](#tls-material-allowlist), even when `tls_enabled` is
-false. Issued tokens contain the resolved allowed paths. Successful issuance
-logs only the requested host, username, and lifetime at info level, with no
-password, token, or admin secret.
+false. Issued tokens preserve the validated request paths. The server resolves
+symlinks again for each connection, allowing certificate aliases to rotate within
+the allowlisted directory. Successful issuance logs only the requested host,
+username, and lifetime at info level, with no password, token, or admin secret.
 
 **Endpoint:** `POST /jwe-token-generator`
 

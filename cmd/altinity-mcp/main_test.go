@@ -2980,8 +2980,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	jweSecretKey := "a-secret-for-jwe-generation-test"
 	jwtSecretKey := "a-secret-for-jwt-generation-test"
 
-	tlsDir, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
+	tlsDir := t.TempDir()
 	for _, name := range []string{"ca.crt", "client.crt", "client.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("fake TLS material"), 0600))
 	}

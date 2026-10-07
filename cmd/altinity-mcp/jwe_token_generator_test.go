@@ -132,8 +132,6 @@ func TestProtectedJWETokenGeneratorBodyAndExpiry(t *testing.T) {
 
 func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 	root := t.TempDir()
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	require.NoError(t, err)
 	outside := t.TempDir()
 	for _, name := range []string{"ca.pem", "cert.pem", "key.pem"} {
 		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte("fake TLS material"), 0600))
@@ -153,7 +151,7 @@ func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 				{"traversal", root + "/../" + filepath.Base(root) + "/ca.pem", root, http.StatusBadRequest},
 				{"symlink escape", filepath.Join(root, "escape.pem"), root, http.StatusBadRequest},
 				{"allowed", filepath.Join(root, "ca.pem"), root, http.StatusOK},
-				{"resolved allowed", filepath.Join(root, "alias.pem"), root, http.StatusOK},
+				{"allowed alias", filepath.Join(root, "alias.pem"), root, http.StatusOK},
 			} {
 				t.Run(field+"/"+tt.name+"/"+map[bool]string{true: "TLS", false: "no TLS"}[enabled], func(t *testing.T) {
 					cfg := protectedGeneratorConfig()
@@ -164,7 +162,7 @@ func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 					rr := callProtectedGenerator(cfg, http.MethodPost, string(body), "Bearer "+fakeGeneratorAdmin, zerolog.Nop())
 					require.Equal(t, tt.status, rr.Code)
 					if tt.status == http.StatusOK {
-						require.Equal(t, filepath.Join(resolvedRoot, "ca.pem"), decodeGeneratedClaims(t, cfg, rr)[field])
+						require.Equal(t, tt.path, decodeGeneratedClaims(t, cfg, rr)[field])
 					} else {
 						require.NotContains(t, rr.Body.String(), tt.path)
 						require.NotContains(t, rr.Body.String(), "fake outside material")
@@ -225,6 +223,66 @@ func TestProtectedJWETokenGeneratorRejectsBlankConnectionClaims(t *testing.T) {
 				require.Equal(t, "jwe: token must carry host and username claims\n", rr.Body.String())
 				require.NotContains(t, rr.Body.String(), `"token"`)
 				require.Empty(t, output.String(), "rejected blank claims must not produce an issuance log")
+			})
+		}
+	}
+}
+
+func TestProtectedJWETokenGeneratorTLSClaimRoundTrip(t *testing.T) {
+	for _, field := range []string{"tls_ca_cert", "tls_client_cert", "tls_client_key"} {
+		for _, tlsEnabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/tls=%t", field, tlsEnabled), func(t *testing.T) {
+				base := t.TempDir()
+				realRoot := filepath.Join(base, "material")
+				linkRoot := filepath.Join(base, "mounted")
+				require.NoError(t, os.Mkdir(realRoot, 0700))
+				require.NoError(t, os.Symlink(realRoot, linkRoot))
+				first := filepath.Join(realRoot, "first.pem")
+				second := filepath.Join(realRoot, "second.pem")
+				outside := filepath.Join(base, "outside.pem")
+				for _, path := range []string{first, second, outside} {
+					require.NoError(t, os.WriteFile(path, []byte("fake TLS material"), 0600))
+				}
+				alias := filepath.Join(linkRoot, "current.pem")
+				require.NoError(t, os.Symlink(first, alias))
+				cfg := protectedGeneratorConfig()
+				cfg.TLSMaterialDir = linkRoot
+				resolvedFirst, err := filepath.EvalSymlinks(first)
+				require.NoError(t, err)
+				resolvedSecond, err := filepath.EvalSymlinks(second)
+				require.NoError(t, err)
+				mint := func(path string) *httptest.ResponseRecorder {
+					t.Helper()
+					body, err := json.Marshal(map[string]interface{}{"host": "ch.example", "username": "alice", "tls_enabled": tlsEnabled, field: path})
+					require.NoError(t, err)
+					return callProtectedGenerator(cfg, http.MethodPost, string(body), "Bearer "+fakeGeneratorAdmin, zerolog.Nop())
+				}
+				for _, requestPath := range []string{filepath.Join(linkRoot, "first.pem"), alias} {
+					claims := decodeGeneratedClaims(t, cfg, mint(requestPath))
+					minted, ok := claims[field].(string)
+					require.True(t, ok)
+					require.Equal(t, requestPath, minted, "issuance must preserve the validated path under the configured symlink root")
+					resolved, err := cfg.ValidateTLSMaterialPath(minted)
+					require.NoError(t, err)
+					require.Equal(t, resolvedFirst, resolved, "decrypted token must pass the same server-side validator")
+				}
+				claims := decodeGeneratedClaims(t, cfg, mint(alias))
+				minted := claims[field].(string)
+				require.NoError(t, os.Remove(alias))
+				require.NoError(t, os.Symlink(second, alias))
+				require.NoError(t, os.Remove(first))
+				resolved, err := cfg.ValidateTLSMaterialPath(minted)
+				require.NoError(t, err)
+				require.Equal(t, resolvedSecond, resolved, "existing token must follow an allowed alias rotation after the old target is deleted")
+				require.Equal(t, alias, decodeGeneratedClaims(t, cfg, mint(alias))[field])
+				require.NoError(t, os.Remove(alias))
+				require.NoError(t, os.Symlink(outside, alias))
+				_, err = cfg.ValidateTLSMaterialPath(minted)
+				require.EqualError(t, err, "jwe: invalid TLS material path")
+				rejected := mint(alias)
+				require.Equal(t, http.StatusBadRequest, rejected.Code)
+				require.Equal(t, "jwe: invalid TLS material path\n", rejected.Body.String())
+				require.NotContains(t, rejected.Body.String(), outside)
 			})
 		}
 	}
