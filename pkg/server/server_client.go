@@ -21,7 +21,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClient(ctx context.Context, tokenPara
 	var chConfig config.ClickHouseConfig
 
 	if !s.Config.Server.JWE.Enabled {
-		chConfig = s.Config.ClickHouse
+		chConfig = s.Config.ClickHouse.Clone()
 	} else {
 		if tokenParam == "" {
 			// JWE auth is enabled but no token provided
@@ -63,7 +63,7 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 // multi-cluster path. Same body as buildConfigFromClaims but takes the base
 // chCfg as a parameter so the global is never consulted on the hot path.
 func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHouseConfig, claims map[string]interface{}) (config.ClickHouseConfig, error) {
-	chConfig := base // copy
+	chConfig := base.Clone()
 
 	if host, ok := claims["host"].(string); ok && host != "" {
 		chConfig.Host = host
@@ -234,7 +234,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 			return nil, err
 		}
 	} else {
-		chConfig = chCfg
+		chConfig = chCfg.Clone()
 	}
 
 	// Merge tool-input settings before OAuth so probe configs carry them.
@@ -309,7 +309,7 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 	// would be misread as "Bearer rejected" and trigger a spurious Basic
 	// fallback. Probing without roles keeps the auth-method signal clean; the
 	// detected method then builds the real, role-carrying client below.
-	probeCfg := chCfg
+	probeCfg := chCfg.Clone()
 	probeCfg.Roles = nil
 
 	// Try Bearer first. NewClient pings internally, so a failed ping surfaces
@@ -347,6 +347,7 @@ func (s *ClickHouseJWEServer) newClientWithOAuth(ctx context.Context, chCfg conf
 
 // newClientForOAuthMethod applies method to chCfg and creates a CH client.
 func newClientForOAuthMethod(ctx context.Context, chCfg config.ClickHouseConfig, token string, method chOAuthMethod, oauthCfg oauth.OAuthConfig) (*clickhouse.Client, error) {
+	chCfg = chCfg.Clone()
 	switch method {
 	case chOAuthMethodBearer:
 		chCfg = oauthApplyBearer(chCfg, token, oauthCfg)
@@ -366,6 +367,7 @@ func newClientForOAuthMethod(ctx context.Context, chCfg config.ClickHouseConfig,
 
 // oauthApplyBearer returns a copy of chCfg with an Authorization: Bearer header set.
 func oauthApplyBearer(chCfg config.ClickHouseConfig, token string, oauthCfg oauth.OAuthConfig) config.ClickHouseConfig {
+	chCfg = chCfg.Clone()
 	headers := oauth.BuildClickHouseHeaders(oauthCfg, token)
 	if len(headers) > 0 {
 		if chCfg.HttpHeaders == nil {
@@ -384,6 +386,7 @@ func oauthApplyBearer(chCfg config.ClickHouseConfig, token string, oauthCfg oaut
 // CH's http_authentication extension expects Basic base64(email:JWT) and
 // delegates validation to the ch-jwt-verify sidecar over loopback.
 func oauthApplyBasic(chCfg config.ClickHouseConfig, email, token string) config.ClickHouseConfig {
+	chCfg = chCfg.Clone()
 	chCfg.Username = email
 	chCfg.Password = token
 	chCfg.Protocol = config.HTTPProtocol

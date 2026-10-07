@@ -3,9 +3,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -63,6 +65,15 @@ type ClickHouseConfig struct {
 	// MaxQueryLength caps the size in bytes of a single SQL query string sent by a client.
 	// Default 10 MB when 0. Set to a negative number to disable the check.
 	MaxQueryLength int `json:"max_query_length,omitempty" yaml:"max_query_length,omitempty" flag:"clickhouse-max-query-length" env:"CLICKHOUSE_MAX_QUERY_LENGTH" desc:"Max bytes of SQL query string accepted from clients (0=default 10MB, <0=disabled)"`
+}
+
+// Clone returns an independent copy for request-specific configuration. Callers
+// must clone shared configuration before changing headers, settings, or roles.
+func (c ClickHouseConfig) Clone() ClickHouseConfig {
+	c.HttpHeaders = maps.Clone(c.HttpHeaders)
+	c.ExtraSettings = maps.Clone(c.ExtraSettings)
+	c.Roles = slices.Clone(c.Roles)
+	return c
 }
 
 // ValidateConnectHost checks that ConnectHost contains only a hostname or an

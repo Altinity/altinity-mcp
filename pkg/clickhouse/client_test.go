@@ -689,3 +689,25 @@ func TestPrepareHTTPAuthForClickHouse(t *testing.T) {
 		require.Equal(t, "my-token", token)
 	})
 }
+
+func TestNewClientConfigIsolation(t *testing.T) {
+	t.Parallel()
+	cfg := setupEmbeddedClickHouse(t)
+	cfg.HttpHeaders = map[string]string{"X-Static": "1"}
+	cfg.ExtraSettings = map[string]string{"max_threads": "1"}
+	cfg.Roles = []string{"reader"}
+	client, err := NewClient(context.Background(), *cfg)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	cfg.HttpHeaders["X-Static"] = "caller-changed"
+	cfg.ExtraSettings["max_threads"] = "2"
+	cfg.Roles[0] = "caller-changed"
+	require.Equal(t, map[string]string{"X-Static": "1"}, client.config.HttpHeaders)
+	require.Equal(t, map[string]string{"max_threads": "1"}, client.config.ExtraSettings)
+	require.Equal(t, []string{"reader"}, client.config.Roles)
+	result, err := client.ExecuteQuery(context.Background(), "SELECT toUInt64(getSetting('max_threads')) AS threads")
+	require.NoError(t, err)
+	require.Empty(t, result.Error)
+	require.Equal(t, [][]interface{}{{uint64(1)}}, result.Rows)
+}

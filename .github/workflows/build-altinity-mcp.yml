@@ -33,6 +33,9 @@ jobs:
     - name: Run tests with coverage
       run: go test -parallel 4 -shuffle=$(date +%Y%m%d) -coverpkg ./... -coverprofile=coverage.out ./...
 
+    - name: Run server race tests
+      run: go test -race -parallel 4 ./pkg/server/...
+
     - name: Send coverage to Coveralls
       uses: coverallsapp/github-action@v2
       with:

@@ -65,6 +65,12 @@ Run OAuth-focused tests only:
 go test ./pkg/server ./cmd/altinity-mcp ./pkg/config -run OAuth -count=1 -v
 ```
 
+CI also checks server request isolation with the race detector:
+
+```bash
+go test -race -parallel 4 ./pkg/server/...
+```
+
 ## Docker-Backed Integration Tests
 
 Several tests start temporary ClickHouse containers with `testcontainers-go`. Before running them, make sure Docker is running and the current user can access the Docker socket.

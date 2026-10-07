@@ -413,6 +413,8 @@ JWE takes priority — if present and valid and has valid credentials, use it an
 
 The MCP server supports OAuth 2.0/OpenID Connect authentication, with Bearer tokens presented to ClickHouse or verified locally. This enables MCP clients to authenticate via an Identity Provider (Keycloak, Azure AD, Google, AWS Cognito) and use token-based ClickHouse authentication via `token_processors`.
 
+OAuth headers, query settings, and role activation are isolated per request and cluster; forwarding a caller's bearer token does not change the configured ClickHouse headers or later requests.
+
 For full setup instructions, provider-specific guides, and ClickHouse configuration, see the [OAuth 2.0 Authorization Documentation](docs/oauth_authorization.md).
 
 ### JWE Authentication
