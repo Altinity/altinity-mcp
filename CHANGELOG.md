@@ -1,3 +1,8 @@
+# Unreleased
+
+BUG FIXES
+- security: OpenAPI `execute_query` always rejects write statements and enforces `max_query_length`; dynamic-tool JSON bodies use the same input-size limit (fixes [#183](https://github.com/Altinity/altinity-mcp/issues/183))
+
 # v1.7.0
 
 This release serves the stateless MCP protocol (spec revision 2026-07-28) over HTTP, adds a configurable ClickHouse Basic-auth username claim, and fixes CIMD client-metadata parsing that broke claude.ai connectors.
@@ -11,7 +16,6 @@ IMPROVEMENTS
 - tests: raise embedded-clickhouse start timeout 60s→120s to de-flake CI ([PR #145](https://github.com/Altinity/altinity-mcp/pull/145))
 
 BUG FIXES
-- security: OpenAPI `execute_query` always rejects write statements and enforces `max_query_length`; dynamic-tool JSON bodies use the same input-size limit (fixes [#183](https://github.com/Altinity/altinity-mcp/issues/183))
 - CIMD: tolerate unknown `grant_types` entries in client metadata (require only `authorization_code`) — claude.ai started advertising `jwt-bearer` in its client metadata document, which failed the whole CIMD resolution and broke every claude.ai connector at `/authorize` ([PR #147](https://github.com/Altinity/altinity-mcp/pull/147))
 
 DEPENDENCY UPDATES
