@@ -22,7 +22,6 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	"github.com/altinity/altinity-mcp/pkg/metrics"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
-	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -328,98 +327,7 @@ func openAPIRoutePatterns(jweEnabled, oauthEnabled bool) []string {
 
 // jweTokenGeneratorHandler handles requests for generating JWE tokens.
 func (a *application) jweTokenGeneratorHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	cfg := a.GetCurrentConfig()
-	if cfg.Server.JWE.JWESecretKey == "" {
-		http.Error(w, "Missing JWE secret key", http.StatusInternalServerError)
-		return
-	}
-	if !cfg.Server.JWE.Enabled {
-		http.Error(w, "JWE authentication is not enabled", http.StatusForbidden)
-		return
-	}
-
-	var reqBody struct {
-		Host                  string `json:"host"`
-		Port                  int    `json:"port"`
-		Database              string `json:"database"`
-		Username              string `json:"username"`
-		Password              string `json:"password"`
-		Protocol              string `json:"protocol"`
-		Expiry                int    `json:"expiry"` // in seconds
-		Limit                 int    `json:"limit,omitempty"`
-		TLSEnabled            bool   `json:"tls_enabled,omitempty"`
-		TLSCaCert             string `json:"tls_ca_cert,omitempty"`
-		TLSClientCert         string `json:"tls_client_cert,omitempty"`
-		TLSClientKey          string `json:"tls_client_key,omitempty"`
-		TLSInsecureSkipVerify bool   `json:"tls_insecure_skip_verify,omitempty"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request body parsing error: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if reqBody.Expiry == 0 {
-		reqBody.Expiry = 3600 // default to 1 hour
-	}
-
-	claims := map[string]interface{}{
-		"exp": time.Now().Add(time.Duration(reqBody.Expiry) * time.Second).Unix(),
-	}
-
-	// Add optional claims if provided
-	if reqBody.Host != "" {
-		claims["host"] = reqBody.Host
-	}
-	if reqBody.Port > 0 {
-		claims["port"] = reqBody.Port
-	}
-	if reqBody.Database != "" {
-		claims["database"] = reqBody.Database
-	}
-	if reqBody.Username != "" {
-		claims["username"] = reqBody.Username
-	}
-	if reqBody.Password != "" {
-		claims["password"] = reqBody.Password
-	}
-	if reqBody.Protocol != "" {
-		claims["protocol"] = reqBody.Protocol
-	}
-	if reqBody.Limit > 0 {
-		claims["limit"] = reqBody.Limit
-	}
-	if reqBody.TLSEnabled {
-		claims["tls_enabled"] = true
-		if reqBody.TLSCaCert != "" {
-			claims["tls_ca_cert"] = reqBody.TLSCaCert
-		}
-		if reqBody.TLSClientCert != "" {
-			claims["tls_client_cert"] = reqBody.TLSClientCert
-		}
-		if reqBody.TLSClientKey != "" {
-			claims["tls_client_key"] = reqBody.TLSClientKey
-		}
-		if reqBody.TLSInsecureSkipVerify {
-			claims["tls_insecure_skip_verify"] = true
-		}
-	}
-
-	encryptedToken, err := jwe_auth.GenerateJWEToken(claims, []byte(cfg.Server.JWE.JWESecretKey), []byte(cfg.Server.JWE.JWTSecretKey))
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to generate JWE token")
-		http.Error(w, "Failed to generate JWE token", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": encryptedToken})
+	a.serveJWETokenGenerator(w, r)
 }
 
 // startHTTPServerWithTLS starts the HTTP server with or without TLS
@@ -895,6 +803,9 @@ func (a *application) getHTTPServer() *http.Server {
 }
 
 func newApplication(ctx context.Context, cfg config.Config, cmd CommandInterface) (*application, error) {
+	if err := cfg.Server.JWE.ValidateTokenGenerator(); err != nil {
+		return nil, err
+	}
 	if err := validateOAuthRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -1219,6 +1130,25 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	// Override with CLI flags
 	overrideWithCLIFlags(newCfg, cmd)
 	if err := newCfg.ClickHouse.ValidateConnectHost(); err != nil {
+		return err
+	}
+
+	// Validate requested settings before applying restart-only normalization. An
+	// insecure enable request must not be silently accepted just because the
+	// running endpoint is disabled.
+	if err := newCfg.Server.JWE.ValidateTokenGenerator(); err != nil {
+		return err
+	}
+	a.configMutex.RLock()
+	oldGeneratorEnabled := a.config.Server.JWE.TokenGenerator.Enabled
+	a.configMutex.RUnlock()
+	if oldGeneratorEnabled != newCfg.Server.JWE.TokenGenerator.Enabled {
+		log.Warn().Msg("config reload: server.jwe.token_generator.enabled changed — restart required; generator remains on the previous configuration")
+		newCfg.Server.JWE.TokenGenerator.Enabled = oldGeneratorEnabled
+	}
+	// A disable request may omit the admin token, but the effective endpoint
+	// remains enabled until restart and must retain a valid issuance policy.
+	if err := newCfg.Server.JWE.ValidateTokenGenerator(); err != nil {
 		return err
 	}
 

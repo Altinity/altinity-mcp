@@ -225,6 +225,12 @@ config:
       # -- Operator-controlled directory for absolute token TLS file paths; empty denies them.
       # Mount certificate/key files read-only and prevent token holders from changing them.
       tls_material_dir: ""
+      # -- Administrative token issuance is off by default; never expose its path publicly.
+      token_generator:
+        enabled: false
+        # -- At least 32 bytes when enabled. Prefer env with a Kubernetes secretKeyRef.
+        admin_token: ""
+        max_expiry_seconds: 86400
       token_param: "token"
     # -- OAuth 2.0 authentication configuration
     # When enabled, MCP server validates incoming OAuth tokens and can forward them to ClickHouse

@@ -189,10 +189,44 @@ type ServerTLSConfig struct {
 
 // JWEConfig defines configuration for JWE authentication
 type JWEConfig struct {
-	TLSMaterialDir string `json:"tls_material_dir" yaml:"tls_material_dir" flag:"jwe-tls-material-dir" env:"MCP_JWE_TLS_MATERIAL_DIR" desc:"Directory allowlist for JWE TLS certificate and key paths (empty denies token file paths)"`
-	Enabled        bool   `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" env:"MCP_ALLOW_JWE_AUTH" desc:"Enable JWE encryption for ClickHouse connection"`
-	JWESecretKey   string `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" env:"MCP_JWE_SECRET_KEY" desc:"Secret key for JWE token encryption/decryption"`
-	JWTSecretKey   string `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" env:"MCP_JWT_SECRET_KEY" desc:"Secret key for JWT signature verification"`
+	TokenGenerator JWETokenGeneratorConfig `json:"token_generator" yaml:"token_generator"`
+	TLSMaterialDir string                  `json:"tls_material_dir" yaml:"tls_material_dir" flag:"jwe-tls-material-dir" env:"MCP_JWE_TLS_MATERIAL_DIR" desc:"Directory allowlist for JWE TLS certificate and key paths (empty denies token file paths)"`
+	Enabled        bool                    `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" env:"MCP_ALLOW_JWE_AUTH" desc:"Enable JWE encryption for ClickHouse connection"`
+	JWESecretKey   string                  `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" env:"MCP_JWE_SECRET_KEY" desc:"Secret key for JWE token encryption/decryption"`
+	JWTSecretKey   string                  `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" env:"MCP_JWT_SECRET_KEY" desc:"Secret key for JWT signature verification"`
+}
+
+// JWETokenGeneratorConfig controls the optional administrative issuance endpoint.
+type JWETokenGeneratorConfig struct {
+	Enabled          bool   `json:"enabled" yaml:"enabled" flag:"jwe-token-generator" env:"MCP_JWE_TOKEN_GENERATOR_ENABLED" desc:"Enable the administrative JWE token generator (requires an admin token)"`
+	AdminToken       string `json:"admin_token" yaml:"admin_token" flag:"jwe-token-generator-admin-token" env:"MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN" desc:"Admin bearer secret for JWE token issuance (at least 32 bytes; prefer environment or secret injection)"`
+	MaxExpirySeconds int    `json:"max_expiry_seconds" yaml:"max_expiry_seconds" flag:"jwe-token-generator-max-expiry-seconds" env:"MCP_JWE_TOKEN_GENERATOR_MAX_EXPIRY_SECONDS" default:"86400" desc:"Maximum lifetime in seconds for generated JWE tokens"`
+}
+
+// EffectiveMaxExpirySeconds applies the default to configurations built without CLI flags.
+func (c JWETokenGeneratorConfig) EffectiveMaxExpirySeconds() int {
+	if c.MaxExpirySeconds == 0 {
+		return 86400
+	}
+	return c.MaxExpirySeconds
+}
+
+// ValidateTokenGenerator rejects insecure administrative endpoint configuration.
+// Callers must validate both initial configuration and reloads before publication.
+func (c JWEConfig) ValidateTokenGenerator() error {
+	if !c.TokenGenerator.Enabled {
+		return nil
+	}
+	if !c.Enabled {
+		return fmt.Errorf("jwe token generator requires server.jwe.enabled")
+	}
+	if len(c.TokenGenerator.AdminToken) < 32 {
+		return fmt.Errorf("jwe token generator admin_token must be at least 32 bytes")
+	}
+	if c.TokenGenerator.MaxExpirySeconds < 0 {
+		return fmt.Errorf("jwe token generator max_expiry_seconds must be positive (0 uses the default 86400)")
+	}
+	return nil
 }
 
 // ServerConfig defines configuration for the MCP server

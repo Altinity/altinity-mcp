@@ -62,6 +62,16 @@ TLS settings are never inherited from server configuration. Custom TLS file
 claims require the server's `server.jwe.tls_material_dir` allowlist. See the
 [JWE migration guide](jwe_authentication.md#self-contained-connection-contract).
 
+The server's HTTP/SSE `/jwe-token-generator` endpoint is off by default. For
+administrative HTTP issuance, enable `server.jwe.token_generator.enabled`
+(`--jwe-token-generator`, `MCP_JWE_TOKEN_GENERATOR_ENABLED=true`), inject an admin
+secret of at least 32 bytes through `MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`, and
+restart the server. Send that secret as `Authorization: Bearer <admin_token>`.
+Never expose the generator publicly; keep it on a trusted administrative
+network and exclude its path from public ingress. The default maximum lifetime
+is 86400 seconds and the complete JSON body is limited to 64 KiB. See the
+[authenticated endpoint examples](jwe_authentication.md#jwe-token-generation-endpoint).
+
 ## Integrate with Claude.ai Chat Web Interface
 
 To integrate Altinity MCP with Claude.ai:

@@ -47,6 +47,9 @@ When JWE or OAuth is enabled, the exact `/openapi` schema route requires authent
 | config.server.jwe.jwe_secret_key | string | `""` |  |
 | config.server.jwe.jwt_secret_key | string | `""` |  |
 | config.server.jwe.tls_material_dir | string | `""` | Directory allowlist for absolute token TLS file paths; empty denies them. Mount material read-only. |
+| config.server.jwe.token_generator.enabled | bool | `false` | Enable administrative token issuance; requires an admin secret and a restart. Never expose the endpoint publicly. |
+| config.server.jwe.token_generator.admin_token | string | `""` | Admin bearer secret of at least 32 bytes when enabled; prefer `MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN` from a Kubernetes Secret. |
+| config.server.jwe.token_generator.max_expiry_seconds | int | `86400` | Maximum generated token lifetime in seconds (0 uses the default). |
 | config.server.jwe.token_param | string | `"token"` |  |
 | config.server.port | int | `8080` |  |
 | config.server.tls.ca_cert | string | `""` |  |
@@ -107,3 +110,26 @@ connection fields, credentials, HTTP headers, roles, and TLS material are never
 inherited by token connections. To use token TLS file claims, mount intended
 material read-only inside `config.server.jwe.tls_material_dir`; traversal and
 symlink escapes are rejected. See the [JWE migration guide](../../docs/jwe_authentication.md#self-contained-connection-contract).
+
+The administrative `/jwe-token-generator` endpoint is disabled by default.
+If enabled, restrict it to trusted administrative access and exclude its path
+from public ingress. Inject its secret with the chart's `env` values:
+
+```yaml
+env:
+  - name: MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: altinity-mcp-generator
+        key: admin-token
+```
+
+The referenced secret must contain at least 32 bytes. Changing
+`config.server.jwe.token_generator.enabled` requires a restart. Reload preserves
+its running value; admin-token rotation and maximum-lifetime changes apply on
+reload. These changes rebuild the MCP catalog generation and disconnect
+existing SSE sessions; SSE clients must reconnect. Invalid enabled generator
+settings reject the entire reload.
+Each issuance request requires `Authorization: Bearer <admin_token>`; ordinary
+OAuth or JWE credentials do not authorize issuance. See the
+[generator guide](../../docs/jwe_authentication.md#jwe-token-generation-endpoint).
