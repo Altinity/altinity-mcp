@@ -362,11 +362,11 @@ References:
 
 ## OpenAPI integration
 
-When `server.openapi.enabled: true`, every registered tool — static and dynamic — also gets:
+When `server.openapi.enabled: true`, `execute_query` has a `GET /openapi/execute_query` endpoint (prefixed with `/{jwe_token}` for JWE). It always rejects write statements, regardless of `clickhouse.read_only`. OpenAPI does not expose `write_query`.
 
-- A `POST` endpoint at `/{jwe_token}/openapi/{tool_name}` (or the non-JWE variant in other auth modes).
-- A request body schema derived from the tool's parameters.
-- A response schema matching the query result shape.
+Dynamic tools have `POST /openapi/{tool_name}` endpoints with JSON request schemas derived from their parameters and query-result response schemas.
+
+`clickhouse.max_query_length` limits both SQL query bytes and the entire dynamic-tool JSON body, including trailing whitespace. The default is 10 MiB; a negative value disables the limit. Oversized inputs return HTTP 413 before any ClickHouse connection; write statements sent to `execute_query` return HTTP 400.
 
 Because dynamic discovery is lazy, dynamic tools only appear in the OpenAPI document **after** the first authenticated call has triggered discovery.
 
