@@ -624,21 +624,22 @@ func ClusterFromContext(ctx context.Context) (string, bool) {
 
 // CHConfigFromContext returns the per-request ClickHouse config (host
 // templated for the active cluster) when the multi-cluster router has run,
-// or s.Config.ClickHouse otherwise. Callers should always prefer this over
+// or a copy of s.Config.ClickHouse otherwise. Mutable fields are cloned so
+// callers cannot change the stored configuration. Always prefer this over
 // reaching for s.Config.ClickHouse directly on a per-request hot path.
 func CHConfigFromContext(ctx context.Context, fallback config.ClickHouseConfig) config.ClickHouseConfig {
 	if v := ctx.Value(requestCHConfigKey); v != nil {
 		if cfg, ok := v.(config.ClickHouseConfig); ok {
-			return cfg
+			return cfg.Clone()
 		}
 	}
-	return fallback
+	return fallback.Clone()
 }
 
 // WithRequestCHConfig stores a per-request ClickHouseConfig on ctx. Used by
 // the multi-cluster router; exported for tests.
 func WithRequestCHConfig(ctx context.Context, chCfg config.ClickHouseConfig) context.Context {
-	return context.WithValue(ctx, requestCHConfigKey, chCfg)
+	return context.WithValue(ctx, requestCHConfigKey, chCfg.Clone())
 }
 
 // WithCluster stores the cluster name on ctx. Used by the multi-cluster

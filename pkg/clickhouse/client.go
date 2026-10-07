@@ -85,6 +85,7 @@ func NewClient(ctx context.Context, cfg config.ClickHouseConfig) (*Client, error
 	if err := cfg.ValidateConnectHost(); err != nil {
 		return nil, err
 	}
+	cfg = cfg.Clone()
 	clickhouseCtx, cancel := context.WithCancel(ctx)
 	client := &Client{
 		config:     cfg,
@@ -295,6 +296,9 @@ func prepareHTTPAuthForClickHouse(cfg config.ClickHouseConfig) (map[string]strin
 		return nil, nil
 	}
 
+	// Keep a defensive snapshot for the driver. This does not replace cloning
+	// request configs before OAuth overlays: shared-map mutations there would
+	// race with this copy and could already have replaced the caller's bearer.
 	headers := make(map[string]string, len(cfg.HttpHeaders))
 	for k, v := range cfg.HttpHeaders {
 		headers[k] = v

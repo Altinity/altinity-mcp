@@ -64,7 +64,7 @@ func (r *MulticlusterRouter) resolveCluster(cluster string) (config.ClickHouseCo
 			return config.ClickHouseConfig{}, false
 		}
 	}
-	reqCfg := r.ch // copy
+	reqCfg := r.ch.Clone()
 	reqCfg.Host = strings.ReplaceAll(r.ch.Host, "{cluster}", cluster)
 	return reqCfg, true
 }
