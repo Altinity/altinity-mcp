@@ -189,9 +189,10 @@ type ServerTLSConfig struct {
 
 // JWEConfig defines configuration for JWE authentication
 type JWEConfig struct {
-	Enabled      bool   `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" env:"MCP_ALLOW_JWE_AUTH" desc:"Enable JWE encryption for ClickHouse connection"`
-	JWESecretKey string `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" env:"MCP_JWE_SECRET_KEY" desc:"Secret key for JWE token encryption/decryption"`
-	JWTSecretKey string `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" env:"MCP_JWT_SECRET_KEY" desc:"Secret key for JWT signature verification"`
+	TLSMaterialDir string `json:"tls_material_dir" yaml:"tls_material_dir" flag:"jwe-tls-material-dir" env:"MCP_JWE_TLS_MATERIAL_DIR" desc:"Directory allowlist for JWE TLS certificate and key paths (empty denies token file paths)"`
+	Enabled        bool   `json:"enabled" yaml:"enabled" flag:"allow-jwe-auth" env:"MCP_ALLOW_JWE_AUTH" desc:"Enable JWE encryption for ClickHouse connection"`
+	JWESecretKey   string `json:"jwe_secret_key" yaml:"jwe_secret_key" flag:"jwe-secret-key" env:"MCP_JWE_SECRET_KEY" desc:"Secret key for JWE token encryption/decryption"`
+	JWTSecretKey   string `json:"jwt_secret_key" yaml:"jwt_secret_key" flag:"jwt-secret-key" env:"MCP_JWT_SECRET_KEY" desc:"Secret key for JWT signature verification"`
 }
 
 // ServerConfig defines configuration for the MCP server

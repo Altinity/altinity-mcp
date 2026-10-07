@@ -510,6 +510,10 @@ func (a *application) createMCPAuthInjector(cfg config.Config) func(http.Handler
 					ctx = context.WithValue(ctx, altinitymcp.JWETokenKey, token)
 					ctx = context.WithValue(ctx, altinitymcp.JWEClaimsKey, jweClaims)
 					jweHasCredentials = a.mcpServer.JWEClaimsHaveCredentials(jweClaims)
+					if !cfg.Server.OAuth.Enabled && !jweHasCredentials {
+						http.Error(w, "jwe: token must carry host and username claims", http.StatusUnauthorized)
+						return
+					}
 				}
 			}
 

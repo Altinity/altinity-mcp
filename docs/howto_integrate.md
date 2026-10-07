@@ -57,6 +57,10 @@ docker run --rm ghcr.io/altinity/altinity-mcp:latest jwe-token-generator \
 ```
 
 This will output a JWE token that can be used for authentication with the Altinity MCP server.
+Tokens must include nonempty `host` and `username`; connection credentials and
+TLS settings are never inherited from server configuration. Custom TLS file
+claims require the server's `server.jwe.tls_material_dir` allowlist. See the
+[JWE migration guide](jwe_authentication.md#self-contained-connection-contract).
 
 ## Integrate with Claude.ai Chat Web Interface
 

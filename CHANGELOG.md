@@ -1,6 +1,7 @@
 # Unreleased
 
 BUG FIXES
+- security: require self-contained JWE ClickHouse connections with host and username; prevent inheritance of operator endpoints, credentials, headers, roles, and TLS material; restrict token TLS file paths to `server.jwe.tls_material_dir` (fixes [#179](https://github.com/Altinity/altinity-mcp/issues/179)). Regenerate tokens that relied on static connection defaults.
 - security: isolate per-request ClickHouse headers, settings, and roles; prevent concurrent OAuth bearer forwarding from crashing the server, confusing caller identities, or leaking a stale bearer into later JWE or static-credential requests (fixes [#181](https://github.com/Altinity/altinity-mcp/issues/181))
 
 # v1.7.0

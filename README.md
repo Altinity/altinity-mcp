@@ -405,7 +405,10 @@ GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 
 ## Authentication and Authorization
 
-JWE takes priority — if present and valid and has valid credentials, use it and skip OAuth. If JWE is absent or has no credentials, fall through to OAuth. 
+JWE takes priority when the token carries nonempty `host` and `username` claims.
+A complete JWE uses its own connection fields without OAuth overrides. Partial
+JWE claims fall through to OAuth and cannot alter its configured endpoint.
+Invalid encrypted tokens are rejected.
 
 ### OAuth 2.0 Authorization
 
@@ -430,6 +433,17 @@ When JWE authentication is enabled, the server expects tokens encrypted using AE
   "secure": "false"
 }
 ```
+
+JWE tokens are self-contained: `host` and `username` are required. An absent or
+empty `password` remains empty. Server endpoint, credentials, headers, roles,
+and TLS settings never fill missing claims. Only operational protocol and query
+settings are inherited; an omitted port defaults to 8123 (HTTP) or 9000 (TCP).
+Regenerate older tokens that relied on server connection defaults.
+
+Nonempty token TLS file paths require `server.jwe.tls_material_dir`
+(`--jwe-tls-material-dir`, `MCP_JWE_TLS_MATERIAL_DIR`). Paths must remain inside
+that operator-controlled directory after symlink resolution. See the
+[JWE migration and TLS allowlist guide](docs/jwe_authentication.md#self-contained-connection-contract).
 
 Generate tokens using the provided utility. 
 
@@ -504,6 +518,7 @@ For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Aut
 - `--allow-jwe-auth`: Enable JWE authentication
 - `--jwe-secret-key`: Secret key for JWE token decryption (must be 32 bytes for A256KW).
 - `--jwt-secret-key`: Secret key for JWT signature verification
+- `--jwe-tls-material-dir`: Directory allowlist for JWE TLS file paths (empty denies token file paths)
 
 ### Commands
 

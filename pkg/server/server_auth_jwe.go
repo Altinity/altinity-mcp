@@ -83,13 +83,14 @@ func (s *ClickHouseJWEServer) ValidateJWEToken(token string) error {
 	return nil
 }
 
-// JWEClaimsHaveCredentials returns true if the parsed JWE claims contain a username claim.
+// JWEClaimsHaveCredentials returns true if the parsed JWE claims contain nonempty host and username claims.
 func (s *ClickHouseJWEServer) JWEClaimsHaveCredentials(claims map[string]interface{}) bool {
 	username, _ := claims["username"].(string)
-	return username != ""
+	host, _ := claims["host"].(string)
+	return strings.TrimSpace(host) != "" && strings.TrimSpace(username) != ""
 }
 
-// JWETokenHasCredentials returns true if the JWE token contains a username claim
+// JWETokenHasCredentials returns true if the JWE token contains nonempty host and username claims
 func (s *ClickHouseJWEServer) JWETokenHasCredentials(token string) bool {
 	claims, err := s.parseJWEClaims(token)
 	if err != nil {

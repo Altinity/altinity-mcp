@@ -22,7 +22,10 @@ config:
       tls: true
     transport: "http"
     jwe:
+      # Every token must carry host and username; static credentials are not inherited.
       enabled: true
+      # Set only when custom TLS files are mounted read-only beneath this directory.
+      tls_material_dir: ""
       jwe_secret_key: "test-encryption-key"
       jwt_secret_key: "test-signing-key"
   
