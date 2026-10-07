@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/altinity/altinity-mcp/pkg/clickhouse"
 	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/rs/zerolog/log"
 )
@@ -160,7 +162,7 @@ func (s *ClickHouseJWEServer) ServeOpenAPISchema(w http.ResponseWriter, r *http.
 				"name":        "query",
 				"in":          "query",
 				"required":    true,
-				"description": "SQL to execute. In read-only mode, only SELECT/WITH/SHOW/DESC/EXISTS/EXPLAIN are allowed.",
+				"description": "Read-only SQL to execute. Only SELECT/WITH/SHOW/DESCRIBE/EXISTS/EXPLAIN are allowed; write statements are always rejected.",
 				"schema":      map[string]interface{}{"type": "string"},
 			},
 			map[string]interface{}{
@@ -274,6 +276,16 @@ func (s *ClickHouseJWEServer) handleExecuteQueryOpenAPI(w http.ResponseWriter, r
 		return
 	}
 
+	// Bound input before either SQL parser or ClickHouse sees it.
+	if maxQueryLength := s.Config.ClickHouse.EffectiveMaxQueryLength(); maxQueryLength > 0 && len(query) > maxQueryLength {
+		http.Error(w, fmt.Sprintf("query exceeds max length (%d bytes, limit %d)", len(query), maxQueryLength), http.StatusRequestEntityTooLarge)
+		return
+	}
+	if !clickhouse.IsSelectQuery(query) {
+		http.Error(w, "execute_query only accepts read-only statements (SELECT, WITH, SHOW, DESCRIBE, EXISTS, EXPLAIN). Use write_query for write operations.", http.StatusBadRequest)
+		return
+	}
+
 	if clause, err := checkBlockedClauses(query, s.blockedClauses); err != nil {
 		http.Error(w, fmt.Sprintf("Query rejected: %v", err), http.StatusBadRequest)
 		return
@@ -331,11 +343,31 @@ func (s *ClickHouseJWEServer) handleDynamicToolOpenAPI(w http.ResponseWriter, r 
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// validate JWE already done by caller
-	// decode JSON body
+	// Authentication is already checked by the caller. Bound the entire body,
+	// including trailing whitespace, before creating a ClickHouse client.
+	if limit := s.Config.ClickHouse.EffectiveMaxQueryLength(); limit > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, int64(limit))
+	}
+	decoder := json.NewDecoder(r.Body)
 	var body map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+	err := decoder.Decode(&body)
+	if err == nil {
+		var extra interface{}
+		if trailingErr := decoder.Decode(&extra); trailingErr != io.EOF {
+			if trailingErr == nil {
+				err = fmt.Errorf("multiple JSON values")
+			} else {
+				err = trailingErr
+			}
+		}
+	}
+	if err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			http.Error(w, fmt.Sprintf("JSON body exceeds max length (limit %d)", sizeErr.Limit), http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		}
 		return
 	}
 
