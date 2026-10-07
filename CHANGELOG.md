@@ -1,3 +1,8 @@
+# Unreleased
+
+BUG FIXES
+- security: isolate per-request ClickHouse headers, settings, and roles; prevent concurrent OAuth bearer forwarding from crashing the server, confusing caller identities, or leaking a stale bearer into later JWE or static-credential requests (fixes [#181](https://github.com/Altinity/altinity-mcp/issues/181))
+
 # v1.7.0
 
 This release serves the stateless MCP protocol (spec revision 2026-07-28) over HTTP, adds a configurable ClickHouse Basic-auth username claim, and fixes CIMD client-metadata parsing that broke claude.ai connectors.

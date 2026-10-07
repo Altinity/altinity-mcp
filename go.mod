@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/AfterShip/clickhouse-sql-parser v0.5.6
+	github.com/ClickHouse/ch-go v0.74.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/franchb/embedded-clickhouse v0.4.2
 	github.com/go-jose/go-jose/v4 v4.1.5
@@ -29,7 +30,6 @@ require (
 )
 
 require (
-	github.com/ClickHouse/ch-go v0.74.0 // indirect
 	github.com/altinity/go-mcp-oauth-sdk v0.2.1
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

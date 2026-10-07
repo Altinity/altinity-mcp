@@ -93,7 +93,11 @@ On the first authenticated request to `host:port`, MCP tries Bearer. If
 CH returns an auth error (HTTP 401/403, CH exception codes 497/516/519),
 it falls back to Basic. The result is stored in an in-memory cache keyed
 by `host:port` and reused for all subsequent requests. The cache is
-cleared on config reload.
+cleared on config reload. Only the authentication method is cached, not the
+caller's credentials. Each request gets independent ClickHouse headers,
+settings, and roles. OAuth forwarding preserves operator-configured static
+headers and never stores a caller's bearer in the shared configuration, so
+later JWE or static-credential requests cannot inherit that bearer.
 
 ## MCP client discovery flow
 

@@ -29,8 +29,9 @@ var blockedSettings = map[string]bool{
 }
 
 // mergeExtraSettings copies per-request settings into a ClickHouseConfig,
-// returning a shallow copy with ExtraSettings populated. Neither input is mutated.
+// returning an independent copy with ExtraSettings populated. Neither input is mutated.
 func mergeExtraSettings(cfg config.ClickHouseConfig, settings map[string]string) config.ClickHouseConfig {
+	cfg = cfg.Clone()
 	merged := make(map[string]string, len(cfg.ExtraSettings)+len(settings))
 	for k, v := range cfg.ExtraSettings {
 		merged[k] = v
