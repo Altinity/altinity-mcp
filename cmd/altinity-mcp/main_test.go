@@ -2978,13 +2978,20 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	jweSecretKey := "a-secret-for-jwe-generation-test"
 	jwtSecretKey := "a-secret-for-jwt-generation-test"
 
+	tlsDir := t.TempDir()
+	for _, name := range []string{"ca.crt", "client.crt", "client.key"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("fake TLS material"), 0600))
+	}
+
 	app := &application{
 		config: config.Config{
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:      true,
-					JWESecretKey: jweSecretKey,
-					JWTSecretKey: jwtSecretKey,
+					TokenGenerator: config.JWETokenGeneratorConfig{Enabled: true, AdminToken: fakeGeneratorAdmin},
+					TLSMaterialDir: tlsDir,
+					Enabled:        true,
+					JWESecretKey:   jweSecretKey,
+					JWTSecretKey:   jwtSecretKey,
 				},
 			},
 		},
@@ -3002,6 +3009,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3026,23 +3034,27 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 			config: config.Config{
 				Server: config.ServerConfig{
 					JWE: config.JWEConfig{
-						JWESecretKey: jweSecretKey,
-						JWTSecretKey: jwtSecretKey,
-						Enabled:      false,
+						TokenGenerator: config.JWETokenGeneratorConfig{Enabled: true, AdminToken: fakeGeneratorAdmin},
+						TLSMaterialDir: tlsDir,
+						JWESecretKey:   jweSecretKey,
+						JWTSecretKey:   jwtSecretKey,
+						Enabled:        false,
 					},
 				},
 			},
 		}
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", nil)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		disabledApp.jweTokenGeneratorHandler(w, req)
-		require.Equal(t, http.StatusForbidden, w.Code)
+		require.Equal(t, http.StatusNotFound, w.Code)
 	})
 
 	t.Run("method_not_allowed", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3052,6 +3064,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	t.Run("invalid_request_body", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", strings.NewReader("not-json"))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3066,23 +3079,27 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 			config: config.Config{
 				Server: config.ServerConfig{
 					JWE: config.JWEConfig{
-						Enabled:      true,
-						JWESecretKey: "", // Empty key will cause generation to fail
-						JWTSecretKey: jwtSecretKey,
+						TokenGenerator: config.JWETokenGeneratorConfig{Enabled: true, AdminToken: fakeGeneratorAdmin},
+						TLSMaterialDir: tlsDir,
+						Enabled:        true,
+						JWESecretKey:   "", // Empty key will cause generation to fail
+						JWTSecretKey:   jwtSecretKey,
 					},
 				},
 			},
 		}
 
 		claims := map[string]interface{}{
-			"host":   "localhost",
-			"port":   8123,
-			"expiry": 60,
+			"host":     "localhost",
+			"username": "test",
+			"port":     8123,
+			"expiry":   60,
 		}
 		body, err := json.Marshal(claims)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		invalidApp.jweTokenGeneratorHandler(w, req)
@@ -3103,6 +3120,7 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3138,15 +3156,16 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 			"limit":                    1000,
 			"expiry":                   120,
 			"tls_enabled":              true,
-			"tls_ca_cert":              "/path/to/ca.crt",
-			"tls_client_cert":          "/path/to/client.crt",
-			"tls_client_key":           "/path/to/client.key",
+			"tls_ca_cert":              filepath.Join(tlsDir, "ca.crt"),
+			"tls_client_cert":          filepath.Join(tlsDir, "client.crt"),
+			"tls_client_key":           filepath.Join(tlsDir, "client.key"),
 			"tls_insecure_skip_verify": true,
 		}
 		body, err := json.Marshal(claims)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3169,9 +3188,9 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		require.Equal(t, "http", parsedClaims["protocol"])
 		require.Equal(t, float64(1000), parsedClaims["limit"])
 		require.Equal(t, true, parsedClaims["tls_enabled"])
-		require.Equal(t, "/path/to/ca.crt", parsedClaims["tls_ca_cert"])
-		require.Equal(t, "/path/to/client.crt", parsedClaims["tls_client_cert"])
-		require.Equal(t, "/path/to/client.key", parsedClaims["tls_client_key"])
+		require.Equal(t, filepath.Join(tlsDir, "ca.crt"), parsedClaims["tls_ca_cert"])
+		require.Equal(t, filepath.Join(tlsDir, "client.crt"), parsedClaims["tls_client_cert"])
+		require.Equal(t, filepath.Join(tlsDir, "client.key"), parsedClaims["tls_client_key"])
 		require.Equal(t, true, parsedClaims["tls_insecure_skip_verify"])
 	})
 
@@ -3179,17 +3198,19 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		t.Parallel()
 		claims := map[string]interface{}{
 			"host":            "localhost",
+			"username":        "testuser",
 			"port":            8123,
 			"expiry":          60,
-			"tls_ca_cert":     "/path/to/ca.crt",
-			"tls_client_cert": "/path/to/client.crt",
-			"tls_client_key":  "/path/to/client.key",
-			// tls_enabled is false by default, so TLS fields should not be included
+			"tls_ca_cert":     filepath.Join(tlsDir, "ca.crt"),
+			"tls_client_cert": filepath.Join(tlsDir, "client.crt"),
+			"tls_client_key":  filepath.Join(tlsDir, "client.key"),
+			// File claims are validated and preserved even when TLS is disabled.
 		}
 		body, err := json.Marshal(claims)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -3201,14 +3222,14 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, resp, "token")
 
-		// Verify the token does NOT contain TLS fields since tls_enabled is false
+		// Verify validated file claims are preserved for later TLS use.
 		parsedClaims, err := jwe_auth.ParseAndDecryptJWE(resp["token"], []byte(jweSecretKey), []byte(jwtSecretKey))
 		require.NoError(t, err)
 		require.Equal(t, "localhost", parsedClaims["host"])
 		require.Equal(t, float64(8123), parsedClaims["port"])
-		require.NotContains(t, parsedClaims, "tls_ca_cert")
-		require.NotContains(t, parsedClaims, "tls_client_cert")
-		require.NotContains(t, parsedClaims, "tls_client_key")
+		require.Equal(t, filepath.Join(tlsDir, "ca.crt"), parsedClaims["tls_ca_cert"])
+		require.Equal(t, filepath.Join(tlsDir, "client.crt"), parsedClaims["tls_client_cert"])
+		require.Equal(t, filepath.Join(tlsDir, "client.key"), parsedClaims["tls_client_key"])
 	})
 }
 
@@ -3665,9 +3686,10 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		cfg := config.Config{
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:      jweEnabled,
-					JWESecretKey: jweSecret,
-					JWTSecretKey: "jwt-secret",
+					TokenGenerator: config.JWETokenGeneratorConfig{Enabled: true, AdminToken: fakeGeneratorAdmin},
+					Enabled:        jweEnabled,
+					JWESecretKey:   jweSecret,
+					JWTSecretKey:   "jwt-secret",
 				},
 			},
 		}
@@ -3678,6 +3700,7 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		t.Parallel()
 		app := makeApp(true, "secret")
 		req := httptest.NewRequest(http.MethodGet, "/jwe-token-generator", nil)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusMethodNotAllowed, rr.Code)
@@ -3688,9 +3711,10 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		app := makeApp(false, "secret")
 		body := strings.NewReader(`{"host":"localhost"}`)
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
-		require.Equal(t, http.StatusForbidden, rr.Code)
+		require.Equal(t, http.StatusNotFound, rr.Code)
 	})
 
 	t.Run("missing_jwe_secret", func(t *testing.T) {
@@ -3698,6 +3722,7 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		app := makeApp(true, "")
 		body := strings.NewReader(`{"host":"localhost"}`)
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusInternalServerError, rr.Code)
@@ -3708,6 +3733,7 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		app := makeApp(true, "secret")
 		body := strings.NewReader(`{invalid}`)
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusBadRequest, rr.Code)
@@ -3718,6 +3744,7 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 		app := makeApp(true, "my-secret-key")
 		body := strings.NewReader(`{"host":"clickhouse.local","port":9000,"database":"default","username":"admin","password":"pass","protocol":"native","expiry":3600}`)
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -3729,8 +3756,14 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 	t.Run("success_with_tls_options", func(t *testing.T) {
 		t.Parallel()
 		app := makeApp(true, "my-secret-key")
-		body := strings.NewReader(`{"host":"ch","tls_enabled":true,"tls_ca_cert":"ca","tls_client_cert":"cert","tls_client_key":"key","tls_insecure_skip_verify":true}`)
+		tlsDir := t.TempDir()
+		for _, name := range []string{"ca", "cert", "key"} {
+			require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("fake TLS material"), 0600))
+		}
+		app.config.Server.JWE.TLSMaterialDir = tlsDir
+		body := strings.NewReader(fmt.Sprintf(`{"host":"ch","username":"test","tls_enabled":true,"tls_ca_cert":%q,"tls_client_cert":%q,"tls_client_key":%q,"tls_insecure_skip_verify":true}`, filepath.Join(tlsDir, "ca"), filepath.Join(tlsDir, "cert"), filepath.Join(tlsDir, "key")))
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)
@@ -3739,8 +3772,9 @@ func TestJWETokenGeneratorHandlerEdgeCases(t *testing.T) {
 	t.Run("default_expiry", func(t *testing.T) {
 		t.Parallel()
 		app := makeApp(true, "my-secret-key")
-		body := strings.NewReader(`{"host":"ch"}`)
+		body := strings.NewReader(`{"host":"ch","username":"test"}`)
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", body)
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		rr := httptest.NewRecorder()
 		app.jweTokenGeneratorHandler(rr, req)
 		require.Equal(t, http.StatusOK, rr.Code)

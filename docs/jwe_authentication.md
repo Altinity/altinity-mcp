@@ -171,7 +171,9 @@ server:
 
 Enable it with `server.jwe.token_generator.enabled: true`,
 `--jwe-token-generator`, or `MCP_JWE_TOKEN_GENERATOR_ENABLED=true`, and set
-`MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`. Enabling the route requires a restart.
+`MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`. Changing `token_generator.enabled` requires a restart. Reload preserves its
+running value; admin-token rotation and maximum-lifetime changes apply on reload.
+An invalid requested or effective enabled configuration rejects the entire reload.
 Keep the endpoint on a trusted administrative network and **never expose it
 publicly**; use an ingress rule to exclude `/jwe-token-generator` from public
 access. The generator shares the HTTP/SSE listener. A separate listener is not

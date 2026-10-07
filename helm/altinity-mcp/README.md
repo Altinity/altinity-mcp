@@ -124,8 +124,9 @@ env:
         key: admin-token
 ```
 
-The referenced secret must contain at least 32 bytes. Enable
-`config.server.jwe.token_generator.enabled` and restart to register the route.
+The referenced secret must contain at least 32 bytes. Changing `config.server.jwe.token_generator.enabled` requires a restart. Reload
+preserves its running value; admin-token rotation and maximum-lifetime changes
+apply on reload. Invalid enabled generator settings reject the entire reload.
 Each issuance request requires `Authorization: Bearer <admin_token>`; ordinary
 OAuth or JWE credentials do not authorize issuance. See the
 [generator guide](../../docs/jwe_authentication.md#jwe-token-generation-endpoint).

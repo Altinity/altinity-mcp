@@ -127,9 +127,22 @@ func (a *application) buildSingleClusterHandler(cfg config.Config, sse bool) htt
 	}
 	mux.HandleFunc("/health", a.healthHandler)
 	mux.HandleFunc("/livez", a.livenessHandler)
-	mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+	generatorEnabled := cfg.Server.JWE.Enabled && cfg.Server.JWE.TokenGenerator.Enabled
+	if generatorEnabled {
+		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
+	}
 	a.registerOAuthHTTPRoutes(mux)
-	return finalizeTransportHandler(mux, cfg)
+	// Reserve the disabled administrative path before wildcard MCP routes and
+	// their authentication middleware. No generator route exists while disabled.
+	finalized := finalizeTransportHandler(mux, cfg)
+	reserved := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !generatorEnabled && strings.TrimRight(r.URL.Path, "/") == "/jwe-token-generator" {
+			http.NotFound(w, r)
+			return
+		}
+		finalized.ServeHTTP(w, r)
+	})
+	return reserved
 }
 
 // Each SDK SSE handler owns the sessions of one effective credential. The SDK
