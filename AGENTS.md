@@ -77,9 +77,10 @@ the full suite passes.
   artifacts out of commits. Use imperative commit messages.
 - Use an isolated worktree for delivery when the shared checkout contains
   unrelated work. Deployments and service restarts need separate authorization.
-- Local developer skills live under `.codex/`. The borrowed deliver workflow
-  is `.codex/deliver/SKILL.md`; apply its issue and review mechanics when
-  invoked, using this repository's checks.
+- Discoverable repository skills live under `.agents/skills/`. The borrowed
+  deliver workflow is `.agents/skills/deliver/SKILL.md`; apply its issue and
+  review mechanics when invoked, using this repository's checks. Existing
+  review instructions under `.codex/` can be read directly by path.
 - When delegating, state each worker's scope and mutation boundary. Reviewers
   are read-only unless explicitly assigned a report artifact. Inspect actual
   diffs, commits, and check results before accepting worker claims.

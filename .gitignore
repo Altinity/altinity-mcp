@@ -9,7 +9,10 @@ GEMINI.md
 *.exe
 .vscode/
 .idea/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/deliver/
 .kilocode/
 .crush/
 .code/
