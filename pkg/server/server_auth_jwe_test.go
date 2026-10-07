@@ -46,10 +46,10 @@ func TestJWEAuthentication(t *testing.T) {
 			},
 		}, "test")
 
-		ctx = context.WithValue(ctx, CHJWEServerKey, srv)
-		ctx = context.WithValue(ctx, JWETokenKey, token)
+		requestCtx := context.WithValue(ctx, CHJWEServerKey, srv)
+		requestCtx = context.WithValue(requestCtx, JWETokenKey, token)
 
-		client, err := srv.GetClickHouseClient(ctx, token)
+		client, err := srv.GetClickHouseClient(requestCtx, token)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.NoError(t, client.Close())
@@ -304,10 +304,17 @@ func TestJWETokenHasCredentials(t *testing.T) {
 	t.Run("has_credentials", func(t *testing.T) {
 		t.Parallel()
 		token := generateJWEToken(t, map[string]interface{}{
+			"host":     "localhost",
 			"username": "admin",
 			"password": "secret",
 		}, []byte(jweKey), []byte(jwtKey))
 		require.True(t, srv.JWETokenHasCredentials(token))
+	})
+
+	t.Run("username_without_host", func(t *testing.T) {
+		t.Parallel()
+		token := generateJWEToken(t, map[string]interface{}{"username": "admin"}, []byte(jweKey), []byte(jwtKey))
+		require.False(t, srv.JWETokenHasCredentials(token))
 	})
 
 	t.Run("no_credentials", func(t *testing.T) {

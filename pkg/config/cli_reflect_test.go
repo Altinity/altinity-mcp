@@ -60,6 +60,7 @@ func TestBuildFlags_ConfigStruct(t *testing.T) {
 	require.Contains(t, byName, "port")
 	require.Contains(t, byName, "server-tls")
 	require.Contains(t, byName, "allow-jwe-auth")
+	require.Contains(t, byName, "jwe-tls-material-dir")
 	require.Contains(t, byName, "log-level")
 	require.Contains(t, byName, "cors-origin")
 	require.Contains(t, byName, "tool-input-settings")
@@ -226,4 +227,12 @@ func TestBuildFlags_NoFlagTagSkipped(t *testing.T) {
 	flags := BuildFlags(&S{})
 	require.Len(t, flags, 1)
 	require.Equal(t, "x", flags[0].Names()[0])
+}
+
+func TestBuildFlagsJWETLSMaterialDir(t *testing.T) {
+	t.Setenv("MCP_JWE_TLS_MATERIAL_DIR", "/operator/tls")
+	var cfg Config
+	cmd := &cli.Command{Name: "test", Flags: BuildFlags(&cfg), Action: func(_ context.Context, cmd *cli.Command) error { ApplyFlags(&cfg, cmd); return nil }}
+	require.NoError(t, cmd.Run(context.Background(), []string{"test"}))
+	require.Equal(t, "/operator/tls", cfg.Server.JWE.TLSMaterialDir)
 }

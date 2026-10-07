@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -766,5 +768,98 @@ func TestBrokerAudience(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, mk(tc.cfg).brokerUpstreamAudience())
 		})
+	}
+}
+
+// Exercise the transport injector through actual client creation. The upstream
+// intentionally refuses queries but captures the effective endpoint and bearer.
+func TestOAuthMCPAuthInjectorPartialJWEClientFallback(t *testing.T) {
+	t.Parallel()
+	headers := make(chan http.Header, 10)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Clone()
+		http.Error(w, "fake upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+	endpoint, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	host, portText, err := net.SplitHostPort(endpoint.Host)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+	cfg := config.Config{
+		ClickHouse: config.ClickHouseConfig{Host: host, Port: port, Protocol: config.HTTPProtocol},
+		Server: config.ServerConfig{
+			JWE:   config.JWEConfig{Enabled: true, JWESecretKey: "fake-test-key"},
+			OAuth: config.OAuthConfig{Enabled: true},
+		},
+	}
+	app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test")}
+	for _, claims := range []map[string]interface{}{
+		{"username": "partial-user", "port": 1},
+		{"host": "127.0.0.2", "port": 1, "password": "fake-partial-password"}, {},
+	} {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+		token, err := jwe_auth.GenerateJWEToken(claims, []byte("fake-test-key"), nil)
+		require.NoError(t, err)
+		called := false
+		handler := app.createMCPAuthInjector(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			require.Equal(t, token, r.Context().Value(altinitymcp.JWETokenKey))
+			require.Equal(t, "fallback-bearer", r.Context().Value(altinitymcp.OAuthTokenKey))
+			_, err := app.mcpServer.GetClickHouseClientFromCtx(r.Context())
+			require.Error(t, err, "fake ClickHouse intentionally refuses queries")
+			w.WriteHeader(http.StatusOK)
+		}))
+		for _, bearer := range []string{"", "Bearer fallback-bearer"} {
+			called = false
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			req.Header.Set("x-altinity-mcp-key", token)
+			req.Header.Set("Authorization", bearer)
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if bearer == "" {
+				require.Equal(t, http.StatusUnauthorized, rr.Code)
+				require.False(t, called)
+				require.Empty(t, headers)
+			} else {
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.True(t, called)
+				require.NotEmpty(t, headers, "OAuth must reach the configured operator endpoint")
+				for len(headers) > 0 {
+					require.Equal(t, "Bearer fallback-bearer", (<-headers).Get("Authorization"))
+				}
+			}
+		}
+	}
+	// Invalid encryption must remain a hard error despite an OAuth bearer.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("x-altinity-mcp-key", "invalid-token")
+	req.Header.Set("Authorization", "Bearer fallback-bearer")
+	rr := httptest.NewRecorder()
+	app.createMCPAuthInjector(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("invalid JWE must not enter the downstream handler")
+	})).ServeHTTP(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+	require.Empty(t, headers)
+}
+
+func TestJWEMCPAuthInjectorRejectsIncompleteConnection(t *testing.T) {
+	t.Parallel()
+	cfg := config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "fake-test-key"}}}
+	app := &application{config: cfg, mcpServer: altinitymcp.NewClickHouseMCPServer(cfg, "test")}
+	handler := app.createMCPAuthInjector(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("incomplete JWE must not enter downstream transport")
+	}))
+	for _, claims := range []map[string]interface{}{{}, {"host": "localhost"}, {"username": "u"}} {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+		token, err := jwe_auth.GenerateJWEToken(claims, []byte("fake-test-key"), nil)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		req.Header.Set("x-altinity-mcp-key", token)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Equal(t, "jwe: token must carry host and username claims\n", rr.Body.String())
 	}
 }

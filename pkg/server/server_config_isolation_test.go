@@ -84,7 +84,7 @@ func TestRequestConfigIsolation(t *testing.T) {
 	srv := &ClickHouseJWEServer{}
 	tests := map[string]func() config.ClickHouseConfig{
 		"jwe_claims": func() config.ClickHouseConfig {
-			cfg, err := srv.buildConfigFromClaimsWithBase(base, map[string]interface{}{"username": "jwe-user"})
+			cfg, err := srv.buildConfigFromClaimsWithBase(base, map[string]interface{}{"host": "jwe-host", "username": "jwe-user"})
 			require.NoError(t, err)
 			return cfg
 		},
@@ -97,9 +97,14 @@ func TestRequestConfigIsolation(t *testing.T) {
 	for name, derive := range tests {
 		t.Run(name, func(t *testing.T) {
 			cfg := derive()
-			cfg.HttpHeaders["X-Static"] = "changed"
+			if name == "jwe_claims" {
+				require.Nil(t, cfg.HttpHeaders)
+				require.Nil(t, cfg.Roles)
+			} else {
+				cfg.HttpHeaders["X-Static"] = "changed"
+				cfg.Roles[0] = "changed"
+			}
 			cfg.ExtraSettings["custom_scope"] = "changed"
-			cfg.Roles[0] = "changed"
 			require.Equal(t, isolationBaseConfig(), base)
 		})
 	}
@@ -213,28 +218,52 @@ func TestOAuthThenJWEHeaderIsolation(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
 		require.Contains(t, rr.Body.String(), `"count":1`)
 	}
-	checkHeaders := func(expectedAuth string) {
+	checkHeaders := func(expectedAuth, expectedStatic string) {
 		require.NotEmpty(t, headers, "request must reach fake ClickHouse")
 		for len(headers) > 0 {
 			h := <-headers
 			require.Equal(t, expectedAuth, h.Get("Authorization"))
-			require.Equal(t, "1", h.Get("X-Static"))
+			require.Equal(t, expectedStatic, h.Get("X-Static"))
 		}
 	}
 	request("Bearer fake-oauth-token", "")
-	checkHeaders("Bearer fake-oauth-token")
+	checkHeaders("Bearer fake-oauth-token", "1")
 	// The next caller uses the cached method with its own bearer.
 	request("Bearer fake-second-oauth-token", "")
-	checkHeaders("Bearer fake-second-oauth-token")
+	checkHeaders("Bearer fake-second-oauth-token", "1")
 	require.Equal(t, map[string]string{"X-Static": "1"}, srv.Config.ClickHouse.HttpHeaders)
 	jweToken := generateJWEToken(t, map[string]interface{}{
 		"host": host, "port": port, "database": "default", "protocol": "http",
 		"username": "jwe-user", "password": "fake-jwe-password",
 		"exp": time.Now().Add(time.Hour).Unix(),
 	}, []byte(jweKey), []byte(jwtKey))
-	request("", jweToken)
+	// A complete JWE wins even when an OAuth bearer is also present.
+	request("Bearer ignored-oauth-token", jweToken)
+	ctx := context.WithValue(context.Background(), JWETokenKey, jweToken)
+	ctx = context.WithValue(ctx, OAuthTokenKey, "ignored-context-oauth-token")
+	client, err := srv.GetClickHouseClientFromCtx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, client.Close())
 	basic := httptest.NewRequest(http.MethodGet, "/", nil)
 	basic.SetBasicAuth("jwe-user", "fake-jwe-password")
-	checkHeaders(basic.Header.Get("Authorization"))
+	checkHeaders(basic.Header.Get("Authorization"), "")
+	// Partial claims cannot redirect OAuth to another endpoint or change its user.
+	for _, claims := range []map[string]interface{}{
+		{"username": "partial-user", "port": 1},
+		{"host": "127.0.0.2", "port": 1, "password": "fake-partial-password"},
+		{},
+	} {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+		partial := generateJWEToken(t, claims, []byte(jweKey), []byte(jwtKey))
+		request("Bearer fallback-oauth-token", partial)
+		checkHeaders("Bearer fallback-oauth-token", "1")
+		ctx := context.WithValue(context.Background(), JWETokenKey, partial)
+		ctx = context.WithValue(ctx, JWEClaimsKey, claims)
+		ctx = context.WithValue(ctx, OAuthTokenKey, "context-fallback-oauth-token")
+		client, err := srv.GetClickHouseClientFromCtx(ctx)
+		require.NoError(t, err)
+		require.NoError(t, client.Close())
+		checkHeaders("Bearer context-fallback-oauth-token", "1")
+	}
 	require.Equal(t, map[string]string{"X-Static": "1"}, srv.Config.ClickHouse.HttpHeaders)
 }

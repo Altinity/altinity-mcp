@@ -218,9 +218,13 @@ config:
       key_file: ""
       ca_cert: ""
     jwe:
+      # Tokens must carry host and username; static connection fields are not inherited.
       enabled: false
       jwt_secret_key: ""
       jwe_secret_key: ""
+      # -- Operator-controlled directory for absolute token TLS file paths; empty denies them.
+      # Mount certificate/key files read-only and prevent token holders from changing them.
+      tls_material_dir: ""
       token_param: "token"
     # -- OAuth 2.0 authentication configuration
     # When enabled, MCP server validates incoming OAuth tokens and can forward them to ClickHouse
