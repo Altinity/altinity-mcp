@@ -4,6 +4,8 @@
 
 A Helm chart for Altinity MCP Server
 
+When JWE or OAuth is enabled, the exact `/openapi` schema route requires authentication and database access never falls back to the configured static credentials. Single-cluster HTTP/SSE dynamic catalogs are isolated by effective request credentials. Existing SSE clients must reconnect after an effective configuration change. Unchanged reload polls preserve sessions. See [dynamic discovery](../../docs/tools.md#dynamic-discovery).
+
 ## Values
 
 | Key | Type | Default | Description |

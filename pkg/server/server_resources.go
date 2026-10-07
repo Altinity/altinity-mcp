@@ -12,6 +12,10 @@ import (
 
 // RegisterResources adds ClickHouse resources to the MCP server
 func RegisterResources(srv AltinityMCPServer) {
+	registerResourcesOn(srv, true)
+}
+
+func registerResourcesOn(srv AltinityMCPServer, startupLogs bool) {
 	// Database catalog resource
 	schemaResource := &mcp.Resource{
 		URI:         "clickhouse://schema",
@@ -32,7 +36,9 @@ func RegisterResources(srv AltinityMCPServer) {
 
 	srv.AddResourceTemplate(tableTemplate, HandleTableResource)
 
-	log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
+	if startupLogs {
+		log.Info().Int("resource_count", 2).Msg("ClickHouse resources registered")
+	}
 }
 
 // HandleSchemaResource handles the schema resource
@@ -158,6 +164,12 @@ func HandleTableResource(ctx context.Context, req *mcp.ReadResourceRequest) (*mc
 
 // RegisterPrompts adds ClickHouse prompts to the MCP server
 func RegisterPrompts(srv AltinityMCPServer) {
+	registerPromptsOn(srv, true)
+}
+
+func registerPromptsOn(srv AltinityMCPServer, startupLogs bool) {
 	// No prompts registered
-	log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
+	if startupLogs {
+		log.Info().Int("prompt_count", 0).Msg("ClickHouse prompts registered")
+	}
 }

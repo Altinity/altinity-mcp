@@ -11,9 +11,9 @@ import (
 )
 
 // MulticlusterServerFactory mints a per-(bearer, cluster) *mcp.Server on
-// each incoming request. Single-cluster mode uses one *mcp.Server for the
-// process; multi-cluster mode cannot, because per-tenant dynamic tools
-// would poison cross-tenant tools/list.
+// each incoming request. Authenticated single-cluster mode also uses fresh
+// registries: sharing per-tenant dynamic tools would expose cross-tenant
+// metadata through tools/list.
 //
 // The factory holds the long-lived (cfg, cache, ClickHouseJWEServer)
 // triple and exposes a single GetServer(r *http.Request) entry point
@@ -109,8 +109,8 @@ func (f *MulticlusterServerFactory) newServer(dynamicTools map[string]dynamicToo
 		Version: f.version,
 	}, opts)
 	adapter := NewSDKServerAdapter(srv)
-	RegisterResources(adapter)
-	RegisterPrompts(adapter)
+	registerResourcesOn(adapter, false)
+	registerPromptsOn(adapter, false)
 	RegisterStaticToolsOn(adapter, &f.cfg)
 	if len(dynamicTools) > 0 {
 		registerDynamicToolsOn(adapter, dynamicTools, f.cfg.Server.ToolInputSettings, nil)

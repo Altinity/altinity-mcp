@@ -35,8 +35,10 @@ var (
 	commit  = "unknown"
 	date    = "unknown"
 
-	// loggingMutex protects global zerolog state during setupLogging calls
-	loggingMutex sync.Mutex
+	// Initialize the shared formatter before workers start; subsequent level
+	// changes use zerolog's atomic global level without replacing the logger.
+	loggingMutex      sync.Mutex
+	loggingFormatOnce sync.Once
 )
 
 func main() {
@@ -117,9 +119,10 @@ func setupLogging(level string) error {
 	loggingMutex.Lock()
 	defer loggingMutex.Unlock()
 
-	// Configure zerolog
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
+	loggingFormatOnce.Do(func() {
+		zerolog.TimeFieldFormat = time.RFC3339
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
+	})
 
 	// Set log level
 	switch strings.ToLower(level) {
@@ -313,11 +316,11 @@ func openAPIRoutePatterns(jweEnabled, oauthEnabled bool) []string {
 
 	switch {
 	case jweEnabled && oauthEnabled:
-		// Exact /openapi remains unauthenticated schema discovery in combined mode.
+		// Exact /openapi uses the same authentication as tool endpoints.
 		// Skip /openapi/ (index 1) — stripTrailingSlash handles it, and it conflicts with /{token}/openapi/.
-		return append(tokenized, pathless[2:]...)
+		return append(append(tokenized, pathless[0]), pathless[2:]...)
 	case jweEnabled:
-		return tokenized
+		return append(tokenized, pathless[0])
 	default:
 		return pathless
 	}
@@ -503,89 +506,7 @@ func (a *application) startHTTPServer(cfg config.Config, mcpServer *mcp.Server) 
 // Split from startHTTPServer so tests can exercise the exact production
 // routing without binding a port.
 func (a *application) buildHTTPHandler(cfg config.Config, mcpServer *mcp.Server) http.Handler {
-	openAPIProtocol := "http"
-	if cfg.Server.OpenAPI.TLS {
-		openAPIProtocol = "https"
-	}
-
-	authInjector := a.createMCPAuthInjector(cfg)
-	serverInjector := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-	}
-	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
-	}
-
-	var httpHandler http.Handler
-	if cfg.Server.JWE.Enabled {
-		log.Info().Msg("Using dynamic base path for JWE authentication")
-
-		tokenInjector := a.createTokenInjector()
-		dtInjector := a.dynamicToolsInjector
-		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-			return mcpServer
-		}, statelessStreamableOptions())
-
-		mux := http.NewServeMux()
-		transportHandler := serverInjector(tokenInjector(dtInjector(httpServer)))
-		if cfg.Server.OAuth.Enabled {
-			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
-		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "") {
-			mux.Handle(pattern, transportHandler)
-		}
-		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorSchema)
-			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
-				mux.HandleFunc(pattern, serverInjectorOpenAPI)
-			}
-			openAPIPath := "/{token}/openapi"
-			if cfg.Server.OAuth.Enabled {
-				openAPIPath = "/openapi"
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
-		}
-		mux.HandleFunc("/health", a.healthHandler)
-		mux.HandleFunc("/livez", a.livenessHandler)
-		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = finalizeTransportHandler(mux, cfg)
-	} else {
-		// Use standard HTTP server without dynamic paths
-		httpServer := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-			return mcpServer
-		}, statelessStreamableOptions())
-		dtInjector := a.dynamicToolsInjector
-		mux := http.NewServeMux()
-		transportHandler := serverInjector(dtInjector(httpServer))
-		if cfg.Server.OAuth.Enabled {
-			transportHandler = serverInjector(authInjector(dtInjector(httpServer)))
-		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "") {
-			mux.Handle(pattern, transportHandler)
-		}
-		if cfg.Server.OpenAPI.Enabled {
-			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
-				mux.HandleFunc(pattern, serverInjectorOpenAPI)
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
-		}
-		mux.HandleFunc("/health", a.healthHandler)
-		mux.HandleFunc("/livez", a.livenessHandler)
-		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		a.registerOAuthHTTPRoutes(mux)
-		httpHandler = finalizeTransportHandler(mux, cfg)
-	}
-
-	return httpHandler
+	return a.buildSingleClusterHandler(cfg, false)
 }
 
 // startSSEServer starts the SSE transport server
@@ -608,91 +529,7 @@ func (a *application) startSSEServer(cfg config.Config, mcpServer *mcp.Server) e
 // transport; see buildHTTPHandler for why it is separate from the server
 // start.
 func (a *application) buildSSEHandler(cfg config.Config, mcpServer *mcp.Server) http.Handler {
-	authInjector := a.createMCPAuthInjector(cfg)
-	serverInjector := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-	serverInjectorOpenAPI := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		a.mcpServer.OpenAPIHandler(w, r.WithContext(ctx))
-	}
-	serverInjectorSchema := func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.WithValue(r.Context(), altinitymcp.CHJWEServerKey, a.mcpServer)
-		a.mcpServer.ServeOpenAPISchema(w, r.WithContext(ctx))
-	}
-
-	openAPIProtocol := "http"
-	if cfg.Server.OpenAPI.TLS {
-		openAPIProtocol = "https"
-	}
-
-	var sseHandler http.Handler
-	if cfg.Server.JWE.Enabled {
-		log.Info().Msg("Using dynamic base path for JWE authentication")
-
-		tokenInjector := a.createTokenInjector()
-		dtInjector := a.dynamicToolsInjector
-
-		// Use SSEHandler for legacy SSE transport
-		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
-			return mcpServer
-		}, nil)
-
-		mux := http.NewServeMux()
-		transportHandler := serverInjector(tokenInjector(dtInjector(sseServer)))
-		if cfg.Server.OAuth.Enabled {
-			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
-		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
-			mux.Handle(pattern, transportHandler)
-		}
-		if cfg.Server.OpenAPI.Enabled {
-			mux.HandleFunc("/openapi", serverInjectorSchema)
-			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
-				mux.HandleFunc(pattern, serverInjectorOpenAPI)
-			}
-			openAPIPath := "/{token}/openapi"
-			if cfg.Server.OAuth.Enabled {
-				openAPIPath = "/openapi"
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d%s", openAPIProtocol, cfg.Server.Address, cfg.Server.Port, openAPIPath)).Msg("OpenAPI server listening")
-		}
-		mux.HandleFunc("/health", a.healthHandler)
-		mux.HandleFunc("/livez", a.livenessHandler)
-		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = finalizeTransportHandler(mux, cfg)
-	} else {
-		// Use SSEHandler for legacy SSE transport
-		sseServer := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
-			return mcpServer
-		}, nil)
-		dtInjector := a.dynamicToolsInjector
-		mux := http.NewServeMux()
-		transportHandler := serverInjector(dtInjector(sseServer))
-		if cfg.Server.OAuth.Enabled {
-			transportHandler = serverInjector(authInjector(dtInjector(sseServer)))
-		}
-		for _, pattern := range transportRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled, "sse") {
-			mux.Handle(pattern, transportHandler)
-		}
-		if cfg.Server.OpenAPI.Enabled {
-			for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
-				mux.HandleFunc(pattern, serverInjectorOpenAPI)
-			}
-			log.Info().Str("url", fmt.Sprintf("%s://%s:%d/openapi", openAPIProtocol, cfg.Server.Address, cfg.Server.Port)).Msg("OpenAPI server listening")
-		}
-		mux.HandleFunc("/health", a.healthHandler)
-		mux.HandleFunc("/livez", a.livenessHandler)
-		mux.HandleFunc("/jwe-token-generator", a.jweTokenGeneratorHandler)
-		a.registerOAuthHTTPRoutes(mux)
-		sseHandler = finalizeTransportHandler(mux, cfg)
-	}
-
-	return sseHandler
+	return a.buildSingleClusterHandler(cfg, true)
 }
 
 // livenessHandler provides a process-level health check endpoint for liveness probes.
@@ -1040,6 +877,7 @@ type application struct {
 	// from the running (restart-only) value, so the reload loop warns once
 	// per mismatch instead of on every tick. Guarded by configMutex.
 	metricsReloadWarned bool
+	ssePools            []*credentialSSEPool
 }
 
 // setHTTPServer sets the HTTP server with proper synchronization
@@ -1317,6 +1155,14 @@ func (a *application) Close() {
 		close(a.stopConfigReload)
 	}
 
+	a.configMutex.Lock()
+	if a.mcpServer != nil {
+		a.mcpServer.Close()
+	}
+	for _, pool := range a.ssePools {
+		pool.Close()
+	}
+	a.configMutex.Unlock()
 	if a.mcCache != nil {
 		a.mcCache.Close()
 	}
@@ -1385,6 +1231,7 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	a.configMutex.RUnlock()
 	if !reflect.DeepEqual(oldMC, newCfg.Multicluster) {
 		log.Warn().Msg("config reload: multicluster.* fields changed — restart required for these to take effect; routing/cache remain on the previous configuration")
+		newCfg.Multicluster = oldMC
 	}
 
 	// server.metrics.* is restart-only for the same reason: the /metrics
@@ -1411,10 +1258,21 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 		newCfg.Server.Metrics = oldMetrics
 	}
 
-	// Update logging level if changed
+	// File polling must not retire catalogs and live SSE streams when the
+	// effective configuration did not change. Reload bookkeeping is excluded.
 	a.configMutex.Lock()
-	oldLogLevel := a.config.Logging.Level
-	a.config = *newCfg
+	current := a.config
+	oldEffective, newEffective := current, *newCfg
+	oldEffective.ReloadTime, newEffective.ReloadTime = 0, 0
+	oldEffective.RemovedKeyWarnings, newEffective.RemovedKeyWarnings = nil, nil
+	if a.mcpServer != nil && reflect.DeepEqual(oldEffective, newEffective) {
+		a.config.ReloadTime = newCfg.ReloadTime
+		a.config.RemovedKeyWarnings = newCfg.RemovedKeyWarnings
+		a.configMutex.Unlock()
+		log.Debug().Msg("Configuration unchanged; preserving catalog generation")
+		return nil
+	}
+	oldLogLevel := current.Logging.Level
 	a.configMutex.Unlock()
 
 	if oldLogLevel != newCfg.Logging.Level {
@@ -1433,8 +1291,16 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 
 	// Update the server (note: this doesn't restart HTTP servers, only updates the MCP server)
 	a.configMutex.Lock()
+	oldServer := a.mcpServer
+	a.config = *newCfg
 	a.mcpServer = newMCPServer
+	for _, pool := range a.ssePools {
+		pool.Retire(newMCPServer)
+	}
 	a.configMutex.Unlock()
+	if oldServer != nil {
+		oldServer.Close()
+	}
 
 	log.Info().Str("config_file", a.configFile).Msg("Configuration reloaded successfully")
 	return nil

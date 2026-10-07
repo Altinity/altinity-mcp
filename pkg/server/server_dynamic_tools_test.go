@@ -1115,14 +1115,15 @@ func TestHasDiscoveryCredentials(t *testing.T) {
 
 	t.Run("jwe_token_present", func(t *testing.T) {
 		t.Parallel()
-		s := &ClickHouseJWEServer{}
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{JWE: config.JWEConfig{Enabled: true}}}}
 		ctx := context.WithValue(context.Background(), JWETokenKey, "jwe-abc")
+		ctx = context.WithValue(ctx, JWEClaimsKey, map[string]interface{}{"host": "tenant.example", "username": "alice"})
 		require.True(t, s.hasDiscoveryCredentials(ctx))
 	})
 
 	t.Run("oauth_token_present", func(t *testing.T) {
 		t.Parallel()
-		s := &ClickHouseJWEServer{}
+		s := &ClickHouseJWEServer{Config: config.Config{Server: config.ServerConfig{OAuth: config.OAuthConfig{Enabled: true}}}}
 		ctx := context.WithValue(context.Background(), OAuthTokenKey, "oauth-xyz")
 		require.True(t, s.hasDiscoveryCredentials(ctx))
 	})

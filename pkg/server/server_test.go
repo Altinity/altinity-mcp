@@ -432,6 +432,7 @@ func TestOpenAPI_SchemaIncludesCombinedAuthPaths(t *testing.T) {
 				OAuth: config.OAuthConfig{
 					Enabled: true,
 				},
+				DynamicTools: []config.DynamicToolRule{{Regexp: ".*"}},
 			},
 		},
 		dynamicTools: map[string]dynamicToolMeta{
@@ -444,9 +445,14 @@ func TestOpenAPI_SchemaIncludesCombinedAuthPaths(t *testing.T) {
 		},
 	}
 
+	s.catalogOnce.Do(func() { s.catalogCache = NewCatalogCache(config.MulticlusterConfig{}) })
+	defer s.Close()
+	s.catalogCache.insertOK(fullKey(CacheKey("oauth\x00caller"), "singlecluster"), s.dynamicTools, time.Time{})
+	s.dynamicTools = nil
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/openapi", nil)
 	ctx := context.WithValue(req.Context(), CHJWEServerKey, s)
+	ctx = context.WithValue(ctx, OAuthTokenKey, "caller")
 	req = req.WithContext(ctx)
 	s.ServeOpenAPISchema(rr, req)
 
