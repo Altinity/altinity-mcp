@@ -973,7 +973,7 @@ func TestHandleExecuteQueryOpenAPI_QueryError(t *testing.T) {
 		Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: false}},
 	}, "test")
 
-	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=INVALID%20SYNTAX%20HERE", nil)
+	req := httptest.NewRequest(http.MethodGet, "/openapi/execute_query?query=SELECT%20*%20FROM%20default.nonexistent_openapi_query_error", nil)
 	req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 
 	rr := httptest.NewRecorder()

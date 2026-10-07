@@ -1,6 +1,7 @@
 # Unreleased
 
 BUG FIXES
+- security: OpenAPI `execute_query` always rejects write statements and enforces `max_query_length`; dynamic-tool JSON bodies use the same input-size limit (fixes [#183](https://github.com/Altinity/altinity-mcp/issues/183))
 - security: isolate per-request ClickHouse headers, settings, and roles; prevent concurrent OAuth bearer forwarding from crashing the server, confusing caller identities, or leaking a stale bearer into later JWE or static-credential requests (fixes [#181](https://github.com/Altinity/altinity-mcp/issues/181))
 
 # v1.7.0

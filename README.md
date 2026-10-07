@@ -349,17 +349,19 @@ OpenAI MCP/tooling references:
 
 ### Available Actions
 
-#### 1. Execute SQL Query
+#### 1. Execute Read-only SQL Query
 **Path**: `/openapi/execute_query`  
 **Parameters**:
 - `jwe_token` (path param): JWE authentication token
-- `query` (query param): SQL query to execute (required)
+- `query` (query param): Read-only SQL query to execute (required); writes are always rejected, even when `clickhouse.read_only: false`.
 - `limit` (query param): Maximum rows to return (optional, default 1000, max 10000)
 
 **Example OpenAPI Path**:
 ```
 GET /{jwe_token}/openapi/execute_query?query=SELECT%20*%20FROM%20table&limit=500
 ```
+
+`clickhouse.max_query_length` bounds the query in bytes and dynamic-tool JSON bodies (default 10 MiB; negative disables the limit). Oversized inputs return HTTP 413 before contacting ClickHouse. OpenAPI does not expose `write_query`.
 
 ### Configuration Example for GPTs
 ```json
