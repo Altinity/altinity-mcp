@@ -80,13 +80,20 @@ func (s *ClickHouseJWEServer) requestCatalog(ctx context.Context) map[string]dyn
 		return nil
 	}
 	s.catalogOnce.Do(func() { s.catalogCache = NewCatalogCache(config.MulticlusterConfig{}) })
-	if s.catalogCache == nil {
-		return nil
+	factory := func(ctx context.Context, cfg config.ClickHouseConfig) (*clickhouse.Client, error) {
+		return s.GetClickHouseClientWithOAuthForConfig(ctx, cfg, s.ExtractTokenFromCtx(ctx), s.ExtractOAuthTokenFromCtx(ctx), s.GetOAuthClaimsFromCtx(ctx))
 	}
-	tools, err := s.catalogCache.GetOrDiscover(ctx, key, "singlecluster", s.Config.ClickHouse,
-		func(ctx context.Context, cfg config.ClickHouseConfig) (*clickhouse.Client, error) {
-			return s.GetClickHouseClientWithOAuthForConfig(ctx, cfg, s.ExtractTokenFromCtx(ctx), s.ExtractOAuthTokenFromCtx(ctx), s.GetOAuthClaimsFromCtx(ctx))
-		}, s.Config.Server.DynamicTools, s.Config.ClickHouse.ReadOnly, exp)
+	var tools map[string]dynamicToolMeta
+	if s.catalogCache == nil {
+		// Close may retire a generation after a request snapshots it but before
+		// lazy cache initialization. Finish that request with its own generation,
+		// without creating a janitor for the retired parent.
+		boundedCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+		defer cancel()
+		tools, err = DiscoverTools(boundedCtx, s.Config.ClickHouse, factory, s.Config.Server.DynamicTools, s.Config.ClickHouse.ReadOnly)
+	} else {
+		tools, err = s.catalogCache.GetOrDiscover(ctx, key, "singlecluster", s.Config.ClickHouse, factory, s.Config.Server.DynamicTools, s.Config.ClickHouse.ReadOnly, exp)
+	}
 	if err != nil {
 		log.Warn().Err(err).Msg("credential catalog discovery failed; static tools remain available")
 		return nil
@@ -97,7 +104,9 @@ func (s *ClickHouseJWEServer) requestCatalog(ctx context.Context) map[string]dyn
 // GetServer creates a caller's MCP registry without changing the parent registry.
 func (s *ClickHouseJWEServer) GetServer(r *http.Request) *mcp.Server {
 	if !s.Config.Server.JWE.Enabled && !s.Config.Server.OAuth.Enabled {
-		_ = s.EnsureDynamicTools(r.Context())
+		if err := s.EnsureDynamicTools(r.Context()); err != nil {
+			log.Warn().Err(err).Msg("Failed to ensure dynamic tools")
+		}
 		return s.MCPServer
 	}
 	f := &MulticlusterServerFactory{cfg: s.Config, version: s.Version,

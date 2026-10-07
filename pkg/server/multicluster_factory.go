@@ -109,8 +109,8 @@ func (f *MulticlusterServerFactory) newServer(dynamicTools map[string]dynamicToo
 		Version: f.version,
 	}, opts)
 	adapter := NewSDKServerAdapter(srv)
-	RegisterResources(adapter)
-	RegisterPrompts(adapter)
+	registerResourcesOn(adapter, false)
+	registerPromptsOn(adapter, false)
 	RegisterStaticToolsOn(adapter, &f.cfg)
 	if len(dynamicTools) > 0 {
 		registerDynamicToolsOn(adapter, dynamicTools, f.cfg.Server.ToolInputSettings, nil)

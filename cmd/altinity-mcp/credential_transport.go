@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/rs/zerolog/log"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +11,7 @@ import (
 	"github.com/altinity/altinity-mcp/pkg/config"
 	altinitymcp "github.com/altinity/altinity-mcp/pkg/server"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rs/zerolog/log"
 )
 
 // withServerSnapshot captures the immutable parent and its converted tool rules
@@ -42,8 +43,16 @@ func (a *application) authenticateSnapshot(next http.Handler) http.Handler {
 		}
 		if cfg.Server.JWE.Enabled {
 			token, claims, _, _, err := parent.ValidateAuth(r)
-			if err != nil || !parent.JWEClaimsHaveCredentials(claims) {
+			if errors.Is(err, altinitymcp.ErrJWEIncompleteConnection) {
+				http.Error(w, altinitymcp.ErrJWEIncompleteConnection.Error(), http.StatusUnauthorized)
+				return
+			}
+			if err != nil {
 				http.Error(w, "Missing or invalid authentication token", http.StatusUnauthorized)
+				return
+			}
+			if !parent.JWEClaimsHaveCredentials(claims) {
+				http.Error(w, altinitymcp.ErrJWEIncompleteConnection.Error(), http.StatusUnauthorized)
 				return
 			}
 			ctx := context.WithValue(r.Context(), altinitymcp.JWETokenKey, token)
@@ -94,11 +103,9 @@ func (a *application) buildSingleClusterHandler(cfg config.Config, sse bool) htt
 		mux.Handle(pattern, handler)
 	}
 	if cfg.Server.OpenAPI.Enabled {
-
 		for _, pattern := range openAPIRoutePatterns(cfg.Server.JWE.Enabled, cfg.Server.OAuth.Enabled) {
 			mux.Handle(pattern, openapiHandler)
 		}
-
 		if sse && cfg.Server.JWE.Enabled && cfg.Server.OAuth.Enabled {
 			mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/openapi/") {

@@ -264,9 +264,9 @@ The server accepts this form but logs a deprecation warning at startup. Prefer `
 
 Discovery is **lazy**: the first authenticated MCP request or OpenAPI schema/tool request discovers the caller's catalog. Single-cluster HTTP and SSE catalogs are cached by the effective JWE or OAuth credential, so each caller's `tools/list`, schema, and dynamic-tool lookup use that caller's own metadata. A self-contained JWE takes priority over OAuth; a partial JWE uses OAuth when available. The unified `server.tools` rules and legacy `dynamic_tools` rules both use this isolation.
 
-Successful catalogs expire at the earlier of token expiry and 15 minutes. Authentication failures are cached for 60 seconds; transient discovery failures are retried on the next request. Static tools remain available if discovery fails. With authentication disabled, the server keeps its shared static-credential catalog and emits `notifications/tools/list_changed` after discovery.
+Successful catalogs expire at the earlier of token expiry and 15 minutes. Authentication failures are cached for 60 seconds; transient discovery failures are retried on the next HTTP request or SSE reconnect. Static tools remain available if discovery fails. With authentication disabled, the server keeps its shared static-credential catalog and emits `notifications/tools/list_changed` after discovery.
 
-Configuration reload starts a new catalog generation. Existing SSE clients must reconnect; old session POST endpoints return 404. SSE GET and POST requests must present the same effective credential, including when multiple sessions share a credential. Closing the final GET stream removes its handler bucket.
+A configuration change on reload starts a new catalog generation. Polling an unchanged effective configuration preserves the catalog and live SSE sessions. After an effective configuration change, existing SSE clients must reconnect; old session POST endpoints return 404. SSE GET and POST requests must present the same effective credential, including when multiple sessions share a credential. Closing the final GET stream removes its handler bucket.
 
 Authenticated STDIO exposes static tools only; it cannot discover or query with server credentials when no request token is available.
 

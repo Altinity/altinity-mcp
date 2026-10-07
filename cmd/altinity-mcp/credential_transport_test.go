@@ -522,6 +522,7 @@ func TestCredentialCatalogConcurrentReloadSnapshots(t *testing.T) {
 	newUp.marker = "_new"
 	oldCfg := catalogConfig(oldUp.chConfig(t), false, true)
 	newCfg := catalogConfig(newUp.chConfig(t), false, true)
+	newCfg.Logging.Level = config.DebugLevel
 	newCfg.Server.Tools = []config.ToolDefinition{{Type: "read", ViewRegexp: "^tenant\\..*", Prefix: "next_"}}
 	app := catalogApp(t, oldCfg)
 	web := httptest.NewServer(app.buildHTTPHandler(oldCfg, app.mcpServer.MCPServer))
@@ -560,9 +561,7 @@ func TestCredentialCatalogConcurrentReloadSnapshots(t *testing.T) {
 				body := string(data)
 				old := strings.Contains(body, "dyn_tenant_alice_old")
 				next := strings.Contains(body, "next_tenant_alice_new")
-				// A generation can retire before its cache is initialized; static-only
-				// completion remains safe, but a mixed catalog must never appear.
-				if strings.Contains(body, "dyn_tenant_alice_new") || strings.Contains(body, "next_tenant_alice_old") || (old && next) {
+				if strings.Contains(body, "dyn_tenant_alice_new") || strings.Contains(body, "next_tenant_alice_old") || (old == next) {
 					t.Errorf("mixed catalog generation: %s", body)
 					return
 				}
@@ -685,6 +684,173 @@ func TestLegacyClientEffectiveCredentials(t *testing.T) {
 			require.Equal(t, 1, up.queries["alice"])
 			require.Zero(t, up.queries["bob"])
 			require.Zero(t, up.queries["static"])
+			up.mu.Unlock()
+		})
+	}
+}
+
+func TestCredentialCatalogUnchangedPeriodicReload(t *testing.T) {
+	up := newCatalogUpstream(t)
+	unused := newCatalogUpstream(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := catalogConfig(up.chConfig(t), false, true)
+	cfg.ReloadTime = 1
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0600))
+	cmd := &mockCommand{flags: map[string]interface{}{"clickhouse-port": cfg.ClickHouse.Port}, setFlags: map[string]bool{"clickhouse-port": true}, stringMaps: map[string]map[string]string{}}
+	initial, err := config.LoadConfigFromFile(path)
+	require.NoError(t, err)
+	overrideWithCLIFlags(initial, cmd)
+	initial.RemovedKeyWarnings = []string{"previous diagnostic only"}
+	app := catalogApp(t, *initial)
+	app.configFile = path
+	app.stopConfigReload = make(chan struct{})
+	web := httptest.NewServer(app.buildSSEHandler(*initial, app.mcpServer.MCPServer))
+	defer web.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	tr := &credentialRoundTripper{token: "alice"}
+	session := catalogSession(t, ctx, web.URL+"/sse", tr, true)
+	assertCatalogSession(t, ctx, session, "alice", "bob")
+	initialParent := app.mcpServer
+	tr.endpointMu.Lock()
+	initialEndpoint := tr.endpoint
+	tr.endpointMu.Unlock()
+	// CLI overrides the on-disk endpoint. Restart-only metrics and multicluster
+	// settings also must not replace the effective catalog generation. ReloadTime
+	// is bookkeeping; observing it below proves the periodic tick completed.
+	next := *initial
+	next.ReloadTime = 2
+	next.ClickHouse.Port = unused.chConfig(t).Port
+	next.Server.Metrics.Enabled = true
+	next.Multicluster.CatalogCacheMax = initial.Multicluster.CatalogCacheMax + 1
+	data, err = json.Marshal(next)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0600))
+	loopCtx, stopLoop := context.WithCancel(ctx)
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); app.configReloadLoop(loopCtx, cmd) }()
+	t.Cleanup(func() { stopLoop(); <-loopDone })
+	require.Eventually(t, func() bool { return app.GetCurrentConfig().ReloadTime == 2 }, 5*time.Second, 10*time.Millisecond)
+	app.configMutex.RLock()
+	parent := app.mcpServer
+	app.configMutex.RUnlock()
+	require.Same(t, initialParent, parent)
+	current := app.GetCurrentConfig()
+	require.Equal(t, initial.Multicluster, current.Multicluster)
+	require.False(t, current.Server.Metrics.Enabled)
+	require.Empty(t, current.RemovedKeyWarnings)
+	assertCatalogSession(t, ctx, session, "alice", "bob")
+	catalogSchema(t, web.URL, tr, "alice", "bob")
+	tr.endpointMu.Lock()
+	require.Equal(t, initialEndpoint, tr.endpoint)
+	tr.endpointMu.Unlock()
+	require.NoError(t, app.reloadConfig(cmd))
+	app.configMutex.RLock()
+	parent = app.mcpServer
+	app.configMutex.RUnlock()
+	require.Same(t, initialParent, parent)
+	up.mu.Lock()
+	require.Equal(t, 1, up.discovers["alice"], "unchanged polls preserve the credential cache")
+	up.mu.Unlock()
+	require.Zero(t, unused.requests.Load())
+}
+
+func TestCredentialCatalogRetiredSnapshotCompletesDiscovery(t *testing.T) {
+	oldUp := newCatalogUpstream(t)
+	oldUp.marker = "_old"
+	newUp := newCatalogUpstream(t)
+	newUp.marker = "_new"
+	cfg := catalogConfig(oldUp.chConfig(t), false, true)
+	app := catalogApp(t, cfg)
+	oldParent := app.mcpServer
+	request := httptest.NewRequest(http.MethodPost, "/openapi/dyn_tenant_alice_old", strings.NewReader(`{"alice_old_id":1}`))
+	request.Header.Set("Authorization", "Bearer alice")
+	response := httptest.NewRecorder()
+	// Capture through production snapshot middleware, then retire the captured
+	// generation before it has ever created a catalog cache.
+	app.withServerSnapshot(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next := cfg
+		next.ClickHouse = newUp.chConfig(t)
+		writeCatalogReload(t, app, next)
+		captured := altinitymcp.GetClickHouseJWEServerFromContext(r.Context())
+		require.Same(t, oldParent, captured)
+		captured.OpenAPIHandler(w, r)
+	})).ServeHTTP(response, request)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "alice_old")
+	oldUp.mu.Lock()
+	require.Equal(t, 1, oldUp.discovers["alice_old"])
+	require.Equal(t, 1, oldUp.queries["alice_old"])
+	oldUp.mu.Unlock()
+	require.Zero(t, newUp.requests.Load())
+}
+
+func TestCredentialCatalogJWEIncompleteTransportMessage(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		for _, partial := range []string{"host_only", "username_only"} {
+			t.Run(fmt.Sprintf("%s/sse=%t", partial, sse), func(t *testing.T) {
+				up := newCatalogUpstream(t)
+				cfg := catalogConfig(up.chConfig(t), true, false)
+				app := catalogApp(t, cfg)
+				claims := map[string]interface{}{"exp": time.Now().Add(time.Hour).Unix()}
+				if partial == "host_only" {
+					claims["host"] = cfg.ClickHouse.Host
+				} else {
+					claims["username"] = "alice"
+				}
+				token, err := jwe_auth.GenerateJWEToken(claims, []byte(cfg.Server.JWE.JWESecretKey), []byte(cfg.Server.JWE.JWTSecretKey))
+				require.NoError(t, err)
+				var handler http.Handler = app.buildHTTPHandler(cfg, app.mcpServer.MCPServer)
+				suffix := ""
+				method := http.MethodPost
+				if sse {
+					handler = app.buildSSEHandler(cfg, app.mcpServer.MCPServer)
+					suffix = "/sse"
+					method = http.MethodGet
+				}
+				web := httptest.NewServer(handler)
+				defer web.Close()
+				request, err := http.NewRequest(method, web.URL+"/"+token+suffix, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+				require.NoError(t, err)
+				request.Header.Set("Content-Type", "application/json")
+				response, err := http.DefaultClient.Do(request)
+				require.NoError(t, err)
+				body, err := io.ReadAll(response.Body)
+				response.Body.Close()
+				require.NoError(t, err)
+				require.Equal(t, 401, response.StatusCode)
+				require.Equal(t, altinitymcp.ErrJWEIncompleteConnection.Error(), strings.TrimSpace(string(body)))
+				require.Zero(t, up.requests.Load())
+			})
+		}
+	}
+}
+
+func TestCredentialCatalogNoAuthUnifiedTransports(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sse=%t", sse), func(t *testing.T) {
+			up := newCatalogUpstream(t)
+			cfg := catalogConfig(up.chConfig(t), false, false)
+			app := catalogApp(t, cfg)
+			var handler http.Handler = app.buildHTTPHandler(cfg, app.mcpServer.MCPServer)
+			suffix := ""
+			if sse {
+				handler = app.buildSSEHandler(cfg, app.mcpServer.MCPServer)
+				suffix = "/sse"
+			}
+			web := httptest.NewServer(handler)
+			defer web.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			tr := &credentialRoundTripper{}
+			session := catalogSession(t, ctx, web.URL+suffix, tr, sse)
+			assertCatalogSession(t, ctx, session, "static", "foreign")
+			catalogSchema(t, web.URL, tr, "static", "foreign")
+			up.mu.Lock()
+			require.Equal(t, 1, up.discovers["static"])
+			require.Equal(t, 1, up.queries["static"])
 			up.mu.Unlock()
 		})
 	}

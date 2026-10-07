@@ -349,7 +349,7 @@ OpenAI MCP/tooling references:
 - **With both**: A self-contained JWE takes priority; otherwise OAuth supplies the credentials.
 - **With both disabled**: Use server-configured ClickHouse credentials.
 
-The exact `/openapi` schema route also requires authentication when either mode is enabled. Dynamic HTTP/SSE tools and OpenAPI schemas use catalogs isolated by the caller's effective credential; server credentials are never a fallback under authentication. Reloading configuration resets catalog generations and requires existing SSE clients to reconnect. See [dynamic discovery](docs/tools.md#dynamic-discovery).
+The exact `/openapi` schema route also requires authentication when either mode is enabled. Dynamic HTTP/SSE tools and OpenAPI schemas use catalogs isolated by the caller's effective credential; server credentials are never a fallback under authentication. An effective configuration change resets catalog generations and requires existing SSE clients to reconnect. Unchanged reload polls preserve sessions. See [dynamic discovery](docs/tools.md#dynamic-discovery).
 
 ### Available Actions
 

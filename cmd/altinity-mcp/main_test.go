@@ -243,6 +243,7 @@ func TestRoutePatterns(t *testing.T) {
 				"/{token}/openapi/list_tables",
 				"/{token}/openapi/describe_table",
 				"/{token}/openapi/execute_query",
+				"/openapi",
 				"/openapi/list_tables",
 				"/openapi/describe_table",
 				"/openapi/execute_query",

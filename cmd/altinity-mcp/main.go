@@ -35,8 +35,10 @@ var (
 	commit  = "unknown"
 	date    = "unknown"
 
-	// loggingMutex protects global zerolog state during setupLogging calls
-	loggingMutex sync.Mutex
+	// Initialize the shared formatter before workers start; subsequent level
+	// changes use zerolog's atomic global level without replacing the logger.
+	loggingMutex      sync.Mutex
+	loggingFormatOnce sync.Once
 )
 
 func main() {
@@ -117,9 +119,10 @@ func setupLogging(level string) error {
 	loggingMutex.Lock()
 	defer loggingMutex.Unlock()
 
-	// Configure zerolog
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
+	loggingFormatOnce.Do(func() {
+		zerolog.TimeFieldFormat = time.RFC3339
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05"})
+	})
 
 	// Set log level
 	switch strings.ToLower(level) {
@@ -1228,6 +1231,7 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 	a.configMutex.RUnlock()
 	if !reflect.DeepEqual(oldMC, newCfg.Multicluster) {
 		log.Warn().Msg("config reload: multicluster.* fields changed — restart required for these to take effect; routing/cache remain on the previous configuration")
+		newCfg.Multicluster = oldMC
 	}
 
 	// server.metrics.* is restart-only for the same reason: the /metrics
@@ -1254,9 +1258,21 @@ func (a *application) reloadConfig(cmd CommandInterface) error {
 		newCfg.Server.Metrics = oldMetrics
 	}
 
-	// Update logging level if changed
+	// File polling must not retire catalogs and live SSE streams when the
+	// effective configuration did not change. Reload bookkeeping is excluded.
 	a.configMutex.Lock()
-	oldLogLevel := a.config.Logging.Level
+	current := a.config
+	oldEffective, newEffective := current, *newCfg
+	oldEffective.ReloadTime, newEffective.ReloadTime = 0, 0
+	oldEffective.RemovedKeyWarnings, newEffective.RemovedKeyWarnings = nil, nil
+	if a.mcpServer != nil && reflect.DeepEqual(oldEffective, newEffective) {
+		a.config.ReloadTime = newCfg.ReloadTime
+		a.config.RemovedKeyWarnings = newCfg.RemovedKeyWarnings
+		a.configMutex.Unlock()
+		log.Debug().Msg("Configuration unchanged; preserving catalog generation")
+		return nil
+	}
+	oldLogLevel := current.Logging.Level
 	a.configMutex.Unlock()
 
 	if oldLogLevel != newCfg.Logging.Level {
