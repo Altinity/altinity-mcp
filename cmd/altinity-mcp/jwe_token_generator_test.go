@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -131,6 +132,8 @@ func TestProtectedJWETokenGeneratorBodyAndExpiry(t *testing.T) {
 
 func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	outside := t.TempDir()
 	for _, name := range []string{"ca.pem", "cert.pem", "key.pem"} {
 		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte("fake TLS material"), 0600))
@@ -161,7 +164,7 @@ func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 					rr := callProtectedGenerator(cfg, http.MethodPost, string(body), "Bearer "+fakeGeneratorAdmin, zerolog.Nop())
 					require.Equal(t, tt.status, rr.Code)
 					if tt.status == http.StatusOK {
-						require.Equal(t, filepath.Join(root, "ca.pem"), decodeGeneratedClaims(t, cfg, rr)[field])
+						require.Equal(t, filepath.Join(resolvedRoot, "ca.pem"), decodeGeneratedClaims(t, cfg, rr)[field])
 					} else {
 						require.NotContains(t, rr.Body.String(), tt.path)
 						require.NotContains(t, rr.Body.String(), "fake outside material")
@@ -173,6 +176,9 @@ func TestProtectedJWETokenGeneratorTLSPaths(t *testing.T) {
 }
 
 func TestProtectedJWETokenGeneratorIssuanceLog(t *testing.T) {
+	initialLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(initialLevel) })
 	cfg := protectedGeneratorConfig()
 	var output bytes.Buffer
 	logger := zerolog.New(&output).Level(zerolog.InfoLevel)
@@ -199,4 +205,27 @@ func TestProtectedJWETokenGeneratorIssuanceLog(t *testing.T) {
 	output.Reset()
 	require.Equal(t, http.StatusBadRequest, callProtectedGenerator(cfg, http.MethodPost, body+"null", "Bearer "+fakeGeneratorAdmin, logger).Code)
 	require.Empty(t, output.String())
+}
+
+func TestProtectedJWETokenGeneratorRejectsBlankConnectionClaims(t *testing.T) {
+	initialLevel := zerolog.GlobalLevel()
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	t.Cleanup(func() { zerolog.SetGlobalLevel(initialLevel) })
+	for _, field := range []string{"host", "username"} {
+		for _, value := range []string{" ", "\t\r\n", "\u00a0", "\u2003", " \t\u00a0\u2003\n"} {
+			t.Run(field+"/"+fmt.Sprintf("%q", value), func(t *testing.T) {
+				claims := map[string]string{"host": "ch.example", "username": "alice"}
+				claims[field] = value
+				body, err := json.Marshal(claims)
+				require.NoError(t, err)
+				var output bytes.Buffer
+				logger := zerolog.New(&output).Level(zerolog.InfoLevel)
+				rr := callProtectedGenerator(protectedGeneratorConfig(), http.MethodPost, string(body), "Bearer "+fakeGeneratorAdmin, logger)
+				require.Equal(t, http.StatusBadRequest, rr.Code)
+				require.Equal(t, "jwe: token must carry host and username claims\n", rr.Body.String())
+				require.NotContains(t, rr.Body.String(), `"token"`)
+				require.Empty(t, output.String(), "rejected blank claims must not produce an issuance log")
+			})
+		}
+	}
 }

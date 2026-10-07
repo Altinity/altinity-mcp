@@ -86,7 +86,7 @@ func serveJWETokenGeneration(w http.ResponseWriter, r *http.Request, cfg config.
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if request.Host == "" || request.Username == "" {
+	if strings.TrimSpace(request.Host) == "" || strings.TrimSpace(request.Username) == "" {
 		http.Error(w, "jwe: token must carry host and username claims", http.StatusBadRequest)
 		return
 	}

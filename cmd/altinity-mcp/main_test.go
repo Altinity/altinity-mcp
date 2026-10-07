@@ -1146,9 +1146,10 @@ func TestNewApplication(t *testing.T) {
 			},
 			Server: config.ServerConfig{
 				JWE: config.JWEConfig{
-					Enabled:      true,
-					JWESecretKey: "jwe-secret",
-					JWTSecretKey: "", // Empty secret key is now allowed
+					TokenGenerator: config.JWETokenGeneratorConfig{Enabled: true, AdminToken: fakeGeneratorAdmin},
+					Enabled:        true,
+					JWESecretKey:   "jwe-secret",
+					JWTSecretKey:   "", // Empty secret key is now allowed
 				},
 			},
 		}
@@ -1166,6 +1167,7 @@ func TestNewApplication(t *testing.T) {
 		app, err := newApplication(ctx, cfg, cmd)
 		require.NoError(t, err)
 		require.NotNil(t, app)
+		t.Cleanup(app.Close)
 
 		claims := map[string]interface{}{
 			"host":     "localhost",
@@ -1179,6 +1181,7 @@ func TestNewApplication(t *testing.T) {
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodPost, "/jwe-token-generator", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+fakeGeneratorAdmin)
 		w := httptest.NewRecorder()
 
 		app.jweTokenGeneratorHandler(w, req)
@@ -1195,7 +1198,6 @@ func TestNewApplication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "localhost", parsedClaims["host"])
 		require.Equal(t, float64(8123), parsedClaims["port"])
-		app.Close()
 	})
 
 	t.Run("jwe_enabled_with_secret", func(t *testing.T) {
@@ -2978,7 +2980,8 @@ func TestJWETokenGeneratorHandler(t *testing.T) {
 	jweSecretKey := "a-secret-for-jwe-generation-test"
 	jwtSecretKey := "a-secret-for-jwt-generation-test"
 
-	tlsDir := t.TempDir()
+	tlsDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	for _, name := range []string{"ca.crt", "client.crt", "client.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("fake TLS material"), 0600))
 	}

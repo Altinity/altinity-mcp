@@ -171,8 +171,11 @@ server:
 
 Enable it with `server.jwe.token_generator.enabled: true`,
 `--jwe-token-generator`, or `MCP_JWE_TOKEN_GENERATOR_ENABLED=true`, and set
-`MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`. Changing `token_generator.enabled` requires a restart. Reload preserves its
-running value; admin-token rotation and maximum-lifetime changes apply on reload.
+`MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`. Changing `token_generator.enabled`
+requires a restart. Reload preserves its running value; admin-token rotation
+and maximum-lifetime changes apply on reload. These changes rebuild the MCP
+catalog generation and disconnect existing SSE sessions; SSE clients must
+reconnect.
 An invalid requested or effective enabled configuration rejects the entire reload.
 Keep the endpoint on a trusted administrative network and **never expose it
 publicly**; use an ingress rule to exclude `/jwe-token-generator` from public
