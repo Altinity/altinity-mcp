@@ -40,14 +40,26 @@ func TestJWETLSMaterialPath(t *testing.T) {
 			require.EqualError(t, err, "jwe: invalid TLS material path")
 		})
 	}
+	expectedPath, err := filepath.EvalSymlinks(allowed)
+	require.NoError(t, err)
 	for _, path := range []string{allowed, insideLink} {
 		resolved, err := cfg.ValidateTLSMaterialPath(path)
 		require.NoError(t, err)
-		require.Equal(t, allowed, resolved)
+		require.Equal(t, expectedPath, resolved)
 	}
-	_, err := (JWEConfig{}).ValidateTLSMaterialPath(allowed)
+	_, err = (JWEConfig{}).ValidateTLSMaterialPath(allowed)
 	require.EqualError(t, err, "jwe: invalid TLS material path")
 	resolved, err := (JWEConfig{}).ValidateTLSMaterialPath("")
 	require.NoError(t, err)
 	require.Empty(t, resolved)
+	// A configured root may itself be a symlink, as with mounted secrets or
+	// platform temporary directories. Paths still resolve within its target.
+	rootLink := filepath.Join(parent, "allowed-link")
+	require.NoError(t, os.Symlink(root, rootLink))
+	linkedCfg := JWEConfig{TLSMaterialDir: rootLink}
+	resolved, err = linkedCfg.ValidateTLSMaterialPath(filepath.Join(rootLink, "ca.pem"))
+	require.NoError(t, err)
+	require.Equal(t, expectedPath, resolved)
+	_, err = linkedCfg.ValidateTLSMaterialPath(filepath.Join(rootLink, "escape.pem"))
+	require.EqualError(t, err, "jwe: invalid TLS material path")
 }

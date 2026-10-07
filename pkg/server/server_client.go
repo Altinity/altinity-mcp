@@ -66,7 +66,7 @@ func (s *ClickHouseJWEServer) buildConfigFromClaims(claims map[string]interface{
 // endpoint, credentials, headers, roles, and TLS material must never be inherited.
 func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHouseConfig, claims map[string]interface{}) (config.ClickHouseConfig, error) {
 	if !s.JWEClaimsHaveCredentials(claims) {
-		return config.ClickHouseConfig{}, fmt.Errorf("jwe: token must carry host and username claims")
+		return config.ClickHouseConfig{}, ErrJWEIncompleteConnection
 	}
 	chConfig := config.ClickHouseConfig{
 		Host: claims["host"].(string), Username: claims["username"].(string),
@@ -124,7 +124,8 @@ func (s *ClickHouseJWEServer) buildConfigFromClaimsWithBase(base config.ClickHou
 // GetClickHouseClientFromCtx creates a ClickHouse client using JWE and/or
 // OAuth tokens from context. When the multi-cluster router has injected a
 // per-request ClickHouseConfig (host templated for the active cluster), it
-// is used; otherwise s.Config.ClickHouse is the base.
+// supplies the OAuth/static endpoint or JWE operational defaults. JWE never
+// inherits its connection fields and cannot fall back to static credentials.
 func (s *ClickHouseJWEServer) GetClickHouseClientFromCtx(ctx context.Context) (*clickhouse.Client, error) {
 	jweToken := s.ExtractTokenFromCtx(ctx)
 	oauthToken := s.ExtractOAuthTokenFromCtx(ctx)
@@ -152,7 +153,8 @@ func (s *ClickHouseJWEServer) GetOAuthClaimsFromCtx(ctx context.Context) *OAuthC
 
 // ValidateAuth validates authentication using priority/fallback semantics.
 // JWE takes priority: if present and valid with credentials, OAuth is skipped.
-// If JWE is absent or has no credentials, falls through to OAuth.
+// If JWE is absent or incomplete, falls through to OAuth when enabled.
+// In JWE-only mode incomplete tokens are rejected.
 func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jweClaims map[string]interface{}, oauthToken string, oauthClaims *OAuthClaims, err error) {
 	jweEnabled := s.Config.Server.JWE.Enabled
 	oauthEnabled := s.Config.Server.OAuth.Enabled
@@ -200,7 +202,7 @@ func (s *ClickHouseJWEServer) ValidateAuth(r *http.Request) (jweToken string, jw
 		return "", nil, "", nil, jwe_auth.ErrMissingToken
 	}
 
-	return "", nil, "", nil, fmt.Errorf("jwe: token must carry host and username claims")
+	return "", nil, "", nil, ErrJWEIncompleteConnection
 }
 
 func (s *ClickHouseJWEServer) openAPIPathPrefixes() []string {
@@ -251,7 +253,7 @@ func (s *ClickHouseJWEServer) GetClickHouseClientWithOAuthForConfig(ctx context.
 			}
 			useJWE = true
 		} else if !s.Config.Server.OAuth.Enabled || oauthToken == "" {
-			return nil, fmt.Errorf("jwe: token must carry host and username claims")
+			return nil, ErrJWEIncompleteConnection
 		}
 	} else if s.Config.Server.JWE.Enabled && (!s.Config.Server.OAuth.Enabled || oauthToken == "") {
 		return nil, jwe_auth.ErrMissingToken

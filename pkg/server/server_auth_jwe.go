@@ -2,12 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/rs/zerolog/log"
 )
+
+// ErrJWEIncompleteConnection identifies tokens missing the endpoint or identity
+// required for a self-contained ClickHouse connection. It carries no claims.
+var ErrJWEIncompleteConnection = errors.New("jwe: token must carry host and username claims")
 
 // ExtractTokenFromCtx extracts a token from context
 func (s *ClickHouseJWEServer) ExtractTokenFromCtx(ctx context.Context) string {

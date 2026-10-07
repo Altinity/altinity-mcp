@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/altinity/altinity-mcp/pkg/config"
+	"github.com/altinity/go-mcp-oauth-sdk/jwe_auth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +90,7 @@ func TestJWERejectedBeforeConnection(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			claims["exp"] = time.Now().Add(time.Hour).Unix()
+			claims["password"] = "fake-token-secret"
 			token := generateJWEToken(t, claims, []byte(key), nil)
 			_, err := srv.GetClickHouseClient(context.Background(), token)
 			require.Error(t, err)
@@ -100,7 +102,16 @@ func TestJWERejectedBeforeConnection(t *testing.T) {
 			req = req.WithContext(context.WithValue(req.Context(), CHJWEServerKey, srv))
 			rr := httptest.NewRecorder()
 			srv.OpenAPIHandler(rr, req)
-			require.NotEqual(t, http.StatusOK, rr.Code)
+			if name == "empty" || name == "host_only" || name == "username_only" {
+				require.ErrorIs(t, err, ErrJWEIncompleteConnection)
+				require.Equal(t, http.StatusUnauthorized, rr.Code)
+				require.Equal(t, "jwe: token must carry host and username claims\n", rr.Body.String())
+			} else {
+				require.NotEqual(t, http.StatusOK, rr.Code)
+			}
+			require.NotContains(t, rr.Body.String(), "fake-token-secret")
+			require.NotContains(t, rr.Body.String(), "fake-password")
+			require.NotContains(t, rr.Body.String(), "/etc/passwd")
 			require.Zero(t, requests.Load())
 		})
 	}
@@ -118,8 +129,12 @@ func TestJWETLSClaims(t *testing.T) {
 	cfg, err := srv.buildConfigFromClaims(claims)
 	require.NoError(t, err)
 	require.True(t, cfg.TLS.Enabled)
-	require.Equal(t, cert, cfg.TLS.ClientCert)
-	require.Equal(t, key, cfg.TLS.ClientKey)
+	resolvedCert, err := filepath.EvalSymlinks(cert)
+	require.NoError(t, err)
+	resolvedKey, err := filepath.EvalSymlinks(key)
+	require.NoError(t, err)
+	require.Equal(t, resolvedCert, cfg.TLS.ClientCert)
+	require.Equal(t, resolvedKey, cfg.TLS.ClientKey)
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	token := generateJWEToken(t, claims, []byte("fake-key"), nil)
 	_, err = srv.GetClickHouseClient(context.Background(), token)
@@ -154,5 +169,45 @@ func TestValidateAuthUsernameWithoutHost(t *testing.T) {
 		} else {
 			require.Error(t, err)
 		}
+	}
+}
+
+// Missing request credentials must fail before static operator credentials can
+// be used, including discovery's context-based client path.
+func TestJWEAbsentTokensDoNotUseStaticCredentials(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected static credential use", http.StatusForbidden)
+	}))
+	defer upstream.Close()
+	endpoint, err := url.Parse(upstream.URL)
+	require.NoError(t, err)
+	host, portText, err := net.SplitHostPort(endpoint.Host)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+	for _, oauthEnabled := range []bool{false, true} {
+		name := "jwe_only"
+		if oauthEnabled {
+			name = "jwe_and_oauth"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := NewClickHouseMCPServer(config.Config{
+				ClickHouse: config.ClickHouseConfig{Host: host, Port: port, Protocol: config.HTTPProtocol, Username: "operator", Password: "fake-static-password"},
+				Server:     config.ServerConfig{JWE: config.JWEConfig{Enabled: true, JWESecretKey: "fake-key"}, OAuth: config.OAuthConfig{Enabled: oauthEnabled}},
+			}, "test")
+			ctx := context.Background()
+			_, err := srv.GetClickHouseClientWithOAuth(ctx, "", "", nil)
+			require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+			_, err = srv.GetClickHouseClientFromCtx(ctx)
+			require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+			_, err = srv.GetClickHouseClientWithOAuthForConfig(ctx, srv.Config.ClickHouse, "", "", nil)
+			require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+			_, err = srv.getDiscoveryClient(ctx)
+			require.ErrorIs(t, err, jwe_auth.ErrMissingToken)
+			require.Zero(t, requests.Load(), "missing tokens must never reach the operator endpoint")
+		})
 	}
 }

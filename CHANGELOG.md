@@ -1,7 +1,7 @@
 # Unreleased
 
 BUG FIXES
-- security: require self-contained JWE ClickHouse connections with host and username; prevent inheritance of operator endpoints, credentials, headers, roles, and TLS material; restrict token TLS file paths to `server.jwe.tls_material_dir` (fixes [#179](https://github.com/Altinity/altinity-mcp/issues/179)). Regenerate tokens that relied on static connection defaults.
+- security: require self-contained JWE ClickHouse connections with host and username; prevent inheritance of operator endpoints, credentials, headers, roles, and TLS material; restrict token TLS file paths to `server.jwe.tls_material_dir` (fixes [#179](https://github.com/Altinity/altinity-mcp/issues/179)). Missing request tokens now fail closed in JWE-only and combined JWE/OAuth client paths, including discovery, instead of using static operator credentials. Regenerate tokens that relied on static connection defaults.
 - security: OpenAPI `execute_query` always rejects write statements and enforces `max_query_length`; dynamic-tool JSON bodies use the same input-size limit (fixes [#183](https://github.com/Altinity/altinity-mcp/issues/183))
 - security: isolate per-request ClickHouse headers, settings, and roles; prevent concurrent OAuth bearer forwarding from crashing the server, confusing caller identities, or leaking a stale bearer into later JWE or static-credential requests (fixes [#181](https://github.com/Altinity/altinity-mcp/issues/181))
 

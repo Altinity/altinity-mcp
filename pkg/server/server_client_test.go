@@ -58,6 +58,7 @@ func TestBuildConfigFromClaims(t *testing.T) {
 		{"host": "x", "username": "   "},
 	} {
 		_, err := srv.buildConfigFromClaims(claims)
+		require.ErrorIs(t, err, ErrJWEIncompleteConnection)
 		require.EqualError(t, err, "jwe: token must carry host and username claims")
 	}
 }
