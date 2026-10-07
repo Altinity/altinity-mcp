@@ -9,10 +9,10 @@ require (
 	github.com/franchb/embedded-clickhouse v0.4.2
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/client_model v0.6.3
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
-	github.com/urfave/cli/v3 v3.11.0
+	github.com/urfave/cli/v3 v3.14.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -26,7 +26,7 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 require (
