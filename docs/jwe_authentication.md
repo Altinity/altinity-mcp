@@ -71,6 +71,9 @@ The following CLI options are available for JWE authentication:
 --jwe-secret-key string           Secret key for JWE token decryption
 --jwt-secret-key string           Secret key for nested JWT signature verification (optional)
 --jwe-tls-material-dir string     Directory allowlist for token TLS file paths (empty denies paths)
+--jwe-token-generator             Enable the administrative token issuance endpoint (default false)
+--jwe-token-generator-admin-token Admin bearer secret (at least 32 bytes; prefer environment injection)
+--jwe-token-generator-max-expiry-seconds Maximum token lifetime in seconds (default 86400)
 ```
 
 You can also set these options using environment variables:
@@ -80,6 +83,9 @@ MCP_ALLOW_JWE_AUTH=true
 MCP_JWE_SECRET_KEY=jwe-encryption-secret
 MCP_JWT_SECRET_KEY=jwt-signing-secret
 MCP_JWE_TLS_MATERIAL_DIR=/etc/altinity-mcp/jwe-tls
+MCP_JWE_TOKEN_GENERATOR_ENABLED=false
+MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN=
+MCP_JWE_TOKEN_GENERATOR_MAX_EXPIRY_SECONDS=86400
 ```
 
 ## Starting the Server with JWE Authentication
@@ -147,9 +153,44 @@ go run cmd/jwe_auth/jwe_token_generator.go \
 
 ### JWE Token Generation Endpoint
 
-The Altinity MCP server provides a `/jwe-token-generator` endpoint that allows you to generate JWE tokens dynamically. This is useful for integrations where you need to generate tokens on the fly without using the command-line tool.
+`POST /jwe-token-generator` is an administrative token issuance endpoint. It is
+**disabled by default**, including when JWE authentication is enabled. Existing
+deployments that used this endpoint must explicitly enable it and supply an
+admin bearer secret of at least 32 bytes. Startup and configuration reload reject
+an enabled generator with a missing or short secret.
 
-To use this endpoint, you must have JWE authentication enabled on the server.
+```yaml
+server:
+  jwe:
+    enabled: true
+    token_generator:
+      enabled: false
+      admin_token: "" # Inject MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN from a secret store.
+      max_expiry_seconds: 86400
+```
+
+Enable it with `server.jwe.token_generator.enabled: true`,
+`--jwe-token-generator`, or `MCP_JWE_TOKEN_GENERATOR_ENABLED=true`, and set
+`MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN`. Enabling the route requires a restart.
+Keep the endpoint on a trusted administrative network and **never expose it
+publicly**; use an ingress rule to exclude `/jwe-token-generator` from public
+access. The generator shares the HTTP/SSE listener. A separate listener is not
+provided. Use HTTPS when accessing it across a network.
+
+Every request must present `Authorization: Bearer <admin_token>`. OAuth tokens,
+ClickHouse credentials, and the JWE encryption key do not authorize issuance.
+The request requires nonempty `host` and `username`; `password` may be absent or
+empty. The complete request body must be one JSON value within 64 KiB, including
+trailing whitespace. A missing or zero `expiry` defaults to 3600 seconds; it is
+rejected if that default exceeds the configured maximum. Negative expiry and
+expiry above `max_expiry_seconds` are rejected. Zero maximum uses the default
+86400 seconds; negative maximum is invalid for an enabled generator.
+
+Nonempty `tls_ca_cert`, `tls_client_cert`, and `tls_client_key` must pass the
+[server TLS allowlist](#tls-material-allowlist), even when `tls_enabled` is
+false. Issued tokens contain the resolved allowed paths. Successful issuance
+logs only the requested host, username, and lifetime at info level, with no
+password, token, or admin secret.
 
 **Endpoint:** `POST /jwe-token-generator`
 
@@ -159,6 +200,7 @@ To use this endpoint, you must have JWE authentication enabled on the server.
 ```bash
 curl -X POST http://localhost:8080/jwe-token-generator \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer ${MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN}" \
 -d '{
     "host": "clickhouse.example.com",
     "port": 8123,
@@ -176,6 +218,7 @@ Protocol is always http but with TLS enabled we need to add a couple of tls para
 ```bash
 curl -X POST http://localhost:8080/jwe-token-generator \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer ${MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN}" \
 -d '{
     "host": "clickhouse.example.com",
     "port": 8443,
@@ -198,9 +241,11 @@ curl -X POST http://localhost:8080/jwe-token-generator \
 ```
 
 **Error Responses:**
-- `403 Forbidden`: If JWE authentication is not enabled on the server.
-- `405 Method Not Allowed`: If a method other than `POST` is used.
-- `400 Bad Request`: If the request body is not valid JSON.
+- `404 Not Found`: If JWE authentication or the generator is disabled.
+- `401 Unauthorized`: If the admin bearer token is missing or incorrect.
+- `405 Method Not Allowed`: If an authenticated request uses a method other than `POST`.
+- `413 Content Too Large`: If the complete request body exceeds 64 KiB.
+- `400 Bad Request`: If the JSON, required claims, expiry, or TLS paths are invalid.
 
 ## Token Generation and Validation
 

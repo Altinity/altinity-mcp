@@ -447,6 +447,13 @@ Nonempty token TLS file paths require `server.jwe.tls_material_dir`
 that operator-controlled directory after symlink resolution. See the
 [JWE migration and TLS allowlist guide](docs/jwe_authentication.md#self-contained-connection-contract).
 
+The HTTP/SSE `/jwe-token-generator` endpoint is disabled by default. To enable
+administrative issuance, set `server.jwe.token_generator.enabled: true` and
+inject `MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN` with at least 32 bytes. Each request
+requires that secret as an `Authorization: Bearer` token. Keep this endpoint on
+a trusted administrative network and exclude it from public ingress. See the
+[generator setup and request limits](docs/jwe_authentication.md#jwe-token-generation-endpoint).
+
 Generate tokens using the provided utility. 
 
 ```bash
@@ -521,6 +528,9 @@ For the full OAuth setup and ClickHouse-specific details, see the [OAuth 2.0 Aut
 - `--jwe-secret-key`: Secret key for JWE token decryption (must be 32 bytes for A256KW).
 - `--jwt-secret-key`: Secret key for JWT signature verification
 - `--jwe-tls-material-dir`: Directory allowlist for JWE TLS file paths (empty denies token file paths)
+- `--jwe-token-generator`: Enable administrative JWE token issuance (default false; `MCP_JWE_TOKEN_GENERATOR_ENABLED`)
+- `--jwe-token-generator-admin-token`: Admin bearer secret of at least 32 bytes (prefer `MCP_JWE_TOKEN_GENERATOR_ADMIN_TOKEN` secret injection)
+- `--jwe-token-generator-max-expiry-seconds`: Maximum issued token lifetime (default 86400; `MCP_JWE_TOKEN_GENERATOR_MAX_EXPIRY_SECONDS`)
 
 ### Commands
 

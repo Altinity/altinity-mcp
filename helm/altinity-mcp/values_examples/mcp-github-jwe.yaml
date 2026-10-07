@@ -26,6 +26,10 @@ config:
       enabled: true
       # Set only when custom TLS files are mounted read-only beneath this directory.
       tls_material_dir: ""
+      token_generator:
+        enabled: false
+        admin_token: ""
+        max_expiry_seconds: 86400
       jwe_secret_key: "test-encryption-key"
       jwt_secret_key: "test-signing-key"
   
