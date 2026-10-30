@@ -737,3 +737,73 @@ func TestHandleExecuteQuery_CapsDisabled(t *testing.T) {
 	require.Equal(t, 1000, qr.Count)
 	require.Nil(t, qr.Truncated)
 }
+
+// TestToolInputSQLSettingsRoundTrip exercises the registered execute_query tool
+// against stock ClickHouse, without overriding custom_settings_prefixes.
+func TestToolInputSQLSettingsRoundTrip(t *testing.T) {
+	t.Parallel()
+	chConfig := setupEmbeddedClickHouseUnseeded(t)
+	cfg := config.Config{
+		ClickHouse: *chConfig,
+		Server:    config.ServerConfig{
+			ToolInputSettings: []string{"SQL_tenant_id"},
+		},
+	}
+	srv := NewClickHouseMCPServer(cfg, "test")
+	ctx := context.WithValue(context.Background(), CHJWEServerKey, srv)
+	var execute ToolHandlerFunc
+	RegisterTools(&mockMCPServer{
+		addToolFn: func(tool *mcp.Tool, handler ToolHandlerFunc) {
+			if tool.Name == "execute_query" {
+				execute = handler
+			}
+		},
+	}, &cfg)
+	require.NotNil(t, execute)
+
+	call := func(settings map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		args := map[string]any{"query": "SELECT getSetting('SQL_tenant_id')"}
+		if settings != nil {
+			args["settings"] = settings
+		}
+		raw, err := json.Marshal(args)
+		require.NoError(t, err)
+		result, err := execute(ctx, &mcp.CallToolRequest{
+			Params: &mcp.CallToolParamsRaw{Name: "execute_query", Arguments: raw},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		return result
+	}
+	decode := func(result *mcp.CallToolResult) clickhouse.QueryResult {
+		t.Helper()
+		require.Len(t, result.Content, 1)
+		content, ok := result.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		var qr clickhouse.QueryResult
+		require.NoError(t, json.Unmarshal([]byte(content.Text), &qr))
+		return qr
+	}
+
+	const value = "fake_tenant_A"
+	first := call(map[string]any{"SQL_tenant_id": value})
+	require.False(t, first.IsError, "stock ClickHouse must accept SQL_ settings: %v", first.Content)
+	qr := decode(first)
+	require.Equal(t, [][]interface{}{{value}}, qr.Rows)
+
+	second := call(nil)
+	if second.IsError {
+		// ClickHouse normally reports UNKNOWN_SETTING when no value was set.
+		require.Len(t, second.Content, 1)
+		content, ok := second.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		require.Contains(t, content.Text, "UNKNOWN_SETTING")
+		return
+	}
+	for _, row := range decode(second).Rows {
+		for _, cell := range row {
+			require.NotEqual(t, value, cell, "a subsequent request must not inherit the setting")
+		}
+	}
+}

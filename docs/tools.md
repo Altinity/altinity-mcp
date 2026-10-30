@@ -23,6 +23,31 @@ Two static tools are built into the server:
 - `query` (string, required) — the SQL to run. Include `LIMIT N` in the SQL itself if you want a specific row cap; the server does not rewrite your query.
 - `settings` (object, optional) — ClickHouse query settings forwarded with the request.
 
+Configure `server.tool_input_settings` to allowlist setting names exposed by the
+optional `settings` object. Values must be strings; names and values are forwarded
+exactly as supplied and apply only to the current request. Unlisted names and
+blocked safety settings are rejected.
+
+Use the recommended `SQL_` prefix, for example:
+
+```yaml
+server:
+  tool_input_settings: [SQL_tenant_id]
+```
+
+An `execute_query` call can then supply:
+
+```json
+{"query": "SELECT getSetting('SQL_tenant_id')", "settings": {"SQL_tenant_id": "tenant_a"}}
+```
+
+Startup checks the prefix case-insensitively. Other prefixes, including `custom_`,
+produce an advisory warning and remain accepted by MCP when otherwise valid.
+Configure ClickHouse's `custom_settings_prefixes` to permit any other prefixes
+used by your settings. Existing settings do not need to be renamed. Prefix
+comparison does not change the spelling sent to ClickHouse; the allowlist and
+request must use the exact same setting name.
+
 `write_query` accepts the same `query` and `settings` parameters and executes the statement as-is.
 
 **Handler mapping:** `name: execute_query` registers the `HandleReadOnlyQuery` function in `pkg/server/server.go`, which enforces the SELECT-only guard and then delegates to `HandleExecuteQuery`. `name: write_query` registers `HandleExecuteQuery` directly. These two names are the only valid values for static tool entries.

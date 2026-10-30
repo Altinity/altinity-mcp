@@ -42,7 +42,12 @@ func TestValidateToolInputSettings(t *testing.T) {
 		wantWarnings int
 		warnContains string
 	}{
-		{"valid_custom_prefix", []string{"custom_tenant_id", "custom_user_id"}, "", 0, ""},
+		{"valid_SQL_prefix", []string{"SQL_tenant_id"}, "", 0, ""},
+		{"valid_lowercase_prefix", []string{"sql_tenant_id"}, "", 0, ""},
+		{"valid_mixed_case_prefix", []string{"SqL_tenant_id"}, "", 0, ""},
+		{"missing_underscore", []string{"SQLtenant_id"}, "", 1, "SQLtenant_id"},
+		{"old_custom_prefix", []string{"custom_tenant_id"}, "", 1, "custom_tenant_id"},
+		{"duplicate_SQL_case", []string{"SQL_tenant_id", "sql_tenant_id"}, "duplicate", 0, ""},
 		{"nil_settings", nil, "", 0, ""},
 		{"empty_settings", []string{}, "", 0, ""},
 		{"blocked_readonly", []string{"readonly"}, "blocked", 0, ""},
@@ -53,8 +58,8 @@ func TestValidateToolInputSettings(t *testing.T) {
 		{"blocked_user", []string{"user"}, "blocked", 0, ""},
 		{"duplicate_setting", []string{"custom_a", "custom_a"}, "duplicate", 0, ""},
 		{"duplicate_case_insensitive", []string{"Custom_A", "custom_a"}, "duplicate", 0, ""},
-		{"warn_non_custom_prefix", []string{"my_setting"}, "", 1, "does not start with 'custom_'"},
-		{"warn_mixed", []string{"custom_ok", "not_custom"}, "", 1, "not_custom"},
+		{"warn_non_SQL_prefix", []string{"my_setting"}, "", 1, "does not start with 'SQL_'"},
+		{"warn_mixed", []string{"SQL_ok", "not_custom"}, "", 1, "not_custom"},
 		{"warn_multiple_non_custom", []string{"env_name", "region_code"}, "", 2, ""},
 	}
 
@@ -67,6 +72,10 @@ func TestValidateToolInputSettings(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Len(t, warnings, tc.wantWarnings)
+			for _, warning := range warnings {
+				require.Contains(t, warning, "does not start with 'SQL_'")
+				require.Contains(t, warning, "custom_settings_prefixes")
+			}
 			if tc.warnContains != "" && len(warnings) > 0 {
 				require.Contains(t, warnings[0], tc.warnContains)
 			}
@@ -74,7 +83,7 @@ func TestValidateToolInputSettings(t *testing.T) {
 	}
 
 	t.Run("public_api_delegates_correctly", func(t *testing.T) {
-		require.NoError(t, ValidateToolInputSettings([]string{"custom_tenant_id"}))
+		require.NoError(t, ValidateToolInputSettings([]string{"SQL_tenant_id"}))
 		require.Error(t, ValidateToolInputSettings([]string{"readonly"}))
 	})
 }
@@ -86,14 +95,14 @@ func TestBuildToolInputSettingsSchema(t *testing.T) {
 	})
 
 	t.Run("builds_schema_with_properties", func(t *testing.T) {
-		schema := buildToolInputSettingsSchema([]string{"custom_tenant_id", "custom_org_id"})
+		schema := buildToolInputSettingsSchema([]string{"SQL_tenant_id", "custom_org_id"})
 		require.NotNil(t, schema)
 		require.Equal(t, "object", schema["type"])
 		require.False(t, schema["additionalProperties"].(bool))
 
 		props := schema["properties"].(map[string]any)
 		require.Len(t, props, 2)
-		require.Equal(t, map[string]any{"type": "string"}, props["custom_tenant_id"])
+		require.Equal(t, map[string]any{"type": "string"}, props["SQL_tenant_id"])
 		require.Equal(t, map[string]any{"type": "string"}, props["custom_org_id"])
 	})
 
@@ -105,6 +114,14 @@ func TestBuildToolInputSettingsSchema(t *testing.T) {
 }
 
 func TestExtractToolInputSettings(t *testing.T) {
+	t.Run("preserves_SQL_name_and_value", func(t *testing.T) {
+		value := " Tenant_A 'quoted' \\ value "
+		settings, err := extractToolInputSettings(map[string]any{
+			"settings": map[string]any{"SQL_tenant_id": value},
+		}, []string{"SQL_tenant_id"})
+		require.NoError(t, err)
+		require.Equal(t, map[string]string{"SQL_tenant_id": value}, settings)
+	})
 	allowlist := []string{"custom_tenant_id", "custom_org_id"}
 
 	t.Run("extracts_valid_settings", func(t *testing.T) {

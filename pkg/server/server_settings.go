@@ -49,7 +49,7 @@ const toolInputSettingsKey contextKey = "tool_input_settings"
 
 // ValidateToolInputSettings checks the allowlist at startup and returns an error
 // if any entry targets a blocked ClickHouse setting. Logs a warning when a
-// setting does not start with "custom_".
+// setting does not start with "SQL_" (case-insensitive).
 func ValidateToolInputSettings(settings []string) error {
 	warnings, err := validateToolInputSettings(settings)
 	for _, w := range warnings {
@@ -70,9 +70,9 @@ func validateToolInputSettings(settings []string) (warnings []string, err error)
 			return nil, fmt.Errorf("tool_input_settings: duplicate setting %q", setting)
 		}
 		seen[lower] = true
-		if !strings.HasPrefix(lower, "custom_") {
+		if !strings.HasPrefix(lower, "sql_") {
 			warnings = append(warnings, fmt.Sprintf(
-				"tool_input_settings: setting %q does not start with 'custom_'; ensure custom_settings_prefixes is configured on ClickHouse",
+				"tool_input_settings: setting %q does not start with 'SQL_'; ensure custom_settings_prefixes is configured on ClickHouse",
 				setting,
 			))
 		}
