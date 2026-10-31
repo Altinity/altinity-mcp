@@ -28,7 +28,10 @@ optional `settings` object. Values must be strings; names and values are forward
 exactly as supplied and apply only to the current request. Unlisted names and
 blocked safety settings are rejected.
 
-Use the recommended `SQL_` prefix, for example:
+Use the recommended `SQL_` prefix. ClickHouse's
+[packaged 26.3 server configuration](https://github.com/ClickHouse/ClickHouse/blob/v26.3.2.3-lts/programs/server/config.xml#L804-L809)
+sets `custom_settings_prefixes` to `SQL_`; minimal or customized server
+configurations may need this set explicitly. For example, allowlist a setting in MCP:
 
 ```yaml
 server:

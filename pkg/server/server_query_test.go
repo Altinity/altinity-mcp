@@ -739,13 +739,18 @@ func TestHandleExecuteQuery_CapsDisabled(t *testing.T) {
 }
 
 // TestToolInputSQLSettingsRoundTrip exercises the registered execute_query tool
-// against stock ClickHouse, without overriding custom_settings_prefixes.
+// against ClickHouse with the SQL_ prefix from the packaged server config.
+// embedded-clickhouse's minimal config omits custom_settings_prefixes, so the
+// drop-in below restores it explicitly rather than relying on a binary default.
+// Reference: ClickHouse/ClickHouse v26.3.2.3-lts programs/server/config.xml.
 func TestToolInputSQLSettingsRoundTrip(t *testing.T) {
 	t.Parallel()
-	chConfig := setupEmbeddedClickHouseUnseeded(t)
+	chConfig := setupEmbeddedClickHouseUnseeded(t, withConfigDropIn(
+		`<clickhouse><custom_settings_prefixes>SQL_</custom_settings_prefixes></clickhouse>`,
+	))
 	cfg := config.Config{
 		ClickHouse: *chConfig,
-		Server:    config.ServerConfig{
+		Server: config.ServerConfig{
 			ToolInputSettings: []string{"SQL_tenant_id"},
 		},
 	}
@@ -788,7 +793,7 @@ func TestToolInputSQLSettingsRoundTrip(t *testing.T) {
 
 	const value = "fake_tenant_A"
 	first := call(map[string]any{"SQL_tenant_id": value})
-	require.False(t, first.IsError, "stock ClickHouse must accept SQL_ settings: %v", first.Content)
+	require.False(t, first.IsError, "ClickHouse configured with custom_settings_prefixes=SQL_ must accept the setting: %v", first.Content)
 	qr := decode(first)
 	require.Equal(t, [][]interface{}{{value}}, qr.Rows)
 
