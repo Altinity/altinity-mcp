@@ -2,6 +2,8 @@
 
 This guide provides step-by-step instructions for integrating the Altinity MCP Server with various AI tools and platforms.
 
+For a forward-looking design of full database-defined applications inside ChatGPT and Claude, see the [ClickHouse-native MCP applications presentation](clickhouse-native-mcp-applications.html). It distinguishes current functionality from proposed roadmap features.
+
 ## Table of Contents
 
 - [Install Helm Chart with Minikube and Helm from GHCR.io (Token Enabled)](#install-helm-chart-with-minikube-and-helm-from-ghcrio-token-enabled)
